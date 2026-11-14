@@ -3,7 +3,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import Button from '@/components/ui/Button.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import ProviderMark from '@/components/fleet/ProviderMark.svelte'
@@ -62,54 +62,48 @@
 </script>
 
 <Modal {open} {onClose} title="Add provider">
-  <div class="space-y-4">
-    <div>
-      <span class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Provider</span>
+  <div class="space-y-5">
+    <SettingsField label="Provider">
       <Combobox
+        size="sm"
         options={PROVIDER_PRESETS.map((p) => ({
           value: p.key,
           label: p.label,
-          sub: p.configurableUrl ? undefined : 'preconfigured',
+          sub: p.configurableUrl ? undefined : 'Preconfigured',
           icon: markIcon(p.provider, p.key),
         }))}
         selected={[presetKey]}
         onChange={([k]) => k && (presetKey = k)}
         placeholder="Pick a provider"
       />
-    </div>
-    <div>
-      <label for="models-name" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-      <Input id="models-name" autofocus bind:value={name} placeholder={preset.key} />
-    </div>
+    </SettingsField>
+    <SettingsField label="Name" for="models-name">
+      <Input id="models-name" size="sm" autofocus bind:value={name} placeholder={preset.key} />
+    </SettingsField>
     {#if preset.configurableUrl}
-      <div>
-        <label for="models-base-url" class="mb-1 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          Base URL
-          <InfoTip text="LAN and loopback hosts count as self-hosted in the cost split, inferred automatically." />
-        </label>
-        <Input id="models-base-url" bind:value={baseUrl} placeholder={preset.baseUrl ?? 'https://host/v1'} />
-      </div>
+      <SettingsField label="Base URL" for="models-base-url" hint="A host on your own network counts as self-hosted.">
+        <Input id="models-base-url" size="sm" class="font-mono" bind:value={baseUrl} placeholder={preset.baseUrl ?? 'https://host/v1'} />
+      </SettingsField>
     {/if}
-    <div>
-      <label for="models-api-key" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">API key</label>
-      <Input id="models-api-key" type="password" bind:value={apiKey} placeholder="paste the provider key" autocomplete="off" />
-      <InfoTip class="mt-1" text="Stored encrypted at rest (AES-256-GCM), never written to a config file or shown again." />
-    </div>
-    <details>
-      <summary class="cursor-pointer font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim transition-colors hover:text-muted">Advanced: env-var fallback</summary>
-      <div class="mt-2">
-        <Input bind:value={apiKeyEnv} placeholder={preset.apiKeyEnv ?? 'MY_PROVIDER_KEY'} />
-        <InfoTip class="mt-1" text="Optional: an env-var name to read the key from if none is stored above (ops override)." />
-      </div>
+    <SettingsField label="API key" for="models-api-key" hint="Stored encrypted. It is never shown again.">
+      <Input id="models-api-key" size="sm" type="password" bind:value={apiKey} placeholder="Paste the provider key" autocomplete="off" />
+    </SettingsField>
+    <details class="group">
+      <summary class="cursor-pointer list-none font-sans text-[13px] font-medium leading-5 text-muted transition-colors hover:text-fg">
+        <span class="mr-1 inline-block transition-transform group-open:rotate-90">›</span>Read the key from an environment variable
+      </summary>
+      <SettingsField class="mt-3" label="Variable name" for="models-api-key-env" hint="Used only when no key is stored above.">
+        <Input id="models-api-key-env" size="sm" class="font-mono" bind:value={apiKeyEnv} placeholder={preset.apiKeyEnv ?? 'MY_PROVIDER_KEY'} />
+      </SettingsField>
     </details>
-    {#if err}<div class="text-sm text-danger">{err}</div>{/if}
-    <div class="flex justify-end gap-2 border-t border-line pt-3">
-      <Button variant="ghost" size="sm" onclick={onClose}>
-        Cancel
-      </Button>
+    {#if err}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{err}</div>{/if}
+  </div>
+  {#snippet footer()}
+    <div class="flex justify-end gap-2">
+      <Button variant="ghost" size="sm" onclick={onClose}>Cancel</Button>
       <Button size="sm" onclick={() => void create()} disabled={busy}>
         {busy ? 'Adding' : 'Add provider'}
       </Button>
     </div>
-  </div>
+  {/snippet}
 </Modal>

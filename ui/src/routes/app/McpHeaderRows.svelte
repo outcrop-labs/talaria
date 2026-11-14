@@ -2,6 +2,7 @@
   import { Plus, X } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { emptyHeaderRow, type HeaderRow } from './mcp'
 
   /** Free-form auth headers — name and value, as many as the server wants.
@@ -11,7 +12,7 @@
   let {
     rows = $bindable(),
     namePlaceholder = 'Authorization',
-    valuePlaceholder = 'Bearer …',
+    valuePlaceholder,
     addLabel = 'Another header',
   }: {
     rows: HeaderRow[]
@@ -19,13 +20,15 @@
     valuePlaceholder?: string
     addLabel?: string
   } = $props()
+
+  const sans = useUiVoice() === 'sans'
 </script>
 
 <div class="space-y-1.5">
   {#each rows as r, i (i)}
     <div class="grid grid-cols-[10rem_1fr_auto] items-center gap-2">
-      <Input size="sm" bind:value={r.name} placeholder={namePlaceholder} aria-label="Header name" class="font-[var(--font-mono)]" autocomplete="off" />
-      <Input size="sm" bind:value={r.value} type="password" placeholder={valuePlaceholder} aria-label="Header value" autocomplete="off" />
+      <Input size="sm" bind:value={r.name} placeholder={namePlaceholder} aria-label="Header name" class={sans ? 'font-mono' : 'font-[var(--font-mono)]'} autocomplete="off" />
+      <Input size="sm" bind:value={r.value} type="password" placeholder={valuePlaceholder ?? (sans ? 'Bearer your-token' : 'Bearer …')} aria-label="Header value" autocomplete="off" />
       <button
         type="button"
         class="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:text-danger"

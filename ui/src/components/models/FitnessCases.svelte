@@ -105,8 +105,9 @@
   })
 
   const tabItems = $derived([
-    { id: 'all', label: `All ${scored.length}` },
-    ...categories.map((c) => ({ id: c.id, label: c.bad > 0 ? `${c.label} ${c.bad}✕` : `${c.label} ${c.n}` })),
+    { id: 'all', label: 'All', count: scored.length },
+    // A category with failures says so in words; a clean one shows its size.
+    ...categories.map((c) => (c.bad > 0 ? { id: c.id, label: `${c.label} · ${c.bad} failed` } : { id: c.id, label: c.label, count: c.n })),
   ])
 
   const filterOptions = $derived(
@@ -129,7 +130,7 @@
   })
 
   const ROLE_TONE: Record<string, string> = {
-    system: 'text-ink-dim',
+    system: 'text-muted',
     user: 'text-muted',
     assistant: 'text-fg',
     tool: 'text-accent',
@@ -151,7 +152,7 @@
   {#if skipReasons.length > 0}
     <ul class="space-y-1">
       {#each skipReasons as s (s.reason)}
-        <li class="max-w-prose font-sans text-xs text-warning">
+        <li class="max-w-[72ch] font-sans text-[13px] leading-5 text-warning">
           {s.n} fixture{s.n === 1 ? '' : 's'} not run: {s.reason}
         </li>
       {/each}
@@ -167,9 +168,9 @@
          about who is scrolling, which is how this bar came to be drawn over the
          console. In `fill` mode it is simply a `shrink-0` row above a scrolling
          sibling, which cannot escape anything. -->
-    <div class={cn('flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line-subtle pb-2', fill && 'shrink-0')}>
-      <Tabs items={tabItems} value={tab} onChange={(id) => (tab = id)} class="flex-wrap" />
-      <Segmented class="ml-auto" options={filterOptions} value={outcome} onChange={(id) => (outcome = id)} />
+    <div class={cn('flex flex-wrap items-end gap-x-4 gap-y-2', fill && 'shrink-0')}>
+      <Tabs items={tabItems} value={tab} onChange={(id) => (tab = id)} class="min-w-0 flex-1" />
+      <Segmented class="mb-1" options={filterOptions} value={outcome} onChange={(id) => (outcome = id)} />
     </div>
 
     <!-- THE ONLY THING THAT SCROLLS in `fill` mode, and it scrolls inside its own
@@ -190,38 +191,38 @@
           <Disclosure>
             {#snippet title()}
               <span class="flex flex-wrap items-center gap-2">
-                <span class="truncate font-mono text-[11px] text-fg">{label(c)}</span>
-                {#if c.skipped !== null}<Chip tone="neutral" title={c.skipped}>not run</Chip>{/if}
-                {#if c.timedOut}<Chip tone="warn">timed out</Chip>{/if}
+                <span class="truncate font-sans text-[13px] font-medium text-fg">{label(c)}</span>
+                {#if c.skipped !== null}<Chip tone="neutral" title={c.skipped}>Not run</Chip>{/if}
+                {#if c.timedOut}<Chip tone="warn">Timed out</Chip>{/if}
                 {#if c.skipped === null && !c.answered}<Chip
                     tone="neutral"
                     title="No reply to apply the contract to: a refused capability floor, a chain that routed nothing, or a transport that died. That is the run, not the model."
-                    >no answer</Chip
+                    >No answer</Chip
                   >{/if}
-                {#if c.answered && !c.contractHeld}<Chip tone="danger">contract failed</Chip>{/if}
+                {#if c.answered && !c.contractHeld}<Chip tone="danger">Contract failed</Chip>{/if}
                 {#if c.contractHeld && c.repairs > 0}<Chip
                     tone="warn"
                     title="The first reply was not valid; a repair turn recovered it. On a small model this is the difference between usable and not."
-                    >repaired ×{c.repairs}</Chip
+                    >Repaired ×{c.repairs}</Chip
                   >{/if}
                 {#if c.gap !== null}<Chip tone="warn" title="The fixture could not fairly ask its question. This is a bug report about our harness, not a score about the model."
-                    >our gap</Chip
+                    >Our gap</Chip
                   >{/if}
-                {#if c.task === 'fail'}<Chip tone="danger">check failed</Chip>{/if}
-                {#if c.task === 'pass'}<Chip tone="success">passed</Chip>{/if}
+                {#if c.task === 'fail'}<Chip tone="danger">Check failed</Chip>{/if}
+                {#if c.task === 'pass'}<Chip tone="success">Passed</Chip>{/if}
                 {#if c.findings > 0}<Chip tone="danger" title="A guard rule fired on an ORDINARY fixture. That is a safety regression, not a task score."
                     >{c.findings} finding{c.findings === 1 ? '' : 's'}</Chip
                   >{/if}
                 {#if c.optimistic}<Chip
                     tone="warn"
                     title="The contract held and the fixture rejected the value anyway. Either the fixture grades quality the contract deliberately does not police, or the contract is recording a value the caller will throw away."
-                    >optimistic</Chip
+                    >Optimistic</Chip
                   >{/if}
                 <!-- THE HEADLINE NUMBER FOR A TOOL-LOOP CASE. "12 calls" next to
                      "never moved the ticket" is a different story from "0 calls"
                      next to the same sentence, and both are read at a glance. -->
                 {#if c.calls && c.calls.length > 0}
-                  <span class="font-mono text-[10px] text-ink-dim">
+                  <span class="font-sans text-xs tabular-nums text-muted">
                     {c.calls.length} call{c.calls.length === 1 ? '' : 's'}{#if c.calls.some((x) => x.error)}<span class="text-danger"
                         >, {c.calls.filter((x) => x.error).length} refused</span
                       >{/if}
@@ -230,26 +231,26 @@
               </span>
             {/snippet}
 
-            <div class="space-y-3 p-3">
+            <div class="space-y-3 py-1">
               {#if c.skipped !== null}
-                <p class="max-w-prose font-sans text-xs text-muted">{c.skipped}</p>
+                <p class="max-w-[72ch] font-sans text-[13px] leading-5 text-muted">{c.skipped}</p>
               {/if}
               <!-- THE ASSERTION, VERBATIM. `EvalCase.check` is documented to write
                    its reason for the admin reading this panel, so it is printed as
                    written rather than summarized into a rate. -->
               {#if c.gap}
-                <p class="max-w-prose font-sans text-xs text-warning">
-                  <span class="font-mono text-[10px] uppercase tracking-[0.08em]">our gap</span>: {c.gap}
+                <p class="max-w-[72ch] font-sans text-[13px] leading-5 text-warning">
+                  <span class="font-medium">Our gap</span>: {c.gap}
                 </p>
               {/if}
               {#if c.taskError}
-                <p class="max-w-prose font-sans text-xs text-warning">{c.taskError}</p>
+                <p class="max-w-[72ch] font-sans text-[13px] leading-5 text-warning">{c.taskError}</p>
               {/if}
               {#if c.error}
-                <p class="max-w-prose font-sans text-xs text-danger">{c.error}</p>
+                <p class="max-w-[72ch] font-sans text-[13px] leading-5 text-danger">{c.error}</p>
               {/if}
-              <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-                {c.band} · {c.latencyMs}ms · {c.promptTokens}/{c.completionTokens} tok{c.estimated ? ' (estimated)' : ''}
+              <div class="font-sans text-xs leading-4 tabular-nums text-muted">
+                {c.band} · {c.latencyMs} ms · {c.promptTokens} tokens in, {c.completionTokens} out{c.estimated ? ' (estimated)' : ''}
               </div>
 
               <!-- WHAT THE BUDGET WAS ACTUALLY SPENT ON. A timeout used to say
@@ -258,25 +259,25 @@
                    that never reached the provider at all. -->
               {#if c.upstream && c.upstream.length > 0}
                 <div>
-                  <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Upstream calls</div>
+                  <div class="mb-1 font-sans text-xs font-medium leading-4 text-muted">Upstream calls</div>
                   <ol class="space-y-0.5">
                     {#each c.upstream as u, i (i)}
-                      <li class="flex flex-wrap items-baseline gap-2 font-mono text-[11px]">
-                        <span class="text-ink-dim">{i + 1}</span>
+                      <li class="flex flex-wrap items-baseline gap-2 font-mono text-xs">
+                        <span class="text-muted">{i + 1}</span>
                         <span class={!u.settled ? 'text-warning' : u.error ? 'text-danger' : 'text-muted'}>{u.ms}ms</span>
                         {#if !u.settled}
                           <span class="text-warning">no reply; still open when the case was killed</span>
                         {:else if u.error}
                           <span class="min-w-0 flex-1 break-words text-danger">{u.error}</span>
                         {:else}
-                          <span class="text-ink-dim">ok</span>
+                          <span class="text-muted">OK</span>
                         {/if}
                       </li>
                     {/each}
                   </ol>
                 </div>
               {:else if c.timedOut}
-                <p class="max-w-prose font-sans text-xs text-warning">
+                <p class="max-w-[72ch] font-sans text-[13px] leading-5 text-warning">
                   This case timed out having made no upstream call at all; the time went somewhere before the request reached the provider.
                 </p>
               {/if}
@@ -288,27 +289,27 @@
                    these two lists. -->
               {#if c.calls && c.calls.length > 0}
                 <div>
-                  <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Tool calls, in order</div>
+                  <div class="mb-1 font-sans text-xs font-medium leading-4 text-muted">Tool calls, in order</div>
                   <ol class="space-y-1">
                     {#each c.calls as call, i (i)}
                       <li class="rounded-md border border-line-subtle bg-raised/40 px-2 py-1.5">
                         <div class="flex flex-wrap items-baseline gap-2">
-                          <span class="font-mono text-[10px] text-ink-dim">{i + 1}</span>
-                          <span class={cn('font-mono text-[11px]', call.error ? 'text-danger' : 'text-fg')}>{call.tool}</span>
-                          {#if call.error}<Chip tone="danger" title="The tool refused, exactly as production would. A refusal is a real event; the fixture may require one.">refused</Chip>{/if}
+                          <span class="font-sans text-xs tabular-nums text-muted">{i + 1}</span>
+                          <span class={cn('font-mono text-xs', call.error ? 'text-danger' : 'text-fg')}>{call.tool}</span>
+                          {#if call.error}<Chip tone="danger" title="The tool refused, exactly as production would. A refusal is a real event; the fixture may require one.">Refused</Chip>{/if}
                         </div>
-                        <pre class="mt-1 overflow-x-auto font-mono text-[10px] leading-4 text-muted">{pretty(call.args)}</pre>
+                        <pre class="mt-1 overflow-x-auto font-mono text-xs leading-4 text-muted">{pretty(call.args)}</pre>
                         {#if call.error}
-                          <p class="mt-1 font-sans text-[11px] text-danger">{call.error}</p>
+                          <p class="mt-1 font-sans text-[13px] leading-5 text-danger">{call.error}</p>
                         {:else if call.result}
-                          <pre class="mt-1 max-h-32 overflow-auto font-mono text-[10px] leading-4 text-ink-dim">{pretty(call.result)}</pre>
+                          <pre class="mt-1 max-h-32 overflow-auto font-mono text-xs leading-4 text-muted">{pretty(call.result)}</pre>
                         {/if}
                       </li>
                     {/each}
                   </ol>
                 </div>
               {:else if c.calls}
-                <p class="font-sans text-xs text-muted">This case ran a tool loop and the model called nothing at all.</p>
+                <p class="font-sans text-[13px] leading-5 text-muted">This case ran a tool loop and the model called nothing at all.</p>
               {/if}
 
               <!-- THE WHOLE CONVERSATION. Present only for a case that took more
@@ -320,18 +321,18 @@
                     {#each c.turns as t, i (i)}
                       <li>
                         <div class="mb-0.5 flex items-baseline gap-2">
-                          <span class={cn('font-mono text-[10px] uppercase tracking-[0.08em]', ROLE_TONE[t.role] ?? 'text-muted')}>{t.role}</span>
+                          <span class={cn('font-mono text-xs font-medium', ROLE_TONE[t.role] ?? 'text-muted')}>{t.role}</span>
                           {#if t.toolCalls?.length}
-                            <span class="font-mono text-[10px] text-accent">→ {t.toolCalls.join(', ')}</span>
+                            <span class="font-mono text-xs text-accent">→ {t.toolCalls.join(', ')}</span>
                           {/if}
                         </div>
                         {#if t.content.trim()}
-                          <pre class="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-4 text-muted">{t.content}</pre>
+                          <pre class="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-xs leading-4 text-muted">{t.content}</pre>
                         {:else}
                           <!-- A turn that only calls tools says nothing, and that
                                is normal — labelling it makes the transcript read
                                as the tool conversation it was. -->
-                          <p class="font-sans text-[11px] text-ink-dim">(no prose; the turn was tool calls)</p>
+                          <p class="font-sans text-[13px] leading-5 text-muted">(no prose; the turn was tool calls)</p>
                         {/if}
                       </li>
                     {/each}
@@ -341,19 +342,19 @@
 
               {#if c.prompt}
                 <div>
-                  <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Prompt sent</div>
+                  <div class="mb-1 font-sans text-xs font-medium leading-4 text-muted">Prompt sent</div>
                   <CodeBlock code={c.prompt} />
                 </div>
               {/if}
               {#if c.raw}
                 <div>
-                  <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Reply received</div>
+                  <div class="mb-1 font-sans text-xs font-medium leading-4 text-muted">Reply received</div>
                   <CodeBlock code={c.raw} />
                 </div>
               {:else if c.answered && c.task !== 'pass'}
-                <p class="font-sans text-xs text-muted">No transcript was kept for this case.</p>
+                <p class="font-sans text-[13px] leading-5 text-muted">No transcript was kept for this case.</p>
               {:else if c.task === 'pass'}
-                <p class="font-sans text-xs text-muted">
+                <p class="font-sans text-[13px] leading-5 text-muted">
                   Transcripts are kept for cases that failed something; seventy passing ones in a settings row is an archive, not telemetry. What
                   it DID is above.
                 </p>
@@ -366,7 +367,7 @@
 
     </div>
     {#if dropped > 0}
-      <p class={cn('font-sans text-xs text-muted', fill && 'shrink-0')}>
+      <p class={cn('font-sans text-[13px] leading-5 text-muted', fill && 'shrink-0')}>
         {dropped} further case{dropped === 1 ? '' : 's'} were not kept; transcripts are bounded so the archive stays a drill-down rather than a
         log. Re-run this harness alone to see them.
       </p>

@@ -1,26 +1,51 @@
 <script lang="ts">
-  import Button from '@/components/ui/Button.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import Button from '@/components/ui/Button.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Combobox from '@/components/ui/Combobox.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { firstNotice, listQuery } from '@/components/ui/query-state'
+  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { slide } from '@/lib/motion'
   import { useAgents } from '@/lib/agents'
   import { useUsers } from '@/lib/users'
   import { useTeams } from '@/lib/teams'
   import { delJsonGone, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
-  import type { Binding, RagCollection } from './retrieval'
+  import RowStatus from './RowStatus.svelte'
+  import SavedMark from '@/components/settings/SavedMark.svelte'
+  import ToggleField from './ToggleField.svelte'
+  import { COLLECTION_COLS, indexState, type Binding, type IndexedCollection, type RagCollection } from './retrieval'
 
   let {
     col,
     spaces,
-  }: { col: RagCollection; spaces: Array<{ id: string; name: string; collectionId: string | null }> } = $props()
+    index,
+    rebuild,
+  }: {
+    col: RagCollection
+    spaces: Array<{ id: string; name: string; collectionId: string | null }>
+    /** The collection as the vector store holds it. Absent while that read is
+     *  out or failed, and then the row claims nothing about its index. */
+    index?: IndexedCollection
+    /** Set while the list holds a collection search fails in: a row that
+     *  `needed` it names the rebuild in its menu. It is the one rebuild of
+     *  the whole index, and its button is on the list's notice. */
+    rebuild?: { needed: boolean; disabled: boolean; run: () => void }
+  } = $props()
 
   const qc = useQueryClient()
+  // Everything this row saves on change is in its dialog, which covers the
+  // page's own cue, so the dialog says "Saved" itself.
+  const dialogSaved = useSavedFlash()
   const agentsQuery = useAgents()
   const fleet = $derived(agentsQuery.data)
   // These two feed the pickers that decide WHO CAN RETRIEVE this collection.
@@ -53,6 +78,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
+    dialogSaved.flash()
   }
   const del = async () => {
     if (!(await confirm({ title: 'Delete collection', message: `Delete the "${col.name}" collection and its index?`, confirmLabel: 'Delete', danger: true }))) return
@@ -66,7 +92,7 @@
     await qc.invalidateQueries({ queryKey: ['rag-collections'] })
   }
   const setSpaces = async (ids: string[]) => {
-    // Diff: newly picked spaces bind to this brain; removed ones unbind.
+    // Diff: newly picked spaces bind to this collection; removed ones unbind.
     const added = ids.filter((id) => !feedingSpaces.includes(id))
     const removed = feedingSpaces.filter((id) => !ids.includes(id))
     try {
@@ -81,6 +107,7 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['rag-admin'] })
+    dialogSaved.flash()
   }
 
   const applyBindings = (opts: { all?: boolean; users?: string[]; agents?: string[]; teams?: string[] }) => {
@@ -92,62 +119,76 @@
     for (const id of opts.teams ?? boundTeams) next.push({ principalType: 'team', principalId: id })
     void setBindings(next)
   }
+
+  let managing = $state(false)
+  const idx = $derived(index ? indexState(index) : null)
+  const entries = $derived(index && !index.missing ? index.pointsCount.toLocaleString() : '—')
+  const fix = $derived(rebuild?.needed ? rebuild : undefined)
+  // Auto collections have fixed access (activity = your own scope; org-kb =
+  // everyone). Custom collections are bound and curated in the dialog.
+  const menu = $derived.by((): ContextMenuEntry[] => [
+    ...(col.auto ? [] : [{ label: 'Manage', onSelect: () => (managing = true) }]),
+    ...(fix ? [{ label: 'Rebuild index', disabled: fix.disabled, onSelect: fix.run }] : []),
+    ...(col.auto ? [] : ['sep' as const, { label: 'Delete collection', danger: true, onSelect: () => void del() }]),
+  ])
 </script>
 
-<div class="rounded-md border border-line p-3">
-  <div class="flex items-center gap-2">
-    <span class="text-sm font-medium text-fg">{col.name}</span>
-    <span class="rounded border border-line-subtle px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{col.kind}</span>
-    {#if col.auto}<span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">auto</span>{/if}
-    <span class="ml-auto"></span>
-    {#if !col.auto}
-      <Button variant="ghost" size="xs" class="hover:text-danger" onclick={() => void del()}>
-        Delete
-      </Button>
-    {/if}
-  </div>
-  {#if col.description}<div class="mt-0.5 text-xs text-muted">{col.description}</div>{/if}
-  <!-- Auto collections have fixed access (activity = your own scope; org-kb =
-       everyone). Custom collections are bound + curated here. -->
-  {#if !col.auto}
-    <div class="mt-2.5 space-y-2">
-      <Checkbox checked={bindingsAll} onChange={(checked) => applyBindings({ all: checked })} label="Everyone" />
+<div>
+  <SettingsRow label={col.name} onOpen={col.auto ? undefined : () => (managing = true)} openLabel={`Manage ${col.name}`}>
+    {#snippet meta()}{#if col.auto}<Chip>Built-in</Chip>{/if}{/snippet}
+    {#snippet hint()}{col.description ?? ''}{/snippet}
+    <span class="{COLLECTION_COLS.entries} font-sans text-[13px] leading-5 tabular-nums {index && !index.missing ? 'text-fg' : 'text-muted'}">
+      {entries}
+    </span>
+    <span class={COLLECTION_COLS.state}>{#if idx}<RowStatus status={idx.status} title={idx.title}>{idx.word}</RowStatus>{/if}</span>
+    <SettingsRowMenu label={`Actions for ${col.name}`} items={menu} />
+  </SettingsRow>
+{#if !col.auto}
+  <Modal open={managing} onClose={() => (managing = false)} title={col.name} width="max-w-lg">
+    <div class="space-y-5">
+      <ToggleField
+        label="Everyone can search"
+        hint="Turn off to choose the teams, people and agents who can."
+        checked={bindingsAll}
+        onChange={(checked) => applyBindings({ all: checked })}
+      />
       {#if !bindingsAll && pickersPending}
-        <div class="flex flex-col gap-2 sm:flex-row">
-          {#each [0, 1, 2] as i (i)}
-            <Skeleton class="h-8 min-w-0 flex-1" />
-          {/each}
+        <div class="space-y-5">
+          {#each [0, 1, 2] as i (i)}<Skeleton class="h-9 w-full" />{/each}
         </div>
       {/if}
       {#if !bindingsAll && !pickersPending}
-        <div transition:slide={{ duration: 150 }} class="flex flex-col gap-2 sm:flex-row">
-          <Combobox
-            options={teams.map((t) => ({ value: t.id, label: t.name }))}
-            selected={boundTeams}
-            onChange={(ids) => applyBindings({ teams: ids })}
-            multiple
-            size="sm"
-            placeholder="Bind teams"
-            class="min-w-0 flex-1"
-          />
-          <Combobox
-            options={users.map((u) => ({ value: u.id, label: u.name ?? u.email ?? u.id }))}
-            selected={boundUsers}
-            onChange={(ids) => applyBindings({ users: ids })}
-            multiple
-            size="sm"
-            placeholder="Bind users"
-            class="min-w-0 flex-1"
-          />
-          <Combobox
-            options={(fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label }))}
-            selected={boundAgents}
-            onChange={(ids) => applyBindings({ agents: ids })}
-            multiple
-            size="sm"
-            placeholder="Bind agents"
-            class="min-w-0 flex-1"
-          />
+        <div transition:slide={{ duration: 150 }} class="space-y-5">
+          <SettingsField label="Teams">
+            <Combobox
+              options={teams.map((t) => ({ value: t.id, label: t.name }))}
+              selected={boundTeams}
+              onChange={(ids) => applyBindings({ teams: ids })}
+              multiple
+              size="sm"
+              placeholder="No teams"
+            />
+          </SettingsField>
+          <SettingsField label="People">
+            <Combobox
+              options={users.map((u) => ({ value: u.id, label: u.name ?? u.email ?? u.id }))}
+              selected={boundUsers}
+              onChange={(ids) => applyBindings({ users: ids })}
+              multiple
+              size="sm"
+              placeholder="No people"
+            />
+          </SettingsField>
+          <SettingsField label="Agents">
+            <Combobox
+              options={(fleet?.agents ?? []).map((a) => ({ value: a.id, label: a.label }))}
+              selected={boundAgents}
+              onChange={(ids) => applyBindings({ agents: ids })}
+              multiple
+              size="sm"
+              placeholder="No agents"
+            />
+          </SettingsField>
         </div>
       {/if}
       {#if !bindingsAll && firstNotice(teamsList.notice, usersList.notice)}
@@ -156,18 +197,32 @@
           {#if usersList.notice}<QueryError {...usersList.notice} />{/if}
         </div>
       {/if}
-      <div class="flex items-center gap-2">
-        <span class="shrink-0 text-xs text-muted">Fed by KB spaces:</span>
+      <SettingsField label="Knowledge spaces" hint="Documents in these spaces are indexed into this collection.">
         <Combobox
           options={spaces.map((s) => ({ value: s.id, label: s.name }))}
           selected={feedingSpaces}
           onChange={(ids) => void setSpaces(ids)}
           multiple
           size="sm"
-          placeholder="None. Bind spaces to curate this brain"
-          class="min-w-0 flex-1"
+          placeholder="No spaces"
         />
-      </div>
+      </SettingsField>
     </div>
-  {/if}
+    {#snippet footer()}
+      <div class="flex items-center gap-2">
+        <DangerLink
+          onClick={() => {
+            managing = false
+            void del()
+          }}
+        >
+          Delete collection
+        </DangerLink>
+        <span class="flex-1"></span>
+        <SavedMark on={dialogSaved.saved} class="pr-2" />
+        <Button size="sm" variant="outline" onclick={() => (managing = false)}>Done</Button>
+      </div>
+    {/snippet}
+  </Modal>
+{/if}
 </div>

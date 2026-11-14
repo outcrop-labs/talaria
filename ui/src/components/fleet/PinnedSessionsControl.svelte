@@ -1,6 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { patchAgentMeta, type AgentDef } from '@/lib/fleet-defs'
   import { toastError } from '@/lib/toast.svelte'
@@ -14,6 +15,7 @@
   let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   let saving = $state(false)
   const set = async (on: boolean) => {
     saving = true
@@ -23,23 +25,20 @@
       toastError(on ? 'Could not pin this agent\'s sessions' : 'Could not unpin this agent\'s sessions', res.error)
       return
     }
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 </script>
 
-<div>
-  <div class="mb-1 flex items-center gap-1.5">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Pinned sessions</span>
-    <InfoTip text="Keeps each conversation as one session inside the agent, so its own memory — compaction, session search — covers the whole thread instead of pieces of it. Applies to conversations started after it is on; older ones keep working the way they did." />
-  </div>
+<SettingsRow
+  label="Pinned sessions"
+  hint="Each conversation stays one session, so the agent's memory covers the whole thread."
+  info="Applies to conversations started after it is on. Older ones keep working the way they did."
+  saved={autosave.saved()}
+>
   {#if canManage}
-    <Toggle
-      checked={def.pinnedSessions}
-      disabled={saving}
-      onChange={(on) => void set(on)}
-      label={def.pinnedSessions ? 'On · Hermes-native memory' : 'Off'}
-    />
+    <Toggle checked={def.pinnedSessions} disabled={saving} onChange={(on) => void set(on)} title="Pinned sessions" />
   {:else}
-    <div class="text-fg">{def.pinnedSessions ? 'On · Hermes-native memory' : 'Off'}</div>
+    <span class="font-sans text-[13px] leading-5 text-fg">{def.pinnedSessions ? 'On' : 'Off'}</span>
   {/if}
-</div>
+</SettingsRow>

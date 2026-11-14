@@ -7,7 +7,16 @@
 
   /** Per-user fine-grained permissions: chips grouped by concern, showing the
    *  EFFECTIVE state (override → org default → shipped default). */
-  let { userId, perms }: { userId: string; perms: PermsData } = $props()
+  let {
+    userId,
+    perms,
+    onSaved,
+  }: {
+    userId: string
+    perms: PermsData
+    /** A change landed. The person's row owns the cue that says so. */
+    onSaved: () => void
+  } = $props()
 
   const qc = useQueryClient()
   const overrides = $derived(perms.overrides[userId] ?? {})
@@ -20,11 +29,11 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['admin-permissions'] })
+    onSaved()
   }
 </script>
 
-<div class="flex flex-wrap items-center gap-1.5 pl-10">
-  <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">can</span>
+<div class="flex flex-wrap items-center gap-1.5">
   {#each perms.catalog as p (p.id)}
     {@const effective = overrides[p.id] ?? orgDefault(p)}
     <AdminPermChip

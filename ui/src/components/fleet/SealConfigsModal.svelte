@@ -4,10 +4,11 @@
   import Modal from '@/components/ui/Modal.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
+  import type { ChipTone } from '@/components/ui/chip'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import { listStagger, slide } from '@/lib/motion'
-  import { cn } from '@/lib/cn'
 
   interface AgentSeal {
     agentId: string
@@ -96,29 +97,29 @@
   const applied = $derived(report !== null && !report.dryRun)
 
   const STATUS: Record<AgentSeal['status'], string> = {
-    clean: 'clean',
-    planned: 'to seal',
-    sealed: 'sealed',
-    skipped: 'skipped',
+    clean: 'Clean',
+    planned: 'To seal',
+    sealed: 'Sealed',
+    skipped: 'Skipped',
   }
+  const TONE: Record<AgentSeal['status'], ChipTone> = { clean: 'neutral', planned: 'neutral', sealed: 'accent', skipped: 'warn' }
 </script>
 
 <Modal open onClose={onClose} title="Seal credentials in stored configs" width="max-w-lg">
   <AutoHeight>
     <div class="space-y-4">
-      <p class="text-sm leading-relaxed text-muted">
-        Agents federated before credentials were sealed on the way in still store each inline credential as written, in every version of
-        their config. Sealing makes each one a <code class="text-fg">CONFIG_…</code> secret of that agent and leaves a placeholder in every
-        version. The value the agent runs on does not change. A running agent that gains secrets restarts once, before its config changes; a
-        stopped one's container is removed, and <span class="text-fg">Start</span> creates a new one.
+      <p class="font-sans text-[13px] leading-5 text-muted">
+        Agents federated earlier still store credentials as written in every version of their config. Sealing turns each
+        one into a <code class="font-mono text-xs text-fg">CONFIG_</code> secret of that agent. The value it runs on does not change.
+        A running agent restarts once, and a stopped one gets a new container the next time it starts.
       </p>
 
       {#if report === null && busy}
-        <p class="flex items-center gap-2 text-sm text-muted"><WaitingMark site="fleet/seal-configs" size={12} /> Reading stored configs</p>
+        <p class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><WaitingMark site="fleet/seal-configs" size={12} /> Reading stored configs</p>
       {/if}
 
       {#if report}
-        <div class="text-sm text-fg">
+        <div class="font-sans text-sm leading-5 text-fg tabular-nums">
           {#if applied}
             {shown.filter((a) => a.status === 'sealed').length} sealed · {shown.filter((a) => a.status === 'skipped').length} skipped · {clean} already clean
           {:else if shown.length === 0}
@@ -130,54 +131,48 @@
           {/if}
         </div>
         {#if shown.length > 0}
-          <ul use:listStagger class="max-h-72 divide-y divide-line overflow-y-auto rounded-lg border border-line">
+          <ul use:listStagger class="max-h-72 overflow-y-auto rounded-lg border border-line [&>*+*]:border-t [&>*+*]:border-line-subtle">
             {#each shown as a (a.agentId)}
-              <li class="space-y-1 px-3.5 py-2 text-sm">
+              <li class="space-y-1 px-4 py-2.5">
                 <div class="flex items-center gap-2">
-                  <span class="font-mono text-xs text-fg">{a.slug}</span>
+                  <span class="min-w-0 truncate font-mono text-xs text-fg">{a.slug}</span>
                   {#if a.roll}
-                    <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{a.rolled ? 'restarted' : 'restarts'}</span>
+                    <span class="font-sans text-[13px] leading-5 text-muted">{a.rolled ? 'Restarted' : 'Restarts'}</span>
                   {:else if a.removeStopped}
-                    <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{a.removed ? 'container removed' : 'stopped'}</span>
+                    <span class="font-sans text-[13px] leading-5 text-muted">{a.removed ? 'Container removed' : 'Stopped'}</span>
                   {/if}
-                  <span
-                    class={cn(
-                      'ml-auto font-mono text-[10px] uppercase tracking-[0.05em]',
-                      a.status === 'skipped' ? 'text-warning' : a.status === 'sealed' ? 'text-accent' : 'text-muted',
-                    )}
-                  >
-                    {STATUS[a.status]}
-                  </span>
+                  <span class="flex-1"></span>
+                  <Chip tone={TONE[a.status]}>{STATUS[a.status]}</Chip>
                 </div>
-                {#if a.reason}<p class="text-xs leading-relaxed text-warning">{a.reason}</p>{/if}
+                {#if a.reason}<p class="font-sans text-[13px] leading-5 text-warning">{a.reason}</p>{/if}
                 {#if a.sealed.length}
-                  <p class="text-xs leading-relaxed text-muted">
-                    Secrets: <span class="font-mono text-fg">{a.sealed.join(', ')}</span>
+                  <p class="font-sans text-[13px] leading-5 text-muted">
+                    Secrets: <span class="font-mono text-xs text-fg">{a.sealed.join(', ')}</span>
                   </p>
                 {/if}
                 {#if a.versions.length}
-                  <p class="text-xs text-muted">Versions rewritten: {a.versions.map((v) => `v${v}`).join(', ')}</p>
+                  <p class="font-sans text-[13px] leading-5 text-muted">Versions rewritten: {a.versions.map((v) => `v${v}`).join(', ')}</p>
                 {/if}
                 {#if a.changed.length}
-                  <p class="text-xs leading-relaxed text-muted">
-                    Older versions held a different value at <span class="font-mono text-fg">{a.changed.join('; ')}</span>: they now name the
+                  <p class="font-sans text-[13px] leading-5 text-muted">
+                    Older versions held a different value at <span class="font-mono text-xs text-fg">{a.changed.join('; ')}</span>: they now name the
                     current one.
                   </p>
                 {/if}
                 {#if a.historyOnly.length}
-                  <p class="text-xs leading-relaxed text-muted">
-                    Only older versions held <span class="font-mono text-fg">{a.historyOnly.join('; ')}</span>: the value is not kept, and
+                  <p class="font-sans text-[13px] leading-5 text-muted">
+                    Only older versions held <span class="font-mono text-xs text-fg">{a.historyOnly.join('; ')}</span>: the value is not kept, and
                     reverting to them leaves that setting out.
                   </p>
                 {/if}
                 {#if a.dropped.length}
-                  <p class="text-xs leading-relaxed text-muted">
-                    Removed, Talaria supplies these itself: <span class="font-mono text-fg">{a.dropped.join('; ')}</span>
+                  <p class="font-sans text-[13px] leading-5 text-muted">
+                    Removed, Talaria supplies these itself: <span class="font-mono text-xs text-fg">{a.dropped.join('; ')}</span>
                   </p>
                 {/if}
                 {#if a.undeliverable.length && a.status !== 'skipped'}
-                  <p class="text-xs leading-relaxed text-muted">
-                    Removed, too long or multi-line to seal: <span class="font-mono text-fg">{a.undeliverable.join('; ')}</span>
+                  <p class="font-sans text-[13px] leading-5 text-muted">
+                    Removed, too long or multi-line to seal: <span class="font-mono text-xs text-fg">{a.undeliverable.join('; ')}</span>
                   </p>
                 {/if}
               </li>
@@ -185,25 +180,25 @@
           </ul>
         {/if}
         {#each report.warnings as w (w)}
-          <p class="text-xs text-warning">{w}</p>
+          <p class="font-sans text-[13px] leading-5 text-warning">{w}</p>
         {/each}
         {#if anyUndeliverable && !applied}
           <Checkbox
             checked={dropUndeliverable}
             disabled={busy}
             onChange={(on) => (dropUndeliverable = on)}
-            label="Take out credentials that cannot be sealed (multi-line or over 8 KB): that setting becomes unconfigured"
+            label="Take out credentials that cannot be sealed (multi-line or over 8 KB). That setting becomes unconfigured."
           />
         {/if}
       {/if}
-      {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
+      {#if err}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{err}</p>{/if}
     </div>
   </AutoHeight>
 
   {#snippet footer()}
     <div class="flex justify-end gap-2">
       {#if applied}
-        <Button size="sm" onclick={onClose}>Done</Button>
+        <Button variant="outline" size="sm" onclick={onClose}>Done</Button>
       {:else}
         <Button variant="ghost" size="sm" onclick={onClose}>Cancel</Button>
         <Button size="sm" onclick={() => void run(false)} disabled={busy || planned.length === 0}>

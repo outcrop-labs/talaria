@@ -1,18 +1,20 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Trash2 } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import CopyButton from '@/components/ui/CopyButton.svelte'
-  import EmptyState from '@/components/ui/EmptyState.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import StatusDot from '@/components/ui/StatusDot.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import { delJson, errorMessage, getList, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
+  import RowStatus from '@/components/admin/RowStatus.svelte'
+  import { sansFill } from '@/lib/ui-voice'
 
   interface OrgDomainRow {
     id: string
@@ -73,82 +75,72 @@
   }
 </script>
 
-<Panel class="mt-4">
-  <SectionHeader
-    title="Email sign-up domains"
-    info="The domain after the @ in your team's EMAIL addresses, not where Talaria is hosted (talaria.yourcompany.com hosting still means yourcompany.com emails). Add it, publish the TXT record to prove ownership, and anyone signing in with Google on that email domain becomes a member automatically. No invites, no env edits. Email subdomains are separate; add each you use. Password logins stay env-managed."
-  />
-  <QueryState query={query} errorTitle="Could not load your sign-up domains" errorVariant="inline">
-    {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
-    {#snippet children(data)}
-    <div class="space-y-2">
-      {#if data.length === 0}
-        <EmptyState
-          variant="inline"
-          title="No email domains yet"
-          hint="add the domain your team's email addresses use to open self-service joins."
-          class="font-sans"
-        />
-      {/if}
-      <!-- No `?? []` fallback: the missing-data case forked to QueryState's
-           error branch, so reaching here means the read landed. -->
-      {#each data as d (d.id)}
-        <div class="space-y-1.5 rounded-md border border-line p-2.5">
-          <div class="flex items-center gap-2">
-            <span class="font-mono text-[13px] text-fg">{d.domain}</span>
-            {#if d.verified}
-              <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
-                <StatusDot status="ok" />
-                verified · self-joins open
-              </span>
-            {:else}
-              <span class="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning">
-                <StatusDot status="warn" />
-                awaiting DNS proof
-              </span>
-            {/if}
-            <span class="flex-1"></span>
+<SettingsSection
+  title="Sign-up domains"
+  description="Anyone who signs in with Google on a verified email domain joins as a member."
+  info="This is the part after the @ in your team's email addresses, not where Talaria is hosted. Subdomains count separately, so add each one you use. People with a password sign-in are added on the People tab."
+>
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load your sign-up domains" errorVariant="compact">
+      {#snippet skeleton()}<div class="px-5 py-4"><SkeletonRows rows={2} /></div>{/snippet}
+      {#snippet children(data)}
+        <!-- No `?? []` fallback: the missing-data case forked to QueryState's
+             error branch, so reaching here means the read landed. -->
+        {#each data as d (d.id)}
+          <div>
+            <SettingsRow>
+              {#snippet label()}<span class="font-mono text-[13px] font-normal">{d.domain}</span>{/snippet}
+              {#snippet status()}
+                {#if verifying === d.id}
+                  <RowStatus status="idle">Checking</RowStatus>
+                {:else if d.verified}
+                  <RowStatus status="ok" title="People on this domain can join on their own">Verified</RowStatus>
+                {:else}
+                  <RowStatus status="warn">Waiting for DNS</RowStatus>
+                {/if}
+              {/snippet}
+              {#if !d.verified}
+                <SettingsRowAction label={`Verify ${d.domain}`} disabled={verifying === d.id} onclick={() => void verify(d.id)}>Verify</SettingsRowAction>
+              {/if}
+              <SettingsRowMenu
+                label={`Actions for ${d.domain}`}
+                items={[
+                  ...(d.verified ? [] : [{ label: 'Verify domain', disabled: verifying === d.id, onSelect: () => void verify(d.id) }, 'sep' as const]),
+                  { label: 'Remove domain', danger: true, onSelect: () => void remove(d) },
+                ]}
+              />
+            </SettingsRow>
             {#if !d.verified}
-              <Button size="sm" variant="outline" disabled={verifying === d.id} onclick={() => void verify(d.id)}>
-                {verifying === d.id ? 'Checking' : 'Verify'}
-              </Button>
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line-subtle px-5 py-3 font-sans text-[13px] leading-5 text-muted">
+                <span>Add a TXT record on</span>
+                <code class="font-mono text-xs text-fg">_talaria-verify.{d.domain}</code>
+                <span>with the value</span>
+                <code class="min-w-0 truncate rounded {sansFill} px-1.5 py-0.5 font-mono text-xs text-fg">{d.verificationToken}</code>
+                <CopyButton value={d.verificationToken} title="Copy the TXT value" />
+                <span>then choose Verify.</span>
+              </div>
             {/if}
-            <button
-              type="button"
-              title="Remove: self-joins from this domain stop immediately"
-              onclick={() => void remove(d)}
-              class="text-muted transition-colors hover:text-danger"
-            >
-              <Trash2 size={13} />
-            </button>
           </div>
-          {#if !d.verified}
-            <div class="flex items-center gap-2">
-              <span class="shrink-0 text-[11px] text-muted">TXT on _talaria-verify.{d.domain}:</span>
-              <code class="min-w-0 flex-1 truncate rounded bg-raised px-1.5 py-0.5 font-mono text-[11px] text-fg">{d.verificationToken}</code>
-              <CopyButton value={d.verificationToken} label="Copy" class="text-xs" />
-            </div>
-          {/if}
-        </div>
-      {/each}
-      <div class="flex items-center gap-2 pt-1">
-        <Input
-          size="sm"
-          bind:value={draft}
-          onkeydown={(e) => e.key === 'Enter' && void add()}
-          placeholder="yourcompany.com (your email domain)"
-          class="w-72"
-        />
-        <Button size="sm" onclick={() => void add()} disabled={!draft.trim()}>
-          Add domain
-        </Button>
-      </div>
-      {#if error}
-        <div transition:slide={{ duration: 150 }} class="text-xs text-danger">
-          {error}
-        </div>
-      {/if}
-    </div>
-    {/snippet}
-  </QueryState>
-</Panel>
+        {/each}
+        <SettingsRow
+          label={data.length === 0 ? 'No domains yet' : 'Add a domain'}
+          hint="The part after the @ in your team's email addresses."
+          as="label"
+          apart
+        >
+          <Input
+            size="sm"
+            bind:value={draft}
+            onkeydown={(e) => e.key === 'Enter' && void add()}
+            placeholder="yourcompany.com"
+            class="w-[280px] font-mono"
+          />
+          <Button size="md" variant="outline" onclick={() => void add()} disabled={!draft.trim()}>Add domain</Button>
+        </SettingsRow>
+        {#if error}
+          <p transition:slide={{ duration: 150 }} class="px-5 py-3 font-sans text-[13px] leading-5 text-danger">{error}</p>
+        {/if}
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
+</SettingsSection>

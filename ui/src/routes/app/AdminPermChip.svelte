@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { Check } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
   import type { PermCatalogEntry } from './admin'
@@ -21,16 +22,18 @@
 
 <button
   type="button"
-  title={`${entry.hint}${overridden ? ' (overridden; click twice to return to default)' : ''}`}
+  aria-pressed={effective}
+  title={`${entry.hint}${overridden ? ' (Changed from the default. Select it again to go back.)' : ''}`}
   onclick={onToggle}
   class={cn(
-    'flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+    'inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-sans text-xs font-medium leading-4 transition-colors',
     focusGold,
     effective
-      ? 'border-accent/60 bg-accent/10 text-fg'
-      : 'border-line-subtle text-muted hover:border-line hover:text-fg',
+      ? 'border-accent/40 bg-accent/12 text-fg'
+      : 'border-line text-muted hover:border-line-strong hover:text-fg',
   )}
 >
+  {#if effective}<Check size={12} class="text-accent" aria-hidden="true" />{/if}
   {entry.label}
-  {#if overridden}<span class="h-1 w-1 rounded-full bg-warning" title="overridden"></span>{/if}
+  {#if overridden}<span class="h-1.5 w-1.5 rounded-full bg-warning" title="Changed from the default"></span>{/if}
 </button>

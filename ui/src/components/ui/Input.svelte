@@ -24,7 +24,9 @@
   class={cn(
     controlSizes[size],
     // What users TYPE is content, not chrome — sans. Callers needing mono
-    // (keys, slugs, config) pass font-[var(--font-mono)]; cn() resolves it.
+    // (keys, slugs, config) pass `font-mono`, which cn() resolves over the
+    // `font-sans` here. `font-[var(--font-mono)]` does not: an arbitrary
+    // `font-[…]` value is not read as a family, so the field stays sans.
     // Spec §8: raised tile bg, hairline border, radius 6, gold focus ring.
     'w-full rounded-md border border-line bg-[var(--theme-input)] px-3 font-sans text-sm text-fg outline-none transition-colors',
     'placeholder:text-muted focus:border-accent focus:ring-2 focus:ring-accent-soft',

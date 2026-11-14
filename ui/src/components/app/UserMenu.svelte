@@ -6,6 +6,7 @@
   import Popover from '@/components/ui/Popover.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import type { SessionUser } from '@/lib/session'
+  import type { UiVoice } from '@/lib/ui-voice'
   import { cn } from '@/lib/cn'
   import { useNotifySettings } from '@/lib/notify-center'
   import { dndView, safeZone } from '@/lib/notify-dnd'
@@ -15,23 +16,18 @@
   // personal nested in a flyover (profile, theme, Settings, Admin, Manage,
   // sign out). Settings/Admin live HERE, not among the tiles: they're about
   // the person and the instance, not the work.
-  //
-  // `active` lights the chip while the route is inside one of the two views
-  // this menu owns (/settings, /admin). They are the only views with no tile
-  // anywhere in the dock, and neither renders a title of its own, so without
-  // this nothing on the screen says where you are — the job the deleted
-  // strip's "System" breadcrumb used to do.
   let {
     user,
     onLogout,
-    active = false,
     hasManage = false,
+    voice = 'mono',
   }: {
     user: SessionUser
     onLogout: () => void
-    active?: boolean
     /** Whether this viewer has any manage view — the dock decides, once. */
     hasManage?: boolean
+    /** The voice of the name on the chip. The dock passes `sans` in settings mode. */
+    voice?: UiVoice
   } = $props()
 
   // PAUSE NOTIFICATIONS lives here too (Slack's place for it): the menu that
@@ -50,18 +46,14 @@
     <button
       type="button"
       aria-expanded={open}
-      class={cn(
-        'flex h-9 items-center gap-2 rounded-md px-2 transition-colors duration-[120ms] dither-fill',
-        active && 'bg-raised',
-      )}
+      class="flex h-9 items-center gap-2 rounded-md px-2 transition-colors duration-[120ms] dither-fill"
     >
       <StatusDot status="ok" />
       <!-- Display name, not email: the flyover header still shows both. -->
       <span
-        class={cn(
-          'hidden max-w-[16rem] truncate font-mono text-[11px] sm:block',
-          active ? 'text-fg' : 'text-muted',
-        )}
+        class={voice === 'sans'
+          ? 'hidden max-w-[16rem] truncate font-sans text-[13px] leading-5 text-muted sm:block'
+          : 'hidden max-w-[16rem] truncate font-mono text-[11px] text-muted sm:block'}
       >
         {user.name ?? user.email ?? 'Account'}
       </span>
@@ -96,7 +88,7 @@
         class="flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-fg transition-colors duration-[120ms] dither-fill"
       >
         <Shield size={15} class="shrink-0 text-muted" />
-        <span>Admin</span>
+        <span>Instance settings</span>
       </a>
     {/if}
 

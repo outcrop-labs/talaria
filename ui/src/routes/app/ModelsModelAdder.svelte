@@ -27,11 +27,12 @@
       onfocus={() => (open = true)}
       onblur={() => (open = false)}
       onkeydown={(e) => e.key === 'Enter' && q.trim() && add(q.trim())}
-      placeholder={`Add a model: browse the live catalog${catalog.length ? ` (${catalog.length})` : ''} or type an id`}
-      class="flex-1"
+      aria-label="Add a model"
+      placeholder={catalog.length ? `Search ${catalog.length} models in the catalog, or type an id` : 'Type a model id'}
+      class="flex-1 font-mono placeholder:font-sans"
     />
-    <Button size="sm" onclick={() => q.trim() && add(q.trim())} disabled={!q.trim()}>
-      Add
+    <Button size="md" variant="outline" onclick={() => q.trim() && add(q.trim())} disabled={!q.trim()}>
+      Add model
     </Button>
   </div>
   {#if open && suggestions.length > 0}

@@ -6,7 +6,7 @@
   import WingMark from '@/components/WingMark.svelte'
   import MercuryBackdrop from '@/components/MercuryBackdrop.svelte'
   import TabBar from '@/components/app/TabBar.svelte'
-  import ManageSidebar from '@/components/app/ManageSidebar.svelte'
+  import SettingsSidebar from '@/components/settings/SettingsSidebar.svelte'
   import DesktopTitlebar from '@/components/app/DesktopTitlebar.svelte'
   import FileViewerHost from '@/components/app/FileViewerHost.svelte'
   import TimezoneAdopt from '@/components/app/TimezoneAdopt.svelte'
@@ -15,7 +15,6 @@
   import InboxFocusShell from '@/components/inbox/InboxFocusShell.svelte'
   import UnreadableSecretsBanner from '@/components/setup/UnreadableSecretsBanner.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import ThemeToggle from '@/components/ThemeToggle.svelte'
   import { useAppGrants, useDeniedViews, useLogout, useSession } from '@/lib/session'
@@ -37,9 +36,10 @@
   // had room for. Its contents moved into the dock's right cluster and the
   // component was deleted.
   //
-  // The manage half of the menu is the /manage area: the dock's gear goes to
-  // its overview, and ManageSidebar (a sibling below) is docked beside every
-  // manage page — a column at md and up, a strip above the page below it.
+  // The manage half of the menu is the settings area: the dock's gear goes to
+  // its overview, and SettingsSidebar (a sibling below) is docked beside every
+  // manage, settings and admin page — a column at md and up, a strip above the
+  // page below it.
   let { children }: { children: Snippet } = $props()
 
   const session = useSession()
@@ -191,17 +191,17 @@
   </div>
 {/snippet}
 
-{#snippet shellSkeleton(content: Snippet | undefined)}
+{#snippet shellSkeleton(content: Snippet)}
   <MercuryBackdrop />
   <div class="flex h-full flex-col">
-    <!-- Dock-shaped skeleton: exactly the one band the real chrome paints, so
-         loading never reflows. The right cluster is held open too — the strip
-         it used to stand in for no longer exists, so if this band did not
-         carry the cluster's width the real chrome would land wider.
-         ThemeToggle rides here in the ERROR case (where `content` is the
-         retry): the account menu that normally holds it needs a session this
-         branch does not have, and leaving a person stuck on a session error
-         unable to change theme is a small cruelty with no reason. -->
+    <!-- Dock-shaped skeleton: exactly the one band the real chrome paints.
+         Only the session-error case renders this, with the retry as
+         `content`; a loading session holds on the mark instead (sessionHold),
+         so there is no page-shaped skeleton here to keep the width of.
+         ThemeToggle rides here because the account menu that normally holds
+         it needs a session this branch does not have, and leaving a person
+         stuck on a session error unable to change theme is a small cruelty
+         with no reason. -->
     <nav
       aria-label="Primary"
       class="@container flex h-14 shrink-0 items-center gap-2 border-b border-line bg-sidebar px-2"
@@ -219,30 +219,11 @@
         {/each}
       </div>
       <div class="min-w-0 flex-1"></div>
-      {#if content}
-        <ThemeToggle />
-      {:else}
-        <Skeleton class="h-9 w-9 rounded-md" />
-        <Skeleton class="h-9 w-9 rounded-md" />
-        <Skeleton class="h-9 w-32 rounded-md" />
-      {/if}
+      <ThemeToggle />
     </nav>
     <div class="flex min-h-0 min-w-0 flex-1 flex-col">
       <div class="min-h-0 min-w-0 flex-1 overflow-hidden p-8">
-        {#if content}
-          {@render content()}
-        {:else}
-          <div class="mx-auto w-full max-w-[var(--page-width)]">
-            <div class="grid gap-4 xl:grid-cols-3">
-              {#each [0, 1, 2] as i (i)}
-                <div class="rounded-lg border border-line bg-panel p-6">
-                  <Skeleton class="mb-4 h-3 w-24 rounded-full" />
-                  <SkeletonRows rows={4} />
-                </div>
-              {/each}
-            </div>
-          </div>
-        {/if}
+        {@render content()}
       </div>
     </div>
   </div>
@@ -281,7 +262,7 @@
          of the drawer. Nothing sits between it and the view any more. -->
     <TabBar {user} onLogout={() => void logout()} />
     <div class="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden md:flex-row">
-      <ManageSidebar {user} />
+      <SettingsSidebar {user} />
       <!-- THE ASSISTANT DRAWER IS A PEER OF THE DOCK'S ROW, not of the page
            body. It used to open inside `vt-view`, below the top strip and
            the banner, so a panel that is conceptually a second rail started

@@ -1,21 +1,20 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Trash2 } from '@lucide/svelte'
-  import Button from '@/components/ui/Button.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import QueryError from '@/components/ui/QueryError.svelte'
+  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import { inlineEditKeys } from '@/components/ui/control'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { errorMessage, getJson, putJson } from '@/lib/fetch-json'
-  import { slide } from '@/lib/motion'
 
   /** The instance's DISPLAY name — the second half of every browser tab
-   *  ("Talaria - <name>"). Purely cosmetic; nothing else derives from it. */
+   *  ("Talaria - <name>"). Purely cosmetic; nothing else derives from it. A row
+   *  of the Instance card, above the address this instance is hosted at. */
   const qc = useQueryClient()
   // `null` is a real answer (no name configured); undefined means the read
-  // failed, and a failed read must not render as "no name" the way a Save
-  // could then quietly overwrite nothing — QueryState's error branch holds it.
+  // failed, and a failed read must not render as "no name" the way a save
+  // could then quietly overwrite nothing.
   const query = createQuery(() => ({
     queryKey: ['company-name'],
     queryFn: async (): Promise<string | null> =>
@@ -26,6 +25,7 @@
   let seeded = $state(false)
   let error = $state<string | null>(null)
   let busy = $state(false)
+  const autosave = useAutosave()
   // Seed the input once the current name arrives, and only once — later
   // refetches (another admin's change) must not clobber what's being typed.
   $effect(() => {
@@ -46,49 +46,49 @@
     error = null
     try {
       await putJson<{ ok: true }>('/api/admin/instance', body)
+      autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     }
     busy = false
     await refresh()
   }
+
+  // An emptied field clears the name; anything else stores what was typed.
+  const commit = () => {
+    if (data === undefined || draft === (data ?? '')) return
+    if (draft.trim()) void save({ companyName: draft })
+    else if (data) void save({ companyName: null })
+  }
 </script>
 
-<Panel class="mt-4">
-  <SectionHeader
-    title="Company name"
-    info="Names this workspace in people's browser tabs: the tab reads 'Talaria' until you set a name, then 'Talaria - <your name>'. Cosmetic — nothing else derives from it."
-  />
-  <QueryState query={query} errorTitle="Could not load the company name" errorVariant="inline">
-    {#snippet skeleton()}<SkeletonRows rows={1} />{/snippet}
-    {#snippet children(data)}
-    <div class="flex items-center gap-2">
-      <Input
-        size="sm"
-        bind:value={draft}
-        onkeydown={(e) => e.key === 'Enter' && draft.trim() && void save({ companyName: draft })}
-        placeholder="Acme Corp (shows as 'Talaria - Acme Corp')"
-        class="w-96"
-      />
-      <Button size="sm" disabled={!draft.trim() || busy} onclick={() => void save({ companyName: draft })}>
-        Save
-      </Button>
-      {#if data}
-        <button
-          type="button"
-          title="Clear the company name"
-          onclick={() => void save({ companyName: null })}
-          class="text-muted transition-colors hover:text-danger"
-        >
-          <Trash2 size={13} />
-        </button>
-      {/if}
-    </div>
-    {/snippet}
-  </QueryState>
-  {#if error}
-    <div transition:slide={{ duration: 150 }} class="mt-2 text-xs text-danger">
-      {error}
-    </div>
+<SettingsRow
+  label="Browser tab name"
+  info="People's browser tabs read 'Talaria' until you set a name, then 'Talaria - your name'. Nothing else uses it. Empty the field to clear it."
+  as="label"
+  saved={autosave.saved()}
+>
+  {#snippet hint()}
+    {#if error}<span class="text-danger">{error}</span>{:else}Shown in everyone's browser tab, after Talaria.{/if}
+  {/snippet}
+  {#if query.isPending}
+    <Skeleton class="h-9 w-[280px]" />
+  {:else if data === undefined}
+    <QueryError
+      variant="inline"
+      error={query.error}
+      title="Could not load the browser tab name"
+      onRetry={() => void query.refetch()}
+    />
+  {:else}
+    <Input
+      size="sm"
+      class="w-[280px]"
+      bind:value={draft}
+      disabled={busy}
+      onblur={commit}
+      onkeydown={inlineEditKeys(() => (draft = data ?? ''))}
+      placeholder="Acme Corp"
+    />
   {/if}
-</Panel>
+</SettingsRow>

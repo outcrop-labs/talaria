@@ -1,19 +1,26 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { ExternalLink, GitBranch, Trash2 } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import type { DotStatus } from '@/components/ui/chip'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import Select from '@/components/ui/Select.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm, alert } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { p } from '@/router'
+  import { navigate, p } from '@/router'
   import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
+  import { slide } from '@/lib/motion'
   import { fetchAdminApps, fetchAppUpdates, post, requestChange, shortSha, type AppPlugin, type AppTriggerInfo, type AppUpdateResult, type InstalledApp } from './apps'
-  import AppsInstallRequests from './AppsInstallRequests.svelte'
-  import AppsUpdateRequests from './AppsUpdateRequests.svelte'
+  import AppsApprovals from './AppsApprovals.svelte'
+  import AppsMark from './AppsMark.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
@@ -33,11 +40,11 @@
   /** A trigger's hover: when it fires next, and its newest runs. */
   function triggerTitle(t: AppTriggerInfo): string {
     const head = t.cron ? `Runs on the schedule ${t.cron} (UTC)${t.nextAt ? `; next ${new Date(t.nextAt).toLocaleString()}` : ''}` : `Runs on every ${t.event}`
-    const runs = t.runs.map((r) => `${new Date(r.queuedAt).toLocaleString()} — ${r.state}${r.error ? `: ${r.error}` : r.detail ? `: ${r.detail}` : ''}`)
+    const runs = t.runs.map((r) => `${new Date(r.queuedAt).toLocaleString()}: ${r.state}${r.error ? `: ${r.error}` : r.detail ? `: ${r.detail}` : ''}`)
     return [head, ...runs].join('\n')
   }
   let busy = $state<string | null>(null)
-  /** The last update's outcome, per app, shown on its card. */
+  /** The last update's outcome, per app, shown on its row. */
   let results = $state<Record<string, { ok: boolean; text: string }>>({})
 
   const refresh = async () => {
@@ -104,7 +111,7 @@
   const uninstall = async (a: InstalledApp) => {
     const ok = await confirm({
       title: `Uninstall ${a.name}?`,
-      message: 'Removes the app codebase and its build from this deployment and stops its database. Agents lose its MCP server and every grant on it.',
+      message: 'Removes the app codebase and its build from this deployment and stops its database. Agents lose its tools and every grant on it.',
       confirmLabel: 'Uninstall',
       danger: true,
     })
@@ -132,6 +139,7 @@
   // A plugin's update policy: approve (every update waits for an admin) or
   // auto (the maintenance sweep applies it when it sees it). Admin only.
   const setPolicy = async (a: InstalledApp, updatePolicy: AppPlugin['updatePolicy']) => {
+    if (a.plugin?.updatePolicy === updatePolicy) return
     busy = a.slug
     try {
       await putJson<{ ok: true }>('/api/admin/apps', { app: a.slug, updatePolicy })
@@ -169,240 +177,294 @@
   }
 
   const apps = $derived(query.data?.apps ?? [])
+
+  /** The rows whose details (source, maintainer, triggers) are open. */
+  let detailsOpen = $state<Record<string, boolean>>({})
+
+  const POLICY_LABEL: Record<AppPlugin['updatePolicy'], string> = { approve: 'Need approval', auto: 'Automatic' }
+
+  const triggersOf = (a: InstalledApp): AppTriggerInfo[] => (a.broken ? [] : (a.triggers ?? []))
+  const failedRuns = (t: AppTriggerInfo) => t.runs.filter((r) => r.state === 'failed')
+  const hasDetails = (a: InstalledApp) => !!a.git || !!a.plugin || triggersOf(a).length > 0
+  const canOpen = (a: InstalledApp) => a.enabled && !!a.surfaces.work
+
+  const statusOf = (a: InstalledApp): { dot: DotStatus; text: string; title?: string; pulse?: boolean } => {
+    if (busy === a.slug) return { dot: 'warn', text: 'Working', pulse: true }
+    if (a.broken) return { dot: 'danger', text: 'Broken manifest', title: a.broken }
+    if (a.build?.status === 'building') return { dot: 'warn', text: 'Compiling', pulse: true }
+    if (a.build?.status === 'failed') return { dot: 'danger', text: 'Build failed', title: a.build.error }
+    return a.enabled ? { dot: 'ok', text: 'Enabled' } : { dot: 'idle', text: 'Disabled' }
+  }
+
+  const open = (a: InstalledApp) => void navigate('/x/:app', { params: { app: a.slug } })
+
+  /** The one action a row's state asks for, under its own name in the menu.
+   *  A row that opens its app shows only its status and chevron; a row that
+   *  cannot open (the app is off) shows the action as its button. */
+  const fixOf = (a: InstalledApp): 'rebuild' | 'enable' | null => {
+    if (isAdmin && !a.broken && a.build?.status === 'failed') return 'rebuild'
+    if (isAdmin && !a.broken && !a.enabled) return 'enable'
+    return null
+  }
+
+  const menuOf = (a: InstalledApp): ContextMenuEntry[] => {
+    const fix = fixOf(a)
+    const working = busy === a.slug
+    const items: ContextMenuEntry[] = []
+    if (canOpen(a)) items.push({ label: 'Open', onSelect: () => open(a) })
+    if (hasDetails(a))
+      items.push({
+        label: detailsOpen[a.slug] ? 'Hide details' : 'Show details',
+        onSelect: () => (detailsOpen[a.slug] = !detailsOpen[a.slug]),
+      })
+    if (a.plugin)
+      items.push({
+        label: 'Request a change',
+        onSelect: () => {
+          changing = changing === a.slug ? null : a.slug
+          changeText = ''
+        },
+      })
+    if (!isAdmin) return items
+    if (a.git && !a.broken) items.push({ label: 'Update', disabled: working, onSelect: () => void update(a) })
+    if (a.plugin)
+      items.push({
+        label: 'Updates',
+        disabled: working,
+        children: (['approve', 'auto'] as const).map((policy) => ({
+          label: POLICY_LABEL[policy],
+          checked: a.plugin?.updatePolicy === policy,
+          onSelect: () => void setPolicy(a, policy),
+        })),
+      })
+    if (fix === 'rebuild') items.push({ label: 'Rebuild', disabled: working, onSelect: () => void rebuild(a) })
+    if (!a.broken) items.push({ label: a.enabled ? 'Disable' : 'Enable', disabled: working, onSelect: () => void toggle(a) })
+    if (items.length) items.push('sep')
+    items.push({ label: 'Uninstall', danger: true, disabled: working, onSelect: () => void uninstall(a) })
+    return items
+  }
+
+  const addsOf = (a: InstalledApp): Array<{ text: string; title: string }> => {
+    const parts: Array<{ text: string; title: string }> = []
+    if (a.surfaces.work) parts.push({ text: 'Work view', title: `Work view: ${a.surfaces.work}` })
+    if (a.surfaces.manage) parts.push({ text: 'Manage view', title: `Manage view: ${a.surfaces.manage}` })
+    if (a.surfaces.settings) parts.push({ text: 'Settings panel', title: `Settings panel: ${a.surfaces.settings}` })
+    if (a.mcp) parts.push({ text: 'Agent tools', title: 'Gives agents tools through its own tool server. Choose who may use them under Tools.' })
+    const registered = a.build?.harnesses?.registered ?? []
+    if (registered.length > 0) {
+      const n = `${registered.length} harness${registered.length === 1 ? '' : 'es'}`
+      parts.push(
+        a.enabled
+          ? { text: n, title: `Activity harnesses scored in Models, under Fitness:\n${registered.join('\n')}` }
+          : {
+              text: `${n}, not registered`,
+              title: `Not registered while ${a.name} is disabled: enable it to score them in Models, under Fitness.\n${registered.join('\n')}`,
+            },
+      )
+    }
+    return parts
+  }
+
+  const note = 'font-sans text-[13px] leading-5'
+  const identifier = 'font-mono text-xs text-muted'
 </script>
 
-{#if isAdmin}<AppsInstallRequests /><AppsUpdateRequests />{/if}
+{#if isAdmin}<AppsApprovals {apps} />{/if}
 
-{#snippet surfaceChips(surfaces: InstalledApp['surfaces'], mcp?: boolean)}
-  <span class="flex gap-1">
-    {#if surfaces.work}<Chip title={`Work view: ${surfaces.work}`}>work</Chip>{/if}
-    {#if surfaces.manage}<Chip title={`Manage view: ${surfaces.manage}`}>manage</Chip>{/if}
-    {#if surfaces.settings}<Chip title={`Settings panel: ${surfaces.settings}`}>settings</Chip>{/if}
-    {#if mcp}<Chip title="Publishes MCP tools for agents. Govern access in Manage → MCP">mcp</Chip>{/if}
-  </span>
+<!-- The app's version and what it adds, as one quiet line under its purpose:
+     every app has these, so they are words and not chips, and the title line
+     is the name alone. The activity harnesses it ships (harnesses/*.ts) end
+     the line, as the host last checked them against the enabled apps. A
+     disabled app registers none: its count is what it would register once
+     enabled. -->
+{#snippet adds(a: InstalledApp)}
+  {@const parts = addsOf(a)}
+  {#if a.version || parts.length > 0}
+    <div class="font-sans text-xs leading-5 text-muted">
+      {#if a.version}<span class="font-mono">v{a.version}</span>{parts.length > 0 ? ' · ' : ''}{/if}{#each parts as part, i (part.text)}{i > 0 ? ' · ' : ''}<span title={part.title}>{part.text}</span>{/each}
+    </div>
+  {/if}
 {/snippet}
 
-<!-- The activity harnesses the app ships (harnesses/*.ts), as the host last
-     checked them against the enabled apps: the ones registered for model
-     fitness, and the ones skipped. A disabled app registers none — its count
-     is what it would register once enabled. -->
-{#snippet harnessChips(a: InstalledApp)}
-  {@const registered = a.build?.harnesses?.registered ?? []}
+<!-- A chip only for what is unusual about this row. -->
+{#snippet exceptions(a: InstalledApp)}
   {@const skipped = a.build?.harnesses?.problems ?? []}
-  {@const n = `${registered.length} harness${registered.length === 1 ? '' : 'es'}`}
-  {#if registered.length > 0 && a.enabled}
-    <Chip title={`Activity harnesses scored in Models → Fitness:\n${registered.join('\n')}`}>{n}</Chip>
-  {:else if registered.length > 0}
-    <Chip title={`Not registered while ${a.name} is disabled: enable it to score them in Models → Fitness.\n${registered.join('\n')}`}>
-      {n} · not registered
-    </Chip>
+  {@const check = a.git ? updates.data?.[a.slug] : undefined}
+  {#if check?.available}
+    <Chip tone="accent" title={`The source now points at ${shortSha(check.latest)}`}>Update available</Chip>
   {/if}
   {#if skipped.length > 0 && a.build?.status !== 'failed'}
     <Chip tone="warn" title={skipped.join('\n')}>{skipped.length} harness{skipped.length === 1 ? '' : 'es'} skipped</Chip>
   {/if}
 {/snippet}
 
-<!-- The app's triggers and how each last ran. A trigger that fails never
-     turns the app off, so this line is where an admin sees it: the failed
-     run's sentence in red, the app's own result line otherwise. The line
-     WRAPS rather than truncating: on a phone the run's sentence is most of
-     what there is to read, and an ellipsis there hid an event trigger's
-     detail entirely (a hover title is no help on a touch screen). -->
-{#snippet triggerLines(a: InstalledApp)}
-  {#each a.triggers ?? [] as t (t.id)}
+<!-- What an admin must see without opening anything: why the app is broken,
+     a harness the platform skipped (it never disables the app, so this is the
+     only place that says one is missing from the fitness matrix), a trigger
+     that failed (it never turns the app off either), and the last outcome. -->
+{#snippet attention(a: InstalledApp)}
+  {#if a.broken}
+    <div class={`${note} wrap-anywhere text-danger`}>{a.broken}</div>
+  {:else if a.build?.status === 'failed' && a.build.error}
+    <div class={`${note} wrap-anywhere text-danger`}>{a.build.error}</div>
+  {/if}
+  {#if a.build?.status !== 'failed'}
+    {#each a.build?.harnesses?.problems ?? [] as problem (problem)}
+      <div class={`${note} wrap-anywhere text-warning`} data-harness-problem>{problem}</div>
+    {/each}
+    <!-- Registered, and will not run as its author meant: a pin that names no
+         platform agent resolves to nothing. -->
+    {#each a.build?.harnesses?.warnings ?? [] as warning (warning)}
+      <div class={`${note} wrap-anywhere text-warning`} data-harness-warning>{warning}</div>
+    {/each}
+  {/if}
+  {#each triggersOf(a) as t (t.id)}
     {@const last = t.runs[0]}
-    {@const failed = t.runs.filter((r) => r.state === 'failed').length}
-    <div class="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 font-mono text-[11px] text-muted" data-app-trigger={t.id}>
-      <span class="shrink-0 text-fg">{t.id}</span>
-      <span class="shrink-0" title={triggerTitle(t)}>{t.cron ? `${t.cron} UTC` : `on ${t.event}`}</span>
-      {#if !last}
-        <span class="min-w-0 wrap-anywhere">{a.enabled ? 'not run yet' : 'off while the app is disabled'}</span>
-      {:else}
-        <span class={`shrink-0 ${last.state === 'failed' ? 'text-danger' : last.state === 'ok' ? 'text-fg' : ''}`}>
-          {last.state === 'ok' ? 'ran' : last.state} {relativeTime(last.finishedAt ?? last.startedAt ?? last.queuedAt)}
-        </span>
-        {#if last.state === 'failed' && last.error}
-          <span class="min-w-0 wrap-anywhere text-danger" data-app-trigger-detail>{last.error}</span>
-        {:else if last.detail}
-          <span class="min-w-0 wrap-anywhere" data-app-trigger-detail>{last.detail}</span>
-        {:else if last.state === 'skipped' && last.error}
-          <span class="min-w-0 wrap-anywhere" data-app-trigger-detail>{last.error}</span>
-        {/if}
-        {#if failed > 0 && last.state !== 'failed'}
-          <span class="shrink-0 text-danger" title={t.runs.filter((r) => r.state === 'failed').map((r) => r.error ?? '').join('\n')}>
-            {failed} of the last {t.runs.length} failed
-          </span>
-        {/if}
-      {/if}
-    </div>
+    {@const failed = failedRuns(t)}
+    {#if last?.state === 'failed'}
+      <div class={`${note} wrap-anywhere text-danger`}>
+        <span class="font-mono text-xs">{t.id}</span> failed {relativeTime(last.finishedAt ?? last.startedAt ?? last.queuedAt)}{#if last.error}: {last.error}{/if}
+      </div>
+    {:else if failed.length > 0}
+      <div class={`${note} text-danger`} title={failed.map((r) => r.error ?? '').join('\n')}>
+        <span class="font-mono text-xs">{t.id}</span> failed {failed.length} of its last {t.runs.length} runs
+      </div>
+    {/if}
   {/each}
+  {#if a.git && updates.data?.[a.slug]?.error}
+    <div class={`${note} text-danger`} title={updates.data[a.slug]?.error}>Update check failed</div>
+  {/if}
+  {#if results[a.slug]}
+    <div class={`${note} wrap-anywhere ${results[a.slug]!.ok ? 'text-fg' : 'text-danger'}`} data-app-update-result>
+      {results[a.slug]!.text}
+    </div>
+  {/if}
+  {#if filed[a.slug]}
+    {@const f = filed[a.slug]!}
+    <div class={`${note} ${f.ok ? 'text-muted' : 'text-danger'}`} data-request-change-result>
+      {#if f.href}<a href={f.href} class="text-fg underline-offset-2 hover:underline">{f.text}</a>{:else}{f.text}{/if}
+    </div>
+  {/if}
+{/snippet}
+
+<!-- One level down: where the code came from, who maintains a plugin and how
+     its updates land, and each trigger with its last run. The lines WRAP
+     rather than truncate: on a phone the run's sentence is most of what
+     there is to read. -->
+{#snippet details(a: InstalledApp)}
+  <dl class={`grid grid-cols-[10rem_minmax(0,1fr)] gap-x-4 gap-y-2 border-t border-line-subtle px-5 py-4 ${note}`}>
+    {#if a.git}
+      {@const check = updates.data?.[a.slug]}
+      <dt class="text-muted">Source</dt>
+      <dd class={`flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 ${identifier}`} data-app-source>
+        <span class="min-w-0 break-all" title={a.git.url}>{a.git.repo}</span>
+        <span class="shrink-0 whitespace-nowrap">@ {a.git.ref ?? 'default branch'}</span>
+        <span class="shrink-0" title={a.git.sha ?? 'installed before commits were recorded'}>{shortSha(a.git.sha)}</span>
+        {#if check?.notChecked}<span class="shrink-0 font-sans text-[13px]" title={check.notChecked}>Update not checked</span>{/if}
+      </dd>
+    {/if}
+    {#if a.plugin}
+      {@const pl = a.plugin}
+      <dt class="text-muted">Maintained by</dt>
+      <dd class="text-fg" data-app-plugin>{pl.maintainer?.name ?? pl.maintainer?.model ?? 'No agent'}</dd>
+      {#if pl.owner}
+        <dt class="text-muted">Built for</dt>
+        <dd class="text-fg">{pl.owner.name ?? 'A member'}</dd>
+      {/if}
+      {#if pl.board}
+        <dt class="text-muted">Tickets go to</dt>
+        <dd class="text-fg">
+          {pl.board.name ?? 'Its board'}{#if pl.ticketRef}<span class={`ml-2 ${identifier}`}>{pl.ticketRef}</span>{/if}
+        </dd>
+      {/if}
+      <dt class="text-muted">Updates</dt>
+      <dd class="text-fg">{POLICY_LABEL[pl.updatePolicy]}</dd>
+    {/if}
+    {#each triggersOf(a) as t (t.id)}
+      {@const last = t.runs[0]}
+      <dt class="font-mono text-xs leading-5 text-muted">{t.id}</dt>
+      <dd class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-muted" data-app-trigger={t.id}>
+        <span class={`shrink-0 ${identifier}`} title={triggerTitle(t)}>{t.cron ? `${t.cron} UTC` : `on ${t.event}`}</span>
+        {#if !last}
+          <span class="min-w-0 wrap-anywhere">{a.enabled ? 'Not run yet' : 'Off while the app is disabled'}</span>
+        {:else}
+          <span class={`shrink-0 ${last.state === 'failed' ? 'text-danger' : last.state === 'ok' ? 'text-fg' : ''}`}>
+            {last.state === 'ok' ? 'ran' : last.state} {relativeTime(last.finishedAt ?? last.startedAt ?? last.queuedAt)}
+          </span>
+          {#if last.state === 'failed' && last.error}
+            <span class="min-w-0 wrap-anywhere text-danger" data-app-trigger-detail>{last.error}</span>
+          {:else if last.detail}
+            <span class="min-w-0 wrap-anywhere" data-app-trigger-detail>{last.detail}</span>
+          {:else if last.state === 'skipped' && last.error}
+            <span class="min-w-0 wrap-anywhere" data-app-trigger-detail>{last.error}</span>
+          {/if}
+        {/if}
+      </dd>
+    {/each}
+  </dl>
 {/snippet}
 
 {#if query.isLoading}
-  <SkeletonRows rows={4} />
+  <SettingsGroup>
+    <div class="px-5 py-4"><SkeletonRows rows={4} /></div>
+  </SettingsGroup>
 {:else if !query.data}
   <QueryError error={query.error} title="Could not load installed apps" onRetry={() => void query.refetch()} />
 {:else if apps.length === 0}
-  <EmptyState
-    icon="⬡"
-    title="No apps installed"
-    hint="Discover community and official apps in the next tab, or drop a codebase into apps/ (see apps/README.md for building your own)"
-  />
+  <EmptyState icon="⬡" title="No apps installed" hint="Find one under Discover, or install your own from a Git repository there." />
 {:else}
-  <div class="space-y-3" data-app-cards>
-    {#each apps as a (a.slug)}
-      <!-- Wraps on a phone: the actions drop below the app's lines instead of
-           squeezing them into a sliver beside the buttons. -->
-      <div class="flex flex-wrap items-center gap-4 rounded-lg border border-line bg-panel p-4 sm:flex-nowrap">
-        <span class="w-8 text-center text-2xl text-accent">{a.icon}</span>
-        <div class="min-w-0 flex-1 basis-56">
-          <div class="flex items-baseline gap-2">
-            <span class="font-sans text-sm font-medium text-fg">{a.name}</span>
-            {#if a.version}<span class="font-mono text-[10px] tracking-[0.05em] text-muted">v{a.version}</span>{/if}
-            {@render surfaceChips(a.surfaces, a.mcp)}
-            {#if a.broken}<Chip tone="danger" title={a.broken}>broken manifest</Chip>
-            {:else if a.build?.status === 'building'}<Chip>compiling</Chip>
-            {:else if a.build?.status === 'failed'}<Chip tone="danger" title={a.build.error}>build failed</Chip>{/if}
-            {@render harnessChips(a)}
-          </div>
-          <div class="truncate font-sans text-xs text-muted">{a.description}</div>
-          {#if a.git}
-            {@const check = updates.data?.[a.slug]}
-            <div class="mt-1 flex items-center gap-2 font-mono text-[11px] text-muted" data-app-source>
-              <GitBranch size={11} />
-              <span class="truncate" title={a.git.url}>{a.git.repo}</span>
-              <span class="shrink-0 whitespace-nowrap">@ {a.git.ref ?? 'default branch'}</span>
-              <span class="shrink-0" title={a.git.sha ?? 'installed before commits were recorded'}>{shortSha(a.git.sha)}</span>
-              {#if check?.available}
-                <span class="shrink-0"><Chip tone="accent" title={`The source now points at ${shortSha(check.latest)}`}>update available</Chip></span>
-              {:else if check?.notChecked}
-                <span class="shrink-0" title={check.notChecked}>update not checked</span>
-              {:else if check?.error}
-                <span class="truncate text-danger" title={check.error}>update check failed</span>
+  <SettingsSection title="Installed apps">
+    <SettingsGroup data-app-cards>
+      {#each apps as a (a.slug)}
+        {@const standing = statusOf(a)}
+        {@const fix = fixOf(a)}
+        {@const menu = menuOf(a)}
+        <div>
+          <SettingsRow label={a.name} openHref={canOpen(a) ? p('/x/:app', { params: { app: a.slug } }) : undefined} openLabel={`Open ${a.name}`}>
+            {#snippet icon()}<AppsMark icon={a.icon} />{/snippet}
+            {#snippet meta()}{@render exceptions(a)}{/snippet}
+            {#snippet hint()}
+              <div>{a.description}</div>
+              {@render adds(a)}
+              {@render attention(a)}
+            {/snippet}
+            {#snippet status()}
+              <span class="flex items-center gap-2" title={standing.title}>
+                <StatusDot status={standing.dot} pulse={standing.pulse} />{standing.text}
+              </span>
+            {/snippet}
+            {#if !canOpen(a)}
+              {#if fix === 'rebuild'}
+                <SettingsRowAction label={`Rebuild ${a.name}`} disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</SettingsRowAction>
+              {:else if fix === 'enable'}
+                <SettingsRowAction label={`Enable ${a.name}`} disabled={busy === a.slug} onclick={() => void toggle(a)}>Enable</SettingsRowAction>
               {/if}
-            </div>
+            {/if}
+            <SettingsRowMenu label={`Actions for ${a.name}`} items={menu} />
+          </SettingsRow>
+          {#if detailsOpen[a.slug] && hasDetails(a)}
+            <div transition:slide={{ duration: 150 }}>{@render details(a)}</div>
           {/if}
-          {#if a.plugin}
-            {@const pl = a.plugin}
-            <!-- A plugin: the Developer Agent that maintains it, the person it
-                 is for, the board its maintenance tickets go to, and how its
-                 updates land. -->
-            <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[11px] text-muted" data-app-plugin>
-              <span title="The Developer Agent that maintains this app">maintained by <span class="text-fg">{pl.maintainer?.name ?? pl.maintainer?.model ?? 'no agent'}</span></span>
-              {#if pl.owner}<span title="Who the app was built for">for <span class="text-fg">{pl.owner.name ?? 'a member'}</span></span>{/if}
-              {#if pl.board}<span title="Where its maintenance tickets go">tickets on <span class="text-fg">{pl.board.name ?? 'its board'}</span>{#if pl.ticketRef}{` · ${pl.ticketRef}`}{/if}</span>{/if}
-              {#if isAdmin}
-                <label class="flex items-center gap-1" title="approve: every update waits for an admin's approval. auto: an update is applied as soon as the maintenance sweep sees it.">
-                  updates
-                  <Select
-                    size="sm"
-                    aria-label={`Update policy for ${a.name}`}
-                    value={pl.updatePolicy}
-                    disabled={busy === a.slug}
-                    onchange={(e) => void setPolicy(a, e.currentTarget.value as AppPlugin['updatePolicy'])}
-                    class="w-40"
-                  >
-                    <option value="approve">need approval</option>
-                    <option value="auto">automatic</option>
-                  </Select>
-                </label>
-              {:else}
-                <span>updates {pl.updatePolicy === 'auto' ? 'automatic' : 'need approval'}</span>
-              {/if}
-              <button
-                type="button"
-                class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent"
-                title="Ask its maintainer for a change: a ticket on its board, assigned to the agent"
-                data-request-change
-                onclick={() => {
-                  changing = changing === a.slug ? null : a.slug
-                  changeText = ''
-                }}>Request a change</button
-              >
-            </div>
-            {#if changing === a.slug}
-              <div class="mt-2 space-y-2" data-request-change-form>
+          {#if changing === a.slug}
+            <div transition:slide={{ duration: 150 }}>
+              <div class="space-y-3 border-t border-line-subtle px-5 py-4" data-request-change-form>
                 <Textarea
                   bind:value={changeText}
                   rows={3}
                   maxlength={4000}
-                  placeholder={`What should change in ${a.name}? The first line becomes the ticket's title.`}
+                  placeholder={`What should change in ${a.name}? The first line becomes the ticket title.`}
                 />
                 <div class="flex justify-end gap-2">
                   <Button size="sm" variant="ghost" onclick={() => (changing = null)}>Cancel</Button>
-                  <Button size="sm" disabled={busy === a.slug || !changeText.trim()} onclick={() => void sendChange(a)}>
-                    {busy === a.slug ? 'Filing…' : 'File the ticket'}
+                  <Button size="sm" variant="outline" disabled={busy === a.slug || !changeText.trim()} onclick={() => void sendChange(a)}>
+                    {busy === a.slug ? 'Filing' : 'File ticket'}
                   </Button>
                 </div>
               </div>
-            {/if}
-            {#if filed[a.slug]}
-              {@const f = filed[a.slug]!}
-              <div class={`mt-1 font-sans text-[11px] ${f.ok ? 'text-muted' : 'text-danger'}`} data-request-change-result>
-                {#if f.href}<a href={f.href} class="text-fg hover:underline">{f.text}</a>{:else}{f.text}{/if}
-              </div>
-            {/if}
-          {/if}
-          {#if a.broken}
-            <div class="mt-1 truncate font-mono text-[11px] text-danger" title={a.broken}>{a.broken}</div>
-          {:else if a.build?.status === 'failed' && a.build.error}
-            <div class="mt-1 truncate font-mono text-[11px] text-danger">{a.build.error}</div>
-          {/if}
-          <!-- A harness the platform skipped never disables the app, so this
-               line is the only place an admin learns one is missing from the
-               fitness matrix, and why. -->
-          {#if a.build?.status !== 'failed'}
-            {#each a.build?.harnesses?.problems ?? [] as problem (problem)}
-              <div class="mt-1 break-words font-mono text-[11px] text-warning" data-harness-problem>{problem}</div>
-            {/each}
-            <!-- Registered, and will not run as its author meant: a pin that
-                 names no platform agent resolves to nothing. -->
-            {#each a.build?.harnesses?.warnings ?? [] as warning (warning)}
-              <div class="mt-1 break-words font-mono text-[11px] text-warning" data-harness-warning>{warning}</div>
-            {/each}
-          {/if}
-          {#if !a.broken}{@render triggerLines(a)}{/if}
-          {#if results[a.slug]}
-            <div class={`mt-1 font-mono text-[11px] ${results[a.slug]!.ok ? 'text-fg' : 'text-danger'}`} data-app-update-result>
-              {results[a.slug]!.text}
             </div>
           {/if}
         </div>
-        {#if a.enabled && a.surfaces.work}
-          <a href={p('/x/:app', { params: { app: a.slug } })} class="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-accent">
-            <ExternalLink size={12} /> Open
-          </a>
-        {/if}
-        {#if isAdmin}
-          {#if a.git && !a.broken}
-            <Button
-              size="sm"
-              variant={updates.data?.[a.slug]?.available ? 'primary' : 'ghost'}
-              disabled={busy === a.slug}
-              title="Fetch the newest commit of this app's ref, build and check it, then switch to it; a version that fails is rolled back"
-              onclick={() => void update(a)}
-            >
-              {busy === a.slug ? 'Working…' : 'Update'}
-            </Button>
-          {/if}
-          {#if a.build?.status === 'failed' && !a.broken}
-            <Button size="sm" variant="ghost" disabled={busy === a.slug} onclick={() => void rebuild(a)}>Rebuild</Button>
-          {/if}
-          {#if !a.broken}
-            <Button size="sm" variant={a.enabled ? 'ghost' : 'primary'} disabled={busy === a.slug} onclick={() => void toggle(a)}>
-              {a.enabled ? 'Disable' : 'Enable'}
-            </Button>
-          {/if}
-          <button
-            title="Uninstall"
-            disabled={busy === a.slug}
-            onclick={() => void uninstall(a)}
-            class="text-muted transition-colors hover:text-danger"
-          >
-            <Trash2 size={14} />
-          </button>
-        {/if}
-      </div>
-    {/each}
-  </div>
+      {/each}
+    </SettingsGroup>
+  </SettingsSection>
 {/if}

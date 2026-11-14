@@ -3,7 +3,8 @@
   import { Activity, Play, Repeat } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import {
@@ -17,10 +18,10 @@
 
   // THE CONTROLS an admin reaches for across the whole instance, each one
   // the same call its own page makes: roll every agent (Agents), start the
-  // ones that are stopped (the fleet reconcile), and re-probe every MCP
+  // ones that are stopped (the fleet reconcile), and re-probe every tool
   // server now rather than at the next hourly pass (the MCP health job).
   // All three are admin-only on the server, so the overview mounts this
-  // panel for admins only.
+  // panel for admins only, as the first group of its Fleet controls card.
   //
   // Each says what it is about to do on the button, and answers in a line
   // under its row — the deploying-action rule from UI-CONVENTIONS.
@@ -52,11 +53,11 @@
   const batchFailed = $derived(batch.filter((r) => r.state === 'failed'))
   const rollLine = $derived.by(() => {
     if (!rollStart) return null
-    if (rollStart.error) return { tone: 'danger', text: `Could not start the roll: ${rollStart.error}` }
-    if (batchRolling > 0) return { tone: 'muted', text: `Rolling: ${batchDone + batchFailed.length} of ${batch.length} done` }
-    if ((rollStart.rolling?.length ?? 0) === 0) return { tone: 'muted', text: 'Nothing to roll.' }
+    if (rollStart.error) return { tone: 'danger', text: `Could not start the restart: ${rollStart.error}` }
+    if (batchRolling > 0) return { tone: 'muted', text: `Restarting: ${batchDone + batchFailed.length} of ${batch.length} done` }
+    if ((rollStart.rolling?.length ?? 0) === 0) return { tone: 'muted', text: 'Nothing to restart.' }
     const failed = batchFailed.length > 0 ? `, ${batchFailed.length} failed: ${batchFailed.map((f) => f.displayName).join(', ')}` : ''
-    return { tone: batchFailed.length > 0 ? 'danger' : 'ok', text: `Rolled ${batchDone} of ${batch.length || rollStart.rolling?.length || 0}${failed}` }
+    return { tone: batchFailed.length > 0 ? 'danger' : 'ok', text: `Restarted ${batchDone} of ${batch.length || rollStart.rolling?.length || 0}${failed}` }
   })
 
   // ── Start stopped agents ──
@@ -74,7 +75,7 @@
   const startLine = $derived.by(() => {
     if (!startResult) return null
     if (startResult.error) return { tone: 'danger', text: `Could not start agents: ${startResult.error}` }
-    if (startResult.pending) return { tone: 'ok', text: 'Still starting (a first start downloads the agent image) — the roster shows each agent as it comes up.' }
+    if (startResult.pending) return { tone: 'ok', text: 'Still starting. A first start downloads the agent image, and Agents shows each one as it comes up.' }
     const started = startResult.started ?? []
     const warn = startResult.warnings?.length ? ` ${startResult.warnings.join(' ')}` : ''
     return {
@@ -83,7 +84,7 @@
     }
   })
 
-  // ── Check MCP servers ──
+  // ── Check tool servers ──
   interface HealthReport {
     checked: number
     down: number
@@ -121,75 +122,60 @@
   })
 
   const TONE: Record<string, string> = { danger: 'text-danger', ok: 'text-fg', muted: 'text-muted' }
+  // One width for the three, so the column of buttons reads as one control.
+  const ACTION = 'w-[8.5rem]'
 </script>
 
-{#snippet result(line: { tone: string; text: string } | null)}
-  {#if line}
-    <p transition:slide={{ duration: 150 }} class="mt-1.5 font-sans text-xs {TONE[line.tone]}">{line.text}</p>
-  {/if}
+{#snippet result(line: { tone: string; text: string } | null, resting: string)}
+  {#if line}<span class={TONE[line.tone]}>{line.text}</span>{:else}{resting}{/if}
 {/snippet}
 
-<Panel class="px-4 py-3">
-  <div class="mb-1 flex min-h-6 items-center">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Controls</span>
-  </div>
-  <ul class="divide-y divide-line-subtle">
-    <li class="py-3">
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div class="min-w-0 flex-1 basis-56">
-          <div class="font-sans text-sm text-fg">Roll every agent</div>
-          <div class="font-sans text-xs text-muted">A fresh container each, in place: a minute or so offline per agent while it restarts.</div>
-        </div>
+<section>
+  <h3 class="mb-2 font-sans text-xs font-medium leading-4 text-muted">All agents</h3>
+  <SettingsGroup bare class="border-b-0">
+    <div>
+      <SettingsRow label="Restart all agents">
+        {#snippet hint()}{@render result(rollLine, 'Each agent is offline for about a minute while it restarts.')}{/snippet}
         <Button
           variant="outline"
           size="sm"
+          class={ACTION}
           disabled={anyRolling || rollConfirming || rollBusy}
           onclick={() => (rollConfirming = true)}
-          title={anyRolling ? 'A roll is already in progress' : undefined}
+          title={anyRolling ? 'A restart is already in progress' : undefined}
         >
           {#if anyRolling}<WaitingMark site="manage/fleet-roll" size={12} />{:else}<Repeat size={14} />{/if}
-          {anyRolling ? 'Rolling' : 'Roll all'}
+          {anyRolling ? 'Restarting' : 'Restart all'}
         </Button>
-      </div>
+      </SettingsRow>
       {#if rollConfirming}
-        <div transition:slide={{ duration: 150 }} class="mt-2 flex flex-wrap items-center justify-between gap-3 rounded-md border border-line-subtle px-3 py-2">
-          <Checkbox checked={rollStopped} onChange={(v) => (rollStopped = v)} label="Also start and roll agents that are stopped" />
-          <div class="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onclick={() => (rollConfirming = false)} disabled={rollBusy}>Cancel</Button>
-            <Button size="sm" onclick={() => void startRoll()} disabled={rollBusy}>
-              {#if rollBusy}<WaitingMark site="manage/fleet-roll" size={12} />{/if}
-              Roll all agents
-            </Button>
+        <div transition:slide={{ duration: 150 }}>
+          <div class="flex flex-wrap items-center justify-between gap-3 border-t border-line-subtle py-3">
+            <Checkbox checked={rollStopped} onChange={(v) => (rollStopped = v)} label="Also start agents that are stopped" />
+            <div class="flex items-center gap-2">
+              <Button variant="ghost" size="sm" onclick={() => (rollConfirming = false)} disabled={rollBusy}>Cancel</Button>
+              <Button size="sm" onclick={() => void startRoll()} disabled={rollBusy}>
+                {#if rollBusy}<WaitingMark site="manage/fleet-roll" size={12} />{/if}
+                Restart all agents
+              </Button>
+            </div>
           </div>
         </div>
       {/if}
-      {@render result(rollLine)}
-    </li>
-    <li class="py-3">
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div class="min-w-0 flex-1 basis-56">
-          <div class="font-sans text-sm text-fg">Start stopped agents</div>
-          <div class="font-sans text-xs text-muted">Re-renders configs and starts every enabled agent that is not running.</div>
-        </div>
-        <Button variant="outline" size="sm" disabled={startBusy} onclick={() => void startStopped()}>
-          {#if startBusy}<WaitingMark site="manage/fleet-start" size={12} />{:else}<Play size={14} />{/if}
-          Start stopped
-        </Button>
-      </div>
-      {@render result(startLine)}
-    </li>
-    <li class="py-3">
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div class="min-w-0 flex-1 basis-56">
-          <div class="font-sans text-sm text-fg">Check MCP servers now</div>
-          <div class="font-sans text-xs text-muted">Re-probes every external server instead of waiting for the hourly pass.</div>
-        </div>
-        <Button variant="outline" size="sm" disabled={mcpBusy} onclick={() => void checkMcp()}>
-          {#if mcpBusy}<WaitingMark site="manage/mcp-check" size={12} />{:else}<Activity size={14} />{/if}
-          Check now
-        </Button>
-      </div>
-      {@render result(mcpLine)}
-    </li>
-  </ul>
-</Panel>
+    </div>
+    <SettingsRow label="Start stopped agents">
+      {#snippet hint()}{@render result(startLine, 'Starts every enabled agent that is not running.')}{/snippet}
+      <Button variant="outline" size="sm" class={ACTION} disabled={startBusy} onclick={() => void startStopped()}>
+        {#if startBusy}<WaitingMark site="manage/fleet-start" size={12} />{:else}<Play size={14} />{/if}
+        Start agents
+      </Button>
+    </SettingsRow>
+    <SettingsRow label="Check tool servers">
+      {#snippet hint()}{@render result(mcpLine, 'Tests every external server now instead of at the hourly check.')}{/snippet}
+      <Button variant="outline" size="sm" class={ACTION} disabled={mcpBusy} onclick={() => void checkMcp()}>
+        {#if mcpBusy}<WaitingMark site="manage/mcp-check" size={12} />{:else}<Activity size={14} />{/if}
+        Check now
+      </Button>
+    </SettingsRow>
+  </SettingsGroup>
+</section>

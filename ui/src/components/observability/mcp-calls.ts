@@ -3,24 +3,24 @@
 // admin). The rows never carry a call's arguments or its result — only who
 // called what, how it went, how long it took, and the failure's sentence.
 import { createQuery } from '@tanstack/svelte-query'
-import type { ChipTone } from '@/components/ui/chip'
+import type { ChipTone, DotStatus } from '@/components/ui/chip'
 import { getJson } from '@/lib/fetch-json'
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 
 export const OUTCOMES = ['ok', 'error', 'denied', 'not_connected', 'upstream_error', 'spend_error', 'cancelled'] as const
 export type McpCallOutcome = (typeof OUTCOMES)[number]
 
-/** Label + tint per outcome. Orange (danger) is a real failure; a refusal is
- *  attention (warn); a missing connection is setup and a hang-up is the
- *  client's choice — neither is the server failing (neutral). */
-export const OUTCOME_META: Record<McpCallOutcome, { label: string; tone: ChipTone; blurb: string }> = {
-  ok: { label: 'ok', tone: 'success', blurb: 'The tool answered.' },
-  error: { label: 'error', tone: 'danger', blurb: 'The tool or server answered with an error.' },
-  denied: { label: 'denied', tone: 'warn', blurb: 'Refused by the gateway: no access, or the tool is outside the allowed set.' },
-  not_connected: { label: 'not connected', tone: 'neutral', blurb: 'Granted, but the account it would speak as is not connected.' },
-  upstream_error: { label: 'upstream', tone: 'danger', blurb: 'The server could not be reached, or failed at HTTP level.' },
-  spend_error: { label: 'spend', tone: 'danger', blurb: 'The credential spend boundary failed; nothing was sent.' },
-  cancelled: { label: 'cancelled', tone: 'neutral', blurb: 'The caller hung up before the answer finished.' },
+/** Label, dot and tint per outcome. Orange (danger) is a real failure; a
+ *  refusal is attention (warn); a missing connection is setup and a hang-up is
+ *  the client's choice, so neither is the server failing (neutral). */
+export const OUTCOME_META: Record<McpCallOutcome, { label: string; dot: DotStatus; tone: ChipTone; blurb: string }> = {
+  ok: { label: 'OK', dot: 'ok', tone: 'success', blurb: 'The tool answered.' },
+  error: { label: 'Error', dot: 'danger', tone: 'danger', blurb: 'The tool or server answered with an error.' },
+  denied: { label: 'Denied', dot: 'warn', tone: 'warn', blurb: 'Refused by the gateway: no access, or the tool is outside the allowed set.' },
+  not_connected: { label: 'Not connected', dot: 'idle', tone: 'neutral', blurb: 'Granted, but the account it would speak as is not connected.' },
+  upstream_error: { label: 'Upstream error', dot: 'danger', tone: 'danger', blurb: 'The server could not be reached, or failed at HTTP level.' },
+  spend_error: { label: 'Spend error', dot: 'danger', tone: 'danger', blurb: 'The credential spend boundary failed; nothing was sent.' },
+  cancelled: { label: 'Canceled', dot: 'idle', tone: 'neutral', blurb: 'The caller hung up before the answer finished.' },
 }
 
 export const isOutcome = (v: string | null | undefined): v is McpCallOutcome =>

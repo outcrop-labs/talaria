@@ -1,9 +1,13 @@
 <script lang="ts">
+  import { MediaQuery } from 'svelte/reactivity'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
   import Modal from '@/components/ui/Modal.svelte'
-  import Tabs from '@/components/ui/Tabs.svelte'
-  import type { TabItem } from '@/components/ui/tabs'
   import AgentConfigForm from '@/components/fleet/AgentConfigForm.svelte'
   import CronsPanel from '@/components/fleet/CronsPanel.svelte'
   import McpTab from '@/components/fleet/McpTab.svelte'
@@ -16,23 +20,42 @@
   import SummaryTab from '@/components/fleet/SummaryTab.svelte'
   import VersionsTab from '@/components/fleet/VersionsTab.svelte'
   import { rotateAgentKey, type AgentDef, type LlmEndpoint } from '@/lib/fleet-defs'
-  import { fly, slide } from '@/lib/motion'
+  import { fly, markCrossfade, slide } from '@/lib/motion'
   import { cn } from '@/lib/cn'
+  import { sansFill, setUiVoice } from '@/lib/ui-voice'
 
   type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'secrets' | 'mcp' | 'versions' | 'managers'
-  const TABS: TabItem<Tab>[] = [
-    { id: 'summary', label: 'Summary' },
-    { id: 'config', label: 'Config' },
-    { id: 'skills', label: 'Skills' },
-    { id: 'memory', label: 'Memory' },
-    { id: 'crons', label: 'Crons' },
-    { id: 'secrets', label: 'Secrets' },
-    { id: 'mcp', label: 'MCP' },
-    { id: 'versions', label: 'Versions' },
-    // Last on purpose: who owns the agent is read far less often than what
-    // it is, and it is the one tab that changes who can open the rest.
-    { id: 'managers', label: 'Managers' },
+  // Nine sections are a list, not a strip: what the agent is, what it has
+  // been given, and who answers for it. Managers is last on purpose: who owns
+  // the agent is read far less often than what it is, and it is the one
+  // section that changes who can open the rest.
+  const SECTIONS: ReadonlyArray<{ label: string; items: ReadonlyArray<{ id: Tab; label: string }> }> = [
+    {
+      label: 'Agent',
+      items: [
+        { id: 'summary', label: 'Overview' },
+        { id: 'config', label: 'Configuration' },
+      ],
+    },
+    {
+      label: 'Capabilities',
+      items: [
+        { id: 'skills', label: 'Skills' },
+        { id: 'memory', label: 'Memory' },
+        { id: 'crons', label: 'Schedules' },
+        { id: 'secrets', label: 'Secrets' },
+        { id: 'mcp', label: 'Tools' },
+      ],
+    },
+    {
+      label: 'Oversight',
+      items: [
+        { id: 'versions', label: 'Versions' },
+        { id: 'managers', label: 'Managers' },
+      ],
+    },
   ]
+  const ORDER = SECTIONS.flatMap((g) => g.items.map((t) => t.id))
 
   // The whole of an agent's internal stack in one modal: model config, skills,
   // memory, MCP servers, version history, and who owns it — no more hopping
@@ -53,10 +76,40 @@
     canManage: boolean
   } = $props()
 
+  // The agent's settings are one surface with one look, wherever they open
+  // from: the roster, or an agent's row in the chat sidebar.
+  setUiVoice('sans')
+
   let tab = $state<Tab>('summary')
-  // The library tabs are editors that own their scroll; every other tab is a
-  // form or a report that scrolls in the frame.
+  // The library sections are editors that own their scroll; every other
+  // section is a form or a report that scrolls in the frame.
   const fills = $derived(tab === 'skills' || tab === 'memory')
+
+  // The list stands beside the section from `md` up and lies across the top
+  // as a strip below it, and says which to a screen reader.
+  const beside = new MediaQuery('min-width: 768px')
+  const [sendMark, receiveMark] = markCrossfade()
+  let list = $state<HTMLElement>()
+  // One stop in the tab order: the arrows move along the list and select as
+  // they go, whichever way it lies.
+  const onListKey = (e: KeyboardEvent) => {
+    const at = ORDER.indexOf(tab)
+    const to =
+      e.key === 'ArrowDown' || e.key === 'ArrowRight'
+        ? (at + 1) % ORDER.length
+        : e.key === 'ArrowUp' || e.key === 'ArrowLeft'
+          ? (at - 1 + ORDER.length) % ORDER.length
+          : e.key === 'Home'
+            ? 0
+            : e.key === 'End'
+              ? ORDER.length - 1
+              : -1
+    const next = ORDER[to]
+    if (next === undefined) return
+    e.preventDefault()
+    tab = next
+    list?.querySelector<HTMLElement>(`#agent-section-${next}`)?.focus()
+  }
 
   // ── Rotate credential ──────────────────────────────────────────────────────
   // The agent's `tak_` key, the one its container presents to Talaria. The
@@ -89,84 +142,128 @@
   }
 </script>
 
-<Modal {open} {onClose} title={`${def.displayName} · v${def.currentVersion}`} takeover>
-  <!-- Takeover modal: the frame owns the height, so every tab renders at
-       the SAME size and scrolls internally — no height jank between tabs. -->
-  <div class="flex h-full min-h-0 flex-col">
-    <Tabs items={TABS} value={tab} onChange={(t) => (tab = t)} class="shrink-0 border-b border-line pb-2" />
+{#snippet title()}
+  <div class="flex min-w-0 items-center gap-3">
+    <Avatar name={def.displayName} class="h-9 w-9" />
+    <div class="min-w-0">
+      <div class="flex min-w-0 items-center gap-2">
+        <span class="line-clamp-2 font-sans text-[15px] font-semibold leading-5 text-fg" title={def.displayName}>{def.displayName}</span>
+        <Chip title={`Version ${def.currentVersion}`} class="shrink-0">v{def.currentVersion}</Chip>
+      </div>
+      <div class="truncate font-sans text-[13px] font-normal leading-5 text-muted">{def.role ?? 'No role yet'}</div>
+    </div>
+  </div>
+{/snippet}
 
-    <!-- THE LIBRARY TABS FILL THE FRAME when it fits: their panes take the
-         whole tab height, controls pinned, only the document body scrolling.
-         Below the surfaces' floor — a short window — this same region scrolls
-         the whole surface, controls reachable at the bottom. The form and
-         report tabs always scrolled here; the editors join them only when
-         they must. -->
-    <div class="min-h-0 flex-1 overflow-y-auto pt-4">
-      <!-- Tab-pane grammar: the incoming pane rises in, the old one is simply
-           replaced (no exit). No AutoHeight — the takeover frame is fixed-height
-           by design. No stagger — several panes are dense data lists. -->
+<!-- Wide enough that the pane beside the list is the settings page's own column, so a section reads the same in both. -->
+<Modal {open} {onClose} {title} width="max-w-6xl" height="h-[88vh]" padded={false}>
+  <!-- The frame owns the height, so every section renders at the SAME size:
+       the list stays put and only the pane beside it scrolls. -->
+  <div class="flex h-full min-h-0 flex-col md:flex-row">
+    <div
+      bind:this={list}
+      role="tablist"
+      tabindex="-1"
+      aria-label={`${def.displayName} settings`}
+      aria-orientation={beside.current ? 'vertical' : 'horizontal'}
+      onkeydown={onListKey}
+      class="flex shrink-0 gap-1 overflow-x-auto border-b border-line px-5 py-2 md:w-[180px] md:flex-col md:gap-4 md:overflow-y-auto md:overflow-x-visible md:border-b-0 md:border-r md:py-4 md:pl-5 md:pr-3"
+    >
+      {#each SECTIONS as group (group.label)}
+        <div role="presentation" class="flex shrink-0 gap-1 md:flex-col md:gap-0.5">
+          <!-- A reading aid for the eye: a tablist holds only its tabs. -->
+          <span aria-hidden="true" class="hidden h-7 items-center px-2 font-sans text-xs leading-4 text-muted md:flex">{group.label}</span>
+          {#each group.items as t (t.id)}
+            {@const active = tab === t.id}
+            <button
+              type="button"
+              role="tab"
+              id={`agent-section-${t.id}`}
+              aria-selected={active}
+              aria-controls="agent-section-pane"
+              tabindex={active ? 0 : -1}
+              onclick={() => (tab = t.id)}
+              class={cn(
+                'relative flex h-8 shrink-0 cursor-pointer items-center whitespace-nowrap rounded-md px-2.5 text-left font-sans text-[13.5px] leading-5 transition-colors duration-[120ms] focus-visible:outline-2 focus-visible:-outline-offset-2! focus-visible:outline-accent md:px-2',
+                active ? 'font-medium text-fg' : 'text-muted hover:bg-hover hover:text-fg',
+              )}
+            >
+              {#if active}
+                <span
+                  aria-hidden="true"
+                  in:receiveMark={{ key: 'agent-section' }}
+                  out:sendMark={{ key: 'agent-section' }}
+                  class={cn('absolute inset-0 rounded-md', sansFill)}
+                >
+                  <span class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-accent"></span>
+                </span>
+              {/if}
+              <span class="relative">{t.label}</span>
+            </button>
+          {/each}
+        </div>
+      {/each}
+    </div>
+
+    <!-- THE LIBRARY SECTIONS FILL THE FRAME when it fits: their panes take
+         the whole height, controls pinned, only the document body scrolling.
+         Below the surfaces' floor (a short window) this same region scrolls
+         the whole surface, controls reachable at the bottom. -->
+    <div id="agent-section-pane" role="tabpanel" aria-labelledby={`agent-section-${tab}`} class="min-h-0 min-w-0 flex-1 overflow-y-auto px-7 py-6">
+      <!-- Pane grammar: the incoming pane rises in, the old one is simply
+           replaced (no exit). No stagger: several panes are dense data lists. -->
       {#key tab}
         <div in:fly={{ y: 6, duration: 200 }} class={cn(fills && 'h-full')}>
           {#if tab === 'summary'}
-            <SummaryTab {def} {canManage} />
-            {#if canManage}
-              <!-- Below the summary, at the edge of the section it affects: a
-                   credential action is read rarely and must not compete with
-                   the agent's identity above it. -->
-              <div class="mt-6 border-t border-line pt-3 text-sm">
-                <div class="flex items-center gap-3">
-                  <div class="min-w-0 flex-1">
-                    <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Credential</div>
-                    <div class="font-sans text-xs text-muted">
-                      The key this agent presents to Talaria. Rotate it if it may have leaked; the new one is never shown.
-                    </div>
-                  </div>
-                  {#if !rotateOpen}
-                    <DangerLink onClick={() => ((rotateOpen = true), (rotated = null))} disabled={rotating}>Rotate credential</DangerLink>
-                  {/if}
-                </div>
-                {#if rotateOpen}
-                  <div transition:slide={{ duration: 150 }} class="mt-3 rounded-lg border border-line bg-surface p-3 font-sans text-xs text-muted">
-                    <div class="mb-2 font-mono text-[10px] uppercase tracking-[0.08em] text-fg">Rotate {def.displayName}'s credential?</div>
-                    <ul class="list-disc space-y-1 pl-4">
-                      <li>The current key stops working the moment you confirm. There is no undo and no grace period.</li>
-                      {#if willRoll}
-                        <li>
-                          The fleet is re-rendered on the new key and, if the agent is running, its container is rolled: it
-                          stops (finishing what it can), a fresh one starts in its place, and the roll waits for it to report
-                          healthy. Until then the agent is locked out, so a toolkit call or a workbench session in flight on
-                          the old key fails and has to be retried; conversations wait for the new container and carry on
-                          there. A stopped agent stays stopped and takes the new key when it next starts.
-                        </li>
-                        <li>If the roll fails, the agent is left on a dead key: roll it again from the roster, or stop and start it.</li>
-                      {:else}
-                        <li>
-                          {def.managed ? 'This agent is retired' : 'This agent is not run by Talaria'}, so nothing is rolled:
-                          the new key is rendered into the fleet files and takes effect the next time the agent starts.
-                          Anything still presenting the old key is refused from now on.
-                        </li>
+            <div class="space-y-8">
+              <SummaryTab {def} {canManage} />
+              {#if canManage}
+                <!-- Last on the page: a credential action is read rarely and
+                     must not compete with the agent's identity above it. -->
+                <SettingsSection title="Credential">
+                  <SettingsGroup>
+                    <SettingsRow label="Agent key" hint="What this agent presents to Talaria, to rotate if it may have leaked.">
+                      {#if !rotateOpen}
+                        <DangerLink onClick={() => ((rotateOpen = true), (rotated = null))} disabled={rotating}>Rotate key</DangerLink>
                       {/if}
-                      <li>The audit trail records who rotated it and which key, never the value.</li>
-                    </ul>
-                    <div class="mt-3 flex items-center gap-2">
-                      <Button size="sm" variant="ghost" disabled={rotating} onclick={() => (rotateOpen = false)}>Cancel</Button>
-                      <Button size="sm" variant="danger-outline" disabled={rotating} onclick={() => void rotate()}>
-                        {rotating ? 'Rotating' : 'Rotate credential'}
-                      </Button>
-                    </div>
-                    {#if rotated && 'error' in rotated}
-                      <div transition:slide={{ duration: 150 }} class="mt-2 text-danger">Could not rotate: {rotated.error}</div>
+                    </SettingsRow>
+                    {#if rotateOpen}
+                      <div transition:slide={{ duration: 150 }} class="px-5 py-4">
+                        <p class="font-sans text-sm font-medium leading-5 text-fg">Rotate {def.displayName}'s key?</p>
+                        <ul class="mt-2 list-disc space-y-1 pl-5 font-sans text-[13px] leading-5 text-muted">
+                          <li>The current key stops working at once. There is no undo, and the new key is never shown.</li>
+                          {#if willRoll}
+                            <li>A running agent restarts on a fresh container to pick up the new key. Work in flight on the old key fails and has to be retried.</li>
+                            <li>If that restart fails, restart the agent from the roster.</li>
+                          {:else}
+                            <li>
+                              {def.managed ? 'This agent is retired' : 'This agent is not run by Talaria'}, so the new key takes
+                              effect the next time it starts.
+                            </li>
+                          {/if}
+                          <li>The audit trail records who rotated it, never the value.</li>
+                        </ul>
+                        <div class="mt-4 flex items-center gap-2">
+                          <Button size="sm" variant="danger-outline" disabled={rotating} onclick={() => void rotate()}>
+                            {rotating ? 'Rotating' : 'Rotate key'}
+                          </Button>
+                          <Button size="sm" variant="ghost" disabled={rotating} onclick={() => (rotateOpen = false)}>Cancel</Button>
+                        </div>
+                        {#if rotated && 'error' in rotated}
+                          <p transition:slide={{ duration: 150 }} class="mt-3 font-sans text-[13px] leading-5 text-danger" role="alert">Could not rotate: {rotated.error}</p>
+                        {/if}
+                      </div>
+                    {:else if rotated && 'rolling' in rotated}
+                      <p transition:slide={{ duration: 150 }} class="px-5 py-3 font-sans text-[13px] leading-5 text-success">
+                        {rotated.rolling && willRoll
+                          ? 'Rotated. The old key is dead, and the agent is restarting on the new one.'
+                          : 'Rotated. The old key is dead, and the new one takes effect the next time the agent starts.'}
+                      </p>
                     {/if}
-                  </div>
-                {:else if rotated && 'rolling' in rotated}
-                  <div transition:slide={{ duration: 150 }} class="mt-2 font-sans text-xs text-success">
-                    {rotated.rolling && willRoll
-                      ? 'Rotated. The old key is dead; the container is rolling onto the new one and is locked out until the roll completes.'
-                      : 'Rotated. The old key is dead; the new one takes effect the next time the agent starts.'}
-                  </div>
-                {/if}
-              </div>
-            {/if}
+                  </SettingsGroup>
+                </SettingsSection>
+              {/if}
+            </div>
           {/if}
           {#if tab === 'config'}
             {#if canManage}
@@ -187,12 +284,16 @@
                 museContext={`The memory of the "${def.slug}" agent (${def.role ?? def.department}).`}
               />
             {:else}
-              <EmptyState icon="❖" title="Not managed" hint="Memory reads through the managed container. Migrate this agent first." />
+              <EmptyState title="Memory is not available" hint="Talaria reads memory through the container it runs. This agent runs outside Talaria." />
             {/if}
           {/if}
           {#if tab === 'crons'}<CronsPanel agentId={def.id} {canManage} />{/if}
           {#if tab === 'secrets'}
-            {#if canManage}<SecretsTab agentId={def.id} agentModel={def.model} agentLabel={def.displayName ?? def.model} />{:else}<div class="text-sm text-muted">Only this agent's managers can see its secrets.</div>{/if}
+            {#if canManage}
+              <SecretsTab agentId={def.id} agentModel={def.model} agentLabel={def.displayName ?? def.model} />
+            {:else}
+              <EmptyState title="Secrets are hidden" hint="Only this agent's managers can see its secrets." />
+            {/if}
           {/if}
           {#if tab === 'mcp'}<McpTab {def} {canManage} />{/if}
           {#if tab === 'versions'}<VersionsTab {def} {canManage} />{/if}

@@ -3,10 +3,12 @@
   import { RefreshCw, Rocket, Pin, PinOff } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
-  import Select from '@/components/ui/Select.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import { agentLabel } from '@/lib/cost.svelte'
   import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
   import { relativeTime, untilTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
@@ -17,7 +19,14 @@
   // harnesses"). Automatic follows upstream — a check every ~6 h, a soak, a
   // smoke test on one workbench, then new jobs — and Pinned holds one
   // version. A running job keeps what it started on. The same shape as the
-  // Agent image panel beside it; admin-only on the server.
+  // Agent image group above it; admin-only on the server.
+  let {
+    note = $bindable(),
+  }: {
+    /** What the card says about the tools while it is closed, when they are
+     *  not at rest. */
+    note?: string
+  } = $props()
 
   interface Candidate {
     version: string
@@ -96,7 +105,6 @@
     }
   }
 
-  let pinChoice = $state<Record<string, string>>({})
   let pinTyped = $state<Record<string, string>>({})
   const pinTo = async (t: ToolView, version: string) => {
     const ok = await confirm({
@@ -135,151 +143,154 @@
     }
   }
   const pinnable = (t: ToolView) => t.versions.filter((v) => !v.held && !v.deprecated && v.version !== t.current)
+  // One field takes both: a version picked from the known ones, or any typed.
+  const pinTarget = (t: ToolView): string | null => {
+    const typed = (pinTyped[t.tool] ?? '').trim()
+    return /^\d+\.\d+\.\d+$/.test(typed) || pinnable(t).some((v) => v.version === typed) ? typed : null
+  }
   const TONE = { ok: 'text-fg', danger: 'text-danger' } as const
   let showHistory = $state(false)
+  const testing = $derived(s?.tools.some((t) => t.next) ?? false)
+  $effect(() => {
+    note = testing ? 'testing a workbench update' : query.isError ? 'workbench tools unreadable' : undefined
+  })
 </script>
 
-<Panel class="px-4 py-3">
-  <div class="mb-1 flex min-h-6 items-center gap-2">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Workbench harnesses</span>
-    {#if s?.tools.some((t) => t.next)}<StatusDot status="accent" pulse title="An update is being smoke-tested" />{/if}
-  </div>
-  {#if query.isPending}
-    <p class="py-2 font-sans text-xs text-muted">Reading the workbench harnesses…</p>
-  {:else if query.isError || !s}
-    <p class="py-2 font-sans text-xs text-danger">Could not read the workbench harnesses: {errorMessage(query.error)}</p>
-    {#if unreadable}
-      <Button variant="outline" size="sm" disabled={busy !== null} onclick={reset}>Reset the state</Button>
-      {#if line}<p class="pt-2 font-sans text-xs {TONE[line.tone]}">{line.text}</p>{/if}
+<section>
+  <div class="mb-2 flex items-center justify-between gap-4">
+    <h3 class="font-sans text-xs font-medium leading-4 text-muted">Workbench tools</h3>
+    {#if testing}
+      <span class="flex items-center gap-2 font-sans text-xs leading-4 text-muted"><StatusDot status="accent" pulse title="An update is being smoke-tested" />Testing an update</span>
     {/if}
-  {:else}
-    <div class="space-y-3 py-2">
+  </div>
+  <SettingsGroup bare class="border-b-0">
+    {#if query.isPending}
+      <p class="py-4 font-sans text-sm leading-5 text-muted">Reading the workbench tools</p>
+    {:else if query.isError || !s}
+      <div class="space-y-2 py-4 font-sans text-[13px] leading-5">
+        <p class="text-danger">Could not read the workbench tools: {errorMessage(query.error)}</p>
+        {#if unreadable}
+          <Button variant="outline" size="sm" disabled={busy !== null} onclick={reset}>Reset the state</Button>
+          {#if line}<p class={TONE[line.tone]}>{line.text}</p>{/if}
+        {/if}
+      </div>
+    {:else}
       {#each s.tools as t (t.tool)}
-        <div class="space-y-1">
-          <div class="font-sans text-sm text-fg">
-            {t.label} <span class="font-mono">{t.current}</span>
-            <span class="text-muted">·</span>
-            {#if t.pinned}
-              Pinned to <span class="font-mono">{t.pinned}</span>
-            {:else}
-              Automatic{t.currentSource === 'bootstrap' ? ' (the compiled version until one is verified here)' : ''}
-            {/if}
-          </div>
-          <div class="font-sans text-xs text-muted">
-            {#if t.lastCheck}
-              Checked {ago(t.lastCheck.at)}{#if t.lastCheck.latest}: newest is <span class="font-mono">{t.lastCheck.latest}</span>{/if}.
-            {:else}
-              Not checked yet.
-            {/if}
-            {#if t.tool === 'omp' && t.requiresBun}Needs bun <span class="font-mono">{t.requiresBun}</span>.{/if}
-            {#if t.previous && t.previous !== t.current}Falls back to <span class="font-mono">{t.previous}</span>.{/if}
-          </div>
-          {#if t.lastCheck?.error}
-            <div class="font-sans text-xs text-danger">The last check failed: {t.lastCheck.error}</div>
-          {/if}
-          {#if t.next}
-            <div class="flex items-center gap-2 font-sans text-xs text-fg">
-              <StatusDot status="accent" pulse title="Being smoke-tested" /> Smoke-testing Oh My Pi {t.next.omp} on bun {t.next.bun} — {t.next.why}
-            </div>
-          {:else if t.detail}
-            <div class="font-sans text-xs text-muted">{t.detail}</div>
-          {/if}
-          {#each t.held as h (h.version)}
-            <div class="flex items-baseline justify-between gap-3">
-              <span class="min-w-0 font-sans text-xs">
-                <span class="text-danger">Held <span class="font-mono">{h.version}</span></span>
-                <span class="text-muted"> — {h.reason.split('\n')[0]}</span>
-              </span>
-              <Button variant="ghost" size="sm" disabled={busy !== null} onclick={() => allowAgain(t, h)}>Allow again</Button>
-            </div>
-          {/each}
-          <div class="flex flex-wrap items-center gap-2">
+        <div>
+          <SettingsRow label={t.label}>
+            {#snippet meta()}
+              <code class="font-mono text-xs text-muted">{t.current}</code>
+              {#if t.pinned}<Chip>Pinned to {t.pinned}</Chip>{/if}
+            {/snippet}
+            {#snippet hint()}
+              {#if t.lastCheck}
+                Checked {ago(t.lastCheck.at)}{#if t.lastCheck.latest}, newest is <span class="font-mono text-xs">{t.lastCheck.latest}</span>{/if}.
+              {:else}
+                Not checked yet.
+              {/if}
+              {#if !t.pinned && t.currentSource === 'bootstrap'}The built-in version runs until one is verified here.{/if}
+              {#if t.tool === 'omp' && t.requiresBun}Needs bun <span class="font-mono text-xs">{t.requiresBun}</span>.{/if}
+              {#if t.previous && t.previous !== t.current}Falls back to <span class="font-mono text-xs">{t.previous}</span>.{/if}
+              {#if t.lastCheck?.error}<span class="block text-danger">The last check failed: {t.lastCheck.error}</span>{/if}
+              {#if t.next}
+                <span class="flex items-center gap-2 text-fg">
+                  <StatusDot status="accent" pulse title="Being smoke-tested" />Testing Oh My Pi {t.next.omp} on bun {t.next.bun}: {t.next.why}
+                </span>
+              {:else if t.detail}
+                <span class="block">{t.detail}</span>
+              {/if}
+            {/snippet}
             {#if t.candidate && !t.pinned}
               <Button variant="outline" size="sm" disabled={busy !== null || t.candidate.forced} onclick={() => updateNow(t)}>
                 <Rocket size={14} />
-                Update to {t.candidate.version} now
+                Update to {t.candidate.version}
               </Button>
             {/if}
             {#if t.pinned}
-              <Button variant="ghost" size="sm" disabled={busy !== null} onclick={() => act('unpin', { tool: t.tool })}>
+              <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => act('unpin', { tool: t.tool })}>
                 <PinOff size={14} />
-                Unpin: follow upstream
+                Unpin
               </Button>
             {:else}
-              {#if pinnable(t).length > 0}
-                <Select size="sm" bind:value={pinChoice[t.tool]} aria-label="{t.label} version to pin">
-                  {#each pinnable(t) as v (v.version)}
-                    <option value={v.version}>{v.version}</option>
-                  {/each}
-                </Select>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={busy !== null || !(pinChoice[t.tool] ?? pinnable(t)[0]?.version)}
-                  onclick={() => pinTo(t, pinChoice[t.tool] ?? pinnable(t)[0]!.version)}
-                >
-                  <Pin size={14} />
-                  Pin
-                </Button>
-              {/if}
-              <Input size="sm" class="w-24 font-[var(--font-mono)]" bind:value={pinTyped[t.tool]} placeholder={t.current} aria-label="Or pin a {t.label} version" />
-              <Button
-                variant="ghost"
+              <Input
                 size="sm"
-                disabled={busy !== null || !/^\d+\.\d+\.\d+$/.test((pinTyped[t.tool] ?? '').trim())}
-                onclick={() => pinTo(t, (pinTyped[t.tool] ?? '').trim())}
-              >
-                Pin version
+                class="w-28 font-mono placeholder:font-sans"
+                list="pin-versions-{t.tool}"
+                bind:value={pinTyped[t.tool]}
+                placeholder="Version"
+                aria-label="{t.label} version to pin"
+              />
+              <datalist id="pin-versions-{t.tool}">
+                {#each pinnable(t) as v (v.version)}
+                  <option value={v.version}></option>
+                {/each}
+              </datalist>
+              <Button variant="outline" size="md" disabled={busy !== null || !pinTarget(t)} onclick={() => pinTo(t, pinTarget(t)!)}>
+                <Pin size={14} />
+                Pin
               </Button>
             {/if}
-          </div>
+          </SettingsRow>
+          {#each t.held as h (h.version)}
+            <div class="flex items-center justify-between gap-6 pb-3 font-sans text-[13px] leading-5">
+              <span class="min-w-0">
+                <span class="text-danger">Held <span class="font-mono text-xs">{h.version}</span></span>
+                <span class="text-muted"> · {h.reason.split('\n')[0]}</span>
+              </span>
+              <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => allowAgain(t, h)}>Allow again</Button>
+            </div>
+          {/each}
         </div>
       {/each}
 
-      <div class="flex flex-wrap items-center gap-2 border-t border-line pt-3">
+      <SettingsRow label="Updates">
+        {#snippet hint()}
+          {#if until(s.nextCheckAt)}Next check {until(s.nextCheckAt)}.{/if}
+          A new release waits {s.minAgeHours} h first.
+          {#if until(s.retryAt)}The host failed the last test and is tried again {until(s.retryAt)}.{/if}
+          {#if line}<span transition:slide={{ duration: 150 }} class="block {TONE[line.tone]}">{line.text}</span>{/if}
+        {/snippet}
         <Button variant="outline" size="sm" disabled={busy !== null} onclick={() => act('check')}>
           <RefreshCw size={14} />
-          {busy === 'check:' ? 'Checking…' : 'Check now'}
+          {busy === 'check:' ? 'Checking' : 'Check now'}
         </Button>
-        <span class="font-sans text-xs text-muted">
-          {#if until(s.nextCheckAt)}Next check {until(s.nextCheckAt)}.{/if}
-          A new release soaks {s.minAgeHours} h first.
-          {#if until(s.retryAt)}The host failed the last smoke test; it is tried again {until(s.retryAt)}.{/if}
-        </span>
-      </div>
+      </SettingsRow>
 
       {#if s.volumes.length > 0}
-        <ul class="divide-y divide-line-subtle">
-          {#each s.volumes as v (v.department)}
-            <li class="flex items-baseline justify-between gap-3 py-1.5">
-              <span class="min-w-0 truncate font-sans text-sm text-fg">{v.agent ?? v.department}</span>
-              <span class="shrink-0 font-sans text-xs {v.refused || v.retryAt ? 'text-danger' : 'text-muted'}">
-                {#if v.refused}would not take omp {v.refused.omp} · bun {v.refused.bun}: {(v.error ?? '').split('\n')[0]} — its jobs run the fallback
-                {:else if v.retryAt}its host failed {v.hostFailures}× — tried again {until(v.retryAt)}
-                {:else}<span class="font-mono">omp {v.omp} · bun {v.bun}</span>{/if}
-              </span>
-            </li>
-          {/each}
-        </ul>
+        <div class="py-4">
+          <div class="mb-1 font-sans text-xs font-medium leading-4 text-muted">Installed per agent</div>
+          <ul>
+            {#each s.volumes as v (v.department)}
+              <li class="flex min-h-8 items-center justify-between gap-6 font-sans text-[13px] leading-5">
+                <span class="min-w-0 break-words text-fg">{agentLabel(v.agent ?? v.department).label}</span>
+                <span class="shrink-0 {v.refused || v.retryAt ? 'text-danger' : 'text-muted'}">
+                  {#if v.refused}would not take omp {v.refused.omp} · bun {v.refused.bun}: {(v.error ?? '').split('\n')[0]}. Its jobs run the fallback.
+                  {:else if v.retryAt}its host failed {v.hostFailures}×, tried again {until(v.retryAt)}
+                  {:else}<span class="font-mono text-xs">omp {v.omp} · bun {v.bun}</span>{/if}
+                </span>
+              </li>
+            {/each}
+          </ul>
+        </div>
       {/if}
 
       {#if s.events.length > 0}
-        <div class="border-t border-line pt-2">
-          <Button variant="ghost" size="sm" onclick={() => (showHistory = !showHistory)}>
-            {showHistory ? 'Hide history' : `History (${s.events.length})`}
-          </Button>
+        <div>
+          <SettingsRow
+            label="History"
+            hint={`${s.events.length} recorded ${s.events.length === 1 ? 'change' : 'changes'}.`}
+            onclick={() => (showHistory = !showHistory)}
+            expanded={showHistory}
+          />
           {#if showHistory}
-            <ul transition:slide={{ duration: 150 }} class="mt-1 space-y-1">
+            <ul transition:slide={{ duration: 150 }} class="space-y-1 pb-4 font-sans text-[13px] leading-5 text-muted">
               {#each s.events as ev, n (n)}
-                <li class="font-sans text-xs text-muted"><span class="text-fg">{ago(ev.at)}</span> — {ev.text}</li>
+                <li><span class="text-fg">{ago(ev.at)}</span> · {ev.text}</li>
               {/each}
             </ul>
           {/if}
         </div>
       {/if}
-      {#if line}
-        <p transition:slide={{ duration: 150 }} class="font-sans text-xs {TONE[line.tone]}">{line.text}</p>
-      {/if}
-    </div>
-  {/if}
-</Panel>
+    {/if}
+  </SettingsGroup>
+</section>

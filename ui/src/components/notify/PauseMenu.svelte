@@ -4,6 +4,7 @@
   import Input from '@/components/ui/Input.svelte'
   import { cn } from '@/lib/cn'
   import { useNotifyPatch, useNotifyZone } from '@/lib/notify-center'
+  import { sansFill, useUiVoice } from '@/lib/ui-voice'
   import {
     customUntil,
     dndView,
@@ -79,25 +80,31 @@
     void save(until)
   }
 
-  const row = 'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left text-sm text-fg transition-colors duration-[120ms] dither-fill disabled:opacity-50'
+  // The dock's account menu and the bell show this in the house voice; the
+  // Notifications settings page shows it in the area's, where a menu's rows
+  // carry no icon.
+  const sans = useUiVoice() === 'sans'
+  const row = sans
+    ? 'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left font-sans text-[13px] leading-5 text-fg transition-colors duration-[120ms] hover:bg-hover disabled:opacity-50'
+    : 'flex w-full items-center gap-2.5 rounded-md px-3 py-1.5 text-left text-sm text-fg transition-colors duration-[120ms] dither-fill disabled:opacity-50'
 </script>
 
 <div data-pause-menu>
   {#if view.active && view.reason === 'paused'}
     <div class="px-3 pb-1 pt-1.5 font-sans text-xs text-muted" data-pause-state>{view.label}</div>
     <button type="button" class={row} disabled={busy} onclick={() => void save(null)} data-pause-resume>
-      <BellRing size={15} class="shrink-0 text-accent" />
+      {#if !sans}<BellRing size={15} class="shrink-0 text-accent" />{/if}
       <span>Resume notifications</span>
     </button>
   {/if}
   {#each PAUSE_PRESETS as p (p.id)}
     <button type="button" class={row} disabled={busy} onclick={() => pick(p.id)} data-pause-preset={p.id}>
-      <BellOff size={15} class="shrink-0 text-muted" />
+      {#if !sans}<BellOff size={15} class="shrink-0 text-muted" />{/if}
       <span>{p.id === 'tomorrow' ? tomorrowLabel : p.label}</span>
     </button>
   {/each}
-  <button type="button" class={cn(row, customOpen && 'bg-raised')} disabled={busy} onclick={openCustom} aria-expanded={customOpen} data-pause-custom>
-    <CalendarClock size={15} class="shrink-0 text-muted" />
+  <button type="button" class={cn(row, customOpen && sansFill)} disabled={busy} onclick={openCustom} aria-expanded={customOpen} data-pause-custom>
+    {#if !sans}<CalendarClock size={15} class="shrink-0 text-muted" />{/if}
     <span>Until a time</span>
   </button>
   {#if customOpen}
@@ -112,7 +119,7 @@
       <Button size="sm" disabled={busy} onclick={saveCustom}>Pause</Button>
     </div>
     {#if browserZone && zone !== browserZone}
-      <div class="px-3 pb-1 font-sans text-[11px] text-muted">In {zone}</div>
+      <div class={sans ? 'px-3 pb-1 font-sans text-xs text-muted' : 'px-3 pb-1 font-sans text-[11px] text-muted' /* voice-ok: the dock's menus */}>In {zone}</div>
     {/if}
   {/if}
   {#if error}<div class="px-3 pb-1.5 font-sans text-xs text-danger" role="alert">{error}</div>{/if}

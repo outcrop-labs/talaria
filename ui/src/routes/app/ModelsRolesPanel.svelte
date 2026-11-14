@@ -2,10 +2,12 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import LibraryPane from '@/components/ui/LibraryPane.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { anyFailed, anyPending } from '@/components/ui/query-state'
   import { toastError } from '@/lib/toast.svelte'
   import CategoryDetail from '@/components/models/CategoryDetail.svelte'
+  import { useModelNames } from '@/components/models/model-names.svelte'
   import { slotState, type ModelRoleRow, type PlatformAgentRow, type RoleIssue, type Slot } from '@/components/models/slot'
 
   // ── Roles & workers — which model runs what ────────────────────────────────
@@ -62,47 +64,49 @@
   // doubles as the resolution map. Anything a later build adds to either
   // catalog without a home here lands in Other rather than silently
   // vanishing from the menu.
-  const CATEGORIES: Array<{ id: string; label: string; blurb: string; ids: string[] }> = [
+  const CATEGORIES: Array<{ id: string; label: string; blurb: string; info?: string; ids: string[] }> = [
     {
       id: 'research',
       label: 'Research',
-      blurb: 'The search stages behind every research run. A stage fetches through a web-search tool the harness or Hermes supplies, or through a model that browses natively. Without either, a run has nothing to fetch with.',
+      blurb: 'The search stages behind every research run.',
+      info: 'A stage fetches through a web-search tool the harness supplies, or through a model that browses on its own. Without either, a run has nothing to fetch with.',
       ids: ['role:research-recon', 'role:research-brief', 'role:research-expedition'],
     },
     {
       id: 'workbench',
-      label: 'Workbench',
-      blurb: 'The effort ladder for coding work. Agents pick the effort; these settings pick the model that runs it.',
+      label: 'Coding',
+      blurb: 'Agents pick how much effort a coding task gets. These pick the model that runs it.',
       ids: ['role:code-light', 'role:code-standard', 'role:code-heavy'],
     },
     {
       id: 'chores',
       label: 'Chores',
-      blurb: 'The platform’s background upkeep: blurbs, titles, gists, digests. Everything here falls back to the Utility chain, so Utility is the one pick that moves them all.',
+      blurb: 'Background upkeep: blurbs, titles, summaries and digests.',
+      info: 'Everything here falls back to Utility, so Utility is the one pick that moves them all.',
       ids: ['role:utility', 'agent:blurb-writer', 'agent:titler', 'agent:summarizer', 'agent:librarian'],
     },
     {
       id: 'writing',
       label: 'Writing',
-      blurb: 'The Muse family: drafting and distillation that follows the requesting user’s muse, else the Utility chain.',
+      blurb: 'Drafting and distilling. Each follows the model of the person asking, then Utility.',
       ids: ['agent:muse', 'agent:distiller', 'agent:concluder', 'agent:briefer'],
     },
     {
       id: 'oversight',
-      label: 'Oversight',
-      blurb: 'Judging agents’ reported ticket outcomes against the ask: verdicts and findings on boards with judging on.',
+      label: 'Judging',
+      blurb: 'Checks what agents report on a ticket against what was asked.',
       ids: ['agent:judge'],
     },
     {
       id: 'eyes',
-      label: 'Agents’ eyes',
-      blurb: 'The model every agent reads images through when its own model is not known to see, set in each agent’s Hermes config.',
+      label: 'Vision',
+      blurb: 'Reads images for agents whose own model cannot.',
       ids: ['role:vision'],
     },
     {
       id: 'reserved',
       label: 'Reserved',
-      blurb: 'Slots for surfaces that haven’t landed yet. Assign now; the pick takes effect the day the surface does.',
+      blurb: 'For features that have not shipped. A pick takes effect the day they do.',
       ids: ['role:image-generation', 'role:embedding', 'role:reranker'],
     },
   ]
@@ -113,7 +117,7 @@
     )
     const other = slots.filter((s) => !known.has(s.id))
     if (other.length)
-      out.push({ id: 'other', label: 'Other', blurb: 'Settings that arrived after this view’s map was written.', slots: other })
+      out.push({ id: 'other', label: 'Other', blurb: 'Settings added since this page was last arranged.', slots: other })
     return out
   })
 
@@ -130,6 +134,7 @@
   // alone", so a model save and an effort save are the same PUT either way.
   // The refetch is what surfaces the unfit warning for a pick just made —
   // nothing blocks or reverts; the admin is told and the choice stands.
+  const autosave = useAutosave()
   const save = async (slot: Slot, patch: { model?: string | null; effort?: string | null }) => {
     try {
       await putJson<{ ok: true }>(
@@ -137,27 +142,41 @@
         slot.kind === 'role' ? { role: slot.row.role, ...patch } : { id: slot.row.id, ...patch },
       )
     } catch (e) {
-      toastError('Could not save that slot', e)
+      toastError('Could not save that setting', e)
       return
     }
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['model-roles'] })
     await qc.invalidateQueries({ queryKey: ['platform-agents'] })
   }
 
-  // The row's second line: the category's members' live states, in order —
-  // the whole fleet still reads from the menu without clicking in.
-  const sublineOf = (c: { slots: Slot[] }) => c.slots.map((s) => slotState(s, assignmentOf(s))).join(' · ')
+  // The row's second line: the models the job's settings run on, each named
+  // once, so the whole fleet still reads from the menu without clicking in.
+  // A model the catalog names reads by that name, and one it does not is its id.
+  const modelName = useModelNames()
+  const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+  const sublineOf = (c: { slots: Slot[] }) => {
+    const parts = new Map<string, { text: string; id: boolean }>()
+    for (const s of c.slots) {
+      const assigned = assignmentOf(s)
+      const state = slotState(s, assigned)
+      if (parts.has(state)) continue
+      const name = state === assigned ? modelName(assigned) : sentence(state)
+      parts.set(state, { text: name ?? state, id: !name })
+    }
+    return [...parts].map(([key, part]) => ({ key, ...part }))
+  }
 
   // Both reads green or neither has data — one load-failed state for the
   // pane, not two competing banners.
   const loadFailed = $derived(anyFailed(rolesQuery, agentsQuery))
 </script>
 
-<!-- Templates' pane height minus this view's ViewHeader row and its gap —
-     the one structural difference between the two shells. -->
-<div class="h-[calc(100vh-20.5rem)] min-h-[26rem]">
+<!-- The window height left under the page header and the tab strip, so the
+     pane ends where the page's bottom padding begins. -->
+<div class="h-[calc(100vh-15.75rem)] min-h-[26rem]">
   <LibraryPane
-    title="Roles & workers"
+    title="Jobs"
     groups={[{ items: categories }]}
     idOf={(c: (typeof categories)[number]) => c.id}
     labelOf={(c: (typeof categories)[number]) => c.label}
@@ -167,7 +186,7 @@
     notice={loadFailed
       ? {
           error: rolesQuery.error ?? agentsQuery.error,
-          title: 'Could not load the slot catalogs',
+          title: 'Could not load the model jobs',
           onRetry: () => {
             void rolesQuery.refetch()
             void agentsQuery.refetch()
@@ -179,17 +198,17 @@
     class="h-full"
   >
     {#snippet row(c: (typeof categories)[number])}
-      <span class="block truncate">{c.label}</span>
-      <!-- The members' live states as the row's second line — the fleet's
-           state at a glance, which is what a library list is for. -->
-      <span class="block truncate font-mono text-[10px] text-ink-dim">{sublineOf(c)}</span>
+      <span class="block truncate font-medium leading-5 text-fg">{c.label}</span>
+      <span class="block truncate font-sans text-xs leading-4 text-muted">
+        {#each sublineOf(c) as part, i (part.key)}{i > 0 ? ' · ' : ''}<span class={part.id ? 'font-mono' : undefined}>{part.text}</span>{/each}
+      </span>
     {/snippet}
 
     {#snippet empty()}
       <EmptyState
         icon="▤"
         title="Nothing selected"
-        hint={loadFailed ? 'The slot catalogs could not be loaded. Retry on the left.' : 'Pick a category on the left to set its models.'}
+        hint={loadFailed ? 'The model jobs could not be loaded. Retry on the left.' : 'Pick a job on the left to set its models.'}
       />
     {/snippet}
 
@@ -199,6 +218,7 @@
           <CategoryDetail
             label={selected.label}
             blurb={selected.blurb}
+            info={selected.info}
             slots={selected.slots}
             models={rolesQuery.data?.models ?? agentsQuery.data?.models ?? []}
             issues={rolesQuery.data?.issues ?? []}

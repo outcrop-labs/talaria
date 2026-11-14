@@ -3,11 +3,11 @@
   let { rows }: { rows: Array<[string, string]> } = $props()
 </script>
 
-<div class="divide-y divide-line-subtle rounded-md border border-line bg-raised/40">
+<dl class="divide-y divide-line-subtle rounded-md border border-line">
   {#each rows as [label, value] (label)}
-    <div class="flex items-baseline gap-3 px-3 py-1.5">
-      <span class="w-52 shrink-0 text-xs text-muted">{label}</span>
-      <span class="min-w-0 flex-1 text-xs text-fg">{value}</span>
+    <div class="grid grid-cols-[12rem_minmax(0,1fr)] gap-x-4 px-3 py-2">
+      <dt class="font-sans text-[13px] leading-5 text-muted">{label}</dt>
+      <dd class="font-sans text-[13px] leading-5 text-fg">{value}</dd>
     </div>
   {/each}
-</div>
+</dl>

@@ -1,30 +1,48 @@
 <script lang="ts">
-  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { GitBranch } from '@lucide/svelte'
+  import { useQueryClient } from '@tanstack/svelte-query'
+  import FactsList from '@/components/admin/FactsList.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
   import { errorMessage } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import { decideUpdateRequest, fetchUpdateRequests, shortSha, type AppUpdateRequest } from './apps'
+  import { decideUpdateRequest, shortSha, type AppUpdateRequest, type InstalledApp } from './apps'
 
-  // Plugin updates waiting for an admin (`app_update`): the maintenance pass
-  // raises one when a plugin's branch moves past the commit installed — a
-  // merged PR. Update builds and probes the new version beside the live one,
+  // Plugin updates waiting for an admin (`app_update`), as rows of the
+  // approvals card (`AppsApprovals`, which reads the list): the maintenance
+  // pass raises one when a plugin's branch moves past the commit installed —
+  // a merged PR. Update builds and probes the new version beside the live one,
   // switches to it, and rolls back if it fails; a plugin set to automatic
   // updates never waits here. Every outcome is a line on the plugin's ticket.
+  let {
+    requests,
+    apps,
+    outcome = $bindable(null),
+  }: {
+    requests: AppUpdateRequest[]
+    /** The installed apps, so a request shows its app's name. */
+    apps: InstalledApp[]
+    /** The last decision's outcome, as it was written on the ticket. */
+    outcome?: { ok: boolean; text: string } | null
+  } = $props()
+
   const qc = useQueryClient()
-  const query = createQuery(() => ({
-    queryKey: ['app-update-requests'],
-    queryFn: fetchUpdateRequests,
-    refetchInterval: 60_000,
-  }))
-  const requests = $derived(query.data ?? [])
   let busy = $state<string | null>(null)
   let rejecting = $state<string | null>(null)
   let rejectNote = $state('')
-  let outcome = $state<{ ok: boolean; text: string } | null>(null)
+  /** The rows whose source is open: what moved and where, by request id. */
+  let open = $state<Record<string, boolean>>({})
+  const ready = (r: AppUpdateRequest) =>
+    r.prs.length === 0 ? 'A newer version is ready.' : `A newer version is ready, from ${r.prs.length} merged pull ${r.prs.length === 1 ? 'request' : 'requests'}.`
+  const sourceOf = (r: AppUpdateRequest) => [
+    ...(r.prs.length > 0 ? [{ label: 'Pull requests', value: r.prs.map((n) => `#${n}`).join(', ') }] : []),
+    { label: 'Repository', value: r.repo, mono: true },
+    { label: 'Branch', value: r.ref ?? 'Default branch', mono: r.ref !== null },
+    { label: 'Installed commit', value: shortSha(r.fromSha), mono: true },
+    { label: 'New commit', value: shortSha(r.targetSha), mono: true },
+  ]
 
   const decide = async (r: AppUpdateRequest, action: 'approve' | 'reject') => {
     busy = r.id
@@ -48,48 +66,44 @@
   }
 </script>
 
-{#if query.isError && query.data === undefined}
-  <QueryError variant="inline" error={query.error} title="Could not load plugin updates" onRetry={() => void query.refetch()} />
-{/if}
-{#if requests.length > 0 || outcome}
-  <div class="mb-4 space-y-2" data-update-requests>
-    <div class="flex items-baseline gap-2">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Plugin updates</span>
-      <span class="text-xs text-muted">a merged change waits for your approval; a version that fails is rolled back</span>
-    </div>
-    {#each requests as r (r.id)}
-      <div class="space-y-2 rounded-md border border-accent/30 px-3 py-2 text-sm" data-update-request>
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="flex min-w-0 flex-1 items-center gap-1.5">
-            <GitBranch size={12} class="shrink-0 text-muted" />
-            <span class="truncate font-mono text-[13px] text-fg">{r.appSlug}</span>
-            <span class="shrink-0 font-mono text-[11px] text-muted">{shortSha(r.fromSha)} → {shortSha(r.targetSha)}</span>
-          </span>
-          {#each r.prs as n (n)}<Chip title="A merged PR that moved the branch">#{n}</Chip>{/each}
-          {#if r.maintainer}<Chip title="The Developer Agent that maintains it">{r.maintainer}</Chip>{/if}
-          <Button size="sm" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
-            {busy === r.id ? 'Updating…' : 'Update'}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            disabled={busy === r.id}
-            onclick={() => {
+{#each requests as r (r.id)}
+  {@const name = apps.find((a) => a.slug === r.appSlug)?.name ?? r.appSlug}
+  <div data-update-request>
+    <SettingsRow label={name} onOpen={() => (open[r.id] = !open[r.id])} expanded={open[r.id] === true} openLabel={`Details for the ${name} update`}>
+      {#snippet hint()}
+        <div>{ready(r)}</div>
+        <div>Update{#if r.maintainer}, maintained by <span title="The agent that maintains it">{r.maintainer}</span>{/if}</div>
+      {/snippet}
+      <SettingsRowAction class="w-24" disabled={busy === r.id} onclick={() => void decide(r, 'approve')}>
+        {busy === r.id ? 'Updating' : 'Update'}
+      </SettingsRowAction>
+      <SettingsRowMenu
+        label={`Actions for the ${name} update`}
+        items={[
+          { label: open[r.id] ? 'Hide details' : 'Show details', onSelect: () => (open[r.id] = !open[r.id]) },
+          {
+            label: rejecting === r.id ? 'Cancel rejection' : 'Reject',
+            disabled: busy === r.id,
+            onSelect: () => {
               rejecting = rejecting === r.id ? null : r.id
               rejectNote = ''
-            }}>Reject</Button
-          >
-        </div>
-        {#if rejecting === r.id}
-          <div transition:slide={{ duration: 150 }} class="flex items-center gap-2">
-            <Input size="sm" bind:value={rejectNote} maxlength={500} placeholder="Why not? Posted on the plugin's ticket (optional)" class="min-w-0 flex-1" />
-            <Button size="sm" variant="ghost" disabled={busy === r.id} onclick={() => void decide(r, 'reject')}>Reject update</Button>
-          </div>
-        {/if}
+            },
+          },
+        ]}
+      />
+    </SettingsRow>
+    {#if open[r.id]}
+      <div transition:slide={{ duration: 150 }} data-request-details>
+        <FactsList facts={sourceOf(r)} class="pt-0" />
       </div>
-    {/each}
-    {#if outcome}
-      <div transition:slide={{ duration: 150 }} class={`text-xs ${outcome.ok ? 'text-muted' : 'text-danger'}`} data-update-outcome>{outcome.text}</div>
+    {/if}
+    {#if rejecting === r.id}
+      <div transition:slide={{ duration: 150 }}>
+        <div class="flex items-center gap-3 border-t border-line-subtle px-5 py-4">
+          <Input size="sm" bind:value={rejectNote} maxlength={500} placeholder="Reason, posted on the app's ticket (optional)" class="min-w-0 flex-1" />
+          <Button size="md" variant="outline" disabled={busy === r.id} onclick={() => void decide(r, 'reject')}>Reject update</Button>
+        </div>
+      </div>
     {/if}
   </div>
-{/if}
+{/each}

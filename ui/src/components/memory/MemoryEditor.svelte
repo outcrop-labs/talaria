@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { History, Plus } from '@lucide/svelte'
+  import { ChevronLeft, History, Plus } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
@@ -10,11 +10,13 @@
   import Segmented from '@/components/ui/Segmented.svelte'
   import type { SegmentedOption } from '@/components/ui/segmented'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import InternalEditor from '@/components/editor/InternalEditor.svelte'
+  import EditorTools from '@/components/editor/EditorTools.svelte'
+  import InternalEditor, { DOC_MUSE_TITLE } from '@/components/editor/InternalEditor.svelte'
   import type { InternalEditorHandle } from '@/components/editor/internal-editor'
   import MemoryEntries from '@/components/memory/MemoryEntries.svelte'
   import { appendMemoryNote, memoryKey, saveMemory, useMemory } from '@/lib/memory'
   import { cn } from '@/lib/cn'
+  import { useUiVoice } from '@/lib/ui-voice'
 
   // MEMORY, IN THE SHAPE IT IS KEPT IN — and the file it is kept in.
   //
@@ -51,6 +53,7 @@
     /** Shown INSTEAD of an error when the owner is simply not running, which is
      *  an explainable state rather than a fault. */
     offline,
+    flush = false,
     class: className,
   }: {
     id: string
@@ -59,8 +62,13 @@
     museContext: string
     note?: string
     offline?: { title: string; hint: string } | null
+    /** No inset of its own: the pane sits on a page, not inside a panel. */
+    flush?: boolean
     class?: string
   } = $props()
+
+  const sans = useUiVoice() === 'sans'
+  const inset = $derived(flush ? '' : 'px-4')
 
   const qc = useQueryClient()
   const query = useMemory(() => id)
@@ -81,6 +89,7 @@
   // History is one icon on the title line, right-aligned — same decision as
   // the record surface.
   let historyOpen = $state(false)
+  let museOpen = $state(false)
 
   const refresh = () => qc.invalidateQueries({ queryKey: memoryKey(id) })
 
@@ -133,6 +142,13 @@
   )
 </script>
 
+<!-- Sans: the whole file is the way out of the list, so it is a quiet button
+     at the end of the list's toolbar and not a second switch beside the file
+     switch. -->
+{#snippet openFile()}
+  <Button variant="ghost" size="sm" class="-mr-3 shrink-0" onclick={() => (view = 'file')}>Open as one file</Button>
+{/snippet}
+
 {#if query.isError && offline}
   <EmptyState icon="◌" title={offline.title} hint={offline.hint} />
 {:else if query.isError}
@@ -142,30 +158,49 @@
        scroll region and unpins the footer (see RecordEditor). Short frames
        shrink the editor, which scrolls internally. -->
   <div class={cn('flex h-full flex-col', className)}>
-    <div class="mb-3 flex items-center gap-1.5 px-4 pt-4">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Memory</span>
-      <InfoTip text={tip} />
-      <!-- A mode switch, not a tab: the same document, read two ways. -->
-      <Segmented options={VIEWS} value={view} onChange={(v) => (view = v)} class="ml-1" />
-      <!-- The entries view names its own file (it switches between two), so the
-           filename belongs to the whole-file view only. -->
-      <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">{label}{view === 'file' ? ' · MEMORY.md' : ''}</span>
+    {#if sans}
+      <!-- The entries view has its own toolbar, so this row is the whole-file
+           view's alone. -->
       {#if view === 'file'}
-        <!-- History, right-aligned on the title line — same place every record
-             surface keeps it. No delete: there is no record without this file.
-             It belongs to the whole-file view: the rail reverts the DOCUMENT,
-             which is not an action an entry card can offer honestly. -->
-        <IconButton title="Version history" active={historyOpen} onclick={() => (historyOpen = !historyOpen)}>
-          <History size={14} />
-        </IconButton>
+        <div class={cn('mb-3 flex items-center gap-2', inset, !flush && 'pt-4')}>
+          <Button variant="ghost" size="sm" class="-ml-2 gap-1 px-2" onclick={() => (view = 'entries')}>
+            <ChevronLeft size={16} aria-hidden="true" />Entries
+          </Button>
+          <InfoTip text={tip} />
+          <span class="ml-auto shrink-0 font-mono text-xs text-muted">MEMORY.md</span>
+          <EditorTools
+            class="ml-0"
+            muse={canEdit ? { open: museOpen, onToggle: () => (museOpen = !museOpen), title: DOC_MUSE_TITLE } : undefined}
+            history={{ open: historyOpen, onToggle: () => (historyOpen = !historyOpen) }}
+          />
+        </div>
       {/if}
-    </div>
+    {:else}
+      <div class="mb-3 flex items-center gap-1.5 px-4 pt-4">
+        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Memory</span> <!-- voice-ok: mono branch, the agent manage dialog opened from Comms -->
+        <InfoTip text={tip} />
+        <!-- A mode switch, not a tab: the same document, read two ways. -->
+        <Segmented options={VIEWS} value={view} onChange={(v) => (view = v)} class="ml-1" />
+        <!-- The entries view names its own file (it switches between two), so the
+             filename belongs to the whole-file view only. -->
+        <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">{label}{view === 'file' ? ' · MEMORY.md' : ''}</span> <!-- voice-ok: mono branch -->
+        {#if view === 'file'}
+          <!-- History, right-aligned on the title line — same place every record
+               surface keeps it. No delete: there is no record without this file.
+               It belongs to the whole-file view: the rail reverts the DOCUMENT,
+               which is not an action an entry card can offer honestly. -->
+          <IconButton title="Version history" active={historyOpen} onclick={() => (historyOpen = !historyOpen)}>
+            <History size={14} />
+          </IconButton>
+        {/if}
+      </div>
+    {/if}
 
     {#if view === 'entries'}
       <!-- The list owns its scroll and its own read (one query key per file,
            so the Memory side is the very read this header is already waiting
            on — not a second request). -->
-      <MemoryEntries {id} {canEdit} class="min-h-0 flex-1" />
+      <MemoryEntries {id} {canEdit} {flush} action={sans ? openFile : undefined} class={cn('min-h-0 flex-1', sans && !flush && 'pt-4')} />
       <!-- Never seed the editor from a read that has not landed: saving from an
            empty seed would replace the real memory with an empty file. The click
            is already answered — the header is here, the body is a skeleton. -->
@@ -174,29 +209,36 @@
     {:else}
       {#if canEdit}
         <!-- Teach it one fact: appends a dated line to the document below. -->
-        <div class="mb-3 flex items-center gap-2 px-4">
+        <div class={cn('mb-3 flex items-center gap-2', inset)}>
           <Input
             size="sm"
             bind:value={fact}
             onkeydown={(e) => e.key === 'Enter' && void remember()}
-            placeholder="Remember something: one fact the agent should keep"
+            placeholder={sans ? 'One fact the agent should keep' : 'Remember something: one fact the agent should keep'}
             disabled={remembering}
             class="flex-1"
           />
-          <Button size="sm" class="shrink-0" onclick={() => void remember()} disabled={remembering || !fact.trim()}>
-            <Plus size={13} /> Remember
-          </Button>
+          {#if sans}
+            <Button size="md" variant="outline" class="shrink-0" onclick={() => void remember()} disabled={remembering || !fact.trim()}>
+              Remember
+            </Button>
+          {:else}
+            <Button size="sm" class="shrink-0" onclick={() => void remember()} disabled={remembering || !fact.trim()}>
+              <Plus size={13} /> Remember
+            </Button>
+          {/if}
         </div>
       {/if}
 
       <!-- min-h-0 so the editor takes what the chrome leaves; the floor lives
            on the root, where short windows turn it into a scrolling surface
            instead of a clipped one. -->
-      <div class="min-h-0 flex-1 px-4">
+      <div class={cn('min-h-0 flex-1', inset)}>
         <InternalEditor
           bind:this={handle}
           bind:dirty
           bind:showHistory={historyOpen}
+          bind:museOpen
           value={query.data.content}
           editable={canEdit}
           onSave={save}
@@ -208,22 +250,29 @@
       </div>
 
       {#if failure}
-        <QueryError variant="inline" class="mt-3 px-4" error={failure} title="Could not save this memory" />
+        <QueryError variant="inline" class={cn('mt-3', inset)} error={failure} title="Could not save this memory" />
       {/if}
 
       {#if canEdit}
         <!-- Same fixed-height pinned menu as every record surface (see
              RecordEditor's footer for the 53px arithmetic). -->
-        <div class="flex h-[53px] shrink-0 items-center gap-2 border-t border-line px-4">
-          <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{dirty ? 'Unsaved changes · ⌘S to save' : ''}</span>
+        <div class={cn('flex h-[53px] shrink-0 items-center gap-2 border-t border-line', inset)}>
+          {#if sans}
+            <span class="ml-auto font-sans text-[13px] leading-5 text-muted">{dirty ? 'Unsaved changes' : ''}</span>
+          {:else}
+            <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted">{dirty ? 'Unsaved changes · ⌘S to save' : ''}</span> <!-- voice-ok: mono branch -->
+          {/if}
           {#if dirty}
             <Button variant="ghost" size="sm" onclick={cancel}>
               Cancel
             </Button>
           {/if}
-          <Button size="sm" onclick={() => void saveAll()} disabled={busy || !dirty}>
-            {busy ? 'Saving' : 'Save'}
-          </Button>
+          <!-- In the settings voice Save is there only while there is something to save. -->
+          {#if !sans || dirty || busy}
+            <Button size="sm" onclick={() => void saveAll()} disabled={busy || !dirty}>
+              {busy ? 'Saving' : 'Save'}
+            </Button>
+          {/if}
         </div>
       {/if}
     {/if}

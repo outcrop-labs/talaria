@@ -1,17 +1,21 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Download, RefreshCw } from '@lucide/svelte'
+  import { ArrowUpRight, RefreshCw } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import Panel from '@/components/ui/Panel.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { alert, confirm } from '@/components/ui/confirm.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { cn } from '@/lib/cn'
   import { fetchAdminApps, installApp, shortSha, type KeptDataConflict } from './apps'
   import AppsCatalogs from './AppsCatalogs.svelte'
+  import AppsMark from './AppsMark.svelte'
 
   let { isAdmin }: { isAdmin: boolean } = $props()
 
@@ -52,8 +56,8 @@
         void alert({ title: 'Install failed', message: r.error })
       } else {
         const built = r.build?.ok
-          ? 'It built and loaded; enable it under Installed.'
-          : `It did not build: ${r.build?.error ?? r.buildError ?? 'unknown error'}. Fix the app and Rebuild, or uninstall it.`
+          ? 'It built and loaded. Enable it under Installed.'
+          : `It did not build: ${r.build?.error ?? r.buildError ?? 'unknown error'}. Fix the app and rebuild it, or uninstall it.`
         const kept = r.keptData
           ? ' The data a previous install kept is attached again.'
           : r.wipedData
@@ -63,9 +67,9 @@
         // another repository, or for none on record, are gone.
         const n = r.grantsRemoved ?? 0
         const grants = n
-          ? ` ${n === 1 ? 'One person or team' : `${n} people and teams`} lost the grants they held on /x/${r.slug}, which were not this repository's. Grant it in Admin → People or Manage → Teams.`
+          ? ` ${n === 1 ? 'One person or team' : `${n} people and teams`} lost the access they held under this name, which belonged to another repository. Grant it again in Organization, People or in Teams.`
           : ''
-        notice = `Installed apps/${r.slug} at ${shortSha(r.sha)}. ${built}${kept}${grants}`
+        notice = `Installed ${r.slug} at ${shortSha(r.sha)}. ${built}${kept}${grants}`
         gitUrl = ''
         gitRef = ''
         gitSecret = ''
@@ -103,116 +107,131 @@
    *  all, every catalog off, the catalogs could not be read, or they are
    *  simply empty. */
   const emptyWhy = $derived.by(() => {
-    if (catalogs.length === 0) return { title: 'No catalog configured', hint: 'Add a catalog below, or install any app from its git URL' }
-    if (!catalogs.some((c) => c.enabled)) return { title: 'Every catalog is off', hint: 'Turn one on below, or install any app from its git URL' }
-    if (unreadable.length > 0) return { title: 'Catalogs unreachable', hint: `${unreadable.join('; ')}. You can still install any app from its git URL below` }
-    return { title: 'No apps in the catalogs yet', hint: 'Install any app from its git URL below' }
+    if (catalogs.length === 0) return { title: 'No catalog source yet', hint: 'Add a source below, or install an app from its Git repository.' }
+    if (!catalogs.some((c) => c.enabled)) return { title: 'Every catalog source is off', hint: 'Turn one on below, or install an app from its Git repository.' }
+    if (unreadable.length > 0) return { title: 'Catalog sources unreachable', hint: `${unreadable.join('; ')}. You can still install an app from its Git repository.` }
+    return { title: 'No apps listed yet', hint: 'Install an app from its Git repository below.' }
   })
+
+  const gitUrlValid = $derived(/^(https|http|file):\/\/.+/.test(gitUrl.trim()))
 </script>
 
-<div class="space-y-6">
-  <div class="flex items-center justify-between">
-    <div class="font-sans text-xs text-muted">
-      Community and official apps from the catalogs this instance lists.
-      <InfoTip text="Installing an app clones its repository into this deployment and its code runs fully trusted, like the platform itself. Install only apps you trust. Official apps are maintained by Outcrop Labs." />
-    </div>
-    <button
-      onclick={() => void query.refetch()}
-      class={cn('flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg', query.isFetching && 'gd-breathe')}
-    >
-      <RefreshCw size={12} /> Refresh
-    </button>
-  </div>
+{#if notice}
+  <!-- A line, not a card of one row. -->
+  <p role="status" class="flex items-baseline gap-2 font-sans text-[13px] leading-5 text-muted">
+    <StatusDot status="ok" class="shrink-0 translate-y-[-1px]" />
+    <span><span class="font-medium text-fg">App installed.</span> {notice}</span>
+  </p>
+{/if}
+{#if keptConflict}
+  <!-- Kept data from another repository: never adopted silently. -->
+  <SettingsGroup data-kept-data-conflict>
+    <SettingsRow label="Not installed yet" stacked>
+      {#snippet hint()}
+        The name <code class="font-mono text-xs">{keptConflict?.conflict.slug}</code> still holds data from
+        {#if keptConflict?.conflict.keptFrom}<code class="break-all font-mono text-xs">{keptConflict.conflict.keptFrom}</code>{:else}an earlier install that did not record its repository{/if}.
+        This install is <code class="break-all font-mono text-xs">{keptConflict?.conflict.installing}</code>.
+      {/snippet}
+      <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void settleKept('adopt')}>Install and keep that data</Button>
+      <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void settleKept('wipe')}>Delete that data, then install</Button>
+      <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => (keptConflict = null)}>Cancel</Button>
+    </SettingsRow>
+  </SettingsGroup>
+{/if}
 
-  {#if notice}<div class="rounded-lg border border-line bg-card px-4 py-3 font-sans text-xs text-fg">{notice}</div>{/if}
-  {#if keptConflict}
-    <!-- Kept data from another repository: never adopted silently. -->
-    <div class="space-y-2 rounded-lg border border-line bg-card px-4 py-3" data-kept-data-conflict>
-      <div class="font-sans text-xs text-fg">
-        Not installed. The slug <code>{keptConflict.conflict.slug}</code> holds data kept from
-        {#if keptConflict.conflict.keptFrom}<code class="break-all">{keptConflict.conflict.keptFrom}</code>{:else}an earlier install that did not record its repository{/if},
-        and this install is <code class="break-all">{keptConflict.conflict.installing}</code>.
-      </div>
-      <div class="flex flex-wrap gap-2">
-        <Button size="sm" disabled={busy !== null} onclick={() => void settleKept('adopt')}>Install, adopting that data</Button>
-        <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void settleKept('wipe')}>Delete that data, then install</Button>
-        <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => (keptConflict = null)}>Cancel</Button>
-      </div>
-    </div>
-  {/if}
-
+<SettingsSection
+  title="Available apps"
+  info="Installing an app adds its code to this instance, where it runs fully trusted, like the platform itself. Install only apps you trust. Official apps are maintained by Outcrop Labs."
+>
+  {#snippet action()}
+    <Button size="sm" variant="ghost" onclick={() => void query.refetch()}>
+      <RefreshCw size={14} class={query.isFetching ? 'gd-breathe' : ''} /> Refresh
+    </Button>
+  {/snippet}
   {#if query.isLoading}
-    <SkeletonRows rows={4} />
+    <SettingsGroup>
+      <div class="px-5 py-4"><SkeletonRows rows={4} /></div>
+    </SettingsGroup>
   {:else if !query.data}
-    <!-- Distinct from "Catalogs unreachable" below: THAT is the server
+    <!-- Distinct from "Catalog sources unreachable" below: THAT is the server
          telling us it could not read a catalog (a real, reported answer,
          with each catalog's `error` to quote). This is OUR read of the
-         server failing, which says nothing about the marketplace at all. -->
+         server failing, which says nothing about the catalogs at all. -->
     <QueryError error={query.error} title="Could not load apps" onRetry={() => void query.refetch()} />
   {:else if (catalog?.apps ?? []).length === 0}
     <EmptyState icon="◎" title={emptyWhy.title} hint={emptyWhy.hint} />
   {:else}
     <!-- data-app-cards: the hook Apps.svelte's data-stagger-items selector
-         targets — these cards cascade on the page entrance. -->
-    <div class="grid gap-3 sm:grid-cols-2" data-app-cards>
+         targets, so these cards cascade on the page entrance. -->
+    <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-app-cards>
       {#each catalog!.apps as c (c.slug)}
-        <div class="flex flex-col gap-2 rounded-lg border border-line bg-panel p-4">
+        <Panel class="flex flex-col p-5">
           <div class="flex items-center gap-3">
-            <span class="text-2xl text-accent">{c.icon}</span>
+            <AppsMark icon={c.icon} tile />
             <div class="min-w-0 flex-1">
-              <div class="flex items-baseline gap-2">
-                <span class="truncate font-sans text-sm font-medium text-fg">{c.name}</span>
-                {#if c.official}<Chip tone="accent">official</Chip>{/if}
+              <div class="flex min-h-[22px] items-center gap-2">
+                <span class="min-w-0 truncate font-sans text-sm font-medium leading-5 text-fg">{c.name}</span>
+                {#if c.official}<Chip tone="accent">Official</Chip>{/if}
               </div>
-              <div class="truncate font-mono text-[10px] tracking-[0.05em] text-muted" title={`Listed by the ${c.catalog.name} catalog`}>by {c.author} · {c.catalog.name}</div>
+              <div class="truncate font-sans text-xs leading-4 text-muted" title={`Listed by the ${c.catalog.name} catalog`}>by {c.author}</div>
             </div>
           </div>
-          <div class="flex-1 font-sans text-xs text-muted">{c.description}</div>
-          <div class="flex items-center justify-between">
-            <a href={c.repo} target="_blank" rel="noreferrer" class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted underline-offset-2 hover:underline">
-              source
-            </a>
+          <p class="mt-3 min-h-10 flex-1 font-sans text-[13px] leading-5 text-muted">{c.description}</p>
+          <div class="mt-4 flex h-8 items-center justify-between gap-3">
             {#if installed.has(c.slug)}
-              <Chip>installed</Chip>
+              <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="ok" />Installed</span>
             {:else if isAdmin}
-              <Button size="sm" disabled={busy !== null} onclick={() => void install({ url: c.repo, slug: c.slug })}>
-                <Download size={12} /> Install
+              <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void install({ url: c.repo, slug: c.slug })}>
+                {busy === c.slug ? 'Installing' : 'Install'}
               </Button>
+            {:else}
+              <span></span>
             {/if}
+            <a
+              href={c.repo}
+              target="_blank"
+              rel="noreferrer"
+              class="flex items-center gap-1 font-sans text-[13px] leading-5 text-muted transition-colors hover:text-fg"
+            >
+              Source <ArrowUpRight size={14} />
+            </a>
           </div>
-        </div>
+        </Panel>
       {/each}
     </div>
   {/if}
+</SettingsSection>
 
-  {#if query.data && catalog}
-    <AppsCatalogs {catalogs} {isAdmin} />
-  {/if}
-
-  {#if isAdmin}
-    <div class="rounded-lg border border-line bg-panel p-4">
-      <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Install from Git</div>
-      <p class="mb-3 font-sans text-xs text-muted">
-        Any https git repository with a <code class="text-fg">talaria.json</code> at its root. A private repository on one of
-        this instance's git hosts (Admin → Git hosts) is read with that host's login — read-only, where the host can scope
-        one; a private repository anywhere else needs a workspace secret that holds a token and lists that host. The code becomes part of this deployment and runs fully trusted, so
-        install only repositories you trust.
-      </p>
-      <div class="flex flex-wrap gap-2">
-        <Input
-          bind:value={gitUrl}
-          placeholder="https://github.com/you/talaria-app-yourthing"
-          class="min-w-64 flex-1"
-        />
-        <Input bind:value={gitRef} placeholder="ref (default branch)" class="w-40" />
-        <Input bind:value={gitSecret} placeholder="workspace secret (optional)" class="w-52" />
+{#if isAdmin}
+  <SettingsSection
+    title="Install from Git"
+    description="Any repository with a talaria.json file at its root, whose code runs fully trusted."
+    info="A private repository on one of this instance's Git hosts (Agent policy, Git hosts) is read with that host's login, read-only where the host can scope one. A private repository anywhere else needs a workspace secret that holds a token and lists that host."
+  >
+    <SettingsGroup>
+      <SettingsRow label="Repository" hint="The https address of the repository." as="label">
+        <Input size="sm" class="w-[360px] font-mono" bind:value={gitUrl} placeholder="https://github.com/you/your-app" />
+      </SettingsRow>
+      <SettingsRow label="Branch or tag" hint="Leave empty to use the default branch." as="label">
+        <Input size="sm" class="w-[360px] font-mono" bind:value={gitRef} placeholder="main" />
+      </SettingsRow>
+      <SettingsRow label="Access secret" hint="Only for a private repository this instance has no login for." as="label">
+        <Input size="sm" class="w-[360px]" bind:value={gitSecret} placeholder="Name of a workspace secret" />
+      </SettingsRow>
+      <div class="flex justify-end px-5 py-3">
         <Button
-          disabled={!/^(https|http|file):\/\/.+/.test(gitUrl.trim()) || busy !== null}
+          size="sm"
+          variant="outline"
+          disabled={!gitUrlValid || busy !== null}
           onclick={() => void install({ url: gitUrl.trim(), ref: gitRef.trim(), secret: gitSecret.trim() })}
         >
-          Install
+          {busy !== null && busy === gitUrl.trim() ? 'Installing' : 'Install'}
         </Button>
       </div>
-    </div>
-  {/if}
-</div>
+    </SettingsGroup>
+  </SettingsSection>
+{/if}
+
+{#if query.data && catalog}
+  <AppsCatalogs {catalogs} {isAdmin} />
+{/if}

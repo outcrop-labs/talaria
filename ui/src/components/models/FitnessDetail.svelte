@@ -1,21 +1,24 @@
 <script lang="ts">
   import { searchParams } from 'sv-router'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Disclosure from '@/components/ui/Disclosure.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
+  import type { TabItem } from '@/components/ui/tabs'
   import { cn } from '@/lib/cn'
   import { SquareTerminal } from '@lucide/svelte'
-  import { focusGold } from '@/components/chat/chat-chrome'
   import { fly } from '@/lib/motion'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import CapabilityTags from './CapabilityTags.svelte'
   import FitnessCases from './FitnessCases.svelte'
+  import FitnessMark from './FitnessMark.svelte'
   import FitnessObserved from './FitnessObserved.svelte'
   import FitnessOverview from './FitnessOverview.svelte'
   import FitnessTerminal from './FitnessTerminal.svelte'
-  import { SAFETY_META, BAND_META, BAND_SEVERITY, BAND_TEXT, pct, type DetailPayload, type ModelRow } from './fitness'
+  import { BAND_META, BAND_SEVERITY, BAND_TEXT, SAFETY_META, TIER_META, pct, type DetailPayload, type ModelRow } from './fitness'
 
   // One model, in full: what the run established, where it broke, and what
   // production says about the same model on the same definitions.
@@ -109,7 +112,7 @@
       )
     } else if (c.narrowedBecause && c.ended < c.requested) {
       out.push(
-        `This sweep started ${c.requested} fixtures wide and was down to ${c.ended} when it finished, after the provider pushed back ("${c.narrowedBecause}"). That was this deployment's ceiling on ${new Date(record.at).toLocaleDateString()} — the run this record came from, not necessarily the deployment as it stands now — and it is not a property of this model. Re-run at ${c.ended} or lower for a clean read.`,
+        `This sweep started ${c.requested} fixtures wide and was down to ${c.ended} when it finished, after the provider pushed back ("${c.narrowedBecause}"). That was this deployment's ceiling on ${new Date(record.at).toLocaleDateString()}, the day of this run, and not a property of this model. Run it again at ${c.ended} or lower for a clean read.`,
       )
     } else if (c.narrowedBecause) {
       // Narrowed and recovered. Said anyway, briefly: the timings in this run
@@ -131,17 +134,22 @@
   type Pane = 'live' | 'overview' | 'verdicts' | 'capabilities' | 'fixtures' | 'adversarial' | 'observed'
 
   const panes = $derived.by(() => {
-    const out: Array<{ id: Pane; label: string }> = []
-    if (live) out.push({ id: 'live', label: `Live ${live.done}/${live.total || '?'}` })
+    const out: Array<TabItem<Pane>> = []
+    if (live) out.push({ id: 'live', label: live.total > 0 ? `Live, ${live.done} of ${live.total}` : 'Live' })
     // OVERVIEW FIRST among the archived panes, because it is the answer and the
     // rest are the evidence. A run in flight still outranks it: what you opened
     // the dialog for during a sweep is the sweep.
     if (record) out.push({ id: 'overview', label: 'Overview' })
-    if (record) out.push({ id: 'verdicts', label: `Verdicts ${slots.length}` })
-    if (record?.probes) out.push({ id: 'capabilities', label: `Capabilities ${record.probes.results.length}` })
-    if (record) out.push({ id: 'fixtures', label: failingCases > 0 ? `Fixtures ${failingCases}✕` : `Fixtures ${record.cases.length}` })
-    if (record?.adversarial) out.push({ id: 'adversarial', label: `Safety ${SAFETY_META[record.adversarial.band].label}` })
-    out.push({ id: 'observed', label: 'Vs production' })
+    if (record) out.push({ id: 'verdicts', label: 'Verdicts', count: slots.length })
+    if (record?.probes) out.push({ id: 'capabilities', label: 'Capabilities', count: record.probes.results.length })
+    if (record)
+      out.push(
+        failingCases > 0
+          ? { id: 'fixtures', label: 'Failed fixtures', count: failingCases }
+          : { id: 'fixtures', label: 'Fixtures', count: record.cases.length },
+      )
+    if (record?.adversarial) out.push({ id: 'adversarial', label: 'Safety' })
+    out.push({ id: 'observed', label: 'Against production' })
     return out
   })
 
@@ -176,15 +184,15 @@
        Identity, the verdict in one line, whatever is true of the run, and the
        compartment strip. None of it scrolls: an admin three screens into the
        fixtures still knows which model this is and that the sweep was partial. -->
-  <div class="shrink-0 border-b border-line px-7 pt-5 pb-3">
-    <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1.5">
-      <span class="font-mono text-sm text-fg">{detail.model}</span>
+  <div class="shrink-0 px-7 pt-5">
+    <!-- The dialog's title names the model; this line is what is known of it. -->
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
       <CapabilityTags {row} />
-      <span class="ml-auto font-mono text-[11px] text-muted">
+      <span class="ml-auto font-sans text-[13px] leading-5 text-muted">
         {#if record}
-          tested {new Date(record.at).toLocaleString()} · {record.tiers.join(' + ')}
+          Tested {new Date(record.at).toLocaleString()} · {record.tiers.map((t) => TIER_META[t].label.toLowerCase()).join(', ')}
         {:else}
-          never tested
+          Never tested
         {/if}
       </span>
     </div>
@@ -209,19 +217,19 @@
       <!-- THE RUN, WHILE IT IS RUNNING, pinned rather than paged: the sweep
            checkpoints every case as it lands, and an admin watching it should not
            have to be on the right tab to see it move. -->
-      <div class="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-line-subtle bg-raised/40 px-2.5 py-1.5">
-        <WaitingMark site="models/fitness-detail" size={11} />
-        <span class="font-mono text-[10px] tracking-[0.05em] text-muted uppercase">
-          {live.phase === 'scoring' ? 'scoring' : (live.phase ?? 'running')}
-          {#if live.total > 0}· {live.done}/{live.total} fixtures{/if}
-          {#if live.harness}· {live.harness}{/if}
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <WaitingMark site="models/fitness-detail" size={14} />
+        <span class="font-sans text-[13px] leading-5 text-fg">
+          {live.phase === 'scoring' ? 'Scoring' : live.phase ? TIER_META[live.phase].label : 'Running'}
+          {#if live.total > 0}· {live.done} of {live.total} fixtures{/if}
+          {#if live.harness}· <span class="font-mono text-xs text-muted">{live.harness}</span>{/if}
         </span>
-        <span class="ml-auto font-mono text-[10px] text-ink-dim">updating every 3s</span>
+        <span class="ml-auto font-sans text-xs leading-4 text-muted">Updates every 3 seconds</span>
       </div>
     {/if}
 
     {#each caveats as c (c)}
-      <p class="mt-2 max-w-prose font-sans text-xs text-warning">{c}</p>
+      <p class="mt-2 max-w-[72ch] font-sans text-[13px] leading-5 text-warning">{c}</p>
     {/each}
 
     <!-- THE CONSOLE IS NOT A PLACE, IT IS A THING YOU TURN ON. It was a tab,
@@ -230,8 +238,8 @@
          so it toggles from the strip and opens above whichever one is showing.
          The count is on the button because a console with nothing in it is worth
          knowing about before you click. -->
-    <div class="mt-3 flex items-end gap-2">
-      <Tabs class="flex-wrap" items={panes} value={pane} onChange={setPane} />
+    <div class="mt-3 flex items-end gap-4">
+      <Tabs class="min-w-0 flex-1" items={panes} value={pane} onChange={setPane} />
       {#if consoleLines.length > 0}
         <button
           type="button"
@@ -239,13 +247,13 @@
           aria-pressed={consoleOpen}
           title={consoleOpen ? 'Hide the run console' : `Show the run console (${consoleLines.length} lines)`}
           class={cn(
-            'ml-auto mb-1 inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] transition-colors',
-            focusGold,
-            consoleOpen ? 'border-line-strong bg-panel text-fg' : 'border-line text-ink-dim hover:text-fg',
+            'mb-1 inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 font-sans text-xs tabular-nums transition-colors',
+            'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+            consoleOpen ? 'border-line-strong bg-raised text-fg' : 'border-line text-muted hover:text-fg',
           )}
         >
-          <SquareTerminal size={13} aria-hidden="true" />
-          {consoleLines.length}
+          <SquareTerminal size={14} aria-hidden="true" />
+          Console {consoleLines.length}
         </button>
       {/if}
     </div>
@@ -311,45 +319,48 @@
           />
         {:else}
           <SectionHeader
-            title="Per slot"
+            title="Verdict per job"
             info="One verdict per assignable slot. The reason names the harness and the assertion that decided it; a score on its own is not something an admin can act on."
           />
-          <ul class="divide-y divide-line">
+          <SettingsGroup>
             {#each slots as s (`${s.slot.kind}:${s.slot.id}`)}
-              <li class="py-2.5">
-                <div class="flex flex-wrap items-center gap-2">
-                  <span class={cn('font-mono text-[13px]', BAND_TEXT[s.band])}>{BAND_META[s.band].glyph}</span>
-                  <span class="font-sans text-sm text-fg">{s.slot.label}</span>
-                  <Chip tone={BAND_META[s.band].tone}>{BAND_META[s.band].label}</Chip>
-                  <span class="ml-auto font-mono text-[10px] text-muted">
-                    {#if s.contract}{s.contract.numerator}/{s.contract.denominator} first try{/if}
-                    {#if s.task} · task floor {pct(s.taskFloor)}{/if}
-                  </span>
-                </div>
-                {#each s.reasons as reason, i (i)}
-                  <p class={cn('mt-1 max-w-prose font-sans text-xs', BAND_TEXT[reason.band])}>
-                    {reason.detail}
-                    {#if reason.assertion}<span class="text-muted"> ({reason.assertion})</span>{/if}
-                  </p>
-                {/each}
-              </li>
+              <SettingsRow label={s.slot.label}>
+                {#snippet lead()}<span class="grid h-4 w-4 place-items-center"><FitnessMark band={s.band} /></span>{/snippet}
+                {#snippet hint()}
+                  {#each s.reasons as reason, i (i)}
+                    <p class={cn('max-w-[72ch]', reason.band === 'ready' ? undefined : BAND_TEXT[reason.band])}>
+                      {reason.detail}
+                      {#if reason.assertion}<span class="text-muted"> ({reason.assertion})</span>{/if}
+                    </p>
+                  {/each}
+                {/snippet}
+                <span class="font-sans text-[13px] leading-5 tabular-nums text-muted">
+                  {#if s.contract}{s.contract.numerator} of {s.contract.denominator} first try{/if}
+                  {#if s.task} · task floor {pct(s.taskFloor)}{/if}
+                </span>
+                <Chip tone={BAND_META[s.band].tone}>{BAND_META[s.band].label}</Chip>
+              </SettingsRow>
             {/each}
-          </ul>
+          </SettingsGroup>
           {#if record.report.unbound.length > 0}
-            <div class="mt-3 border-t border-line-subtle pt-3">
+            <div class="mt-4">
               <!-- Harnesses whose model comes from the SUBJECT of the call: the
                    owner's assistant, the agent on the ticket, the researching
                    agent. Scored, because "can this model work a ticket" is the
                    question when picking an agent's brain — they simply have no
                    column an admin assigns. -->
               <Disclosure title="Harnesses with no assignable slot ({record.report.unbound.length})">
-                <ul class="space-y-1 p-3">
+                <ul class="space-y-3 py-1">
                   {#each record.report.unbound as v (v.harness)}
-                    <li class="flex flex-wrap items-baseline gap-2 font-mono text-[11px]">
-                      <span class={cn('w-48 shrink-0', BAND_TEXT[v.band])}>{v.label}</span>
-                      <span class="text-muted">{BAND_META[v.band].label}</span>
-                      {#if v.cases > 0}<span class="text-muted">· {pct(v.contractRate)} first try over {v.cases} fixture(s)</span>{/if}
-                      {#if v.reasons[0]}<span class="basis-full font-sans text-xs text-muted">{v.reasons[0].detail}</span>{/if}
+                    <li class="font-sans text-[13px] leading-5">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span class="grid h-4 w-3 place-items-center"><FitnessMark band={v.band} /></span>
+                        <span class="font-medium text-fg">{v.label}</span>
+                        <span class="text-muted">
+                          {BAND_META[v.band].label}{#if v.cases > 0} · {pct(v.contractRate)} first try over {v.cases} fixture{v.cases === 1 ? '' : 's'}{/if}
+                        </span>
+                      </div>
+                      {#if v.reasons[0]}<p class="ml-5 max-w-[72ch] text-muted">{v.reasons[0].detail}</p>{/if}
                     </li>
                   {/each}
                 </ul>
@@ -357,8 +368,9 @@
             </div>
           {/if}
           {#if record.sweep.unfixtured.length > 0}
-            <p class="mt-3 max-w-prose font-sans text-xs text-muted">
-              {record.sweep.unfixtured.length} registered harness(es) declare no fixtures, so tier 2 says nothing about them: {record.sweep.unfixtured.join(', ')}.
+            <p class="mt-3 max-w-[72ch] font-sans text-[13px] leading-5 text-muted">
+              {record.sweep.unfixtured.length} registered harness{record.sweep.unfixtured.length === 1 ? ' has' : 'es have'} no fixtures, so this run says nothing about them:
+              <span class="font-mono text-xs">{record.sweep.unfixtured.join(', ')}</span>.
             </p>
           {/if}
         {/if}
@@ -368,45 +380,43 @@
           info="Tier 1: model-level facts, measured against fixed prompts. These are what the capability tags everywhere else in Models are made of, and what a role assignment is checked against."
         />
         {#if record.probes.ambiguous}
-          <p class="mb-2 max-w-prose font-sans text-xs text-warning">
+          <p class="mb-3 max-w-[72ch] font-sans text-[13px] leading-5 text-warning">
             This id resolves to {record.probes.ambiguous.length} endpoints, so nothing was recorded: a fact learned from one endpoint must never
             be credited to another. Re-run against {record.probes.ambiguous.join(' or ')} to record it.
           </p>
         {/if}
-        <ul class="space-y-1.5">
+        <SettingsGroup>
           {#each record.probes.results as r (r.id)}
-            <li class="flex flex-wrap items-baseline gap-2">
-              <span class="w-40 shrink-0 font-mono text-[11px] text-fg">{r.label}</span>
-              {#if r.outcome.kind === 'scored'}
-                <Chip tone={r.outcome.verdict.value ? 'success' : 'danger'}>
-                  {r.outcome.verdict.value ? 'yes' : 'no'} · {pct(r.outcome.verdict.score)}
-                </Chip>
-                <span class="min-w-0 flex-1 font-sans text-xs text-muted">{r.outcome.verdict.detail}</span>
-              {:else if r.outcome.kind === 'known'}
-                <!-- ALREADY MEASURED, so no call was made and the standing fact
-                     is shown. NOT the same as skipped: a fact exists here. -->
-                <Chip tone={r.outcome.verdict.value ? 'success' : 'danger'}>
-                  {r.outcome.verdict.value ? 'yes' : 'no'} · {pct(r.outcome.verdict.score)}
-                </Chip>
-                <span class="min-w-0 flex-1 font-sans text-xs text-muted">
+            <SettingsRow label={r.label}>
+              {#snippet hint()}
+                {#if r.outcome.kind === 'scored'}
                   {r.outcome.verdict.detail}
-                  <span class="text-ink-dim"> (measured {new Date(r.outcome.at).toLocaleDateString()}, not re-run)</span>
-                </span>
+                {:else if r.outcome.kind === 'known'}
+                  <!-- ALREADY MEASURED, so no call was made and the standing
+                       fact is shown. NOT the same as skipped: a fact exists. -->
+                  {r.outcome.verdict.detail} Measured {new Date(r.outcome.at).toLocaleDateString()}, not run again.
+                {:else if r.outcome.kind === 'skipped'}
+                  {r.outcome.reason}
+                {:else}
+                  {r.outcome.reason}. That is the deployment, not the model.
+                {/if}
+              {/snippet}
+              {#if r.outcome.kind === 'scored' || r.outcome.kind === 'known'}
+                <span class="font-sans text-[13px] leading-5 tabular-nums text-muted">{pct(r.outcome.verdict.score)}</span>
+                <Chip tone={r.outcome.verdict.value ? 'success' : 'warn'}>{r.outcome.verdict.value ? 'Yes' : 'No'}</Chip>
               {:else if r.outcome.kind === 'skipped'}
                 <!-- Skipped writes NOTHING. Not a pass and not a failure — the
                      channel could not be opened, so no fact exists. -->
-                <Chip>skipped</Chip>
-                <span class="min-w-0 flex-1 font-sans text-xs text-muted">{r.outcome.reason}</span>
+                <Chip>Skipped</Chip>
               {:else}
-                <Chip tone="warn">errored</Chip>
-                <span class="min-w-0 flex-1 font-sans text-xs text-muted">{r.outcome.reason}; that is the deployment, not the model.</span>
+                <Chip tone="warn">Errored</Chip>
               {/if}
-            </li>
+            </SettingsRow>
           {/each}
-        </ul>
-        <div class="mt-3 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          {record.probes.wrote} fact(s) recorded · p50 {record.probes.latency.p50}ms · p95 {record.probes.latency.p95}ms
-        </div>
+        </SettingsGroup>
+        <p class="mt-3 font-sans text-[13px] leading-5 tabular-nums text-muted">
+          {record.probes.wrote} fact{record.probes.wrote === 1 ? '' : 's'} recorded · median {record.probes.latency.p50} ms · 95th percentile {record.probes.latency.p95} ms
+        </p>
       {:else if pane === 'fixtures' && record}
         <SectionHeader
           title="Fixtures"
@@ -416,7 +426,7 @@
       {:else if pane === 'adversarial' && record?.adversarial}
         {@const adv = record.adversarial}
         <SectionHeader
-          title="Adversarial"
+          title="Safety"
           info="Tier 3: safety provocations, scored TWICE. `resistance` is the model on its own, with the guard's grounding deliberately omitted; `after guardrails` is what production would actually have filed, because Talaria runs guardrails.ts over every harness that declares them. The seeds are built to be hard and strong models land in the eighties on the first number; the gap between the two is the layer the platform adds."
         />
         <div class="mb-3 flex flex-wrap items-center gap-2">
@@ -424,47 +434,61 @@
                vocabulary, so this chip reads out of the same table as every
                other band on the page. -->
           <Chip tone={SAFETY_META[adv.band].tone}>{SAFETY_META[adv.band].label}</Chip>
-          <span class="font-mono text-[11px] text-muted">
-            model alone {adv.resistance === null ? 'unscorable' : pct(adv.resistance)}
+          <span class="font-sans text-[13px] leading-5 tabular-nums text-muted">
+            Model alone {adv.resistance === null ? 'could not be scored' : pct(adv.resistance)}
             {#if adv.guardedResistance !== null}
               · <span class="text-success">after guardrails {pct(adv.guardedResistance)}</span>
             {/if}
             · {adv.silent} silent · {adv.errored} voided
           </span>
-          {#if adv.escalation.adversary}
-            <span class="font-mono text-[11px] text-muted">
-              adversary {adv.escalation.adversary}: {adv.escalation.written}/{adv.escalation.attempted} turns written, {adv.escalation.fell} landed
-            </span>
-          {:else}
-            <span class="font-sans text-xs text-muted">Seed corpus only; no escalation round ran.</span>
-          {/if}
+          <span class="font-sans text-[13px] leading-5 tabular-nums text-muted">
+            {#if adv.escalation.adversary}
+              Adversary <span class="font-mono text-xs">{adv.escalation.adversary}</span> wrote {adv.escalation.written} of {adv.escalation.attempted} turns, {adv.escalation.fell} landed.
+            {:else}
+              Seed corpus only. No escalation round ran.
+            {/if}
+          </span>
         </div>
         <!-- SAID IN WORDS, ONCE, because the two percentages above are the whole
              point of this pane and a reader who takes the first for the answer
              comes away with the wrong conclusion about every model on the page. -->
-        <p class="mb-3 max-w-prose font-sans text-xs text-muted">
-          {SAFETY_META[adv.band].blurb} These provocations score the MODEL, with the guard's grounding deliberately off. It is what the weights do with nothing behind them.
-          <strong class="text-fg">After guardrails</strong> is the same run as production would have recorded it, and it moves in both directions: grounding drops a hit where the
-          provocation planted the span in the prompt, and adds one where a claim is ungrounded against real sources. Neither number is the other's correction: the first is about
-          the model, the second is about this deployment.
+        <p class="mb-4 max-w-[72ch] font-sans text-[13px] leading-5 text-muted">
+          {SAFETY_META[adv.band].blurb}
+          <strong class="font-medium text-fg">Model alone</strong> is the weights with the guard's grounding off.
+          <strong class="font-medium text-fg">After guardrails</strong> is the same run as production would have recorded it.
         </p>
-        <ul class="space-y-1">
-          {#each adv.rules as r (r.rule)}
-            <li class="flex flex-wrap items-baseline gap-2 font-mono text-[11px]">
-              <span class="w-40 shrink-0 text-fg">{r.rule}</span>
-              <span class={r.elicited > 0 ? 'text-danger' : 'text-muted'}>{r.elicited}/{r.scored} elicited</span>
-              <span class="text-muted">· {r.filed} filed in production{r.filed !== r.elicited ? ` (${r.filed < r.elicited ? 'grounding dropped' : 'grounding added'} ${Math.abs(r.elicited - r.filed)})` : ''}</span>
-            </li>
-          {/each}
-        </ul>
+        <div class="overflow-x-auto rounded-lg border border-line">
+          <table class="w-full border-collapse text-left">
+            <thead>
+              <tr class="border-b border-line font-sans text-xs leading-4 text-muted">
+                <th class="px-5 py-2.5 font-medium">Rule</th>
+                <th class="px-3 py-2.5 text-right font-medium">Took the bait</th>
+                <th class="px-3 py-2.5 text-right font-medium">Filed in production</th>
+                <th class="py-2.5 pl-3 pr-5 font-medium">Grounding</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each adv.rules as r (r.rule)}
+                <tr class="h-11 border-b border-line-subtle last:border-0">
+                  <td class="px-5 font-mono text-xs text-fg">{r.rule}</td>
+                  <td class={cn('px-3 text-right font-sans text-[13px] tabular-nums', r.elicited > 0 ? 'text-danger' : 'text-muted')}>{r.elicited} of {r.scored}</td>
+                  <td class="px-3 text-right font-sans text-[13px] tabular-nums text-fg">{r.filed}</td>
+                  <td class="pl-3 pr-5 font-sans text-[13px] tabular-nums text-muted">
+                    {r.filed === r.elicited ? 'No change' : `${r.filed < r.elicited ? 'Dropped' : 'Added'} ${Math.abs(r.elicited - r.filed)}`}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
         {@const fell = adv.cases.filter((c) => c.elicited && (c.prompt || c.raw))}
         {#if fell.length > 0}
-          <div class="mt-3 space-y-2">
+          <div class="mt-4 space-y-2">
             {#each fell as c (c.id)}
               <Disclosure title="{c.target} · {c.id}{c.origin === 'adversary' ? ' (escalated)' : ''}">
-                <div class="space-y-2 p-3">
-                  {#if c.prompt}<div class="whitespace-pre-wrap font-mono text-[11px] text-muted">{c.prompt}</div>{/if}
-                  {#if c.raw}<div class="whitespace-pre-wrap rounded-md border border-line-subtle p-2 font-mono text-[11px] text-fg">{c.raw}</div>{/if}
+                <div class="space-y-3 py-1">
+                  {#if c.prompt}<div class="whitespace-pre-wrap font-mono text-xs leading-5 text-muted">{c.prompt}</div>{/if}
+                  {#if c.raw}<div class="whitespace-pre-wrap border-t border-line-subtle pt-3 font-mono text-xs leading-5 text-fg">{c.raw}</div>{/if}
                 </div>
               </Disclosure>
             {/each}
@@ -472,7 +496,7 @@
         {/if}
       {:else}
         <SectionHeader
-          title="Tested vs observed"
+          title="Tested against production"
           info="The bench on the left, the last {detail.thresholds.observedWindowDays} days of production on the right, computed by the same definitions. A model that benched Ready and is repairing 12% of its production runs is the alert no external benchmark can give you."
         />
         <FitnessObserved

@@ -28,9 +28,10 @@
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
-  import { DROPDOWN_PANEL_MAX_WIDTH_PX, dropdownHorizStyle } from '@/lib/dropdown-position'
+  import { anchorMoved, DROPDOWN_PANEL_MAX_WIDTH_PX, dropdownHorizStyle, opensUpward, type AnchorSpot } from '@/lib/dropdown-position'
   import type { ContextMenuEntry, MenuIcon } from './context-menu.svelte'
 
   // Anchored dropdown menu — the SAME shell and item grammar as the context
@@ -66,6 +67,9 @@
     group?: string
   } = $props()
 
+  const voice = useUiVoice()
+  const sans = voice === 'sans'
+
   let open = $state(false)
   let ref = $state<HTMLDivElement | null>(null)
   let panelEl = $state<HTMLDivElement | null>(null)
@@ -74,6 +78,12 @@
   // context), so an absolutely-positioned sibling could never stack above
   // neighboring cards, no z-index would save it.
   let pos = $state<string | null>(null)
+  // Flipped upward because opening down would run past the bottom of the
+  // viewport: the kebab of a page's last row. Reset on every open.
+  let flipped = $state(false)
+  const upward = $derived(up || flipped)
+  let openedAt: AnchorSpot | null = null
+  const OFFSET = 4
 
   const close = () => {
     open = false
@@ -90,11 +100,26 @@
     await onWillOpen?.()
     const r = ref?.getBoundingClientRect()
     if (!r) return
-    const vert = up ? `bottom: ${window.innerHeight - r.top + 4}px` : `top: ${r.bottom + 4}px`
-    const horiz = dropdownHorizStyle(align, r, window.innerWidth, DROPDOWN_PANEL_MAX_WIDTH_PX)
-    pos = `position: fixed; z-index: 80; ${vert}; ${horiz}`
+    flipped = false
+    pos = place(r)
+    openedAt = { top: r.top, left: r.left }
     open = true
   }
+
+  function place(r: DOMRect): string {
+    const vert = upward ? `bottom: ${window.innerHeight - r.top + OFFSET}px` : `top: ${r.bottom + OFFSET}px`
+    const horiz = dropdownHorizStyle(align, r, window.innerWidth, DROPDOWN_PANEL_MAX_WIDTH_PX)
+    return `position: fixed; z-index: 80; ${vert}; ${horiz}`
+  }
+
+  // The panel's height is only known once it exists, so it is measured then.
+  $effect(() => {
+    if (!open || !panelEl || up || flipped) return
+    const r = ref?.getBoundingClientRect()
+    if (!r || !opensUpward(r, panelEl.offsetHeight, window.innerHeight, OFFSET)) return
+    flipped = true
+    pos = place(r)
+  })
 
   function onDocMousedown(e: MouseEvent) {
     if (!open) return
@@ -109,10 +134,14 @@
   function onDocScroll(e: Event) {
     if (!open) return
     if (panelEl?.contains(e.target as Node)) return
+    if (!anchorMoved(ref?.getBoundingClientRect(), openedAt)) return
     close()
   }
 
   const entries = $derived(typeof items === 'function' ? (open ? items() : []) : items)
+  // In the sans voice a disabled item dims its label and marks, not the whole
+  // row: its hint says why it is off, so the hint stays at full strength.
+  const dimmed = (item: { disabled?: boolean }) => (sans && item.disabled ? 'opacity-50' : undefined)
 </script>
 
 {#snippet menuIcon(icon: MenuIcon)}
@@ -142,6 +171,7 @@
     <div
       bind:this={panelEl}
       use:portal
+      data-voice={voiceScope(voice)}
       role="menu"
       tabindex="-1"
       style={pos}
@@ -149,7 +179,7 @@
       class={cn(
         popPanel,
         'min-w-44 max-w-72 max-w-[min(18rem,calc(100vw-16px))]',
-        up
+        upward
           ? align === 'right' ? 'origin-bottom-right' : 'origin-bottom-left'
           : align === 'right' ? 'origin-top-right' : 'origin-top-left',
       )}
@@ -166,7 +196,8 @@
             {:else}
               <button
                 type="button"
-                role="menuitem"
+                role={sans && item.checked !== undefined ? 'menuitemcheckbox' : 'menuitem'}
+                aria-checked={sans ? item.checked : undefined}
                 disabled={item.disabled}
                 onclick={(e) => {
                   e.stopPropagation()
@@ -176,23 +207,23 @@
                 class={cn(
                   'flex w-full select-none items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left font-sans text-[13px] transition-colors',
                   item.disabled
-                    ? 'cursor-default text-muted opacity-50'
+                    ? cn('cursor-default text-muted', !sans && 'opacity-50')
                     : item.danger
                       ? 'text-danger hover:bg-danger/10'
-                      : cn('dither-fill', item.checked === false ? 'text-muted' : 'text-fg'),
+                      : cn(sans ? 'hover:bg-hover' : 'dither-fill', item.checked === false ? 'text-muted' : 'text-fg'),
                 )}
               >
                 <!-- checked state: leading ✓ slot (kept when unchecked so rows
                     align); falls back to the icon slot otherwise. -->
                 {#if item.checked !== undefined}
-                  <span class="grid w-4 shrink-0 place-items-center text-accent">{item.checked ? '✓' : ''}</span>
+                  <span class={cn('grid w-4 shrink-0 place-items-center text-accent', dimmed(item))}>{item.checked ? '✓' : ''}</span>
                 {/if}
                 {#if item.icon}
-                  <span class="grid w-4 shrink-0 place-items-center text-muted">{@render menuIcon(item.icon)}</span>
+                  <span class={cn('grid w-4 shrink-0 place-items-center text-muted', dimmed(item))}>{@render menuIcon(item.icon)}</span>
                 {/if}
-                <span class="min-w-0 flex-1 truncate">{item.label}</span>
+                <span class={cn('min-w-0 flex-1 truncate', dimmed(item))}>{item.label}</span>
                 {#if item.hint}
-                  <span class="shrink-0 font-mono text-[10px] text-ink-dim">{item.hint}</span>
+                  <span class={sans ? 'shrink-0 font-sans text-xs text-muted' : 'shrink-0 font-mono text-[10px] text-ink-dim'}>{item.hint}</span>
                 {/if}
               </button>
             {/if}

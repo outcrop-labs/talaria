@@ -120,6 +120,11 @@ describe('entryTitle: one line, clipped', () => {
     const exact = 'b'.repeat(80)
     expect(entryTitle(exact)).toBe(exact)
   })
+
+  it('hands back the whole line to a caller that wraps it', () => {
+    const long = `## ${'word '.repeat(40).trim()}`
+    expect(entryTitle(long, Infinity)).toBe('word '.repeat(40).trim())
+  })
 })
 
 describe('replaceEntry / removeEntry: new lists, never a mutation', () => {

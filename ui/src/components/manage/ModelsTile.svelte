@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import StatCard from '@/components/ui/StatCard.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
   import { getJson } from '@/lib/fetch-json'
   import { useEndpoints } from '@/lib/models'
   import { p } from '@/router'
@@ -19,19 +19,19 @@
   const keyless = $derived((endpoints ?? []).filter((e) => e.class === 'cloud' && e.hasKey === false).length)
   const issues = $derived(rolesQuery.data?.issues?.length ?? 0)
   const sub = $derived.by(() => {
-    if (!endpoints) return endpointsQuery.isError ? 'could not read' : undefined
+    if (!endpoints) return endpointsQuery.isError ? 'Could not read' : undefined
     const parts = [
       keyless ? `${keyless} without a key` : null,
       issues ? `${issues} role${issues === 1 ? '' : 's'} unrouted` : null,
     ].filter(Boolean)
-    return parts.length > 0 ? parts.join(' · ') : endpoints.length > 0 ? 'every role routed' : 'add a provider'
+    return parts.length > 0 ? parts.join(' · ') : endpoints.length > 0 ? 'Every role routed' : 'Add a provider'
   })
 </script>
 
-<StatCard label="Model providers" href={p('/models')} {sub}>
+<Stat label="Model providers" href={p('/models')} {sub}>
   {#snippet value()}
     {#if endpoints}{endpoints.length}
     {:else if endpointsQuery.isError}—
-    {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
+    {:else}<Skeleton class="my-1.5 h-5 w-16 rounded-full" />{/if}
   {/snippet}
-</StatCard>
+</Stat>

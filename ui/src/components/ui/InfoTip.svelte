@@ -2,6 +2,7 @@
   import { Info } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
 
   // An ⓘ that explains an area on hover — the home for the sentence that used
@@ -15,6 +16,9 @@
   // that region's edge — so the tips nearest the bottom of a dialog, exactly
   // where the longest explanations sit, got cut in half.
   let { text, class: className }: { text: string; class?: string } = $props()
+
+  const voice = useUiVoice()
+  const sans = voice === 'sans'
 
   let open = $state(false)
   let ref = $state<HTMLSpanElement | null>(null)
@@ -53,11 +57,14 @@
 {#if open}
   <span
     use:portal
+    data-voice={voiceScope(voice)}
     role="tooltip"
     style={pos}
     in:pop={POPOVER}
     out:fade={QUICK}
-    class="pointer-events-none w-64 rounded-lg border border-line bg-panel px-2.5 py-2 font-sans text-[11px] font-normal normal-case leading-snug tracking-normal text-muted shadow-[var(--theme-shadow-2)]"
+    class={sans
+      ? 'pointer-events-none w-64 rounded-lg border border-line bg-panel px-2.5 py-2 font-sans text-xs font-normal normal-case leading-[18px] tracking-normal text-muted shadow-[var(--theme-shadow-2)]'
+      : 'pointer-events-none w-64 rounded-lg border border-line bg-panel px-2.5 py-2 font-sans text-[11px] font-normal normal-case leading-snug tracking-normal text-muted shadow-[var(--theme-shadow-2)]'}
   >
     {text}
   </span>

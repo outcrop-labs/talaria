@@ -1,11 +1,16 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import NoticeRow from '@/components/admin/NoticeRow.svelte'
+  import { useExplicitSave } from '@/components/settings/autosave.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Select from '@/components/ui/Select.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import { errorMessage, getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
 
@@ -39,6 +44,9 @@
   }))
   const requests = $derived(requestsQuery.data ?? [])
   const requestsFailed = $derived(requestsQuery.isError && requestsQuery.data === undefined)
+  // A request's visibility and protection are choices that go out with
+  // Create repository. While one waits, or might, the header says nothing.
+  useExplicitSave(() => requestsQuery.isPending || requests.length > 0)
   // The approver's visibility per request; absent = what the agent asked for.
   let chosen = $state<Record<string, Visibility>>({})
   const visibilityOf = (r: RepoReq): Visibility => chosen[r.id] ?? r.visibility ?? 'private'
@@ -81,71 +89,78 @@
   }
 </script>
 
-<div class="space-y-2">
-  <div class="flex flex-wrap items-baseline gap-x-2">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Agent repo requests</span>
-    <span class="text-xs text-muted">agents REQUEST new repos in a host's approved orgs; you approve each one</span>
-  </div>
-  {#if requests.length === 0 && !requestsFailed}
-    <p class="text-xs text-muted">Nothing waiting on you.</p>
-  {/if}
-  {#if requestsFailed}
-    <QueryError
-      variant="inline"
-      error={requestsQuery.error}
-      title="Could not load pending repo requests"
-      onRetry={() => void requestsQuery.refetch()}
-    />
-  {/if}
-  {#each requests as r (r.id)}
-    <div class="space-y-2 rounded-md border border-warning/30 px-3 py-2 text-sm" data-testid="repo-request">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="w-full min-w-0 truncate sm:w-auto sm:flex-1">
-          <span class="font-mono text-[13px] text-fg">{r.org}/{r.name}</span>
-          <span class="font-mono text-[11px] text-muted"> on {r.host}</span>
-          <span class="text-muted"> · {r.agentModel}: {r.why}</span>
-        </span>
-        {#if r.appSlug}<Chip title="the Talaria app this repo will hold">app {r.appSlug}</Chip>{/if}
-        <Select
-          size="sm"
-          aria-label="Visibility"
-          value={visibilityOf(r)}
-          onchange={(e) => (chosen[r.id] = e.currentTarget.value as Visibility)}
-          class="w-28"
-        >
-          <option value="private">private</option>
-          <option value="public">public</option>
-        </Select>
-        <Checkbox
-          checked={!unprotected[r.id]}
-          onChange={(on) => (unprotected[r.id] = !on)}
-          label="protect default branch"
-          title="Block force-push and deletion on the new repo's default branch (no required reviews or checks)"
+<SettingsSection
+  title="Repository requests"
+  description="New repositories your agents asked for, created and shared with the agent when you approve."
+  info="Agents can ask only in the organizations a host allows, which you set on the host. A rejection posts its reason on the ticket that asked."
+>
+  <div class="space-y-3">
+    {#if requestsFailed}
+      <SettingsGroup>
+        <QueryError
+          variant="compact"
+          error={requestsQuery.error}
+          title="Could not load pending repo requests"
+          onRetry={() => void requestsQuery.refetch()}
         />
-        <Button size="sm" onclick={() => void decide(r, 'approve')}>Create + grant</Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onclick={() => {
-            rejecting = rejecting === r.id ? null : r.id
-            rejectNote = ''
-          }}>Reject</Button
-        >
-      </div>
-      {#if rejecting === r.id}
-        <div transition:slide={{ duration: 150 }} class="flex items-center gap-2">
-          <Input
+      </SettingsGroup>
+    {:else if requests.length === 0}
+      <SettingsGroup>
+        <SettingsRow label="No requests waiting" hint="A request shows here when an agent needs a new repository." />
+      </SettingsGroup>
+    {/if}
+    {#each requests as r (r.id)}
+      <SettingsGroup data-testid="repo-request">
+        <SettingsRow>
+          {#snippet label()}<span class="font-mono text-[13px] font-normal">{r.org}/{r.name}</span>{/snippet}
+          {#snippet meta()}{#if r.appSlug}<Chip title="The Talaria app this repository will hold">App {r.appSlug}</Chip>{/if}{/snippet}
+          {#snippet hint()}
+            <span class="whitespace-normal">Asked for by {r.agentModel} on <span class="font-mono text-xs">{r.host}</span>. {r.why}</span>
+          {/snippet}
+        </SettingsRow>
+        <SettingsRow label="Visibility" hint="Who can see the repository on the host." as="label">
+          <Select
             size="sm"
-            bind:value={rejectNote}
-            maxlength={500}
-            placeholder="Why not? Posted on the requesting ticket (optional)"
-            class="min-w-0 flex-1"
-          />
-          <Button size="sm" variant="ghost" onclick={() => void decide(r, 'reject')}>Reject request</Button>
+            aria-label="Visibility"
+            value={visibilityOf(r)}
+            onchange={(e) => (chosen[r.id] = e.currentTarget.value as Visibility)}
+            class="w-[280px]"
+          >
+            <option value="private">Private</option>
+            <option value="public">Public</option>
+          </Select>
+        </SettingsRow>
+        <SettingsRow label="Protect the default branch" hint="Blocks force-pushes and deletion, with no required reviews or checks.">
+          <Toggle checked={!unprotected[r.id]} onChange={(on) => (unprotected[r.id] = !on)} title="Protect the default branch" />
+        </SettingsRow>
+        {#if rejecting === r.id}
+          <div transition:slide={{ duration: 150 }}>
+            <SettingsRow label="Reason" hint="Optional, and posted on the ticket that asked." as="label">
+              <Input size="sm" bind:value={rejectNote} maxlength={500} placeholder="Why not?" class="w-[280px]" />
+              <Button size="md" variant="outline" onclick={() => void decide(r, 'reject')}>Reject request</Button>
+            </SettingsRow>
+          </div>
+        {/if}
+        <div class="flex items-center justify-end gap-2 px-5 py-3">
+          <Button
+            size="sm"
+            variant="ghost"
+            onclick={() => {
+              rejecting = rejecting === r.id ? null : r.id
+              rejectNote = ''
+            }}>{rejecting === r.id ? 'Keep request' : 'Reject'}</Button
+          >
+          <Button size="sm" variant="outline" onclick={() => void decide(r, 'approve')}>Create repository</Button>
         </div>
-      {/if}
-    </div>
-  {/each}
-  {#if decideError}<div transition:slide={{ duration: 150 }} class="text-xs text-danger">{decideError}</div>{/if}
-  {#if decided}<div transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="repo-request-decided">{decided}</div>{/if}
-</div>
+      </SettingsGroup>
+    {/each}
+    {#if decideError || decided}
+      <div transition:slide={{ duration: 150 }}>
+        <SettingsGroup>
+          {#if decideError}<NoticeRow status="danger">{decideError}</NoticeRow>{/if}
+          {#if decided}<NoticeRow status="ok" data-testid="repo-request-decided">{decided}</NoticeRow>{/if}
+        </SettingsGroup>
+      </div>
+    {/if}
+  </div>
+</SettingsSection>

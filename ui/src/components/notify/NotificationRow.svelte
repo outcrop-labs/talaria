@@ -108,7 +108,7 @@
   {:else if actor?.kind === 'user'}
     <Avatar src={picture} name={actor.name} class="mt-0.5 h-6 w-6" />
   {:else}
-    <span class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full text-ink-dim" aria-hidden="true" data-row-glyph={row.category ?? 'none'}>
+    <span class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full text-ink-dim" aria-hidden="true" data-row-glyph={row.category ?? 'none'}><!-- voice-ok: the bell and the inbox page, outside the settings area -->
       <CategoryIcon size={13} strokeWidth={1.5} />
     </span>
   {/if}
@@ -120,9 +120,9 @@
   >
     <span class="block truncate text-sm {unread ? 'font-medium text-fg' : 'text-muted'}">{row.title}</span>
     {#if row.body}
-      <span class="mt-0.5 block truncate text-xs {unread ? 'text-muted' : 'text-ink-dim'}">{row.body}</span>
+      <span class="mt-0.5 block truncate text-xs {unread ? 'text-muted' : 'text-ink-dim'}">{row.body}</span><!-- voice-ok: the bell and the inbox page, outside the settings area -->
     {/if}
-    <span class="mt-0.5 block truncate font-mono text-[10px] text-ink-dim" data-row-meta>{meta}</span>
+    <span class="mt-0.5 block truncate font-mono text-[10px] text-ink-dim" data-row-meta>{meta}</span><!-- voice-ok: the bell and the inbox page, outside the settings area -->
   </button>
   <div
     class={cn(

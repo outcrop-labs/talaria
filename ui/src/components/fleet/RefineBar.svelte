@@ -20,9 +20,8 @@
   let text = $state('')
 </script>
 
-<div class={cn('space-y-2 rounded-lg border border-line p-3.5', busy && 'opacity-90')}>
-  <div class="flex items-end gap-2.5">
-    <Sparkles size={14} class={cn('mb-3 shrink-0 text-accent', busy && 'gd-pulse')} />
+<div class={cn('space-y-2', busy && 'opacity-90')}>
+  <div class="flex items-start gap-2">
     <Textarea
       autoGrow
       rows={1}
@@ -36,11 +35,13 @@
           }
         }
       }}
+      aria-label="Refine the design"
       placeholder="Refine the design, e.g. “more formal, and add a weekly retro skill”"
-      class="max-h-32 text-sm"
+      class="max-h-32 py-[7px]"
     />
     <Button
       variant="outline"
+      size="md"
       class="shrink-0"
       disabled={busy || !text.trim()}
       onclick={() => {
@@ -48,21 +49,19 @@
         text = ''
       }}
     >
+      <Sparkles size={14} class={cn(busy && 'gd-pulse')} />
       {busy ? 'Refining' : 'Refine'}
     </Button>
   </div>
   {#if busy}
     <!-- THE IN-PROGRESS STATE: a whole-agent refine is a JSON contract, so
          there is no token stream to show (the server validates and answers with
-         the finished draft). What is left to say is that it IS running and for
-         how long — the same honest "working, slowly" signal the describe step
-         shows. The disabled button alone was the silence Jon hit. -->
-    <div in:slide={{ duration: 150 }} class="rounded-md border border-line bg-surface px-2.5 py-2" data-refine-inflight="visible">
-      <div class="flex items-center gap-2 text-xs text-muted">
-        <span class="gd-pulse text-accent">▍</span>
-        <span>Refining the design: identity, soul, and starter skills{preview ? ` — ${preview}` : ''}</span>
-      </div>
-    </div>
+         the finished draft). What is left to say is that it IS running. The
+         disabled button alone was the silence Jon hit. -->
+    <p in:slide={{ duration: 150 }} class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted" data-refine-inflight="visible">
+      <span class="gd-pulse text-accent">▍</span>
+      Refining the design{preview ? `: ${preview}` : ''}
+    </p>
   {/if}
-  {#if error}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{error}</p>{/if}
+  {#if error}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</p>{/if}
 </div>

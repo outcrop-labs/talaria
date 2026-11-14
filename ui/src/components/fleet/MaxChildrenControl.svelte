@@ -1,7 +1,8 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import { patchAgentMeta, type AgentDef } from '@/lib/fleet-defs'
   import { toastError } from '@/lib/toast.svelte'
@@ -28,6 +29,7 @@
   const MAX = 16
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   let saving = $state(false)
   // svelte-ignore state_referenced_locally -- reason: a draft until Apply; the refetch after a save must not clobber a number being typed
   let draft: number | null = $state(def.maxChildren)
@@ -56,42 +58,40 @@
       return
     }
     draft = n
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 </script>
 
-<div>
-  <div class="mb-1 flex items-center gap-1.5">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Subagents</span>
-    <InfoTip
-      text="How many helpers this agent may run at once, at most {MAX}. 0 means it delegates to nobody and does every job in its own turn. An applied change reaches the running agent on its next turn, without a restart."
-    />
-  </div>
+<SettingsRow
+  label="Subagents"
+  hint={`How many helpers it may run at once, from ${MIN} to ${MAX}.`}
+  info="0 means it delegates to nobody and does every job in its own turn. An applied change reaches the running agent on its next turn, without a restart."
+  saved={autosave.saved()}
+>
   {#if canManage}
-    <div class="flex items-center gap-2">
-      <Input
-        size="sm"
-        type="number"
-        min={MIN}
-        max={MAX}
-        step={1}
-        bind:value={draft}
-        disabled={saving}
-        title="Subagents this agent may run at once, 0 to {MAX}"
-        onkeydown={(e: KeyboardEvent) => {
-          if (e.key === 'Enter') void apply()
-          if (e.key === 'Escape') reset()
-        }}
-        class="w-20 font-[var(--font-mono)]"
-      />
-      {#if pending !== null}
-        <Button size="xs" variant="outline" disabled={saving} onclick={() => void apply()}>
-          {saving ? 'Applying' : 'Apply'}
-        </Button>
-        <Button size="xs" variant="ghost" disabled={saving} onclick={reset}>Reset</Button>
-      {/if}
-    </div>
+    {#if pending !== null}
+      <Button size="sm" variant="ghost" disabled={saving} onclick={reset}>Reset</Button>
+      <Button size="sm" disabled={saving} onclick={() => void apply()}>
+        {saving ? 'Applying' : 'Apply'}
+      </Button>
+    {/if}
+    <Input
+      size="sm"
+      type="number"
+      min={MIN}
+      max={MAX}
+      step={1}
+      bind:value={draft}
+      disabled={saving}
+      aria-label="Subagents"
+      onkeydown={(e: KeyboardEvent) => {
+        if (e.key === 'Enter') void apply()
+        if (e.key === 'Escape') reset()
+      }}
+      class="w-20 tabular-nums"
+    />
   {:else}
-    <div class="text-fg">{def.maxChildren === 0 ? '0 · delegates to nobody' : String(def.maxChildren)}</div>
+    <span class="font-sans text-[13px] leading-5 text-fg tabular-nums">{def.maxChildren === 0 ? '0, delegates to nobody' : String(def.maxChildren)}</span>
   {/if}
-</div>
+</SettingsRow>

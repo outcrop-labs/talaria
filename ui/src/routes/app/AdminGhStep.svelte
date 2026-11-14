@@ -6,9 +6,9 @@
 </script>
 
 <div class="flex gap-3">
-  <span class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--theme-accent-border)] font-mono text-[10px] text-accent">{n}</span>
-  <div class="min-w-0 flex-1 space-y-2">
-    <div class="text-sm font-medium text-fg">{title}</div>
+  <span class="grid h-5 w-5 shrink-0 place-items-center rounded-full border border-line font-sans text-xs font-medium tabular-nums text-muted">{n}</span>
+  <div class="min-w-0 flex-1 space-y-3">
+    <div class="font-sans text-sm font-medium leading-5 text-fg">{title}</div>
     {@render children()}
   </div>
 </div>

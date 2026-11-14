@@ -3,17 +3,20 @@
   import { Check, History, Sparkles, Trash2, X } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import SendButton from '@/components/chat/SendButton.svelte'
   import StopButton from '@/components/chat/StopButton.svelte'
-  import InternalEditor from './InternalEditor.svelte'
+  import EditorTools from './EditorTools.svelte'
+  import InternalEditor, { DOC_MUSE_TITLE } from './InternalEditor.svelte'
   import type { InternalEditorHandle } from './internal-editor'
   import DiffView from '@/components/fleet/DiffView.svelte'
   import { diffLines, type DiffLine } from '@/components/fleet/line-diff'
   import { fly, slide } from '@/lib/motion'
   import { cn } from '@/lib/cn'
   import type { MuseKind } from '@/lib/muse.svelte'
+  import { useUiVoice } from '@/lib/ui-voice'
 
   type ChatMsg = { role: 'user' | 'assistant'; content: string }
 
@@ -43,9 +46,12 @@
     onCancel,
     showHistory = $bindable(false),
     onDelete,
+    deleteLabel,
     class: className,
   }: {
-    /** The record's kind, as a chip: 'skill', 'template', 'memory' … */
+    /** The record's kind: 'Skill', 'Ticket template'. A chip ahead of the title
+     *  outside the settings area. Inside it the tab or the dialog's title has
+     *  already said the kind, so it only words the delete link. */
     kind: string
     /** The record's name/title, shown in the header row. */
     title: string
@@ -105,6 +111,8 @@
      *  belongs to the caller's `confirmDelete`. Omit where there is nothing to
      *  delete (a memory file). */
     onDelete?: () => void
+    /** The delete link's words in the settings area. "Delete skill" by default, from `kind`. */
+    deleteLabel?: string
     class?: string
   } = $props()
 
@@ -115,6 +123,8 @@
 
   // ── whole-form Muse: instruction → complete record proposal → fields ─────
   let museOpen = $state(false)
+  // The bare document's own Muse (`doc.muse`), whose toggle this title line carries.
+  let docMuseOpen = $state(false)
   let instruction = $state('')
   let generating = $state(false)
   let proposal = $state<any | null>(null)
@@ -125,7 +135,12 @@
   $effect(() => () => abortCtl?.abort())
 
   const docText = () => handle?.getMarkdown() ?? doc.value
+
+  const sans = useUiVoice() === 'sans'
+  // voice-ok: the mono label, for the screens outside the settings area
+  const smallLabel = sans ? 'font-sans text-xs font-medium leading-4 text-muted' : 'font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim' // voice-ok
   const dirty = $derived(fieldsDirty || docDirty)
+  const editable = $derived(doc.editable ?? true)
 
   // THE PREVIEW SURVIVES UNTIL IT IS ACCEPTED. `apply` only fills the fields;
   // nothing is written until the record's Save — so a refused write leaves the
@@ -208,14 +223,29 @@
   <div class="relative min-h-0 flex-1">
     <div class="h-full overflow-y-auto px-4 py-4">
       <div class="mb-3 flex items-center gap-2">
-        <Chip class="shrink-0">{kind}</Chip>
-        <div class="min-w-0 truncate text-sm font-semibold text-fg">{title}</div>
-        {#if meta}<span class="shrink-0 font-mono text-[11px] text-muted">{meta}</span>{/if}
+        {#if !sans}<Chip class="shrink-0">{kind}</Chip>{/if}
+        <div class={sans ? 'min-w-0 break-words font-sans text-[15px] font-semibold leading-5 text-fg' : 'min-w-0 truncate text-sm font-semibold text-fg'}>{title}</div>
+        {#if meta}<span class={sans ? 'shrink-0 font-sans text-xs leading-4 text-muted' : 'shrink-0 font-mono text-[11px] text-muted'}>{meta}</span>{/if}<!-- voice-ok -->
         <!-- The record's icon cluster, right-aligned on its own title line —
              within the editor view, not on any sidebar. Delete is a trash icon
              (the typed challenge says exactly what is going); history opens the
              workbench's rail. -->
-        {#if onDelete || doc.history}
+        {#if sans}
+          <!-- In the settings area Delete is the footer's link, at its left,
+               and the record's tools sit here, apart from the footer's Save. -->
+          <EditorTools
+            muse={formMuse && editable
+              ? {
+                  open: museOpen,
+                  onToggle: () => (museOpen = !museOpen),
+                  title: `Describe the ${formMuse.label} you want and Muse, the writing assistant, drafts every field. Nothing is saved until you save.`,
+                }
+              : doc.muse && doc.editable !== false
+                ? { open: docMuseOpen, onToggle: () => (docMuseOpen = !docMuseOpen), title: DOC_MUSE_TITLE }
+                : undefined}
+            history={doc.history ? { open: showHistory, onToggle: () => (showHistory = !showHistory) } : undefined}
+          />
+        {:else if onDelete || doc.history}
           <!-- Icon TILES, not padded buttons: two icon controls side by side
                read as one cluster only when their glyphs are near each other. -->
           <div class="ml-auto flex shrink-0 items-center">
@@ -232,7 +262,7 @@
           </div>
         {/if}
       </div>
-      {#if subtitle}<p class="mb-3 -mt-1.5 text-xs text-muted">{subtitle}</p>{/if}
+      {#if subtitle}<p class={sans ? 'mb-3 -mt-1 font-sans text-[13px] leading-5 text-muted' : 'mb-3 -mt-1.5 text-xs text-muted'}>{subtitle}</p>{/if}
 
       {#if fields}{@render fields({ dirty })}{/if}
 
@@ -241,6 +271,7 @@
           bind:this={handle}
           bind:dirty={docDirty}
           bind:showHistory
+          bind:museOpen={docMuseOpen}
           value={doc.value}
           editable={doc.editable}
           saving={doc.saving ?? busy}
@@ -262,30 +293,39 @@
            and cuts out hard. -->
       <div in:fly={{ y: 6, duration: 200 }} class="absolute inset-0 z-10 flex flex-col rounded-lg border border-accent/30 bg-panel p-3">
         <div class="flex flex-wrap items-center gap-1.5">
-          <span class="mr-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{formMuse.label}</span>
+          <span class="mr-1 {smallLabel}">{sans ? `Proposed ${formMuse.label}` : formMuse.label}</span>
           {#each formMuse.fields?.(proposal, formMuse.current(docText())) ?? [] as f (f.label)}
-            <span class="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-fg">
-              {f.label} → {f.value}
-            </span>
+            {#if sans}
+              <Chip tone="accent">{f.label}: {f.value}</Chip>
+            {:else}
+              <span class="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 font-mono text-[10px] tracking-[0.05em] text-fg"><!-- voice-ok -->
+                {f.label} → {f.value}
+              </span>
+            {/if}
           {/each}
         </div>
-        <div class="mb-1 mt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Document</div>
+        <div class="mb-1 mt-2 {smallLabel}">Document</div>
         <div class="min-h-0 flex-1 overflow-y-auto">
           <DiffView diff={proposalDiff} fallback={formMuse.docOf(proposal)} />
         </div>
         <div class="flex justify-end gap-2 pt-2">
-          <Button size="sm" variant="outline" onclick={() => (proposal = null)}>
-            <X size={13} /> Discard
-          </Button>
-          <Button size="sm" onclick={accept}>
-            <Check size={13} /> Fill the form
-          </Button>
+          {#if sans}
+            <Button size="sm" variant="ghost" onclick={() => (proposal = null)}>Discard draft</Button>
+            <Button size="sm" onclick={accept}>Fill the form</Button>
+          {:else}
+            <Button size="sm" variant="outline" onclick={() => (proposal = null)}>
+              <X size={13} /> Discard
+            </Button>
+            <Button size="sm" onclick={accept}>
+              <Check size={13} /> Fill the form
+            </Button>
+          {/if}
         </div>
       </div>
     {/if}
   </div>
 
-  {#if formMuse && (doc.editable ?? true)}
+  {#if formMuse && editable}
     {#if museError}<div transition:slide={{ duration: 150 }} class="mb-2 shrink-0 px-4 text-xs text-danger">{museError}</div>{/if}
     {#if museOpen}
       <!-- THE RECORD'S ONE MUSE — a chat composer, pinned above the menu like
@@ -335,8 +375,31 @@
        sidebar's pinned footer row exactly: py-3 (24px) around its 28px `+`
        control plus the 1px border-t = 53px RENDERED, border-box. The two menus
        bookending the view must agree to the pixel or the frame reads broken. -->
+  {#if sans}
+    <!-- One footer for every record in the settings area: the destructive link
+         at the left, then the record's one gold primary at the right with its
+         way out beside it. Save is there only while there is something to
+         save, so a clean record never shows one that looks switched off. -->
+    <div class="flex h-[53px] shrink-0 items-center gap-2 border-t border-line px-4">
+      {#if onDelete}
+        <DangerLink onClick={onDelete}>{deleteLabel ?? `Delete ${kind.toLowerCase()}`}</DangerLink>
+      {/if}
+      <span class="ml-auto"></span>
+      {#if onCancel && dirty}
+        <Button variant="ghost" size="sm" onclick={cancel}>Discard changes</Button>
+      {/if}
+      {#if onClose}
+        <Button variant="ghost" size="sm" onclick={onClose}>Close</Button>
+      {/if}
+      {#if editable && (dirty || busy)}
+        <Button size="sm" onclick={() => void saveAll()} disabled={busy} title="Save (⌘S)">
+          {busy ? 'Saving' : 'Save'}
+        </Button>
+      {/if}
+    </div>
+  {:else}
   <div class="flex h-[53px] shrink-0 items-center gap-2 border-t border-line px-4">
-    {#if formMuse && (doc.editable ?? true)}
+    {#if formMuse && editable}
       <Button
         variant={museOpen ? 'outline' : 'ghost'}
         size="sm"
@@ -346,8 +409,8 @@
         <Sparkles size={14} class="mr-1.5" /> Muse
       </Button>
     {/if}
-    <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted">
-      {(doc.editable ?? true) && dirty ? 'Unsaved changes · ⌘S to save' : ''}
+    <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted"><!-- voice-ok: the mono footer, for a screen outside the settings area -->
+      {editable && dirty ? 'Unsaved changes · ⌘S to save' : ''}
     </span>
     {#if onCancel}
       <Button variant="ghost" size="sm" onclick={cancel}>
@@ -359,10 +422,11 @@
         Close
       </Button>
     {/if}
-    {#if doc.editable ?? true}
+    {#if editable}
       <Button size="sm" onclick={() => void saveAll()} disabled={busy || !dirty}>
         {busy ? 'Saving' : 'Save'}
       </Button>
     {/if}
   </div>
+  {/if}
 </div>

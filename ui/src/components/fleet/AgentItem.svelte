@@ -1,18 +1,22 @@
 <script lang="ts" module>
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import type { AgentMenu } from '@/routes/app/agents.svelte'
+
   /** Everything the row and the tile each used to derive for themselves, handed
    *  to the frame they supply: nothing about geometry lives in here. */
   export interface AgentFrame {
-    /** The container is up — drives the lifecycle half of AgentControls and the
-     *  Start/Stop half of the agent menu. */
+    /** The container is up. */
     running: boolean
     /** Opens the manage modal this component owns. */
     openManage: () => void
     /** The frame root's `oncontextmenu` (the manage/duplicate/lifecycle menu). */
     onContextMenu: (e: MouseEvent) => void
-    /** The department's roll is in its steps — its own roll or the fleet-wide
-     *  batch — so the Roll control is disabled and the frame can say so. A
-     *  roll whose container is still starting is not (`rollInProgress`). */
-    rolling: boolean
+    /** The same menu's entries, for the frame's own "…" button. */
+    menuItems: () => ContextMenuEntry[]
+    /** Runs one control on this agent (the menu's own instance). */
+    act: AgentMenu['act']
+    /** The label of the control being carried out, or null. */
+    pending: string | null
   }
 </script>
 
@@ -24,8 +28,8 @@
   import { healthOf, useAgentMenu } from '@/routes/app/agents.svelte'
   import AgentManageModal from './AgentManageModal.svelte'
 
-  // One agent as an ITEM: the health it reads off container reality, the
-  // right-click menu, and the manage/retire modal tail. The roster frames it
+  // One agent as an ITEM: the health it reads off container reality, its
+  // menu, and the manage/retire modal tail. The roster frames it
   // two ways — AgentListRow and AgentTile — which own their geometry and are
   // handed the derivation through `frame`; this is the half they shared.
   let {
@@ -53,7 +57,7 @@
   const am = useAgentMenu(() => d, () => running, openManage, () => onDuplicate(), () => rolling)
 </script>
 
-{@render frame({ running, openManage, onContextMenu: am.onContextMenu, rolling })}
+{@render frame({ running, openManage, onContextMenu: am.onContextMenu, menuItems: am.entries, act: am.act, pending: am.pending })}
 <ContextMenu menu={am.menu} />
 {#if am.retiring}
   <AgentRetireModal def={d} onClose={() => (am.retiring = false)} onConfirm={() => void am.act('retire', 'retiring')} />

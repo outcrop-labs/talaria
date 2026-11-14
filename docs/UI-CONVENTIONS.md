@@ -31,6 +31,7 @@ and every tab change slid sideways.
 | Token | Width | Used by |
 |---|---|---|
 | `--page-width` | 1152px | every centred page surface, via `PageSurface` |
+| `--settings-width` | 960px | every page in the settings area (Manage, Settings, Admin), via `SettingsPage` |
 | `--converse-width` | 900px | Chat, Plan, Research transcripts |
 | `--read-width` | 46rem | long-form prose: KB docs, artifact bodies, shares |
 
@@ -53,6 +54,185 @@ from the frame.
   to 1152px is ~145 characters a line. Inside a page surface, a field or a prose
   column is sized by what it holds (`max-w-md` on a lone input + button row);
   that is not drift, because the panel edges still line up view to view.
+
+## Settings area
+
+Every page behind the dock's gear and the user menu's Settings and Instance
+settings (`/manage`, the manage views, `/settings/*`, `/admin/*`) follows seven
+rules.
+
+1. **One shell.** The same sidebar and the same page header on every page.
+2. **A page says what it is.** A title and one sentence, then the content.
+3. **Sans for anything a person reads.** Mono is for identifiers only, in
+   lowercase. Nothing is uppercase by CSS, and nothing is under 12px.
+4. **Rows in one card.** Related settings are rows of a single card with
+   hairline dividers. Never a card inside a card.
+5. **One control per kind of value.** A boolean is a `Toggle`. One of a few is
+   a `Segmented` or a `Select`. Destructive is a `DangerLink` or a `danger` menu
+   item. At most one gold primary button, in the page header.
+6. **Say it once, briefly.** A label of one to four words, and a hint of one
+   sentence. Longer explanations go behind the `info` tip.
+7. **The first screen carries the page.** At 1440×900 the title, the tabs and
+   the most important content show without scrolling.
+
+The components are in `components/settings/`, and a page composes them
+instead of styling its own panels:
+
+- `SettingsPage` is the page: `title`, `blurb`, `tabs`, `actions`. Every page
+  in the area renders exactly one. `fill` gives a `LibraryPane` the window
+  height left under the header.
+- `SettingsSidebar` is the area's navigation. Its rows, active row and search
+  come from the pure `lib/settings-nav.ts`. A new page adds its row there. It
+  has four groups: Personal, Workspace, App settings and Instance. Every page
+  an installed app contributes (its settings tab, its manage surface) sits
+  under App settings with the app's own glyph, and search results keep the
+  groups. The Apps page itself is a row of Workspace.
+- Instance holds three pages, for admins only: Organization (General, People),
+  Agent policy (Oversight, Git hosts, Web search, Knowledge search) and Data &
+  security (Storage, Secrets, Security). They are one route, and every tab
+  keeps the address it had as one of nine under `/admin`. `INSTANCE_PAGES` in
+  `lib/settings-nav.ts` says which page holds which tab, and the page and the
+  sidebar's lit row both read it through `instanceAt`. "Admin" is not a page
+  name: copy names the page and the tab, and search still finds the three
+  pages under "admin".
+- The page at `/mcp` is called Tools wherever a person reads its name: the
+  label comes from `NAV` and `MANAGE_VIEWS` in `lib/nav.ts`. Its blurb names
+  the protocol once, and search still finds it under "mcp".
+- `SettingsSection` is a titled block. `SettingsGroup` is the card.
+  `SettingsRow` is one row: `label`, `hint`, an `icon` tile or a bare `lead`
+  mark, inline `meta`, a `status` (a `StatusDot` and a word), and the control
+  as children. `SettingsRowMenu` is the kebab that holds a row's secondary and
+  destructive actions. It takes `up` and `align` for a kebab at the foot of a
+  dialog. It is a fixed 32px cell, and as the last control of a row its dots
+  end on the card's content edge, where a button in the next row ends. A row
+  with nothing in its menu passes `items={[]}` and keeps the cell, so the
+  column holds down the list.
+- A row that opens the thing it is about takes `onOpen`. The whole row lights
+  on hover and takes the click, and it can still hold a status and the kebab.
+  Tab reaches the row first, then its controls. The row ends in a chevron,
+  after the kebab. In a group where only some rows open, the rest hold the
+  chevron's cell empty, so the kebabs stay in one column.
+- A row ends in one thing at rest, besides its own value control (a switch, a
+  select, a field). A row that opens ends in its chevron. A row whose state
+  needs one action from a person ends in a `SettingsRowAction` instead: a
+  small secondary button at the row's edge, named for what it does ("Connect",
+  "Reconnect", "Verify", "Set credentials"), the name its menu or dialog uses.
+  That holds for a row that opens too (a tool server that needs credentials):
+  the button takes the chevron's place and the row still opens when clicked.
+  No row says "Fix". The row's status says what is wrong.
+- The kebab of a row that opens, or that holds a `SettingsRowAction`, appears
+  when the row is hovered, when focus is anywhere inside the row and while its
+  menu is open. It keeps its cell, its tab stop and its name, and a device
+  that cannot hover always shows it. A row whose only control is its kebab
+  keeps it visible, and so does an agent card, which has no chevron.
+- A row that expands or opens and names its action (an app waiting for
+  approval, a tool server that needs setting up) ends in the button alone.
+  `SettingsRow` leaves its chevron out, the row still takes the click, and
+  its menu says "Show details" or "Manage".
+- The alert rows on the overview and in Observability end in `SettingsRowFix`:
+  "Fix" or "Review" and a chevron, read as one link. The row is the button.
+- A group lines its rows up: the right side is one column, as wide as the
+  widest row needs. Put the state of a thing in `status`, not among the
+  controls, and down a list every status starts at the same place and every
+  control ends at the card edge. Below `sm` a row wraps, so a wide control
+  drops under its label. The add row at the foot of an entity list is `apart`,
+  so its wide field does not size that column. On a surface that is already a
+  panel (a `LibraryPane` detail), the group is `bare`: hairlines, no card.
+- `StatStrip` and `Stat` are one card of numbers. Any count from one to eight
+  fills the card: the strip sizes its rows from the count and the last stat
+  spans what is left. A `Stat` with `href` draws an arrow at its top right that
+  brightens on hover. `SettingsField` is a stacked field for a dialog, and
+  `required` marks its label.
+- Saving says the truth. A page (or tab) where every control saves on change
+  passes `autosave` to `SettingsPage`, or its components call `useAutosave()`.
+  The header says "Changes save automatically" in one fixed place and flashes
+  "Saved" in the same box. On a phone the cue takes its own line under the
+  blurb. A component that only sometimes shows such controls passes a
+  condition: `useAutosave(() => canEdit)`.
+- A group that saves with a button ends in `SettingsSaveBar`, which is not
+  there while nothing changed. When a field changes it slides in as the
+  group's footer: one sentence on why the group needs a Save, Discard, and
+  the gold button named for what it saves ("Save identity"). When the save
+  lands it says "Saved" for a moment and goes. A record editor's footer keeps
+  its sentence and shows no button while clean, and a key field's
+  `SaveAction` waits in a cell ahead of the field. No Save is ever a disabled
+  outline. A dialog's footer keeps its primary visible and disabled until
+  valid. While a `SettingsSaveBar` is mounted, shown or not, the header shows
+  no cue, so the two are never on screen together. A control on that page that still
+  saves on change passes `saved={autosave.saved(key)}` to its `SettingsRow`,
+  which shows a check and "Saved" beside the control for two seconds. The
+  same holds in a dialog, where the header is out of sight.
+- A focus ring on something that fills a card (a row, a stat) is drawn inside
+  it with `focus-visible:-outline-offset-2!`. The `!` is needed: the global
+  `:focus-visible` rule in `styles.css` is unlayered, so it beats a plain
+  utility, and a ring outside the row is cut off by the card.
+- A filter row that holds a `Segmented` beside a `sm` `Select` gives the
+  `Segmented` `size="md"`, so both are one height. Money in the area groups
+  thousands: `formatUsd(n, { group: true })`, or `formatCost`.
+- Diagnostics go behind one closed `Disclosure` with `variant="card"`. Add
+  `keepMounted` when the readings must stay live while it is closed.
+- A row that opens what follows it (a history, a list of addresses, a group
+  of an inventory) takes `onclick` and `expanded`. The row draws the chevron.
+  No Show and Hide buttons.
+- A state is a `StatusDot` and a word, never a chip, and the same state has
+  the same word on every page: Connected, Not connected, Needs sign-in,
+  Reachable, Unreachable, Running, Stopped, Idle, Not set.
+- A row whose open action is navigation takes `openHref`, not `onOpen`, so
+  it opens in a new tab like any other link.
+- A dialog step that shows something once (a new key) is `dismissible={false}`
+  on `Modal`: Escape, a click outside and the close button do nothing, and it
+  leaves by its own gold Done.
+- In the sans voice `Modal`'s scrim is 75% and takes the colour out of the
+  page behind it, so the page's gold primary does not read through beside a
+  wide dialog.
+- A dialog's footer holds its buttons: Cancel then the one primary on the
+  right, a `DangerLink` on the left. A dialog that only shows or saves as it
+  goes ends in an outline Done. A page's primary is a label with no icon.
+- A value that is an identifier renders mono with `font-mono` on the `Input`.
+
+Settings is its own mode of the dock. On every route where the sidebar shows,
+the tab strip and the gear give way to one "Back to app" link, which returns
+to the last address outside the area (`lib/settings-return.ts`) or to Home.
+The working readout and the assistant button are left out there too, and the
+account name is sans: the settings dock is the wordmark, the way back, search,
+the bell and the account. Outside the area the dock is unchanged.
+
+The area speaks sans through `lib/ui-voice`. `SettingsPage` and
+`SettingsSidebar` call `setUiVoice('sans')`, and the shared primitives (`Button`,
+`Tabs`, `Chip`, `Modal` and the rest) read it unless their own `voice` prop is
+passed. Context follows the component tree, so a dialog a page opens is sans
+too. The default is `mono`, so no other screen changes.
+
+CSS cannot see context, so everything in the sans voice also carries
+`data-voice="sans"` on its root: the page (`PageSurface`), the sidebar, and
+each portaled surface (`Modal`, `DropdownMenu`, `ContextMenu`, `Popover`, the
+`Combobox` panel, `InfoTip`). `voiceScope(voice)` gives the value. Under that
+attribute `styles.css` re-derives Mercury's tokens with `color-mix`, per
+theme: a lighter card and field and a brighter hairline in dark, a stronger
+hairline in light, and `text-muted` at about 7:1 in both. In dark a card's
+own edge (`rounded-lg border border-line bg-panel`) is one step past the
+hairline, `--settings-card-line`; a state border on the card still wins. A new portaled
+primitive that is voice-aware sets the attribute, or it renders with the
+app's tokens inside a settings page. Two fills exist only in the scope:
+`--settings-selected` for the sidebar's selected row, and `--settings-fill`
+(the `sansFill` class) for a thing with no border of its own, such as a
+neutral chip or the picked row of a `LibraryPane`. `bg-raised` is white on
+cream in the light theme, so it is not a selected state there.
+
+In the sans voice a `Toggle` that is on is a solid gold track with a ground
+knob. Off is a neutral track with a muted knob.
+
+A brand mark and the fallback share one tile: 32px, `rounded-md`, the same
+border, and in dark the same light plate (`McpServerMark`). A server with no
+brand mark shows two letters of its name on that plate (`serverMonogram`), set
+as an avatar's initials are, never one letter and never a shared glyph. A
+brand is never guessed from a name. The rich-text
+toolbar is short in the sans voice: bold, italic, the two lists, link, a
+"Text style" menu and "More" for everything else.
+
+`ConfirmHost` mounts at the app root, above every context. It asks
+`screenVoice()` when it opens, which is `sans` while the sidebar holds the
+screen (`holdSansScreen`), so `confirm()` from a settings page matches the page.
 
 ## Pick-one-and-edit-it — use `LibraryPane`
 
@@ -81,7 +261,9 @@ nothing-selected pane. Callers bring data and snippets.
   opening an empty form), in three positions. The caller receives a trimmed,
   non-empty name and decides what a record made of it is — a saved row, or an
   unsaved draft in the editor. That difference is the caller's; the control
-  does not change shape.
+  does not change shape. In the settings area the same control is a quiet
+  labeled button ("New role"), and it is the page's one create: Teams and
+  Templates put no second one in the page header.
 - **`bare` inside a dialog.** The Modal is already a surface; a Panel within a
   Panel is a border inside a border with the padding twice. For the same reason
   a detail component rendered into the pane must not wrap itself in a `Panel`.

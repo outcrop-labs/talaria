@@ -42,12 +42,12 @@ const SURFACES: Array<{ prefix: string; id: string; label: string }> = [
   { prefix: '/studio', id: 'studio', label: 'Agent Studio' },
   { prefix: '/templates', id: 'templates', label: 'Templates' },
   { prefix: '/models', id: 'models', label: 'Models' },
-  { prefix: '/mcp', id: 'mcp', label: 'MCP' },
+  { prefix: '/mcp', id: 'mcp', label: 'Tools' },
   { prefix: '/observability', id: 'observability', label: 'Observability' },
   { prefix: '/apps', id: 'apps', label: 'Apps' },
   { prefix: '/x', id: 'apps', label: 'Apps' },
   { prefix: '/settings', id: 'settings', label: 'Settings' },
-  { prefix: '/admin', id: 'admin', label: 'Admin' },
+  { prefix: '/admin', id: 'admin', label: 'Instance settings' },
 ]
 
 /** Every id this module can produce. The server holds the matching prose, and

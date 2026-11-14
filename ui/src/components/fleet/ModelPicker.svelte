@@ -5,6 +5,7 @@
   import type { ControlSize } from '@/components/ui/control'
   import ProviderMark from '@/components/fleet/ProviderMark.svelte'
   import type { LlmEndpoint, ModelTarget } from '@/lib/fleet-defs'
+  import { useModelNames } from '@/components/models/model-names.svelte'
 
   // Unit separator — never appears in provider/model ids.
   const SEP = '␟'
@@ -39,21 +40,29 @@
 
   const cur = $derived(value.model ? `${value.endpoint}${SEP}${value.model}` : '')
 
+  // A model the catalog names leads with that name; its id moves to the second
+  // line, where a search still finds it.
+  const modelName = useModelNames()
+  const hosting = (ep: LlmEndpoint) => (ep.class === 'local' ? 'Self-hosted' : 'Cloud')
+
   const options = $derived.by(() => {
     const opts: ComboOption[] = endpoints.flatMap((ep) =>
-      (ep.models ?? []).map((m) => ({
-        value: `${ep.name}${SEP}${m}`,
-        label: m,
-        sub: `${ep.name} · ${ep.class}`,
-        icon: markIcon(ep.provider, ep.name),
-      })),
+      (ep.models ?? []).map((m) => {
+        const name = modelName(m)
+        return {
+          value: `${ep.name}${SEP}${m}`,
+          label: name ?? m,
+          sub: [name ? m : null, ep.name, hosting(ep)].filter(Boolean).join(' · '),
+          icon: markIcon(ep.provider, ep.name),
+        }
+      }),
     )
     if (cur && !opts.some((o) => o.value === cur)) {
       const ep = endpoints.find((e) => e.name === value.endpoint)
       opts.unshift({
         value: cur,
-        label: value.model,
-        sub: `${value.endpoint} · not in catalog`,
+        label: modelName(value.model) ?? value.model,
+        sub: `${value.endpoint} · Not in the catalog`,
         icon: markIcon(ep?.provider ?? 'custom', value.endpoint),
       })
     }

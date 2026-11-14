@@ -1,5 +1,7 @@
 <script lang="ts">
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import ModelName from '@/components/models/ModelName.svelte'
   import { submitOnEnter } from '@/components/ui/control'
 
   // One model's effort-ladder row in the endpoint modal.
@@ -18,12 +20,15 @@
   // the model rejects. Comma or space separated; cleared = undeclare.
   let {
     model,
+    modelName,
     catalogEfforts,
     declared,
     onDeclare,
   }: {
     /** Upstream model id on this endpoint. */
     model: string
+    /** The catalog's name for it, when it has one. */
+    modelName?: string
     /** What the provider's catalog publishes right now (null = silent). */
     catalogEfforts: string[] | null
     /** The admin's stored declaration for this model, if any. */
@@ -51,22 +56,25 @@
   }
 </script>
 
-<div class="flex items-center gap-2 py-1.5 font-mono text-xs">
-  <span class="min-w-0 flex-1 truncate text-fg">{model}</span>
-  <!-- The provider's word, or its silence — the reason this row exists. -->
-  {#if declared}
-    <span class="shrink-0 tracking-[0.05em] text-accent" title="Your declaration replaces the catalog's ladder for this endpoint's build of the model">declared</span>
-  {:else if catalogEfforts}
-    <span class="shrink-0 text-muted" title="What the provider's catalog publishes right now">catalog: {catalogEfforts.join(' · ')}</span>
-  {:else}
-    <span class="shrink-0 text-muted" title="This provider publishes no ladder for the model. Declare one if the model takes one">catalog silent</span>
-  {/if}
+<SettingsRow>
+  {#snippet label()}<ModelName id={model} name={modelName} />{/snippet}
+  <!-- The provider's word, or its silence: the reason this row exists. -->
+  {#snippet hint()}
+    {#if declared}
+      <span title="Your declaration replaces the catalog's levels for this provider's build of the model">Declared by you</span>
+    {:else if catalogEfforts}
+      <span title="What the provider's catalog publishes right now">Provider lists {catalogEfforts.join(', ')}</span>
+    {:else}
+      <span title="This provider publishes no levels for the model. Declare them if the model takes them">Provider lists none</span>
+    {/if}
+  {/snippet}
   <Input
     size="sm"
-    class="w-56 shrink-0"
+    class="w-56"
     bind:value
     onkeydown={submitOnEnter(commit)}
     onblur={commit}
-    placeholder={declared ? 'clear to undeclare' : 'e.g. low, medium, high'}
+    aria-label={`Effort levels for ${model}`}
+    placeholder={declared ? 'Clear to use the provider list' : 'low, medium, high'}
   />
-</div>
+</SettingsRow>

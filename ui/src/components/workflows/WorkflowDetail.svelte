@@ -1,11 +1,12 @@
 <script lang="ts">
-  // Workflow editor — the detail pane of /workflows. A workflow classifies
-  // tickets by match rules (boards / labels / keywords) and delivers
-  // instructions + declared toolkits with the dispatched work.
-  import Button from '@/components/ui/Button.svelte'
+  // The body of the dialog a Studio "Routed work" row opens. A workflow
+  // classifies tickets by match rules (boards / labels / keywords) and delivers
+  // skills and declared toolkits with the dispatched work. The frame and its
+  // footer are `WorkflowDialog`.
+  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import InfoTip from '@/components/ui/InfoTip.svelte'
@@ -15,9 +16,13 @@
   import { useBoards } from '@/lib/boards.svelte'
   import { useSkills } from '@/lib/skills'
   import { updateWorkflow, type TaskWorkflow } from '@/lib/workflows'
+  import { skillTitle } from '@/components/skills/skill-title'
   import TokenInput from './TokenInput.svelte'
 
-  let { workflow, onChanged, onDelete }: { workflow: TaskWorkflow; onChanged: () => void; onDelete: () => void } = $props()
+  let { workflow, onChanged }: { workflow: TaskWorkflow; onChanged: () => void } = $props()
+
+  const heading = 'font-sans text-sm font-semibold leading-5 text-fg'
+  const note = 'font-sans text-[13px] leading-5 text-muted'
 
   // Both of these fed "there are none" copy. The skill one was worse than that:
   // with an empty library every skill this workflow is bound to falls out of
@@ -41,8 +46,10 @@
     workflow.toolkits.map((t) => (t.tools?.length ? `${t.server}: ${t.tools.join(', ')}` : t.server)).join('\n'),
   )
 
+  const autosave = useAutosave()
   const save = async (patch: Parameters<typeof updateWorkflow>[1]) => {
     await updateWorkflow(workflow.id, patch)
+    autosave.flash()
     onChanged()
   }
   const saveMatch = (m: Partial<TaskWorkflow['match']>) => void save({ match: { ...workflow.match, ...m } })
@@ -71,27 +78,32 @@
   })
 </script>
 
-<Panel>
-  <div class="mb-4 flex items-center gap-2">
-    <Input size="sm" bind:value={name} onblur={() => name.trim() && name !== workflow.name && void save({ name: name.trim() })} class="max-w-xs font-sans" />
-    <Toggle checked={workflow.enabled} onChange={(v) => void save({ enabled: v })} label={workflow.enabled ? 'Enabled' : 'Disabled'} />
-    <Button variant="ghost" size="sm" class="ml-auto" onclick={onDelete}>
-      Delete
-    </Button>
-  </div>
-
-  <div class="mb-4">
-    <Input size="sm" bind:value={description} onblur={() => description !== workflow.description && void save({ description })} placeholder="One-line description (shown to admins, not agents)" />
-  </div>
-
-  <div class="mb-4 space-y-3 rounded-lg border border-line bg-card/40 px-4 py-3">
-    <div class="flex items-center gap-1.5">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Matches when</span>
-      <InfoTip text="OR within a rule, AND across the rules you set. A workflow with no rules matches nothing." />
+<!-- A dialog body: stacked fields under plain headings, no card inside the
+     dialog. Each field saves when it is left. -->
+<div class="space-y-8">
+  <div class="space-y-5">
+    <SettingsField label="Name">
+      <Input size="sm" bind:value={name} onblur={() => name.trim() && name !== workflow.name && void save({ name: name.trim() })} />
+    </SettingsField>
+    <SettingsField label="Description" hint="For admins. Agents never see it.">
+      <Input size="sm" bind:value={description} onblur={() => description !== workflow.description && void save({ description })} placeholder="What kind of work this is" />
+    </SettingsField>
+    <div class="flex items-center gap-6">
+      <div class="min-w-0 flex-1">
+        <div class="font-sans text-[13px] font-medium leading-5 text-fg">Route matching tickets</div>
+        <p class="font-sans text-[13px] leading-5 text-muted">Off keeps the rules but sends nothing through them.</p>
+      </div>
+      <Toggle checked={workflow.enabled} onChange={(v) => void save({ enabled: v })} title={workflow.enabled ? 'Stop routing matching tickets' : 'Route matching tickets'} />
     </div>
-    <div class="space-y-1">
-      <span class="text-xs text-muted">Boards</span>
-      <div class="flex flex-wrap gap-1">
+  </div>
+
+  <section class="space-y-5">
+    <div class="flex items-center gap-2">
+      <h3 class={heading}>Matches when</h3>
+      <InfoTip text="A ticket matches a rule when it fits any of its values, and it must match every rule you set. With no rules, nothing matches." />
+    </div>
+    <SettingsField label="Boards">
+      <div class="flex flex-wrap gap-1.5">
         {#each boards as b (b.id)}
           {@const on = workflow.match.boards?.includes(b.id) ?? false}
           <Chip
@@ -103,71 +115,67 @@
           </Chip>
         {/each}
         {#if boards.length === 0 && !boardsList.failed && !boardsList.pending}
-          <span class="text-xs text-muted">No boards yet.</span>
+          <span class={note}>No boards yet.</span>
         {/if}
       </div>
       {#if boardsList.notice}<div transition:slide={{ duration: 150 }}><QueryError {...boardsList.notice} /></div>{/if}
-    </div>
-    <div class="space-y-1">
-      <span class="text-xs text-muted">Labels</span>
-      <TokenInput value={workflow.match.labels ?? []} onChange={(labels) => saveMatch({ labels })} placeholder="Add label…" />
-    </div>
-    <div class="space-y-1">
-      <span class="text-xs text-muted">Title/description keywords</span>
-      <TokenInput value={workflow.match.keywords ?? []} onChange={(keywords) => saveMatch({ keywords })} placeholder="Add keyword…" />
-    </div>
-  </div>
+    </SettingsField>
+    <SettingsField label="Labels">
+      <TokenInput value={workflow.match.labels ?? []} onChange={(labels) => saveMatch({ labels })} placeholder="Add a label" />
+    </SettingsField>
+    <SettingsField label="Keywords" hint="Words in the ticket's title or description.">
+      <TokenInput value={workflow.match.keywords ?? []} onChange={(keywords) => saveMatch({ keywords })} placeholder="Add a keyword" />
+    </SettingsField>
+  </section>
 
-  <div class="mb-4">
-    <div class="mb-1 flex items-center gap-1.5">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Skills</span>
-      <InfoTip text="The flow lives in Hermes skills, the same library the agents already mount, edited on the agent view. The workflow only names which ones this kind of work follows; dispatch tells the agent to load them." />
+  <section class="space-y-5">
+    <div class="flex items-center gap-2">
+      <h3 class={heading}>Skills</h3>
+      <InfoTip text="The skills this kind of work follows. Dispatch tells the agent to load them. Edit a skill itself from the agent's skill list." />
     </div>
-    <div class="space-y-2 rounded-lg border border-line bg-card/40 px-4 py-3">
-      {#each skillOwners as o (o.owner)}
-        {#if o.skills.length}
-          <div class="space-y-1">
-            <span class="text-xs text-muted">{o.label}</span>
-            <div class="flex flex-wrap gap-1">
-              {#each o.skills as sk (`${o.owner}/${sk.name}`)}
-                {@const on = workflow.skills.includes(sk.name)}
-                <Chip
-                  title={sk.description}
-                  selected={on}
-                  onSelect={() =>
-                    void save({ skills: on ? workflow.skills.filter((x) => x !== sk.name) : [...workflow.skills, sk.name] })}
-                >
-                  {sk.name}
-                </Chip>
-              {/each}
-            </div>
-          </div>
-        {/if}
-      {/each}
-      {#if orphans.length}
-        <div transition:slide={{ duration: 150 }} class="space-y-1">
-          <span class="text-xs text-warning">Bound but not in the library</span>
-          <div class="flex flex-wrap gap-1">
-            {#each orphans as sk (sk)}
-              <Chip tone="warn" onRemove={() => void save({ skills: workflow.skills.filter((x) => x !== sk) })}>
-                {sk}
+    {#each skillOwners as o (o.owner)}
+      {#if o.skills.length}
+        <SettingsField label={o.owner === 'shared' ? 'Every agent' : o.label}>
+          <div class="flex flex-wrap gap-1.5">
+            {#each o.skills as sk (`${o.owner}/${sk.name}`)}
+              {@const on = workflow.skills.includes(sk.name)}
+              <Chip
+                title={sk.description}
+                selected={on}
+                onSelect={() =>
+                  void save({ skills: on ? workflow.skills.filter((x) => x !== sk.name) : [...workflow.skills, sk.name] })}
+              >
+                {skillTitle(sk.name)}
               </Chip>
             {/each}
           </div>
-        </div>
+        </SettingsField>
       {/if}
-      {#if libraryList.notice}<div transition:slide={{ duration: 150 }}><QueryError {...libraryList.notice} /></div>{/if}
-      {#if !libraryList.failed && !libraryList.pending && skillOwners.every((o) => !o.skills.length) && !workflow.skills.length}
-        <span class="text-xs text-muted">No skills in the library yet; create them on an agent's manage view.</span>
-      {/if}
-    </div>
-  </div>
+    {/each}
+    {#if orphans.length}
+      <div transition:slide={{ duration: 150 }}>
+        <SettingsField label="No longer in the library" hint="These are still named here. Remove them, or add the skill back.">
+          <div class="flex flex-wrap gap-1.5">
+            {#each orphans as sk (sk)}
+              <Chip tone="warn" onRemove={() => void save({ skills: workflow.skills.filter((x) => x !== sk) })}>
+                {skillTitle(sk)}
+              </Chip>
+            {/each}
+          </div>
+        </SettingsField>
+      </div>
+    {/if}
+    {#if libraryList.notice}<div transition:slide={{ duration: 150 }}><QueryError {...libraryList.notice} /></div>{/if}
+    {#if !libraryList.failed && !libraryList.pending && skillOwners.every((o) => !o.skills.length) && !workflow.skills.length}
+      <p class={note}>No skills yet. Teach an agent one from its skill list.</p>
+    {/if}
+  </section>
 
-  <div>
-    <div class="mb-1 flex items-center gap-1.5">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Toolkits</span>
-      <InfoTip text="MCP servers (optionally: specific tools) this work expects, one per line, like 'github: create_pr, get_diff'. Declarative; access is still granted in the MCP registry." />
+  <section class="space-y-3">
+    <div class="flex items-center gap-2">
+      <h3 class={heading}>Tools</h3>
+      <InfoTip text="Tool servers this work expects, one per line, with tools after a colon if only some are needed. This only declares them. Access is still granted on the Tools page." />
     </div>
     <Textarea autoGrow rows={2} bind:value={toolkitsText} onblur={saveToolkits} class="max-h-40 font-mono text-xs" placeholder={'github: create_pr, get_diff\nsandbox'} />
-  </div>
-</Panel>
+  </section>
+</div>

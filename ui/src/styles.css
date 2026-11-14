@@ -62,6 +62,12 @@
      adopting it made every view wider or the same and compressed nothing. */
   --page-width: 1152px;
 
+  /* The settings area: Manage, Settings and Admin, via `SettingsPage`. Those
+     pages are rows of a label and its control, and at the page width the two
+     sat a third of a window apart. One width for the whole area, so its pages
+     still line up with each other. */
+  --settings-width: 960px;
+
   /* Chat, Plan and Research transcripts. A conversation is read in turns, so
      it wants a measure, but its rows carry chips and tool output that a prose
      column would wrap badly. */
@@ -214,6 +220,94 @@
   --code-foreground: #1b1917;
 
   --theme-input: #ffffff;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   The settings area's own ladder. Everything that renders in the sans voice
+   carries `data-voice="sans"` (`voiceScope` in lib/ui-voice.ts), and inside
+   it the Mercury tokens are re-derived from themselves, so no call site and
+   no screen outside the area changes. `--base-*` are the theme's own values
+   under names the scope does not redefine: a token cannot be mixed from
+   itself on the element that redefines it.
+   ════════════════════════════════════════════════════════════════════════ */
+:root {
+  --base-panel: var(--theme-panel);
+  --base-raised: var(--theme-raised);
+  --base-hover: var(--theme-hover);
+  --base-border: var(--theme-border);
+  --base-muted: var(--theme-muted);
+}
+
+[data-theme='mercury'] [data-voice='sans'] {
+  /* A card on the ground: panel and ground were 1.07:1 apart, so groups vanished. */
+  --theme-panel: color-mix(in srgb, var(--theme-text) 5%, var(--base-panel));
+  /* An input, chip or icon tile has to differ from the card it sits in. */
+  --theme-raised: color-mix(in srgb, var(--theme-text) 7%, var(--base-raised));
+  /* A hovered row or button is one step above raised, as in Mercury. */
+  --theme-hover: color-mix(in srgb, var(--theme-text) 8%, var(--base-hover));
+  /* The hairline has to show against the lighter card. */
+  --theme-border: color-mix(in srgb, var(--theme-text) 9%, var(--base-border));
+  /* Row dividers inside a card: quieter than its edge, still visible. */
+  --theme-border-subtle: color-mix(in srgb, var(--theme-text) 3%, var(--base-border));
+  /* Secondary text was 5.2:1 on a card. This is about 7:1, still a clear step under the readout. */
+  --theme-muted: color-mix(in srgb, var(--theme-text) 38%, var(--base-muted));
+  /* The edge of a card: one step past the hairline, so a group reads as a
+     group without a lighter fill. Fields and dividers keep the hairline. */
+  --settings-card-line: color-mix(in srgb, var(--theme-text) 15%, var(--base-border));
+}
+
+/* A card is `rounded-lg border border-line bg-panel`: `Panel`, and every table
+   and list that writes the same recipe. In the utilities layer and at one
+   class of weight, so it replaces `border-line` and still loses to a hover or
+   state border on the same card. */
+@layer utilities {
+  :where([data-theme='mercury'] [data-voice='sans']) .border-line:where(.rounded-lg.border.bg-panel) {
+    border-color: var(--settings-card-line);
+  }
+}
+
+[data-theme='mercury-light'] [data-voice='sans'] {
+  /* Paper, card and white field already step apart here. Only the hairline
+     that draws a card and a field on them was faint. */
+  --theme-border: color-mix(in srgb, var(--theme-text) 6%, var(--base-border));
+  /* Secondary text was 5.3:1 on a card and 4.9:1 on paper. This is about 7:1 on both. */
+  --theme-muted: color-mix(in srgb, var(--theme-text) 30%, var(--base-muted));
+}
+
+/* These alias the tokens above and were resolved at the root, so they are
+   restated where the tokens change. */
+[data-voice='sans'] {
+  --theme-card: var(--theme-raised);
+  --theme-card2: var(--theme-hover);
+  --theme-input: var(--theme-raised);
+  --theme-line: var(--theme-border);
+  --theme-line-subtle: var(--theme-border-subtle);
+  /* The selected sidebar row. A raised tile is white on cream in the light
+     theme, so the fill is mixed from the readout colour and reads in both. */
+  --settings-selected: color-mix(in srgb, var(--theme-text) 12%, var(--theme-sidebar));
+  /* The same for a borderless fill on a card: a neutral chip, a picked row. */
+  --settings-fill: color-mix(in srgb, var(--theme-text) 9%, var(--theme-panel));
+}
+
+/* Rendered markdown is static HTML with the mono chrome's classes on its
+   code-block header and table headers. Inside the settings area those speak
+   the area's voice: 12px, no forced capitals, the secondary text colour. */
+.md-sans [data-code-block] > div:first-child > span,
+.md-sans [data-copy-code],
+.md-sans th {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--theme-muted);
+}
+.md-sans [data-copy-code],
+.md-sans th {
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+.md-sans [data-copy-code]::first-letter {
+  text-transform: uppercase;
 }
 
 /* ════════════════════════════════════════════════════════════════════════

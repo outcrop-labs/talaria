@@ -4,7 +4,8 @@ import type { AffectedAgent } from '@/lib/models'
 // The model-backend registry: providers + the models each offers. Agents'
 // tiers pick from these catalogs; the class (local/cloud) drives the cost split.
 export const MODEL_TABS = [
-  { id: 'models', label: 'Models' },
+  // The page is Models, so its first tab says what it lists. The id is the URL's and stays.
+  { id: 'models', label: 'Providers' },
   // Roles also carries Talaria's own workers (Muse, Distiller, …) — the old
   // Platform tab folded in, since it answered the same question ("which model
   // runs this") over the same picker in a different layout.

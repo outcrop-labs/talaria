@@ -1,6 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { patchAgentMeta, type AgentDef } from '@/lib/fleet-defs'
   import { slide } from '@/lib/motion'
@@ -15,6 +16,7 @@
   let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   let saving = $state(false)
   const set = async (on: boolean) => {
     saving = true
@@ -24,27 +26,26 @@
       toastError(on ? 'Could not make this a Developer Agent' : 'Could not turn off Developer Agent', res.error)
       return
     }
+    autosave.flash()
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
   }
 </script>
 
 <div>
-  <div class="mb-1 flex items-center gap-1.5">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Developer Agent</span>
-    <InfoTip text="Lets this agent do coding work from tickets: a sandbox, Oh My Pi as its coding harness, and the Workbench tools that open branches and PRs. Turning it on or off restarts the agent so the change takes effect. It can only touch the repos you pick below." />
-  </div>
-  {#if canManage}
-    <Toggle
-      checked={def.developer}
-      disabled={saving}
-      onChange={(on) => void set(on)}
-      label={def.developer ? 'On · Oh My Pi' : 'Off'}
-    />
-  {:else}
-    <div class="text-fg">{def.developer ? 'On · Oh My Pi' : 'Off'}</div>
-  {/if}
+  <SettingsRow
+    label="Developer agent"
+    hint={def.developer ? 'On. It does coding work from tickets with Oh My Pi.' : 'Lets it do coding work from tickets.'}
+    info="A sandbox, Oh My Pi as its coding harness, and the Workbench tools that open branches and pull requests. Turning it on or off restarts the agent. It can only touch the repositories you pick."
+    saved={autosave.saved()}
+  >
+    {#if canManage}
+      <Toggle checked={def.developer} disabled={saving} onChange={(on) => void set(on)} title="Developer agent" />
+    {:else}
+      <span class="font-sans text-[13px] leading-5 text-fg">{def.developer ? 'On' : 'Off'}</span>
+    {/if}
+  </SettingsRow>
   {#if canManage && def.developer}
-    <div transition:slide={{ duration: 150 }}>
+    <div transition:slide={{ duration: 150 }} class="space-y-6 border-t border-line-subtle px-5 py-4">
       <WorkbenchRepos agentId={def.id} />
       <!-- Coding accounts sit under the repo grants because they answer the
            next question in the same breath: this agent may touch these repos,

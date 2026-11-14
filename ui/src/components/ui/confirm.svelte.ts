@@ -10,6 +10,8 @@
 // triggered by user interaction (well after mount), the host is always there
 // by the time these run.
 
+import { screenVoice, type UiVoice } from '@/lib/ui-voice'
+
 type Kind = 'confirm' | 'alert' | 'prompt'
 
 export interface DialogSpec {
@@ -38,6 +40,8 @@ type Resolve = (value: boolean | string | null) => void
 interface ActiveDialog {
   spec: DialogSpec
   resolve: Resolve
+  /** The voice of the screen that asked, so the dialog matches it. */
+  voice: UiVoice
 }
 
 /** Reactive slot ConfirmHost renders from. One dialog at a time. */
@@ -46,7 +50,7 @@ export const dialog = $state<{ active: ActiveDialog | null }>({ active: null })
 function request(spec: DialogSpec): Promise<boolean | string | null> {
   if (typeof window === 'undefined') return Promise.resolve(spec.kind === 'alert' ? null : false)
   return new Promise((resolve) => {
-    dialog.active = { spec, resolve }
+    dialog.active = { spec, resolve, voice: screenVoice() }
   })
 }
 

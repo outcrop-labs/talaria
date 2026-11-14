@@ -1,17 +1,15 @@
 <script lang="ts">
+  import InfoTip from '@/components/ui/InfoTip.svelte'
   import SlotBlock from './SlotBlock.svelte'
   import type { RoleIssue, Slot } from './slot'
 
-  // The selected category's half of the Roles pane — the record-editor
-  // grammar's DETAIL side for a record whose fields are SETTINGS: the
-  // category is the menu item, and its members render as one assignment block
-  // each, divided rather than nested, so every setting keeps the full
-  // record anatomy (state chip, hint, fields card, advisory context) instead
-  // of being demoted to a row inside a table. The pane owns the frame; this
-  // owns the scroll.
+  // The selected job's half of the Roles pane: its name, one sentence on what
+  // it is for, then one row per stage or setting, divided rather than nested.
+  // The pane owns the frame; this owns the scroll.
   let {
     label,
     blurb,
+    info,
     slots,
     models,
     issues,
@@ -21,10 +19,12 @@
   }: {
     label: string
     blurb: string
+    /** The longer explanation, behind an InfoTip beside the name. */
+    info?: string
     slots: Slot[]
     /** Assignable gateway model ids (either catalog serves the same list). */
     models: string[]
-    /** The server's role-capability issues (advisory), passed through to blocks. */
+    /** The server's role-capability issues (advisory), passed through to rows. */
     issues: RoleIssue[]
     assignmentOf: (slot: Slot) => string | undefined
     effortOf: (slot: Slot) => string | null
@@ -32,27 +32,26 @@
   } = $props()
 </script>
 
-<div class="h-full overflow-y-auto px-4 py-4">
-  <!-- The title row: the category IS the record; its members are the fields. -->
-  <div class="mb-1 flex items-baseline gap-2">
-    <div class="text-base font-semibold text-fg">{label}</div>
-    <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">{slots.length} {slots.length === 1 ? 'setting' : 'settings'}</span>
-  </div>
-  <p class="mb-4 max-w-prose text-xs text-muted">{blurb}</p>
+<div class="h-full overflow-y-auto">
+  <header class="px-5 pb-4 pt-5">
+    <div class="flex items-center gap-2">
+      <h2 class="font-sans text-[15px] font-semibold leading-5 text-fg">{label}</h2>
+      {#if info}<InfoTip text={info} />{/if}
+    </div>
+    <p class="mt-1 max-w-[72ch] font-sans text-[13px] leading-5 text-muted">{blurb}</p>
+  </header>
 
-  <div class="divide-y divide-line-subtle">
+  <div class="border-t border-line-subtle [&>*+*]:border-t [&>*+*]:border-line-subtle">
     {#each slots as slot (slot.id)}
-      <div class="py-4 first:pt-0 last:pb-0">
-        <SlotBlock
-          {slot}
-          assigned={assignmentOf(slot)}
-          {models}
-          effort={effortOf(slot)}
-          {issues}
-          onModel={(model) => onSave(slot, { model })}
-          onEffort={(effort) => onSave(slot, { effort })}
-        />
-      </div>
+      <SlotBlock
+        {slot}
+        assigned={assignmentOf(slot)}
+        {models}
+        effort={effortOf(slot)}
+        {issues}
+        onModel={(model) => onSave(slot, { model })}
+        onEffort={(effort) => onSave(slot, { effort })}
+      />
     {/each}
   </div>
 </div>

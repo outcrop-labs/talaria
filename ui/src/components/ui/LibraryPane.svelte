@@ -35,7 +35,8 @@
      *  renders `<ContextMenu>` itself — this only forwards the event, so the
      *  menu implementation stays out of the component. */
     onRowMenu?: (e: MouseEvent, item: T) => void
-    /** Width of the picker column. */
+    /** Width of the picker column. Left out, it is 224px in the sans voice
+     *  and 256px in the mono voice. */
     listWidth?: string
     /** WHICH SURFACE THIS SITS ON, which is not decoration — Mercury's layers
      *  are what tell a reader one region is inside another.
@@ -70,7 +71,11 @@
      *  already says what a new one would be and spelling it out tells the
      *  reader what they can see. The name is a different audience: a screen
      *  reader gets no help from placement, so this one SHOULD be specific.
-     *  Terse on screen, precise in the accessibility tree. */
+     *  Terse on screen, precise in the accessibility tree.
+     *
+     *  In the sans voice (the settings area) it IS the visible text: a quiet
+     *  "+ New role" button, because that area never asks a bare glyph to say
+     *  what it creates. */
     createLabel?: string
     createPlaceholder?: string
     /** Row body override, for rows that need more than a name. */
@@ -91,6 +96,7 @@
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import { cn } from '@/lib/cn'
   import { listStagger } from '@/lib/motion'
+  import { sansFill, useUiVoice } from '@/lib/ui-voice'
 
   // A LIBRARY ON THE LEFT, THE THING YOU PICKED ON THE RIGHT.
   //
@@ -126,7 +132,7 @@
     pending = false,
     notice = null,
     onRowMenu,
-    listWidth = 'w-64',
+    listWidth,
     surface = 'panel',
     class: className,
     onCreate,
@@ -137,6 +143,8 @@
     detail,
     empty,
   }: LibraryPaneProps<T> = $props()
+
+  const sans = useUiVoice() === 'sans'
 
   const total = $derived(groups.reduce((n, g) => n + g.items.length, 0))
   // A group with no label and no rows contributes nothing; one WITH a label
@@ -149,10 +157,10 @@
      the two panes. -->
 {#snippet panes()}
   <!-- ── The picker ──────────────────────────────────────────────────────── -->
-  <div class={cn('flex shrink-0 flex-col border-r border-line', listWidth)}>
+  <div class={cn('flex shrink-0 flex-col border-r border-line', listWidth ?? (sans ? 'w-56' : 'w-64'))}>
     {#if title}
       <div class="flex h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-4">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{title}</span>
+        <span class={sans ? 'font-sans text-[13px] font-medium leading-5 text-fg' : 'font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'}>{title}</span>
       </div>
     {/if}
 
@@ -174,7 +182,7 @@
       {:else}
         {#each visible as group, gi (group.label ?? gi)}
           {#if group.label}
-            <div class="px-2 pb-1 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+            <div class={sans ? 'px-2 pb-1 pt-2 font-sans text-xs leading-4 text-muted' : 'px-2 pb-1 pt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim'}>
               {group.label}
             </div>
           {/if}
@@ -193,11 +201,14 @@
                     aria-current={active ? 'true' : undefined}
                     class={cn(
                       'min-w-0 flex-1 truncate rounded-md px-2 py-1.5 text-left font-sans text-[13px] transition-colors',
-                      // Selected keeps the texture and GAINS the solid tile — the two states
-                      // differ by whether the surface has arrived, not by whether there
-                      // is any texture at all.
-                      'dither-bloom',
-                      active ? 'bg-raised text-fg' : 'text-muted hover:text-fg',
+                      sans
+                        ? active
+                          ? cn(sansFill, 'text-fg')
+                          : 'text-muted hover:bg-hover hover:text-fg'
+                        : // Selected keeps the texture and GAINS the solid tile — the two states
+                          // differ by whether the surface has arrived, not by whether there
+                          // is any texture at all.
+                          cn('dither-bloom', active ? 'bg-raised text-fg' : 'text-muted hover:text-fg'),
                     )}
                   >
                     {#if row}{@render row(item, active)}{:else}{labelOf(item)}{/if}
@@ -215,7 +226,18 @@
       {/if}
     </div>
 
-    {#if onCreate}
+    {#if onCreate && sans}
+      <!-- 53px with its border, the height of the record editor's pinned footer beside it. -->
+      <div class="shrink-0 border-t border-line px-2 py-2.5">
+        <InlineCreate
+          variant="ghost"
+          label={createLabel}
+          placeholder={createPlaceholder}
+          onSubmit={(name) => void onCreate(name)}
+          class="[&>button]:w-full [&>button]:justify-start [&>button]:px-2 [&>button]:hover:bg-hover"
+        />
+      </div>
+    {:else if onCreate}
       <div class="shrink-0 border-t border-line px-3 py-3">
         <!-- A bare `+`, left-aligned. The footer of a library already says
              what a new one would be; a button that spells it out is telling

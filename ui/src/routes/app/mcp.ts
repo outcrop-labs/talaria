@@ -1,7 +1,9 @@
 // Shared types + helpers for the MCP page (Mcp.svelte + its cards/modals) and
 // the agent settings MCP tab, which browses and assigns the same registry.
 import { createQuery } from '@tanstack/svelte-query'
+import { BookOpen, FileBox, LayoutGrid } from '@lucide/svelte'
 import { errorMessage, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
+import { iconDomains } from '@/lib/mcp-icon'
 export { isInternalServer } from '@/lib/mcp-servers'
 export {
   catalogLine,
@@ -27,7 +29,8 @@ export {
   type HeaderDecl,
   type HeaderField,
 } from '@/lib/mcp-headers'
-import type { CatalogStatus, ProbeRow } from '@/lib/mcp-status'
+import type { DotStatus } from '@/components/ui/chip'
+import type { CatalogStatus, ProbeRow, ServerStatus } from '@/lib/mcp-status'
 import type { CatalogLiveness, FeaturedConfigRow, FeaturedResponse, LibraryLive } from '@/lib/mcp-catalog'
 export {
   addDomain,
@@ -126,14 +129,29 @@ export interface McpServerRow {
 export const connectPopup = (serverId: string, scope: 'org' | 'me') =>
   window.open(`/api/mcp/oauth/start?server=${serverId}&scope=${scope}`, 'talaria-mcp-oauth', 'width=620,height=780')
 
-export function useMcpServers() {
+/** The registry is an `agents.manage` read. A page a member can open passes
+ *  `enabled`, so the request is only sent for someone who may make it. */
+export function useMcpServers(enabled: () => boolean = () => true) {
   return createQuery(() => ({
     queryKey: ['mcp-servers'],
     // "No MCP servers yet" invites an admin to register one they may already
     // have. Only a genuine empty registry earns that screen.
     queryFn: (): Promise<McpServerRow[]> => getList<McpServerRow>('/api/mcp/servers', 'servers'),
+    enabled: enabled(),
   }))
 }
+
+/** Where a registered server's mark might live, best first: the one rule
+ *  for the Tools page and for the same server's row on Connections. */
+export const serverMarkDomains = (s: Pick<McpServerRow, 'url' | 'oauthMeta'>): string[] =>
+  iconDomains({ publisher: s.oauthMeta?.guide?.domain, url: s.url })
+
+const OWN_MARKS = { boards: LayoutGrid, knowledge: BookOpen, files: FileBox } as const
+
+/** A built-in server is a part of Talaria, so its mark is that part's own
+ *  icon from the app's navigation. Null for any other server. */
+export const ownMark = (s: { builtin: boolean; name: string }) =>
+  s.builtin && s.name in OWN_MARKS ? OWN_MARKS[s.name as keyof typeof OWN_MARKS] : null
 
 export async function patchServer(id: string, body: unknown): Promise<string | null> {
   try {
@@ -269,6 +287,14 @@ export interface InstallOutcome {
   needsCredentials: boolean
 }
 
+/** What the marketplace knows about an entry it installed in this sitting:
+ *  the registry row it became, and what that row still needs. */
+export interface MarketplaceAdded {
+  serverId: string
+  state: 'ok' | 'needs-key' | 'connect' | 'needs-app' | 'failed'
+  detail?: string
+}
+
 export const needsOauthApp = (m: OauthMeta | null) => !!m && !m.clientSet && (!m.dcr || !!m.dcrRejected)
 
 /** Register a marketplace entry in the org registry and run discovery, so
@@ -307,16 +333,33 @@ export async function installLibraryServer(l: LibraryServerRow, opts: InstallOpt
   }
 }
 
-// Outline chips in the mono chrome voice — gold reserved for the official tier.
-export const TIER_BADGE: Record<LibraryServerRow['tier'], { label: string; cls: string; hint: string }> = {
+/** A catalog tier's name. `word` is the settings area's, a quiet word on the
+ *  publisher's line; `label` and `cls` are the mono chip the agent dialog
+ *  still draws in comms. */
+export const TIER_BADGE: Record<LibraryServerRow['tier'], { label: string; cls: string; word: string; hint: string }> = {
   'first-party': {
     label: 'official',
     cls: 'border-accent/50 text-accent',
+    word: 'Official',
     hint: 'Published by the company itself, hosted on its own verified domain',
   },
-  verified: { label: 'verified', cls: 'border-line text-muted', hint: 'Domain-verified publisher, hosted elsewhere' },
-  community: { label: 'community', cls: 'border-line-subtle text-ink-dim', hint: 'Community-built (io.github namespace)' },
+  verified: { label: 'verified', cls: 'border-line text-muted', word: 'Verified', hint: 'Domain-verified publisher, hosted elsewhere' },
+  community: {
+    label: 'community',
+    cls: 'border-line-subtle text-ink-dim', // voice-ok: the mono chip, for the agent dialog in comms
+    word: 'Community',
+    hint: 'Community-built (io.github namespace)',
+  },
 }
+
+export const STATUS_DOT: Record<ServerStatus['tone'], DotStatus> = {
+  muted: 'idle',
+  warning: 'warn',
+  danger: 'danger',
+  success: 'ok',
+}
+
+export { addressHost as serverDomain } from '@/lib/mcp-icon'
 
 export const slugify = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
 

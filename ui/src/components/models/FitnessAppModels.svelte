@@ -1,7 +1,9 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import Chip from '@/components/ui/Chip.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
@@ -28,47 +30,42 @@
   } = $props()
 
   const qc = useQueryClient()
-  let saving = $state<string | null>(null)
+  // These pickers are the tab's only editable controls, so with an app
+  // harness on the page its header says changes save as they are made.
+  const autosave = useAutosave(() => slots.length > 0)
 
   const assign = async (slot: string, model: string | null) => {
-    saving = slot
     try {
       await putJson<{ ok: true }>('/api/admin/app-harness-models', { slot, model })
-      await qc.invalidateQueries({ queryKey: ['model-fitness'] })
     } catch (e) {
       toastError('Could not assign the model', e)
-    } finally {
-      saving = null
+      return
     }
+    autosave.flash(slot)
+    await qc.invalidateQueries({ queryKey: ['model-fitness'] })
   }
 </script>
 
 {#if slots.length > 0}
-  <div class="mt-4 rounded-md border border-line p-3">
-    <SectionHeader
-      title="App harness models"
-      info="Each harness an enabled app ships runs on the model picked here, before its own chain. Auto lets the harness's declared role and the utility model decide. The column above says how each model scored on the harness's own fixtures."
-    />
-    <ul class="divide-y divide-line">
+  <SettingsSection
+    title="App harness models"
+    description="The model each app harness runs on. Auto follows the harness's own chain."
+    info="An assignment wins before the harness's declared role and the utility model. The matching column in the matrix says how each model scored on the harness's own fixtures."
+  >
+    <SettingsGroup>
       {#each slots as slot (slot.key)}
-        <li class="flex flex-wrap items-center gap-3 py-2">
-          <div class="min-w-0 flex-1">
-            <div class="truncate text-sm text-fg">{slot.label}</div>
-            <div class="truncate font-mono text-[11px] text-muted" title={slot.hint}>{slot.key}</div>
-          </div>
-          {#if saving === slot.key}
-            <Chip tone="neutral" class="shrink-0">saving</Chip>
-          {/if}
+        <SettingsRow label={slot.label} saved={autosave.saved(slot.key)}>
+          {#snippet hint()}<span class="font-mono text-xs" title={slot.hint}>{slot.key}</span>{/snippet}
           <ModelIdPicker
             {models}
             value={assigned[slot.key] ?? null}
             onChange={(m) => void assign(slot.key, m)}
             emptyLabel="Auto"
-            emptySub="the harness's own chain"
-            class="w-64 max-w-full"
+            emptySub="The harness's own chain"
+            class="w-[280px]"
           />
-        </li>
+        </SettingsRow>
       {/each}
-    </ul>
-  </div>
+    </SettingsGroup>
+  </SettingsSection>
 {/if}

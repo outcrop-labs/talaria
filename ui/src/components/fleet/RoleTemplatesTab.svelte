@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { Trash2 } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -40,6 +42,12 @@
   /** True when the draft would create a NEW org template (including one that
    *  shadows a built-in) rather than update an existing org one. */
   const isNew = $derived(!!draft && !templates.some((t) => t.slug === draft!.slug && !t.builtIn))
+
+  // What the draft was opened from. A draft with no origin is a new role, and
+  // one that matches its origin has nothing to save.
+  const origin = $derived(selected ? templates.find((t) => t.slug === selected) : undefined)
+  const DRAFT_FIELDS = ['slug', 'name', 'role', 'department', 'description', 'soul'] as const
+  const changed = $derived(!!draft && (!origin || DRAFT_FIELDS.some((k) => draft![k] !== origin[k])))
 
   const refresh = () => qc.invalidateQueries({ queryKey: ROLE_TEMPLATES_KEY })
 
@@ -113,7 +121,7 @@
   // Your own first, then what Talaria maintains — the org's roles are the ones
   // being worked on, and the built-ins are the shelf you take a copy from.
   const groups = $derived([
-    { label: 'Your organization', items: templates.filter((t) => !t.builtIn), empty: 'None yet; edit a common role to make one.' },
+    { label: 'Your organization', items: templates.filter((t) => !t.builtIn), empty: 'None yet. Edit a common role to make one.' },
     { label: 'Common roles', items: templates.filter((t) => t.builtIn) },
   ])
 
@@ -121,6 +129,17 @@
   // NO selection, and the pane must show the editor for it rather than the
   // "pick something" empty state.
   const paneSelection = $derived(draft ? (selected ?? '__new__') : null)
+
+  // The pane never rests on nothing: with no draft open (first load, or after
+  // a delete) it opens the first role in the picker's own order.
+  $effect(() => {
+    if (draft) return
+    const first = groups.flatMap((g) => g.items)[0]
+    if (first) pick(first)
+  })
+
+  /** The stored org role the editor has open, which is the one Delete removes. */
+  const stored = $derived(selected ? templates.find((t) => t.slug === selected && !t.builtIn) : undefined)
 </script>
 
 <LibraryPane
@@ -132,81 +151,68 @@
   title="Roles"
   pending={list.pending}
   notice={list.notice}
-  listWidth="w-72"
-  class="h-[calc(100vh-16rem)] min-h-[28rem]"
+  class="h-full min-h-[28rem]"
   onCreate={blank}
   createLabel="New role"
 >
-  {#snippet rowAction(t: RoleTemplate)}
-    <!-- Only the org's own roles can be deleted; a built-in is restored by
-         deleting your copy of it, which is the same button on that copy. -->
-    {#if !t.builtIn}
-      <button
-        type="button"
-        onclick={() => void remove(t.slug)}
-        disabled={busy}
-        title="Delete this role"
-        aria-label="Delete {t.name}"
-        class="rounded-md p-1.5 text-muted transition-colors hover:text-fg"
-      >
-        <Trash2 size={13} />
-      </button>
-    {/if}
-  {/snippet}
-
   {#snippet empty()}
-    <EmptyState
-      title="Pick a role, or add one"
-      hint="Talaria maintains the common roles. Editing one saves YOUR version under the same name. Yours is used from then on, and deleting it restores ours."
-    />
+    <EmptyState title="No roles yet" hint="Add one with New role, under the list." />
   {/snippet}
 
   {#snippet detail()}
     {#if draft}
-      <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-6">
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label for="rt-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-            <Input id="rt-name" bind:value={draft.name} placeholder="Research Analyst" />
-          </div>
-          <div>
-            <label for="rt-slug" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Slug</label>
-            <Input id="rt-slug" bind:value={draft.slug} placeholder="research-analyst" />
-          </div>
+      <div class="flex min-h-11 shrink-0 items-center gap-2 border-b border-line-subtle px-6 py-2">
+        <span class="line-clamp-2 min-w-0 font-sans text-[15px] font-semibold leading-5 text-fg" title={draft.name || undefined}>{draft.name || 'New role'}</span>
+        <!-- The list already says whose a stored role is. Only a role that is nowhere yet is marked. -->
+        {#if !selected}<Chip class="shrink-0">Not saved yet</Chip>{/if}
+      </div>
+      <div class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-6">
+        <div class="grid shrink-0 grid-cols-2 gap-x-4 gap-y-5">
+          <SettingsField label="Name" for="rt-name">
+            <Input id="rt-name" size="sm" bind:value={draft.name} placeholder="Research Analyst" />
+          </SettingsField>
+          <SettingsField label="Slug" for="rt-slug">
+            <Input id="rt-slug" size="sm" class="font-mono" bind:value={draft.slug} placeholder="research-analyst" />
+          </SettingsField>
+          <SettingsField label="Role title" for="rt-role">
+            <Input id="rt-role" size="sm" bind:value={draft.role} placeholder="Research Analyst" />
+          </SettingsField>
+          <SettingsField label="Department" for="rt-dept">
+            <Input id="rt-dept" size="sm" bind:value={draft.department} placeholder="research" />
+          </SettingsField>
+          <SettingsField label="Description" for="rt-desc" class="col-span-2">
+            <Input id="rt-desc" size="sm" bind:value={draft.description} placeholder="One line, shown when someone picks a role." />
+          </SettingsField>
         </div>
-        <div class="grid grid-cols-2 gap-4">
-          <div>
-            <label for="rt-role" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role title</label>
-            <Input id="rt-role" bind:value={draft.role} placeholder="Research Analyst" />
-          </div>
-          <div>
-            <label for="rt-dept" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
-            <Input id="rt-dept" bind:value={draft.department} placeholder="research" />
-          </div>
-        </div>
-        <div>
-          <label for="rt-desc" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Description</label>
-          <Input id="rt-desc" bind:value={draft.description} placeholder="One line, shown in the picker." />
-        </div>
-        <div>
-          <label for="rt-soul" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter soul</label>
-          <Textarea id="rt-soul" bind:value={draft.soul} rows={16} class="font-mono text-xs" />
-          <p class="mt-1.5 font-sans text-xs text-muted">
-            Markdown. Keep the <span class="font-mono text-fg">## Who you are</span> /
-            <span class="font-mono text-fg">## Voice &amp; personality</span> /
-            <span class="font-mono text-fg">## How you work</span> sections. The agent designer expects that shape.
-          </p>
+        <!-- The instructions take the height the fields leave, so the form
+             fits the window and only the text scrolls. -->
+        <div class="flex min-h-[14rem] flex-1 flex-col gap-1.5">
+          <label for="rt-soul" class="font-sans text-[13px] font-medium leading-5 text-fg">Starting instructions</label>
+          <Textarea id="rt-soul" bind:value={draft.soul} class="min-h-0 flex-1 font-mono text-xs leading-5" />
+          <p class="font-sans text-[13px] leading-5 text-muted">Markdown. Keep the three section headings, the agent designer expects them.</p>
         </div>
       </div>
-      <div class="flex shrink-0 items-center justify-between gap-3 border-t border-line px-6 py-4">
-        <span class="min-w-0 truncate font-sans text-xs" style:color={err ? 'var(--theme-danger)' : undefined}>
+      <!-- The foot the other pick-and-edit pages have: Delete at its left, Save at its right, as tall as the
+           picker's own foot so the two hairlines meet. -->
+      <div class="flex h-[53px] shrink-0 items-center gap-4 border-t border-line px-6">
+        {#if stored}
+          <DangerLink onClick={() => void remove(stored.slug)} disabled={busy} class="shrink-0">Delete role</DangerLink>
+        {/if}
+        <span class={['min-w-0 flex-1 truncate text-right font-sans text-[13px] leading-5', err ? 'text-danger' : 'text-muted']}>
           {#if err}{err}{:else if isNew && selected}Saves as your organization’s version of “{draft.name}”.{/if}
         </span>
-        <div class="flex shrink-0 gap-2">
-          <Button size="sm" onclick={() => void save()} disabled={busy || !draft.slug.trim() || !draft.name.trim() || !draft.soul.trim()}>
+        <!-- Gold once there is an edit to save, and not there while there is none. An untouched common role can still be copied as it stands. -->
+        {#if changed || isNew || busy}
+          <Button
+            size="sm"
+            variant={changed ? 'primary' : 'outline'}
+            class="shrink-0"
+            onclick={() => void save()}
+            disabled={busy || !draft.slug.trim() || !draft.name.trim() || !draft.soul.trim()}
+          >
             {busy ? 'Saving' : isNew ? 'Save as ours' : 'Save'}
           </Button>
-        </div>
+        {/if}
       </div>
     {/if}
   {/snippet}

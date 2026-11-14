@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { isolateAutosave } from '@/components/settings/autosave.svelte'
   import { fade, pop, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
+  import { useUiVoice, voiceScope, type UiVoice } from '@/lib/ui-voice'
   import CloseButton from './CloseButton.svelte'
 
   // The one modal. Esc + backdrop-click close. Two shapes:
@@ -37,6 +39,8 @@
     height = '',
     padded = true,
     takeover = false,
+    dismissible = true,
+    voice,
   }: {
     open: boolean
     onClose: () => void
@@ -52,12 +56,23 @@
      *  two knobs instead of hand-rolling their own shell. */
     padded?: boolean
     takeover?: boolean
+    /** false: Escape, a click outside and the header's close button do nothing,
+     *  so the dialog leaves only by a button in its own content or footer. For
+     *  a step that shows something once (a new secret). */
+    dismissible?: boolean
+    /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
+    voice?: UiVoice
   } = $props()
+
+  const areaVoice = useUiVoice()
+  const sans = $derived((voice ?? areaVoice) === 'sans')
+  // A settings page's "Saved" cue is in its header, which a dialog covers.
+  isolateAutosave()
 </script>
 
 <svelte:document
   onkeydown={(e) => {
-    if (open && e.key === 'Escape') onClose()
+    if (open && dismissible && e.key === 'Escape') onClose()
   }}
 />
 
@@ -67,18 +82,23 @@
     aria-modal="true"
     in:pop|global
     out:fade|global={QUICK}
-    class={takeover
-      ? 'relative z-10 flex h-full w-full flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]'
-      : `relative z-10 flex max-h-full w-full ${width} ${height} flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]`}
+    class={[
+      takeover
+        ? 'relative z-10 flex h-full w-full flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]'
+        : `relative z-10 flex max-h-full w-full ${width} ${height} flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--theme-shadow-3)]`,
+      sans && 'font-sans',
+    ]}
   >
     {#if title}
       <div class="flex shrink-0 items-center justify-between border-b border-line px-7 py-4">
-        {#if typeof title === 'string'}
+        {#if typeof title === 'string' && sans}
+          <div class="min-w-0 truncate font-sans text-[15px] font-semibold leading-5 text-fg">{title}</div>
+        {:else if typeof title === 'string'}
           <div class="min-w-0 truncate font-mono text-[11px] font-medium uppercase tracking-[0.08em] text-muted">{title}</div>
         {:else}
           <div class="min-w-0 text-sm font-semibold text-fg">{@render title()}</div>
         {/if}
-        <CloseButton onClick={onClose} class="-mr-2" />
+        {#if dismissible}<CloseButton onClick={onClose} class="-mr-2" />{/if}
       </div>
     {/if}
     <!-- The scrolling region, in EVERY shape. The panel is a flex column capped
@@ -97,17 +117,19 @@
 {/snippet}
 
 {#if open}
-  <div use:portal class={takeover ? 'fixed inset-0 z-50 p-6 sm:p-8' : 'fixed inset-0 z-50 grid place-items-center p-4'}>
+  <div use:portal data-voice={voiceScope(voice ?? areaVoice)} class={takeover ? 'fixed inset-0 z-50 p-6 sm:p-8' : 'fixed inset-0 z-50 grid place-items-center p-4'}>
     <!-- |global on every leg: most call sites render {#if x}<SomeModal>, so
          this {#if open} block is created while an ANCESTOR mounts — local
          transitions (the default) are suppressed in exactly that case, which
          is how modals shipped two rounds of "completely unanimated". An
          overlay must animate no matter what mounted it. -->
+    <!-- The settings area's page is lighter and holds a gold primary in its header, which read through beside a wide
+         dialog: there the scrim is heavier, so nothing behind competes with the dialog. -->
     <div
-      class="absolute inset-0 bg-black/50"
+      class={sans ? 'absolute inset-0 bg-black/75 backdrop-grayscale' : 'absolute inset-0 bg-black/50'}
       in:fade|global={{ duration: 220 }}
       out:fade|global={QUICK}
-      onclick={onClose}
+      onclick={dismissible ? onClose : undefined}
       aria-hidden="true"
     ></div>
     {@render panel()}

@@ -1,15 +1,17 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { tabFromPath } from '@/lib/route-tabs'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { navigate, route } from '@/router'
-  import Avatar from '@/components/ui/Avatar.svelte'
+  import { route } from '@/router'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
-  import Panel from '@/components/ui/Panel.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import { inlineEditKeys } from '@/components/ui/control'
   import { useAppGrants, useSession } from '@/lib/session'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
@@ -17,34 +19,29 @@
   import AppSurface from '@/components/app/AppSurface.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import { appAccess } from '@/lib/app-grants'
-  import Tabs from '@/components/ui/Tabs.svelte'
   import { fly, staggerIn } from '@/lib/motion'
-  import { claimViewTitle } from '@/lib/view-title.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import PreferredModelPicker from './settings/PreferredModelPicker.svelte'
   import TimezonePicker from './settings/TimezonePicker.svelte'
   import ProfilePhotoField from './settings/ProfilePhotoField.svelte'
   import TitleField from './settings/TitleField.svelte'
   import NotificationsSection from './settings/NotificationsSection.svelte'
-  import McpConnectionsSection from './settings/McpConnectionsSection.svelte'
   import IntegrationsSection from './settings/IntegrationsSection.svelte'
-  import ApiKeysSection from './settings/ApiKeysSection.svelte'
+  import ApiKeysSection, { useApiKeys } from './settings/ApiKeysSection.svelte'
   import DesktopSection from './settings/DesktopSection.svelte'
   import { inDesktopShell } from '@/lib/desktop-shell'
 
-  // Personal settings, tabbed by concern: Profile (identity + drafting model),
-  // Assistant (the member's whole personal agent), Connections, API keys —
-  // plus one tab per enabled app that ships a settings surface. The title
-  // claim is unread (lib/view-title); the body opens on its tabs.
-  claimViewTitle('Settings')
-
+  // Personal settings, one page per concern: Profile (identity + drafting
+  // model), Notifications, Assistant (the member's whole personal agent),
+  // Connections, API keys — plus one per enabled app that ships a settings
+  // surface. The sidebar's Personal group is the way between them.
   type SettingsTab = 'profile' | 'notifications' | 'assistant' | 'connections' | 'keys' | `app:${string}`
-  const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
-    { id: 'profile', label: 'Profile' },
-    { id: 'notifications', label: 'Notifications' },
-    { id: 'assistant', label: 'Assistant' },
-    { id: 'connections', label: 'Connections' },
-    { id: 'keys', label: 'API keys' },
+  const SETTINGS_TABS: { id: SettingsTab; label: string; blurb: string }[] = [
+    { id: 'profile', label: 'Profile', blurb: 'How you appear to teammates and agents.' },
+    { id: 'notifications', label: 'Notifications', blurb: 'Choose what reaches you, and where.' },
+    { id: 'assistant', label: 'Assistant', blurb: 'Your personal agent, its voice, and what it can reach.' },
+    { id: 'connections', label: 'Connections', blurb: 'Accounts your assistant can act through.' },
+    { id: 'keys', label: 'API keys', blurb: 'Keys for scripts and tools that call Talaria as you.' },
   ]
 
   const qc = useQueryClient()
@@ -68,10 +65,6 @@
     const raw = route.pathname.startsWith('/settings/') ? decodeURIComponent(route.pathname.slice('/settings/'.length)) : ''
     return /^app:[a-z0-9-]+$/.test(raw) ? (raw as SettingsTab) : 'profile'
   })
-  const setTab = (t: SettingsTab) => {
-    if (t === 'profile') void navigate('/settings')
-    else void navigate('/settings/:tab', { params: { tab: t } })
-  }
   // Enabled apps with a settings surface get their own tab, labeled by the
   // app — only for people granted it. A settings tab follows the app's
   // MANAGE grant (app-grants.ts); it used to follow the work view, which a
@@ -83,12 +76,22 @@
   const appTabs = $derived(
     appsList.rows
       .filter((a) => appAccess(a, { isAdmin: user?.role === 'admin', appGrants: appGrants.current }).settings)
-      .map((a) => ({ id: `app:${a.slug}` as SettingsTab, label: a.surfaces.settings! })),
+      .map((a) => ({ id: `app:${a.slug}` as SettingsTab, label: a.surfaces.settings!, blurb: undefined })),
+  )
+  // An app tab this person was not granted has no page: the URL alone
+  // (/settings/app:<slug>) is not a grant, so it titles as Settings.
+  const page = $derived(
+    [...SETTINGS_TABS, ...appTabs].find((t) => t.id === tab) ?? { id: tab, label: 'Settings', blurb: undefined },
   )
 
   $effect(() => {
     if (user) name = user.name ?? ''
   })
+
+  // API keys: the page's one create lives in its header, and only for someone
+  // who may create a key. The list's own read says so.
+  const apiKeys = useApiKeys(() => tab === 'keys')
+  let creatingKey = $state(false)
 
   const save = async () => {
     const n = name.trim()
@@ -107,77 +110,65 @@
   }
 </script>
 
-<PageSurface>
-  <div>
-    <Tabs items={[...SETTINGS_TABS, ...appTabs]} value={tab} onChange={setTab} class="mb-6" />
-    {#if appsList.notice}<div class="-mt-4 mb-6"><QueryError {...appsList.notice} /></div>{/if}
-    <!-- Tab-pane grammar: pane rises in on switch (no exit) and its sections
-         stagger — settings panes are section stacks. Keying is safe here: the
-         profile input's state (`name`) lives in this component, not the pane.
-         No AutoHeight — the pane is the last thing on a scrolling page, so its
-         resize has nothing below it to displace. -->
+{#snippet keyActions()}
+  <Button size="sm" onclick={() => (creatingKey = true)}>Create key</Button>
+{/snippet}
+
+<SettingsPage
+  title={page.label}
+  blurb={page.blurb}
+  autosave={tab === 'profile'}
+  saved={savedFlash.saved}
+  actions={tab === 'keys' && apiKeys.data?.canMint ? keyActions : undefined}
+>
+    {#if appsList.notice}<QueryError {...appsList.notice} />{/if}
+    <!-- Pane grammar: the pane rises in on switch (no exit) and its sections
+         stagger. Keying is safe here: the profile input's state (`name`)
+         lives in this component, not the pane. -->
     {#key tab}
-    <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-6">
+    <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-8">
     {#if tab === 'profile'}
-      <Panel as="section">
-        <div class="mb-4 flex items-center gap-3">
-          {#if sessionLoading}
-            <!-- Hold the identity header until the session lands — an empty
-                 avatar/name/email that fills in later reads as a glitch. -->
-            <Skeleton class="h-10 w-10 shrink-0 rounded-full" />
-            <div class="min-w-0 flex-1 space-y-2">
-              <Skeleton class="h-3 w-36 rounded-full" />
-              <Skeleton class="h-2.5 w-48 rounded-full" />
-            </div>
-          {:else}
-            <Avatar src={user?.picture} name={name || user?.email} class="h-10 w-10" />
-            <div class="min-w-0">
-              <div class="truncate text-sm font-medium text-fg">{name || user?.email}</div>
-              <div class="truncate text-xs text-muted">{user?.email}</div>
-            </div>
-          {/if}
-        </div>
-        <label for="settings-display-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Display name</label>
+      <SettingsGroup>
         {#if sessionLoading}
-          <div class="flex max-w-md items-center gap-2">
-            <Skeleton class="h-11 flex-1" />
-            <Skeleton class="h-11 w-20" />
-          </div>
+          <!-- Hold the rows until the session lands: an empty name that fills
+               in later reads as a glitch. -->
+          <SettingsRow label="Photo"><Skeleton class="h-9 w-9 rounded-full" /><Skeleton class="h-8 w-20" /></SettingsRow>
+          <SettingsRow label="Name"><Skeleton class="h-9 w-[280px]" /></SettingsRow>
         {:else}
-          <div class="flex max-w-md items-center gap-2">
-            <Input
-              id="settings-display-name"
-              bind:value={name}
-              onkeydown={(e) => e.key === 'Enter' && void save()}
-              placeholder="How teammates and agents see you"
-            />
-            <Button onclick={() => void save()} disabled={busy || !name.trim() || name.trim() === user?.name}>
-              Save
-            </Button>
-          </div>
-        {/if}
-        {#if savedFlash.saved}<div class="mt-2 text-xs text-success">Saved</div>{/if}
-        <TitleField />
-        {#if !sessionLoading}
           <ProfilePhotoField {user} />
+          <SettingsRow label="Name" as="label">
+            <Input
+              size="sm"
+              class="w-[280px]"
+              bind:value={name}
+              disabled={busy}
+              onblur={() => void save()}
+              onkeydown={inlineEditKeys(() => (name = user?.name ?? ''))}
+              placeholder="Your name"
+            />
+          </SettingsRow>
+          <SettingsRow label="Email">
+            <span class="font-sans text-sm leading-5 text-muted">{user?.email}</span>
+          </SettingsRow>
         {/if}
-        <PreferredModelPicker />
-        <TimezonePicker />
-      </Panel>
+        <TitleField />
+      </SettingsGroup>
+      <SettingsSection title="Preferences">
+        <SettingsGroup>
+          <PreferredModelPicker />
+          <TimezonePicker />
+        </SettingsGroup>
+      </SettingsSection>
       {#if inDesktopShell()}<DesktopSection />{/if}
     {/if}
 
     {#if tab === 'notifications'}<NotificationsSection />{/if}
-    {#if tab === 'assistant'}<AssistantSection />{/if}
-    {#if tab === 'connections'}
-      <IntegrationsSection />
-      <McpConnectionsSection />
-    {/if}
-    {#if tab === 'keys'}<ApiKeysSection />{/if}
+    {#if tab === 'assistant'}<div class="space-y-6"><AssistantSection /></div>{/if}
+    {#if tab === 'connections'}<IntegrationsSection />{/if}
+    {#if tab === 'keys'}<ApiKeysSection bind:creating={creatingKey} />{/if}
     <!-- Only a tab this person was granted mounts its surface: the URL alone
          (/settings/app:<slug>) is not a grant. -->
     {#if tab.startsWith('app:') && appTabs.some((t) => t.id === tab)}<AppSurface slug={tab.slice(4)} surface="settings" />{/if}
     </div>
     {/key}
-  </div>
-</PageSurface>
+</SettingsPage>

@@ -81,3 +81,45 @@ describe('describeSchedule: an interval reads in the largest whole unit', () => 
     expect(schedToString(parseSchedule('every 360m'))).toBe('every 360m')
   })
 })
+
+describe('describeSchedule: a step or a list reads as a phrase when the phrase is exact', () => {
+  it('phrases a step in the hour field', () => {
+    expect(describeSchedule('0 */4 * * *')).toBe('Every 4 hours')
+    expect(describeSchedule('0 */1 * * *')).toBe('Every hour')
+    expect(describeSchedule('0 * * * *')).toBe('Every hour')
+    expect(describeSchedule('30 * * * *')).toBe('Every hour at :30')
+    expect(describeSchedule('15 */6 * * *')).toBe('Every 6 hours at :15')
+  })
+
+  it('phrases a step in the minute field', () => {
+    expect(describeSchedule('*/15 * * * *')).toBe('Every 15 minutes')
+    expect(describeSchedule('*/30 * * * *')).toBe('Every 30 minutes')
+    expect(describeSchedule('* * * * *')).toBe('Every minute')
+  })
+
+  it('says so when the step runs on weekdays only', () => {
+    expect(describeSchedule('0 */2 * * 1-5')).toBe('Every 2 hours on weekdays')
+    expect(describeSchedule('*/10 * * * 1-5')).toBe('Every 10 minutes on weekdays')
+  })
+
+  it('phrases a short list of hours', () => {
+    expect(describeSchedule('0 9,17 * * *')).toBe('Every day at 09:00 and 17:00')
+    expect(describeSchedule('30 8,12,16 * * 1-5')).toBe('Weekdays at 08:30, 12:30 and 16:30')
+  })
+
+  it('keeps the raw string for a step that does not divide evenly, or anything it cannot be sure of', () => {
+    // `*/7` fires at :56 then :00, and `*/5` hours at 20:00 then 00:00: neither is "every N".
+    for (const raw of ['*/7 * * * *', '0 */5 * * *', '0 8-18/2 * * *', '0 0 */2 * *', '0 */4 1 * *', '0 */4 * * 1,3', '* */4 * * *', '0 9,25 * * *', '0 */4 * *'])
+      expect(describeSchedule(raw)).toBe(raw)
+  })
+
+  it('still opens a step cron as custom, so an untouched edit sends back what was stored', () => {
+    expect(parseSchedule('0 */4 * * *')).toMatchObject({ mode: 'custom', custom: '0 */4 * * *' })
+    expect(schedToString(parseSchedule('0 */4 * * *'))).toBe('0 */4 * * *')
+  })
+
+  it('leaves the shapes the builder knows as they were', () => {
+    expect(describeSchedule('30 7 * * *')).toBe('Every day at 07:30')
+    expect(describeSchedule('0 9 * * 1-5')).toBe('Weekdays at 09:00')
+  })
+})

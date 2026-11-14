@@ -227,29 +227,27 @@ export function agentCredential(def: AgentDefRow): { headers: Record<string, str
 
 const xq = (s: string) => (s.includes('"') ? `concat("${s.split('"').join('", \'"\', "')}")` : `"${s}"`)
 
-/** A server card on Manage → MCP: the nearest box around the label that
- *  also holds the card's "Manage access" door. */
-export function registryCard(page: Page, label: string): Locator {
-  return page.locator(
-    `xpath=//*[normalize-space(text())=${xq(label)}]/ancestor::*[.//button[normalize-space()="Manage access"]][1]`,
-  )
+/** A server's row on Manage → Tools, by the slug agents call it by. The row
+ *  carries `data-mcp-server`. */
+export function registryCard(page: Page, slug: string): Locator {
+  return page.locator(`[data-mcp-server="${slug}"]`)
 }
 
-/** A marketplace entry: the nearest box around the title that holds its
- *  install control (a button before install, the check mark after). */
+/** One marketplace entry's card, by its title. The card carries
+ *  `data-mcp-market`; its title sits in a header row with the Add button, so
+ *  an ancestor walk from the title would stop at that row and miss the chips
+ *  and the follow-up actions under it. */
 export function marketCard(scope: Locator, title: string): Locator {
-  return scope.locator(
-    `xpath=.//*[normalize-space(text())=${xq(title)}]/ancestor::*[.//button or .//*[@title="In your org registry"]][1]`,
-  )
+  return scope.locator('[data-mcp-market]').filter({ has: scope.page().getByText(title, { exact: true }) })
 }
 
-/** One server row in an agent's MCP tab: the nearest box around the label
- *  that holds its toggle. */
+/** One server row in an agent's Tools section: the nearest box around the
+ *  label that holds its toggle. */
 export function agentServerRow(scope: Locator, label: string): Locator {
   return scope.locator(`xpath=.//*[normalize-space(text())=${xq(label)}]/ancestor::*[.//*[@role="switch"]][1]`)
 }
 
-/** The marketplace dialog, opened from Manage → MCP → External. */
+/** The marketplace dialog, opened from Manage → Tools → External. */
 export async function openMarketplace(page: Page): Promise<Locator> {
   await page.goto('/mcp/external')
   await page.getByRole('button', { name: /Browse marketplace/ }).first().click()

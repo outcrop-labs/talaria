@@ -2,6 +2,7 @@
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
   import Panel from '@/components/ui/Panel.svelte'
+  import { useUiVoice, type UiVoice } from '@/lib/ui-voice'
   import { focusRing } from './control'
 
   // The §8 stat block: big sans numeral in readout cream + 10px mono uppercase
@@ -19,21 +20,43 @@
     value,
     sub,
     href,
+    voice,
     class: className,
-  }: { label: string; value: string | number | Snippet; sub?: string; href?: string; class?: string } = $props()
+  }: {
+    label: string
+    value: string | number | Snippet
+    sub?: string
+    href?: string
+    /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
+    voice?: UiVoice
+    class?: string
+  } = $props()
+
+  const areaVoice = useUiVoice()
+  const sans = $derived((voice ?? areaVoice) === 'sans')
 </script>
 
-<!-- A stat card is a headline number on a page that has three or four of
-     them; the corridor gives it material without competing with the value. -->
-<Panel
-  field="ambient"
-  as={href ? 'a' : 'div'}
-  {href}
-  class={cn('p-5', href && 'block', href && focusRing, className)}
->
-  <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</div>
-  <div class="mt-1.5 font-sans text-2xl font-semibold text-fg">
-    {#if typeof value === 'function'}{@render value()}{:else}{value}{/if}
-  </div>
-  {#if sub}<div class="mt-1 font-mono text-[11px] text-muted">{sub}</div>{/if}
-</Panel>
+{#if sans}
+  <Panel as={href ? 'a' : 'div'} {href} class={cn('p-5', href && 'block', href && focusRing, className)}>
+    <div class="font-sans text-xs leading-4 text-muted">{label}</div>
+    <div class="mt-1 font-sans text-2xl font-semibold leading-8 tabular-nums text-fg">
+      {#if typeof value === 'function'}{@render value()}{:else}{value}{/if}
+    </div>
+    {#if sub}<div class="mt-0.5 font-sans text-[13px] leading-5 text-muted">{sub}</div>{/if}
+  </Panel>
+{:else}
+  <!-- A stat card is a headline number on a page that has three or four of
+       them; the corridor gives it material without competing with the value. -->
+  <Panel
+    field="ambient"
+    as={href ? 'a' : 'div'}
+    {href}
+    class={cn('p-5', href && 'block', href && focusRing, className)}
+  >
+    <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</div>
+    <div class="mt-1.5 font-sans text-2xl font-semibold text-fg">
+      {#if typeof value === 'function'}{@render value()}{:else}{value}{/if}
+    </div>
+    {#if sub}<div class="mt-1 font-mono text-[11px] text-muted">{sub}</div>{/if}
+  </Panel>
+{/if}

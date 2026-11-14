@@ -1,9 +1,11 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { AlertTriangle } from '@lucide/svelte'
+  import { AlertTriangle, Plus } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Generating from '@/components/ui/Generating.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { submitOnEnter } from '@/components/ui/control'
@@ -140,67 +142,65 @@
   }
 </script>
 
-<div class="space-y-5">
-  <section>
-    <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Main model</div>
-    <TargetRow {endpoints} value={main} onChange={(t) => (main = t)} allowEffort />
-  </section>
-
-  <section>
-    <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Model tiers (aliases)</div>
-    <div class="space-y-1.5" use:listStagger>
-      <!-- Index-keyed rows: entries fade in; no exit — an outro would fade the
-           LAST index while the remaining rows' contents shift, showing a
-           duplicate. Instant removal is the honest form here. -->
-      {#each aliases as a, i (i)}
-        <div in:fade={{ duration: 150 }}>
-          <TargetRow
-            {endpoints}
-            value={a}
-            name={a.name}
-            onName={(name) => (aliases = aliases.map((x, j) => (j === i ? { ...x, name } : x)))}
-            namePlaceholder="alias"
-            onChange={(t) => (aliases = aliases.map((x, j) => (j === i ? { ...x, ...t } : x)))}
-            onRemove={() => (aliases = aliases.filter((_, j) => j !== i))}
-            allowEffort
-          />
+<div class="space-y-8">
+  <SettingsSection title="Models">
+    <SettingsGroup>
+      <SettingsRow label="Main model" hint="What it answers with.">
+        <div class="w-[520px] max-w-full"><TargetRow {endpoints} value={main} onChange={(t) => (main = t)} allowEffort /></div>
+      </SettingsRow>
+      <SettingsRow label="Model tiers" hint="Named alternatives a conversation can switch to." stacked>
+        <div class="w-full space-y-2" use:listStagger>
+          <!-- Index-keyed rows: entries fade in; no exit — an outro would fade the
+               LAST index while the remaining rows' contents shift, showing a
+               duplicate. Instant removal is the honest form here. -->
+          {#each aliases as a, i (i)}
+            <div in:fade={{ duration: 150 }}>
+              <TargetRow
+                {endpoints}
+                value={a}
+                name={a.name}
+                onName={(name) => (aliases = aliases.map((x, j) => (j === i ? { ...x, name } : x)))}
+                namePlaceholder="Name"
+                onChange={(t) => (aliases = aliases.map((x, j) => (j === i ? { ...x, ...t } : x)))}
+                onRemove={() => (aliases = aliases.filter((_, j) => j !== i))}
+                allowEffort
+              />
+            </div>
+          {/each}
+          <Button variant="outline" size="sm" onclick={() => (aliases = [...aliases, { name: '', endpoint: endpoints[0]?.name ?? '', model: '' }])}>
+            <Plus size={16} />
+            Add tier
+          </Button>
         </div>
-      {/each}
-      <Button variant="outline" size="sm" onclick={() => (aliases = [...aliases, { name: '', endpoint: endpoints[0]?.name ?? '', model: '' }])}>
-        + Add tier
-      </Button>
-    </div>
-  </section>
-
-  <section>
-    <div class="mb-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Fallbacks (when the model above is down)</div>
-    <div class="space-y-1.5" use:listStagger>
-      {#each fallbacks as f, i (i)}
-        <div in:fade={{ duration: 150 }}>
-          <TargetRow
-            {endpoints}
-            value={f}
-            onChange={(t) => (fallbacks = fallbacks.map((x, j) => (j === i ? t : x)))}
-            onRemove={() => (fallbacks = fallbacks.filter((_, j) => j !== i))}
-          />
+      </SettingsRow>
+      <SettingsRow label="Fallbacks" hint="Tried in order when the main model is down." stacked>
+        <div class="w-full space-y-2" use:listStagger>
+          {#each fallbacks as f, i (i)}
+            <div in:fade={{ duration: 150 }}>
+              <TargetRow
+                {endpoints}
+                value={f}
+                onChange={(t) => (fallbacks = fallbacks.map((x, j) => (j === i ? t : x)))}
+                onRemove={() => (fallbacks = fallbacks.filter((_, j) => j !== i))}
+              />
+            </div>
+          {/each}
+          <Button variant="outline" size="sm" onclick={() => (fallbacks = [...fallbacks, { endpoint: endpoints[0]?.name ?? '', model: '' }])}>
+            <Plus size={16} />
+            Add fallback
+          </Button>
         </div>
-      {/each}
-      <Button variant="outline" size="sm" onclick={() => (fallbacks = [...fallbacks, { endpoint: endpoints[0]?.name ?? '', model: '' }])}>
-        + Add fallback
-      </Button>
-    </div>
-  </section>
+      </SettingsRow>
+    </SettingsGroup>
+  </SettingsSection>
 
-  <section>
-    <div class="mb-1.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-      Compaction
-      <InfoTip
-        text="Hermes folds the earlier part of a pinned session once the thread passes the threshold. The threshold is a ratio of the routed model's context window, and Hermes raises anything under 0.75 to 0.75 for models with less than 512K of context. The token ceiling is an absolute bound: whichever is reached first fires. Blank leaves Hermes' own default in place."
-      />
-    </div>
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-      <label class="flex items-center gap-2">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Threshold</span>
+  <SettingsSection
+    title="Compaction"
+    description="When a long conversation is folded into a summary."
+    info="Hermes folds the earlier part of a pinned session once the thread passes the threshold. The threshold is a share of the routed model's context window, and Hermes raises anything under 0.75 to 0.75 for models with less than 512K of context. The token ceiling is an absolute bound. Whichever is reached first fires."
+  >
+    <SettingsGroup>
+      <SettingsRow label="Threshold" hint="Share of the model's context window, from 0.1 to 1. Blank keeps the default." as="label">
         <Input
           size="sm"
           type="number"
@@ -209,13 +209,11 @@
           step={COMPACTION_BOUNDS.threshold.step}
           bind:value={threshold}
           oninput={() => (touched.threshold = true)}
-          placeholder="default"
-          title="Fraction of the model's context window at which the session is compacted (0.1 to 1); blank for Hermes' default"
-          class="w-24 font-[var(--font-mono)]"
+          placeholder="Default"
+          class="w-32 tabular-nums"
         />
-      </label>
-      <label class="flex items-center gap-2">
-        <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Token ceiling</span>
+      </SettingsRow>
+      <SettingsRow label="Token ceiling" hint="Compact past this many tokens, whatever the share says. Blank means none." as="label">
         <Input
           size="sm"
           type="number"
@@ -224,30 +222,27 @@
           step={COMPACTION_BOUNDS.tokens.step}
           bind:value={thresholdTokens}
           oninput={() => (touched.tokens = true)}
-          placeholder="none"
-          title="Compact once the session passes this many tokens, whatever the ratio says (1,000 to 10,000,000); blank for no ceiling"
-          class="w-32 font-[var(--font-mono)]"
+          placeholder="None"
+          class="w-32 tabular-nums"
         />
-      </label>
-    </div>
-  </section>
+      </SettingsRow>
+    </SettingsGroup>
+  </SettingsSection>
 
-  <section>
-    <div class="mb-1.5 flex items-center font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-      Soul
-      <Button variant="outline" size="sm" class="ml-auto" onclick={() => (soulOpen = true)}>
-        Open workspace
-      </Button>
-    </div>
-    <!-- Documents render as ground-inset wells (spec §8 code treatment). -->
-    <pre class="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-line bg-surface p-3 font-mono text-xs text-muted">{soul || 'No soul yet.'}</pre>
+  <SettingsSection title="Instructions" description="Who the agent is and how it works.">
+    {#snippet action()}
+      <Button variant="outline" size="sm" onclick={() => (soulOpen = true)}>Open editor</Button>
+    {/snippet}
+    <SettingsGroup>
+      <pre class="max-h-48 overflow-y-auto whitespace-pre-wrap px-5 py-4 font-mono text-xs leading-5 text-muted">{soul || 'No instructions yet.'}</pre>
+    </SettingsGroup>
     {#if soulOpen}
       <InternalEditorModal
         open
         nested
         onClose={() => (soulOpen = false)}
         title={`${def.displayName} · SOUL.md`}
-        subtitle="Who the agent is. Saving publishes a soul-only version on top of the last saved config."
+        subtitle="Who the agent is. Saving publishes a new version with only this changed."
         value={soul}
         editable
         saving={!!busy}
@@ -272,8 +267,8 @@
           if (settle(r, sentAt)) {
             pushToast(
               stillApplying
-                ? { title: `${def.displayName} · soul saved, still applying`, body: stillApplying }
-                : { title: `${def.displayName} · soul saved, not applied`, body: r.warning?.trim() || notApplied || undefined, tone: 'danger' },
+                ? { title: `${def.displayName} · instructions saved, still applying`, body: stillApplying }
+                : { title: `${def.displayName} · instructions saved, not applied`, body: r.warning?.trim() || notApplied || undefined, tone: 'danger' },
             )
           }
           await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
@@ -282,38 +277,40 @@
         muse={{ kind: 'soul', context: `${def.displayName} — ${def.role ?? def.department} agent (slug "${def.slug}").` }}
       />
     {/if}
-  </section>
+  </SettingsSection>
 
-  {#if err}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err}</div>{/if}
-  {#if stillApplying}
-    <div transition:slide={{ duration: 150 }} class="flex items-start gap-2 rounded-lg border border-line bg-surface p-3 text-sm text-fg" data-testid="config-still-applying">
-      <WaitingMark site="fleet/agent-controls" size={12} class="mt-0.5 shrink-0 text-muted" />
-      <span>{stillApplying}</span>
-    </div>
-  {/if}
-  {#if notApplied}
-    <div transition:slide={{ duration: 150 }} class="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm text-fg" data-testid="config-not-applied">
-      <AlertTriangle size={13} class="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
-      <span>{notApplied}</span>
-    </div>
-  {/if}
-
-  {#if busy === 'apply'}
-    <Generating
-      site="fleet/agent-apply"
-      label={`Applying to ${def.displayName}: the change lands in place, and the agent restarts only if the edit needs it (offline for about a minute)`}
-      lines={2}
-    />
-  {/if}
-  <div class="flex items-center gap-2 border-t border-line pt-3">
-    <Input bind:value={note} onkeydown={submitOnEnter(() => !busy && void save(false))} placeholder="version note (optional)" size="sm" class="min-w-0 flex-1" />
-    <Button variant="outline" size="sm" onclick={() => void save(false)} disabled={!!busy}>
-      Save version
-    </Button>
-    {#if def.managed}
-      <Button size="sm" onclick={() => void save(true)} disabled={!!busy}>
-        {busy === 'apply' ? 'Applying' : 'Save & apply'}
-      </Button>
+  <!-- The save bar stays at the foot of the pane while the form scrolls
+       under it: saving here deploys, so it keeps its buttons. -->
+  <!-- -mb-6: at the end of the scroll the bar sits on the dialog's edge, not above the pane's padding. -->
+  <div class="sticky -bottom-6 z-10 -mx-7 -mb-6 space-y-3 border-t border-line bg-panel px-7 py-4">
+    {#if err}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{err}</div>{/if}
+    {#if stillApplying}
+      <div transition:slide={{ duration: 150 }} class="flex items-start gap-2 font-sans text-[13px] leading-5 text-fg" data-testid="config-still-applying">
+        <WaitingMark site="fleet/agent-controls" size={12} class="mt-1 shrink-0 text-muted" />
+        <span>{stillApplying}</span>
+      </div>
     {/if}
+    {#if notApplied}
+      <div transition:slide={{ duration: 150 }} class="flex items-start gap-2 font-sans text-[13px] leading-5 text-fg" data-testid="config-not-applied">
+        <AlertTriangle size={14} class="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+        <span>{notApplied}</span>
+      </div>
+    {/if}
+    {#if busy === 'apply'}
+      <Generating
+        site="fleet/agent-apply"
+        label={`Applying to ${def.displayName}. It restarts only if the change needs it, and is then offline for about a minute.`}
+        lines={2}
+      />
+    {/if}
+    <div class="flex items-center gap-2">
+      <Input bind:value={note} onkeydown={submitOnEnter(() => !busy && void save(false))} placeholder="Version note (optional)" aria-label="Version note" size="sm" class="min-w-0 flex-1" />
+      <Button variant="outline" size="md" onclick={() => void save(false)} disabled={!!busy}>Save version</Button>
+      {#if def.managed}
+        <Button size="md" onclick={() => void save(true)} disabled={!!busy}>
+          {busy === 'apply' ? 'Applying' : 'Save and apply'}
+        </Button>
+      {/if}
+    </div>
   </div>
 </div>
