@@ -5,7 +5,6 @@
   import Input from '@/components/ui/Input.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
@@ -20,7 +19,14 @@
   // harnesses"). Automatic follows upstream — a check every ~6 h, a soak, a
   // smoke test on one workbench, then new jobs — and Pinned holds one
   // version. A running job keeps what it started on. The same shape as the
-  // Agent image panel beside it; admin-only on the server.
+  // Agent image group above it; admin-only on the server.
+  let {
+    note = $bindable(),
+  }: {
+    /** What the card says about the tools while it is closed, when they are
+     *  not at rest. */
+    note?: string
+  } = $props()
 
   interface Candidate {
     version: string
@@ -144,19 +150,24 @@
   }
   const TONE = { ok: 'text-fg', danger: 'text-danger' } as const
   let showHistory = $state(false)
+  const testing = $derived(s?.tools.some((t) => t.next) ?? false)
+  $effect(() => {
+    note = testing ? 'testing a workbench update' : query.isError ? 'workbench tools unreadable' : undefined
+  })
 </script>
 
-<SettingsSection title="Workbench tools">
-  {#snippet action()}
-    {#if s?.tools.some((t) => t.next)}
-      <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="accent" pulse title="An update is being smoke-tested" />Testing an update</span>
+<section>
+  <div class="mb-2 flex items-center justify-between gap-4">
+    <h3 class="font-sans text-xs font-medium leading-4 text-muted">Workbench tools</h3>
+    {#if testing}
+      <span class="flex items-center gap-2 font-sans text-xs leading-4 text-muted"><StatusDot status="accent" pulse title="An update is being smoke-tested" />Testing an update</span>
     {/if}
-  {/snippet}
-  <SettingsGroup>
+  </div>
+  <SettingsGroup bare class="border-b-0">
     {#if query.isPending}
-      <p class="px-5 py-4 font-sans text-sm leading-5 text-muted">Reading the workbench tools</p>
+      <p class="py-4 font-sans text-sm leading-5 text-muted">Reading the workbench tools</p>
     {:else if query.isError || !s}
-      <div class="space-y-2 px-5 py-4 font-sans text-[13px] leading-5">
+      <div class="space-y-2 py-4 font-sans text-[13px] leading-5">
         <p class="text-danger">Could not read the workbench tools: {errorMessage(query.error)}</p>
         {#if unreadable}
           <Button variant="outline" size="sm" disabled={busy !== null} onclick={reset}>Reset the state</Button>
@@ -169,7 +180,7 @@
           <SettingsRow label={t.label}>
             {#snippet meta()}
               <code class="font-mono text-xs text-muted">{t.current}</code>
-              <Chip>{t.pinned ? `Pinned to ${t.pinned}` : 'Automatic'}</Chip>
+              {#if t.pinned}<Chip>Pinned to {t.pinned}</Chip>{/if}
             {/snippet}
             {#snippet hint()}
               {#if t.lastCheck}
@@ -221,7 +232,7 @@
             {/if}
           </SettingsRow>
           {#each t.held as h (h.version)}
-            <div class="flex items-center justify-between gap-6 px-5 pb-3 font-sans text-[13px] leading-5">
+            <div class="flex items-center justify-between gap-6 pb-3 font-sans text-[13px] leading-5">
               <span class="min-w-0">
                 <span class="text-danger">Held <span class="font-mono text-xs">{h.version}</span></span>
                 <span class="text-muted"> · {h.reason.split('\n')[0]}</span>
@@ -246,12 +257,12 @@
       </SettingsRow>
 
       {#if s.volumes.length > 0}
-        <div class="px-5 py-4">
+        <div class="py-4">
           <div class="mb-1 font-sans text-xs font-medium leading-4 text-muted">Installed per agent</div>
           <ul>
             {#each s.volumes as v (v.department)}
               <li class="flex min-h-8 items-center justify-between gap-6 font-sans text-[13px] leading-5">
-                <span class="min-w-0 truncate text-fg">{agentLabel(v.agent ?? v.department).label}</span>
+                <span class="min-w-0 break-words text-fg">{agentLabel(v.agent ?? v.department).label}</span>
                 <span class="shrink-0 {v.refused || v.retryAt ? 'text-danger' : 'text-muted'}">
                   {#if v.refused}would not take omp {v.refused.omp} · bun {v.refused.bun}: {(v.error ?? '').split('\n')[0]}. Its jobs run the fallback.
                   {:else if v.retryAt}its host failed {v.hostFailures}×, tried again {until(v.retryAt)}
@@ -272,7 +283,7 @@
             expanded={showHistory}
           />
           {#if showHistory}
-            <ul transition:slide={{ duration: 150 }} class="space-y-1 px-5 pb-4 font-sans text-[13px] leading-5 text-muted">
+            <ul transition:slide={{ duration: 150 }} class="space-y-1 pb-4 font-sans text-[13px] leading-5 text-muted">
               {#each s.events as ev, n (n)}
                 <li><span class="text-fg">{ago(ev.at)}</span> · {ev.text}</li>
               {/each}
@@ -282,4 +293,4 @@
       {/if}
     {/if}
   </SettingsGroup>
-</SettingsSection>
+</section>

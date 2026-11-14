@@ -5,7 +5,6 @@
   import Checkbox from '@/components/ui/Checkbox.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
-  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import {
@@ -19,10 +18,10 @@
 
   // THE CONTROLS an admin reaches for across the whole instance, each one
   // the same call its own page makes: roll every agent (Agents), start the
-  // ones that are stopped (the fleet reconcile), and re-probe every MCP
+  // ones that are stopped (the fleet reconcile), and re-probe every tool
   // server now rather than at the next hourly pass (the MCP health job).
   // All three are admin-only on the server, so the overview mounts this
-  // panel for admins only.
+  // panel for admins only, as the first group of its Fleet controls card.
   //
   // Each says what it is about to do on the button, and answers in a line
   // under its row — the deploying-action rule from UI-CONVENTIONS.
@@ -85,7 +84,7 @@
     }
   })
 
-  // ── Check MCP servers ──
+  // ── Check tool servers ──
   interface HealthReport {
     checked: number
     down: number
@@ -131,8 +130,9 @@
   {#if line}<span class={TONE[line.tone]}>{line.text}</span>{:else}{resting}{/if}
 {/snippet}
 
-<SettingsSection title="Fleet controls">
-  <SettingsGroup>
+<section>
+  <h3 class="mb-2 font-sans text-xs font-medium leading-4 text-muted">All agents</h3>
+  <SettingsGroup bare class="border-b-0">
     <div>
       <SettingsRow label="Restart all agents">
         {#snippet hint()}{@render result(rollLine, 'Each agent is offline for about a minute while it restarts.')}{/snippet}
@@ -150,7 +150,7 @@
       </SettingsRow>
       {#if rollConfirming}
         <div transition:slide={{ duration: 150 }}>
-          <div class="flex flex-wrap items-center justify-between gap-3 border-t border-line-subtle px-5 py-3">
+          <div class="flex flex-wrap items-center justify-between gap-3 border-t border-line-subtle py-3">
             <Checkbox checked={rollStopped} onChange={(v) => (rollStopped = v)} label="Also start agents that are stopped" />
             <div class="flex items-center gap-2">
               <Button variant="ghost" size="sm" onclick={() => (rollConfirming = false)} disabled={rollBusy}>Cancel</Button>
@@ -170,7 +170,7 @@
         Start agents
       </Button>
     </SettingsRow>
-    <SettingsRow label="Check MCP servers">
+    <SettingsRow label="Check tool servers">
       {#snippet hint()}{@render result(mcpLine, 'Tests every external server now instead of at the hourly check.')}{/snippet}
       <Button variant="outline" size="sm" class={ACTION} disabled={mcpBusy} onclick={() => void checkMcp()}>
         {#if mcpBusy}<WaitingMark site="manage/mcp-check" size={12} />{:else}<Activity size={14} />{/if}
@@ -178,4 +178,4 @@
       </Button>
     </SettingsRow>
   </SettingsGroup>
-</SettingsSection>
+</section>

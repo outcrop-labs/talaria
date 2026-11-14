@@ -5,8 +5,8 @@
   import { useMcpServers } from '@/routes/app/mcp'
   import { p } from '@/router'
 
-  // The MCP servers the agents can reach, and how many need someone: the
-  // same verdict (`serverStatus`) each card on the MCP page shows, counted.
+  // The tool servers the agents can reach, and how many need someone: the
+  // same verdict (`serverStatus`) each row on the Tools page shows, counted.
   const serversQuery = useMcpServers()
   const servers = $derived(serversQuery.data)
   const enabled = $derived((servers ?? []).filter((s) => s.enabled))
@@ -14,7 +14,7 @@
 </script>
 
 <Stat
-  label="MCP servers"
+  label="Tool servers"
   href={p('/mcp')}
   sub={servers
     ? attention > 0

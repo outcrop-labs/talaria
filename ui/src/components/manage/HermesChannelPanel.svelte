@@ -6,7 +6,6 @@
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
-  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Chip from '@/components/ui/Chip.svelte'
   import Select from '@/components/ui/Select.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
@@ -21,7 +20,15 @@
   // fleet"). Automatic follows Hermes' `stable` — a check every ~6 h, the new
   // image prepared in the background, a canary, then agents one at a time in
   // the maintenance window — and Pinned holds every agent on one version.
-  // Admin-only on the server, so the overview mounts it for admins only.
+  // Admin-only on the server, so the overview mounts it for admins only, as
+  // a group of its Fleet controls card.
+  let {
+    note = $bindable(),
+  }: {
+    /** What the card says about the image while it is closed, when it is not
+     *  at rest. */
+    note?: string
+  } = $props()
 
   interface Labelled {
     digest: string
@@ -238,19 +245,23 @@
     if (rollout.phase === 'rolling' && !rollout.moved.includes(a.slug)) return 'queued'
     return null
   }
+  $effect(() => {
+    note = rollout?.open ? 'agent image rolling out' : query.isError ? 'agent image unreadable' : undefined
+  })
 </script>
 
-<SettingsSection title="Agent image">
-  {#snippet action()}
+<section>
+  <div class="mb-2 flex items-center justify-between gap-4">
+    <h3 class="font-sans text-xs font-medium leading-4 text-muted">Agent image</h3>
     {#if rollout?.open}
-      <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="accent" pulse title="A rollout is in progress" />Rolling out</span>
+      <span class="flex items-center gap-2 font-sans text-xs leading-4 text-muted"><StatusDot status="accent" pulse title="A rollout is in progress" />Rolling out</span>
     {/if}
-  {/snippet}
-  <SettingsGroup>
+  </div>
+  <SettingsGroup bare class="border-b-0">
     {#if query.isPending}
-      <p class="px-5 py-4 font-sans text-sm leading-5 text-muted">Reading the agent image</p>
+      <p class="py-4 font-sans text-sm leading-5 text-muted">Reading the agent image</p>
     {:else if query.isError || !s}
-      <div class="space-y-2 px-5 py-4 font-sans text-[13px] leading-5">
+      <div class="space-y-2 py-4 font-sans text-[13px] leading-5">
         <p class="text-danger">Could not read the agent image: {errorMessage(query.error)}</p>
         {#if unreadable}
           <p class="text-muted">Agents keep running, and you can still hire, start and edit them. Only automatic image updates are paused.</p>
@@ -261,7 +272,9 @@
     {:else}
       <SettingsRow label={`Hermes ${s.current.label}`}>
         {#snippet meta()}
-          <Chip>{s.standing === 'following' ? 'Automatic' : s.standing === 'pinned' ? `Pinned to ${s.pinned?.label}` : 'Set by the operator'}</Chip>
+          {#if s.standing !== 'following'}
+            <Chip>{s.standing === 'pinned' ? `Pinned to ${s.pinned?.label}` : 'Set by the operator'}</Chip>
+          {/if}
         {/snippet}
         {#snippet hint()}
           {#if s.standing === 'off'}
@@ -326,7 +339,7 @@
             {/if}
           </SettingsRow>
           {#if held}
-            <div class="px-5 pb-4 font-sans text-[13px] leading-5">
+            <div class="pb-4 font-sans text-[13px] leading-5">
               <p class="text-danger">Held for review. A Hermes internal that Talaria relies on changed:</p>
               <ul class="mt-1 list-disc pl-4 text-muted">
                 {#each held.contractProblems as p, n (n)}<li>{p}</li>{/each}
@@ -402,12 +415,12 @@
       {/if}
 
       {#if s.agents.length > 0}
-        <div class="px-5 py-4">
+        <div class="py-4">
           <div class="mb-1 font-sans text-xs font-medium leading-4 text-muted">Agents on this image</div>
           <ul>
             {#each s.agents as a (a.slug)}
-              <li class="flex h-8 items-center justify-between gap-6 font-sans text-[13px] leading-5">
-                <span class="min-w-0 truncate text-fg">{a.displayName}</span>
+              <li class="flex min-h-8 items-center justify-between gap-6 font-sans text-[13px] leading-5">
+                <span class="min-w-0 break-words text-fg">{a.displayName}</span>
                 <span class="shrink-0 text-muted">
                   {#if agentNote(a)}<span class="mr-2">{agentNote(a)}</span>{/if}
                   <span class="font-mono text-xs">{a.image?.label ?? (a.onChannel ? 'operator image' : 'workbench image')}</span>
@@ -427,7 +440,7 @@
             expanded={showHistory}
           />
           {#if showHistory}
-            <ul transition:slide={{ duration: 150 }} class="space-y-1 px-5 pb-4 font-sans text-[13px] leading-5 text-muted">
+            <ul transition:slide={{ duration: 150 }} class="space-y-1 pb-4 font-sans text-[13px] leading-5 text-muted">
               {#each s.events as ev, n (n)}
                 <li><span class="text-fg">{ago(ev.at)}</span> · {ev.text}</li>
               {/each}
@@ -437,4 +450,4 @@
       {/if}
     {/if}
   </SettingsGroup>
-</SettingsSection>
+</section>

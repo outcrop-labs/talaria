@@ -12,8 +12,8 @@
   // WORST NEWS FIRST. The alerts the instance is raising about itself —
   // agents down or unhealthy, unroutable brains, MCP and retrieval planes,
   // the email outbox, unpriced usage — each a row that goes where it can be
-  // fixed. `/api/alerts` filters to what this viewer may act on. This page
-  // owns the list: Observability shows it as a count and a link.
+  // fixed. `/api/alerts` filters to what this viewer may act on. Each is one
+  // line here, and the Alerts tab has the explanations in full.
   //
   // "All clear" is a CLAIM about the instance. It only comes from a 200 that
   // really carried no problems; a failed read says so instead.
@@ -53,7 +53,7 @@
       </div>
     {:else if problems.length > 0}
       {#each problems.slice(0, SHOWN) as a, i (i)}
-        <AlertRow alert={a} />
+        <AlertRow alert={a} compact />
       {/each}
       {#if problems.length > SHOWN}
         <a href="/observability/alerts" class="block px-5 py-3 font-sans text-[13px] leading-5 text-muted transition-colors hover:text-fg">

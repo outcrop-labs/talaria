@@ -14,3 +14,10 @@ export const table = {
 /** A link from a section's title row to the tab or page that owns the detail. */
 export const sectionLink =
   'flex items-center gap-1 rounded font-sans text-[13px] font-medium leading-5 text-muted transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
+
+/** One quiet line of facts under a stat strip: counts and readings that do
+ *  not earn a stat, each a `fact`, the ones that go somewhere a `factLink`. */
+export const factLine = 'flex flex-wrap gap-x-2 font-sans text-[13px] leading-5 text-muted'
+export const fact = "whitespace-nowrap [&:not(:first-child)]:before:mr-2 [&:not(:first-child)]:before:content-['·']"
+export const factLink =
+  'rounded underline-offset-2 transition-colors hover:text-fg hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
