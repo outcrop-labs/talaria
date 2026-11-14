@@ -41,7 +41,7 @@
   }
 </script>
 
-<SettingsRow label="Title" hint="Shown on your profile in Comms." as="label">
+<SettingsRow label="Job title" info="Shown on your profile in Comms." as="label">
   {#if prefsQuery.isPending}
     <Skeleton class="h-9 w-[280px]" />
   {:else if prefsQuery.isError}

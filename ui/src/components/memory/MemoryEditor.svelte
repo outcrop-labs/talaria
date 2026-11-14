@@ -166,9 +166,10 @@
           </Button>
           <InfoTip text={tip} />
           <span class="ml-auto shrink-0 font-mono text-xs text-muted">MEMORY.md</span>
-          <IconButton title="Version history" active={historyOpen} onclick={() => (historyOpen = !historyOpen)}>
-            <History size={16} />
-          </IconButton>
+          <!-- In the settings area a control in content says what it is. -->
+          <Button variant="ghost" size="sm" class={cn('-mr-3 gap-1.5', historyOpen && 'text-fg')} aria-pressed={historyOpen} onclick={() => (historyOpen = !historyOpen)}>
+            <History size={14} />History
+          </Button>
         </div>
       {/if}
     {:else}
@@ -262,7 +263,7 @@
               Cancel
             </Button>
           {/if}
-          <Button size="sm" onclick={() => void saveAll()} disabled={busy || !dirty}>
+          <Button size="sm" variant={sans && !dirty ? 'outline' : 'primary'} onclick={() => void saveAll()} disabled={busy || !dirty}>
             {busy ? 'Saving' : 'Save'}
           </Button>
         </div>

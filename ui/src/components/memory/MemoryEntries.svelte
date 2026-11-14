@@ -198,7 +198,8 @@
      control that takes them back to the memory they can read. The failure
      belongs where the list belongs. -->
 {#if sans}
-  {#snippet editor(value: string, label: string, placeholder: string | undefined, onInput: (v: string) => void, onSave: () => void)}
+  {#snippet editor(value: string, was: string, label: string, placeholder: string | undefined, onInput: (v: string) => void, onSave: () => void)}
+    {@const changed = value.trim() !== '' && value.trim() !== was.trim()}
     <div class="px-5 py-4">
       <Textarea
         {value}
@@ -212,7 +213,7 @@
       />
       <div class="mt-3 flex items-center justify-end gap-2">
         <Button size="sm" variant="ghost" onclick={reset} disabled={busy}>Cancel</Button>
-        <Button size="sm" variant="outline" onclick={onSave} disabled={busy || !value.trim()}>
+        <Button size="sm" variant={changed ? 'primary' : 'outline'} onclick={onSave} disabled={busy || !changed}>
           {busy ? 'Saving' : 'Save entry'}
         </Button>
       </div>
@@ -266,7 +267,7 @@
             {#each hits as i (i)}
               {@const entry = entries[i] ?? ''}
               {#if editing === i}
-                {@render editor(draft, 'Entry text', undefined, (v) => (draft = v), () => void saveEdit())}
+                {@render editor(draft, opened, 'Entry text', undefined, (v) => (draft = v), () => void saveEdit())}
               {:else}
                 <SettingsRow
                   onOpen={canEdit ? () => !busy && startEdit(i) : undefined}
@@ -296,7 +297,7 @@
           {/if}
           {#if canEdit}
             {#if adding}
-              {@render editor(fresh, 'New entry', 'One thing the agent should remember', (v) => (fresh = v), () => void add())}
+              {@render editor(fresh, '', 'New entry', 'One thing the agent should remember', (v) => (fresh = v), () => void add())}
             {:else}
               <div class="px-5 py-3">
                 <Button size="sm" variant="outline" onclick={() => (adding = true)}>Add entry</Button>
