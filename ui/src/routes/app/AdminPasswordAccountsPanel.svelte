@@ -157,7 +157,7 @@
         class="w-[280px]"
         onkeydown={(e) => e.key === 'Enter' && void submitSet(userId)}
       />
-      <SaveAction size="md" dirty={newPassword.length >= 8} {busy} onclick={() => void submitSet(userId)}>Save password</SaveAction>
+      <SaveAction always size="md" dirty={newPassword.length >= 8} {busy} onclick={() => void submitSet(userId)}>Save password</SaveAction>
       <Button size="md" variant="ghost" onclick={() => openSet(key)}>Cancel</Button>
     </div>
   </div>

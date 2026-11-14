@@ -267,9 +267,12 @@
               Cancel
             </Button>
           {/if}
-          <Button size="sm" variant={sans && !dirty ? 'outline' : 'primary'} onclick={() => void saveAll()} disabled={busy || !dirty}>
-            {busy ? 'Saving' : 'Save'}
-          </Button>
+          <!-- In the settings voice Save is there only while there is something to save. -->
+          {#if !sans || dirty || busy}
+            <Button size="sm" onclick={() => void saveAll()} disabled={busy || !dirty}>
+              {busy ? 'Saving' : 'Save'}
+            </Button>
+          {/if}
         </div>
       {/if}
     {/if}

@@ -378,7 +378,8 @@
   {#if sans}
     <!-- One footer for every record in the settings area: the destructive link
          at the left, then the record's one gold primary at the right with its
-         way out beside it. Save is gold only while there is something to save. -->
+         way out beside it. Save is there only while there is something to
+         save, so a clean record never shows one that looks switched off. -->
     <div class="flex h-[53px] shrink-0 items-center gap-2 border-t border-line px-4">
       {#if onDelete}
         <DangerLink onClick={onDelete}>{deleteLabel ?? `Delete ${kind.toLowerCase()}`}</DangerLink>
@@ -390,14 +391,8 @@
       {#if onClose}
         <Button variant="ghost" size="sm" onclick={onClose}>Close</Button>
       {/if}
-      {#if editable}
-        <Button
-          size="sm"
-          variant={dirty ? 'primary' : 'outline'}
-          onclick={() => void saveAll()}
-          disabled={busy || !dirty}
-          title={dirty ? 'Save (⌘S)' : 'Nothing to save'}
-        >
+      {#if editable && (dirty || busy)}
+        <Button size="sm" onclick={() => void saveAll()} disabled={busy} title="Save (⌘S)">
           {busy ? 'Saving' : 'Save'}
         </Button>
       {/if}

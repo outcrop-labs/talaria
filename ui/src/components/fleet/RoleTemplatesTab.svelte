@@ -201,16 +201,18 @@
         <span class={['min-w-0 flex-1 truncate text-right font-sans text-[13px] leading-5', err ? 'text-danger' : 'text-muted']}>
           {#if err}{err}{:else if isNew && selected}Saves as your organization’s version of “{draft.name}”.{/if}
         </span>
-        <!-- Gold once there is an edit to save. An untouched common role can still be copied as it stands. -->
-        <Button
-          size="sm"
-          variant={changed ? 'primary' : 'outline'}
-          class="shrink-0"
-          onclick={() => void save()}
-          disabled={busy || (!changed && !isNew) || !draft.slug.trim() || !draft.name.trim() || !draft.soul.trim()}
-        >
-          {busy ? 'Saving' : isNew ? 'Save as ours' : 'Save'}
-        </Button>
+        <!-- Gold once there is an edit to save, and not there while there is none. An untouched common role can still be copied as it stands. -->
+        {#if changed || isNew || busy}
+          <Button
+            size="sm"
+            variant={changed ? 'primary' : 'outline'}
+            class="shrink-0"
+            onclick={() => void save()}
+            disabled={busy || !draft.slug.trim() || !draft.name.trim() || !draft.soul.trim()}
+          >
+            {busy ? 'Saving' : isNew ? 'Save as ours' : 'Save'}
+          </Button>
+        {/if}
       </div>
     {/if}
   {/snippet}
