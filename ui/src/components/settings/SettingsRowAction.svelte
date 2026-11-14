@@ -4,12 +4,12 @@
   import { buttonClasses } from '@/components/ui/button'
   import { useUiVoice } from '@/lib/ui-voice'
 
-  // The one action a row that does not open shows when it needs a person: a
-  // small secondary button named for what it does ("Connect", "Reconnect",
-  // "Verify"), never "Fix". The row's status says what is wrong. A row that
-  // opens shows no action: its chevron is its one affordance, and the action
-  // is in its kebab. `SettingsRow` hides the kebab of a row that holds one of
-  // these until the row is hovered or focused.
+  // The one action a row shows when its state needs a person: a small
+  // secondary button named for what it does ("Connect", "Reconnect",
+  // "Verify"), never "Fix". The row's status says what is wrong. On a row that
+  // opens it takes the chevron's place, and the row still opens when clicked.
+  // `SettingsRow` draws it at the row's edge and hides the kebab of a row that
+  // holds one until the row is hovered or focused.
   let {
     onclick,
     href,

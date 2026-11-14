@@ -113,20 +113,22 @@ instead of styling its own panels:
   after the kebab. In a group where only some rows open, the rest hold the
   chevron's cell empty, so the kebabs stay in one column.
 - A row ends in one thing at rest, besides its own value control (a switch, a
-  select, a field). A row that opens ends in its chevron: it shows its status
-  and no action, and what its state needs is in its kebab and behind the row.
-  A row that does not open and needs one action shows it as a
-  `SettingsRowAction`, a small secondary button named for what it does
-  ("Connect", "Reconnect", "Verify", "Set up"), the name its menu or dialog
-  uses. No row says "Fix". The row's status says what is wrong.
+  select, a field). A row that opens ends in its chevron. A row whose state
+  needs one action from a person ends in a `SettingsRowAction` instead: a
+  small secondary button at the row's edge, named for what it does ("Connect",
+  "Reconnect", "Verify", "Set credentials"), the name its menu or dialog uses.
+  That holds for a row that opens too (a tool server that needs credentials):
+  the button takes the chevron's place and the row still opens when clicked.
+  No row says "Fix". The row's status says what is wrong.
 - The kebab of a row that opens, or that holds a `SettingsRowAction`, appears
   when the row is hovered, when focus is anywhere inside the row and while its
   menu is open. It keeps its cell, its tab stop and its name, and a device
   that cannot hover always shows it. A row whose only control is its kebab
   keeps it visible, and so does an agent card, which has no chevron.
-- A row that expands and names its action (an app waiting for approval) ends
-  in the button alone. `SettingsRow` leaves the disclosure chevron out, the
-  row still takes the click, and its menu says "Show details".
+- A row that expands or opens and names its action (an app waiting for
+  approval, a tool server that needs setting up) ends in the button alone.
+  `SettingsRow` leaves its chevron out, the row still takes the click, and
+  its menu says "Show details" or "Manage".
 - The alert rows on the overview and in Observability end in `SettingsRowFix`:
   "Fix" or "Review" and a chevron, read as one link. The row is the button.
 - A group lines its rows up: the right side is one column, as wide as the
