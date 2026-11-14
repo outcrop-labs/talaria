@@ -3,7 +3,7 @@
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import { navigate, route } from '@/router'
-  import { tabFromPath } from '@/lib/route-tabs'
+  import { instanceAt, type InstanceTabId } from '@/lib/settings-nav'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -36,7 +36,7 @@
   import AdminSettingsPanel from './AdminSettingsPanel.svelte'
   import AdminSignupDomainsPanel from './AdminSignupDomainsPanel.svelte'
   import AdminUpdatePanel from './AdminUpdatePanel.svelte'
-  import { ADMIN_TABS, useAdminPermissions, type AdminTab } from './admin'
+  import { useAdminPermissions } from './admin'
 
   const session = useSession()
   const me = $derived(session.data)
@@ -49,9 +49,11 @@
   let addingCredentials = $state(false)
 
   // /admin/security deep-links a concern.
-  // THE URL IS THE TAB — /admin and /admin/<tab>.
-  const tab = $derived(tabFromPath(route.pathname, '/admin', ADMIN_TABS.map((t) => t.id), 'org'))
-  const setTab = (t: AdminTab) => {
+  // THE URL IS THE TAB — /admin and /admin/<tab>. Which of the Instance
+  // group's pages this is follows from the tab: each page shows only its own.
+  const here = $derived(instanceAt(route.pathname))
+  const tab = $derived(here.tab)
+  const setTab = (t: InstanceTabId) => {
     if (t === 'org') void navigate('/admin')
     else void navigate('/admin/:tab', { params: { tab: t } })
   }
@@ -62,9 +64,9 @@
 {:else}
   <!-- One concern per tab; every panel keeps its own component. -->
   <SettingsPage
-    title="Admin"
-    blurb="Settings for the whole instance."
-    tabs={ADMIN_TABS}
+    title={here.page.label}
+    blurb={here.page.blurb}
+    tabs={here.page.tabs}
     {tab}
     onTab={setTab}
   >

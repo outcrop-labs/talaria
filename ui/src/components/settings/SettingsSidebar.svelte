@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Bell, Blocks, KeyRound, LayoutDashboard, Link2, Search, Shield, Sparkles, User, type LucideIcon } from '@lucide/svelte'
+  import { Bell, Blocks, Building2, KeyRound, LayoutDashboard, Link2, Scale, Search, Shield, Sparkles, User, type LucideIcon } from '@lucide/svelte'
   import NavIcon from '@/components/app/NavIcon.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import { listQuery } from '@/components/ui/query-state'
@@ -23,16 +23,15 @@
   } from '@/lib/settings-nav'
   import { revealCurrent } from '@/lib/tab-strip'
   import { holdSansScreen, setUiVoice } from '@/lib/ui-voice'
-  import { ADMIN_TABS } from '@/routes/app/admin'
   import AppsMark from '@/routes/app/AppsMark.svelte'
   import { MODEL_TABS } from '@/routes/app/models'
   import { OBS_TABS } from '@/routes/app/observability/observability'
   import { navigate, route } from '@/router'
 
   // The settings area's one navigation: docked beside every page behind the
-  // dock's gear and the user menu's Settings and Admin, and absent everywhere
-  // else. `user` is the viewer whose grants decide the rows, handed down from
-  // the layout so the dock and the sidebar cannot drift.
+  // dock's gear and the user menu's Settings and Instance settings, and absent
+  // everywhere else. `user` is the viewer whose grants decide the rows, handed
+  // down from the layout so the dock and the sidebar cannot drift.
   let { user }: { user: SessionUser } = $props()
 
   setUiVoice('sans')
@@ -67,7 +66,9 @@
     '/settings/connections': Link2,
     '/settings/keys': KeyRound,
     [MANAGE_HOME]: LayoutDashboard,
-    [ADMIN_HOME]: Shield,
+    [ADMIN_HOME]: Building2,
+    '/admin/agents': Scale,
+    '/admin/storage': Shield,
   }
   // An app's row wears the app's own glyph, so the rows of the App settings group
   // tell apart. It is drawn in the 16px box the drawn icons fill, in the
@@ -78,7 +79,6 @@
     ...OWN_PAGE_TABS,
     '/models': MODEL_TABS,
     '/observability': OBS_TABS,
-    [ADMIN_HOME]: ADMIN_TABS,
   }
 
   let query = $state('')
@@ -104,6 +104,10 @@
 
   const [sendMark, receiveMark] = markCrossfade()
 
+  // 10px above a group and 4px under the search field is the most air that
+  // still ends an admin's list, three Instance rows included, inside a 900px
+  // window with two app rows.
+  const groupStack = 'space-y-2.5'
   const groupLabel = 'flex h-7 items-center px-2 font-sans text-xs leading-4 text-muted'
   const rowClass =
     'relative flex h-8 items-center gap-2.5 rounded-md px-2 font-sans text-[13.5px] leading-5 text-muted transition-colors duration-[120ms] hover:bg-[var(--settings-selected)]/50 hover:text-fg focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent'
@@ -158,12 +162,12 @@
       </label>
     </div>
 
-    <nav class="min-h-0 flex-1 overflow-y-auto p-3" aria-label="Settings pages">
+    <nav class="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-1" aria-label="Settings pages">
       {#if searching}
         {#if matches.length === 0}
           <p class="px-2 py-1.5 font-sans text-[13px] leading-5 text-muted">No settings match</p>
         {:else}
-          <div class="space-y-5">
+          <div class={groupStack}>
             {#each matchGroups as { group, matches: found } (group.id)}
               <section aria-label={group.label}>
                 <h2 class={groupLabel}>{group.label}</h2>
@@ -184,7 +188,7 @@
           </div>
         {/if}
       {:else}
-        <div class="space-y-5">
+        <div class={groupStack}>
           {#each nav.groups as group (group.id)}
             <section aria-label={group.label}>
               <h2 class={groupLabel}>{group.label}</h2>

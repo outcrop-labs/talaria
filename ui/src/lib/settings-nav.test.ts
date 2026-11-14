@@ -2,7 +2,7 @@
 // Fixtures are hand-built cores shaped like NAV, as in manage-area.test.ts.
 import { describe, expect, it } from 'vitest'
 import type { NavSection } from './nav'
-import { OWN_PAGE_TABS, searchSettings, settingsNav, type SettingsNavApp, type SettingsPageTabs } from './settings-nav'
+import { INSTANCE_PAGES, instanceAt, OWN_PAGE_TABS, searchSettings, settingsNav, type SettingsNavApp, type SettingsPageTabs } from './settings-nav'
 
 const CORE: NavSection[] = [
   { id: 'work', items: [{ to: '/work', label: 'Work', icon: 'work' }] },
@@ -25,10 +25,7 @@ const TABS: SettingsPageTabs = {
     { id: 'overview', label: 'Overview' },
     { id: 'cost', label: 'Cost' },
   ],
-  '/admin': [
-    { id: 'org', label: 'Organization' },
-    { id: 'people', label: 'People' },
-  ],
+  ...OWN_PAGE_TABS,
 }
 const admin = { isAdmin: true, denied: [] as string[], appGrants: [] as string[] }
 const crm: SettingsNavApp = { slug: 'crm', icon: 'c', surfaces: { work: 'CRM', manage: 'CRM setup', settings: 'CRM' } }
@@ -43,7 +40,7 @@ describe('settingsNav groups', () => {
     expect(labels(nav)).toEqual({
       personal: ['Profile', 'Notifications', 'Assistant', 'Connections', 'API keys'],
       workspace: ['Overview', 'Agents', 'Models', 'Observability'],
-      instance: ['Admin'],
+      instance: ['Organization', 'Agent policy', 'Data & security'],
     })
   })
 
@@ -73,12 +70,14 @@ describe('settingsNav grants', () => {
     expect(nav.groups.map((g) => g.id)).toEqual(['personal'])
   })
 
-  it('drops a denied manage view and never shows Admin to a member', () => {
+  it('drops a denied manage view and never shows an Instance page to a member', () => {
     const member = { isAdmin: false, denied: ['/models', '/observability'], appGrants: [] }
     const nav = settingsNav(CORE, [], member, '/agents')
     expect(labels(nav).workspace).toEqual(['Overview', 'Agents'])
     expect(nav.groups.some((g) => g.id === 'instance')).toBe(false)
-    expect(settingsNav(CORE, [], member, '/admin')).toMatchObject({ inside: false, activePath: null })
+    for (const path of ['/admin', '/admin/git', '/admin/secrets']) {
+      expect(settingsNav(CORE, [], member, path), path).toMatchObject({ inside: false, activePath: null })
+    }
   })
 
   it("shows an app's settings tab on its manage grant, and only then", () => {
@@ -109,10 +108,27 @@ describe('settingsNav active row', () => {
     expect(settingsNav(CORE, [], admin, '/settings/nonsense')).toMatchObject({ inside: true, activePath: '/settings' })
   })
 
-  it('lights Overview on /manage, a manage view on anything nested in it, and Admin on its tabs', () => {
+  it('lights Overview on /manage and a manage view on anything nested in it', () => {
     expect(settingsNav(CORE, [], admin, '/manage').activePath).toBe('/manage')
     expect(settingsNav(CORE, [], admin, '/observability/cost').activePath).toBe('/observability')
-    expect(settingsNav(CORE, [], admin, '/admin/people')).toMatchObject({ inside: true, activePath: '/admin' })
+  })
+
+  it('lights the Instance page that holds the tab an /admin address names', () => {
+    const lit = (path: string) => {
+      const nav = settingsNav(CORE, [], admin, path)
+      expect(nav.inside, path).toBe(true)
+      return nav.groups.flatMap((g) => g.rows).find((r) => r.to === nav.activePath)?.label
+    }
+    for (const path of ['/admin', '/admin/people']) expect(lit(path), path).toBe('Organization')
+    for (const path of ['/admin/agents', '/admin/git', '/admin/search', '/admin/retrieval']) expect(lit(path), path).toBe('Agent policy')
+    for (const path of ['/admin/storage', '/admin/secrets', '/admin/security']) expect(lit(path), path).toBe('Data & security')
+  })
+
+  it('lights Organization on an /admin address that names no tab, as the page shows it', () => {
+    for (const path of ['/admin/nonsense', '/admin/git/extra']) {
+      expect(settingsNav(CORE, [], admin, path), path).toMatchObject({ inside: true, activePath: '/admin' })
+      expect(instanceAt(path), path).toMatchObject({ page: { label: 'Organization' }, tab: 'org' })
+    }
   })
 
   it('is outside on work views', () => {
@@ -145,7 +161,7 @@ describe('searchSettings', () => {
 
   it('matches a row by keyword', () => {
     expect(found('token')).toEqual(['API keys'])
-    expect(found('invites')).toEqual(['Admin'])
+    expect(found('invites')).toEqual(['Organization'])
   })
 
   it('matches a page tab and links to it', () => {
@@ -153,11 +169,39 @@ describe('searchSettings', () => {
       { to: '/agents', label: 'Agents', icon: 'agents', rowTo: '/agents', group: 'workspace' },
       { to: '/models/roles', label: 'Roles', parent: 'Models', icon: 'models', rowTo: '/models', group: 'workspace' },
     ])
-    expect(found('people')).toEqual(['Admin', 'Admin › People'])
+    expect(found('people')).toEqual(['Organization › People'])
   })
 
   it("links a page's home tab to the page itself", () => {
-    expect(searchSettings(groups, TABS, 'organization').at(-1)).toMatchObject({ to: '/admin', parent: 'Admin' })
+    expect(searchSettings(groups, TABS, 'general').at(-1)).toMatchObject({ to: '/admin', parent: 'Organization' })
+    expect(searchSettings(groups, TABS, 'oversight').at(-1)).toMatchObject({ to: '/admin/agents', parent: 'Agent policy' })
+  })
+
+  it('finds every Instance tab under the page that holds it, at the address it always had', () => {
+    const tabs = INSTANCE_PAGES.flatMap((p) => p.tabs.map((t) => ({ page: p.label, tab: t })))
+    expect(tabs.map(({ tab }) => tab.to)).toEqual([
+      '/admin',
+      '/admin/people',
+      '/admin/agents',
+      '/admin/git',
+      '/admin/search',
+      '/admin/retrieval',
+      '/admin/storage',
+      '/admin/secrets',
+      '/admin/security',
+    ])
+    for (const { page, tab } of tabs) {
+      expect(searchSettings(groups, TABS, tab.label), tab.label).toContainEqual(
+        expect.objectContaining({ to: tab.to, label: tab.label, parent: page, group: 'instance' }),
+      )
+    }
+    expect(found('secrets')).toEqual(['Data & security › Secrets'])
+    expect(found('knowledge')).toEqual(['Agent policy › Knowledge search'])
+  })
+
+  it('finds the three Instance pages under the name they shared, which is no longer a label', () => {
+    expect(found('admin')).toEqual(['Organization', 'Agent policy', 'Data & security'])
+    expect(groups.flatMap((g) => g.rows.map((r) => r.label))).not.toContain('Admin')
   })
 
   it('finds the Models page by its first tab, once, at the page', () => {

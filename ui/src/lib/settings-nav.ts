@@ -7,7 +7,7 @@ import { appAccess, type AppGrantSubject, type ViewerGrants } from '@/lib/app-gr
 import { MANAGE_HOME, manageArea } from '@/lib/manage-area'
 import type { NavItem, NavSection } from '@/lib/nav'
 import { appManageItem, type AppManifestLike } from '@/lib/nav-sections'
-import { activeAmong } from '@/lib/route-tabs'
+import { activeAmong, isUnder, tabFromPath } from '@/lib/route-tabs'
 
 export const SETTINGS_HOME = '/settings'
 export const ADMIN_HOME = '/admin'
@@ -29,9 +29,10 @@ export interface SettingsNavGroup {
   rows: SettingsNavRow[]
 }
 
-/** A page's tabs, home tab first. The home tab lives at the page's own path
- *  and every other tab at `<page>/<id>`. */
-export type SettingsPageTabs = Readonly<Record<string, ReadonlyArray<{ id: string; label: string }>>>
+/** A page's tabs, home tab first. A tab lives at its `to` when it names one.
+ *  Otherwise the home tab lives at the page's own path and every other tab at
+ *  `<page>/<id>`. */
+export type SettingsPageTabs = Readonly<Record<string, ReadonlyArray<{ id: string; label: string; to?: string }>>>
 
 /** The tabs of the pages that keep no tab table of their own. Each page
  *  renders its strip from here, so what search finds is what the page shows. */
@@ -52,11 +53,69 @@ export const APPS_TABS = [
   { id: 'installed', label: 'Installed' },
   { id: 'discover', label: 'Discover' },
 ] as const
+
+export type InstanceTabId = 'org' | 'people' | 'agents' | 'git' | 'search' | 'retrieval' | 'storage' | 'secrets' | 'security'
+export interface InstanceTab {
+  id: InstanceTabId
+  label: string
+  to: string
+}
+export interface InstancePage {
+  /** The sidebar row's address, which is its first tab's. */
+  to: string
+  label: string
+  blurb: string
+  tabs: readonly InstanceTab[]
+}
+
+// Every Instance tab keeps the address it had when the nine were one strip
+// under /admin, so a tab's address says nothing about which page holds it.
+const instanceTab = (id: InstanceTabId, label: string): InstanceTab => ({ id, label, to: id === 'org' ? ADMIN_HOME : `${ADMIN_HOME}/${id}` })
+const instancePage = (label: string, blurb: string, tabs: readonly [InstanceTab, ...InstanceTab[]]): InstancePage => ({
+  to: tabs[0].to,
+  label,
+  blurb,
+  tabs,
+})
+
+const ORGANIZATION = instancePage('Organization', 'Your business, how people sign in, and what each of them can do.', [
+  instanceTab('org', 'General'),
+  instanceTab('people', 'People'),
+])
+/** The Instance group's pages, in the sidebar's order. */
+export const INSTANCE_PAGES: readonly InstancePage[] = [
+  ORGANIZATION,
+  instancePage('Agent policy', "How agents' work is checked, and the code, web and knowledge they can reach.", [
+    instanceTab('agents', 'Oversight'),
+    instanceTab('git', 'Git hosts'),
+    // Two kinds of search, named for what is searched.
+    instanceTab('search', 'Web search'),
+    instanceTab('retrieval', 'Knowledge search'),
+  ]),
+  instancePage('Data & security', 'Where files and secrets are kept, and how this instance is protected.', [
+    instanceTab('storage', 'Storage'),
+    // Its own tab, not a section of Security: the banner about unreadable
+    // secrets links here.
+    instanceTab('secrets', 'Secrets'),
+    instanceTab('security', 'Security'),
+  ]),
+]
+const INSTANCE_TAB_IDS = INSTANCE_PAGES.flatMap((p) => p.tabs.map((t) => t.id))
+
+/** The Instance page and tab an address under /admin shows. An address that
+ *  names no tab shows Organization's first, so the sidebar's lit row and the
+ *  page agree on every address. */
+export function instanceAt(pathname: string): { page: InstancePage; tab: InstanceTabId } {
+  const tab = tabFromPath(pathname, ADMIN_HOME, INSTANCE_TAB_IDS, 'org')
+  return { page: INSTANCE_PAGES.find((p) => p.tabs.some((t) => t.id === tab)) ?? ORGANIZATION, tab }
+}
+
 export const OWN_PAGE_TABS: SettingsPageTabs = {
   '/agents': AGENTS_TABS,
   '/mcp': MCP_TABS,
   '/templates': TEMPLATES_TABS,
   '/apps': APPS_TABS,
+  ...Object.fromEntries(INSTANCE_PAGES.map((p) => [p.to, p.tabs])),
 }
 
 export interface SettingsNavMatch {
@@ -126,7 +185,7 @@ export function settingsNav(
           ...area.items.filter((item) => !appManagePaths.has(item.to)).map(({ to, label, icon, badge }) => ({ to, label, icon, badge })),
         ]
       : []
-  const instance: SettingsNavRow[] = viewer.isAdmin ? [{ to: ADMIN_HOME, label: 'Admin' }] : []
+  const instance: SettingsNavRow[] = viewer.isAdmin ? INSTANCE_PAGES.map(({ to, label }) => ({ to, label })) : []
 
   const groups: SettingsNavGroup[] = [
     { id: 'personal' as const, label: 'Personal', rows: PERSONAL },
@@ -136,7 +195,8 @@ export function settingsNav(
   ].filter((g) => g.rows.length > 0)
 
   const appSettings = appRows.filter((r) => !appManagePaths.has(r.to))
-  const outside = activeAmong(pathname, [...PERSONAL, ...appSettings, ...instance].map((r) => r.to))
+  const instanceHere = viewer.isAdmin && isUnder(pathname, ADMIN_HOME) ? instanceAt(pathname).page.to : null
+  const outside = instanceHere ?? activeAmong(pathname, [...PERSONAL, ...appSettings].map((r) => r.to))
   const activePath = area.activePath ?? outside
   return { groups, activePath, inside: area.inside || outside !== null }
 }
@@ -158,7 +218,10 @@ const KEYWORDS: Readonly<Record<string, readonly string[]>> = {
   '/studio': ['skills', 'memory', 'teach'],
   '/observability': ['health', 'cost', 'spend', 'logs', 'usage'],
   '/apps': ['install', 'discover', 'catalog'],
-  [ADMIN_HOME]: ['instance', 'organization', 'people', 'users', 'invites', 'secrets', 'security', 'storage', 'git'],
+  // "admin" is what the three Instance pages were called as one page.
+  [ADMIN_HOME]: ['admin', 'instance', 'business', 'domain', 'email', 'google', 'sign-up', 'users', 'members', 'invites', 'permissions', 'password'],
+  '/admin/agents': ['admin', 'instance', 'rules', 'decisions', 'judge', 'quality review', 'guardrails', 'coding subscriptions', 'check-ins', 'repositories', 'github', 'pull requests', 'searxng', 'retrieval', 'collections', 'index'],
+  '/admin/storage': ['admin', 'instance', 'files', 'uploads', 's3', 'bucket', 'replica', 'credentials', 'encryption', 'updates', 'limits'],
 }
 
 /**
@@ -180,7 +243,7 @@ export function searchSettings(groups: readonly SettingsNavGroup[], tabs: Settin
     const tabMatches = g.rows.flatMap((r) =>
       (tabs[r.to] ?? []).flatMap((t, i): SettingsNavMatch[] =>
         has(t.label) && t.label.toLowerCase() !== r.label.toLowerCase()
-          ? [{ to: i === 0 ? r.to : `${r.to}/${t.id}`, label: t.label, parent: r.label, icon: r.icon, rowTo: r.to, group: g.id }]
+          ? [{ to: t.to ?? (i === 0 ? r.to : `${r.to}/${t.id}`), label: t.label, parent: r.label, icon: r.icon, rowTo: r.to, group: g.id }]
           : [],
       ),
     )
