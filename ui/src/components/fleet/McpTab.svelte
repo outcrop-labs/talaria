@@ -21,7 +21,6 @@
   import type { AgentDef } from '@/lib/fleet-defs'
   import { listStagger } from '@/lib/motion'
   import { pushToast, toastError } from '@/lib/toast.svelte'
-  import { useUiVoice } from '@/lib/ui-voice'
   import { noteStillApplying } from '@/routes/app/agents.svelte'
   import { p } from '@/router'
   import McpAddServerModal from '@/routes/app/McpAddServerModal.svelte'
@@ -175,11 +174,8 @@
     s.authMode === 'per-user' ? 'Owner must connect' : s.probe?.state === 'reconnect' ? 'Reconnect needed' : 'Not connected'
   const probeLabel = (state: string) =>
     state === 'auth-required' ? 'Needs credentials' : state === 'reconnect' ? 'Reconnect needed' : state.charAt(0).toUpperCase() + state.slice(1)
-  // Where a server's mark lives, by the Tools page's rule, from the address
-  // host this row carries. Comms draws this list in the mono voice, which
-  // asks for the host as it always has.
-  const sans = useUiVoice() === 'sans'
-  const markDomains = (s: AgentServer) => (sans ? iconDomains({ host: s.domain }) : s.domain)
+  // Where a server's mark lives, by the Tools page's rule, from the address host this row carries.
+  const markDomains = (s: AgentServer) => iconDomains({ host: s.domain })
   const toolCount = (s: AgentServer) =>
     s.tools.length === 0
       ? 'No tools discovered yet'
