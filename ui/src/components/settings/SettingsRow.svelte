@@ -192,7 +192,7 @@
         <span class="relative -mr-3 w-0 self-stretch">{@render savedFlash('right-3')}</span>
       {/if}
       <!-- No space before the chevron's block: a text node there would keep an empty control slot from collapsing. -->
-      {@render children?.()}{#if expanded !== undefined}<span data-row-chevron aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} class={cn('transition-transform duration-150', expanded && 'rotate-90')} /></span>{:else if pointsOnward}<span data-row-chevron aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} /></span>{/if}
+      {@render children?.()}{#if expanded !== undefined}<span aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} class={cn('transition-transform duration-150', expanded && 'rotate-90')} /></span>{:else if pointsOnward}<span data-row-chevron aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} /></span>{/if}
     </div>
   {/if}
 </svelte:element>

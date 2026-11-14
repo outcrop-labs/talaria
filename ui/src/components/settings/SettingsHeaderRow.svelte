@@ -25,9 +25,8 @@
     /** The rows end in a `SettingsRowMenu`: hold its cell. */
     menu?: boolean
     /** The rows end in the chevron that opens and closes them (`expanded`):
-     *  hold its cell, marked as a chevron so the group does not hold a second
-     *  one. A chevron that points onward needs nothing, the group holds that
-     *  cell itself. */
+     *  hold its cell. A chevron that points onward needs nothing, the group
+     *  holds that cell itself. */
     expands?: boolean
     class?: string
     /** One caption for each cell a row puts in its control slot, in order. */
@@ -51,6 +50,6 @@
   <div data-row-controls class="flex shrink-0 items-center justify-end gap-3">
     {@render children?.()}
     {#if menu}<span data-row-menu class="w-8 shrink-0 last:-mr-2"></span>{/if}
-    {#if expands}<span data-row-chevron class="-mr-1 w-4 shrink-0"></span>{/if}
+    {#if expands}<span class="-mr-1 w-4 shrink-0"></span>{/if}
   </div>
 </div>
