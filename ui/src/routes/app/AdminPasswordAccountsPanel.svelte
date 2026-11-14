@@ -194,7 +194,7 @@
             >
               <SettingsRowMenu
                 label="Actions for your account"
-                items={[{ label: open === 'me' ? 'Keep it without a password' : 'Set a password', disabled: busy, onSelect: () => openSet('me') }]}
+                items={[{ label: open === 'me' ? 'Close' : 'Set a password', disabled: busy, onSelect: () => openSet('me') }]}
               />
             </SettingsRow>
             {#if open === 'me' && me}{@render setForm(me.id, 'me')}{/if}

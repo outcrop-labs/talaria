@@ -280,7 +280,11 @@
   {/if}
 {/snippet}
 {#snippet deployKeyStatus()}
-  <RowStatus status={status?.machineKeySet ? 'ok' : 'idle'}>{status?.machineKeySet ? 'Set' : 'Not set'}</RowStatus>
+  {#if busy === 'mint'}
+    <RowStatus status="idle">Generating</RowStatus>
+  {:else}
+    <RowStatus status={status?.machineKeySet ? 'ok' : 'idle'}>{status?.machineKeySet ? 'Set' : 'Not set'}</RowStatus>
+  {/if}
 {/snippet}
 
 <SettingsSection
@@ -341,7 +345,7 @@
                 {:else if status.available}
                   Version <span class="font-mono text-xs text-fg">{status.available.version}</span> is ready to install.
                 {:else}
-                  Check to see whether a newer version is out.
+                  Check for updates from the menu to see whether a newer version is out.
                 {/if}
               {/snippet}
               {#if !status.migrated}
