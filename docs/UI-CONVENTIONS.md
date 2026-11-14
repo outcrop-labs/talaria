@@ -108,8 +108,9 @@ instead of styling its own panels:
   `required` marks its label.
 - A page whose fields save on change passes `autosave` to `SettingsPage`, or
   calls `useAutosave()` inside it. The header says "Changes save
-  automatically" on the title's baseline and flashes "Saved" in the same box.
-  On a phone the cue takes its own line under the blurb.
+  automatically" in one fixed place and flashes "Saved" in the same box. On a
+  phone the cue takes its own line under the blurb. A component that only
+  sometimes shows such fields passes a condition: `useAutosave(() => canEdit)`.
 - A focus ring on something that fills a card (a row, a stat) is drawn inside
   it with `focus-visible:-outline-offset-2!`. The `!` is needed: the global
   `:focus-visible` rule in `styles.css` is unlayered, so it beats a plain
@@ -125,6 +126,11 @@ instead of styling its own panels:
 - A state is a `StatusDot` and a word, never a chip, and the same state has
   the same word on every page: Connected, Not connected, Needs sign-in,
   Reachable, Unreachable, Running, Stopped, Idle, Not set.
+- A row whose open action is navigation takes `openHref`, not `onOpen`, so
+  it opens in a new tab like any other link.
+- A dialog step that shows something once (a new key) is `dismissible={false}`
+  on `Modal`: Escape, a click outside and the close button do nothing, and it
+  leaves by its own gold Done.
 - A dialog's footer holds its buttons: Cancel then the one primary on the
   right, a `DangerLink` on the left. A dialog that only shows or saves as it
   goes ends in an outline Done. A page's primary is a label with no icon.
