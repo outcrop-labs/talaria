@@ -329,11 +329,11 @@ test.describe('the matrix', () => {
     await expect(dm).toHaveAttribute('data-push', 'false')
     await expect(dm.locator('[data-matrix-menu]')).not.toContainText(/push/i)
     const payload = await getPayload(page)
-    const dm = payload.channels!.dm!
-    expect(dm.push).toBe(false)
+    const served = payload.channels!.dm!
+    expect(served.push).toBe(false)
     // The legacy route derives from the channels (I-13): email and a screen →
     // both, email alone → email, no email → in_app.
-    const legacy = !dm.email ? 'in_app' : dm.desktop || dm.push ? 'both' : 'email'
+    const legacy = !served.email ? 'in_app' : served.desktop || served.push ? 'both' : 'email'
     expect(payload.prefs.dm).toBe(legacy)
     const [stored] = await sql<Array<{ push: string | null }>>`select notify_prefs->'channels'->'dm'->>'push' as push from users where id = ${p.id}::uuid`
     expect(stored?.push).toBe('false')
