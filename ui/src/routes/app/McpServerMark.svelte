@@ -1,11 +1,13 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { Server } from '@lucide/svelte'
   import { publicIconDomain } from '@/lib/icon-domain'
   import { useUiVoice } from '@/lib/ui-voice'
 
   /** A server's mark. The registry-declared icon hotlinks DIRECTLY (fast, no
    *  middleman); the cached favicon proxy is the fallback, one host at a time
-   *  (`iconDomains` orders them); a letter tile is the floor. */
+   *  (`iconDomains` orders them). The floor is one neutral glyph in the
+   *  settings voice and a letter tile in the other. */
   let {
     title,
     domain,
@@ -49,16 +51,16 @@
 
 {#if sans}
   <!-- The settings area's entity tile, the one `SettingsRow` draws for an icon.
-       A mark and an initial share it, so a list that has both reads as one
-       set, and the initial reads as a letter someone set there and never as
-       an image that failed. -->
+       A brand mark and the glyph for a server with none share it, so a list
+       that has both reads as one set. The glyph is the same for every such
+       server: an initial read as a logo that was never finished. -->
   <span class="plate grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-raised text-fg">
     {#if children}
       {@render children()}
     {:else if src}
       <img {src} alt="" width="20" height="20" loading="lazy" onerror={miss} class="h-5 w-5 object-contain" />
     {:else}
-      <span aria-hidden="true" class="font-sans text-sm font-medium leading-none">{monogram}</span>
+      <Server size={16} aria-hidden="true" />
     {/if}
   </span>
 {:else if !src}
@@ -86,8 +88,8 @@
 
 <style>
   /* Service marks are drawn for a light page: GitHub's is black on nothing.
-     In the dark theme the tile is a light plate so a mark can be seen, and an
-     initial takes the same plate in the ground's ink. */
+     In the dark theme the tile is a light plate so a mark can be seen, and
+     the glyph takes the same plate in the ground's ink. */
   :global([data-theme='mercury']) .plate {
     border-color: transparent;
     background: color-mix(in srgb, var(--theme-text) 90%, var(--theme-panel));

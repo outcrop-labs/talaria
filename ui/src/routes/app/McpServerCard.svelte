@@ -11,7 +11,6 @@
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { cn } from '@/lib/cn'
   import { delJson, errorMessage } from '@/lib/fetch-json'
-  import { iconDomains } from '@/lib/mcp-icon'
   import { useSession } from '@/lib/session'
   import McpServerModal from './McpServerModal.svelte'
   import McpCredentialsModal from './McpCredentialsModal.svelte'
@@ -24,6 +23,7 @@
     isInternalServer,
     patchServer,
     serverDomain,
+    serverMarkDomains,
     serverStatus,
     staleAssignments,
     type McpServerRow,
@@ -64,7 +64,7 @@
   // A built-in server is a part of Talaria, so its mark is that part's own icon from the app's navigation.
   const OWN_MARKS = { boards: LayoutGrid, knowledge: BookOpen, files: FileBox } as const
   const OwnMark = $derived(s.builtin && s.name in OWN_MARKS ? OWN_MARKS[s.name as keyof typeof OWN_MARKS] : null)
-  const markDomains = $derived(iconDomains({ publisher: s.oauthMeta?.guide?.domain, url: s.url }))
+  const markDomains = $derived(serverMarkDomains(s))
   // The Workbench is granted by each agent's Developer Agent switch, not from
   // here. The api refuses assignment and access rows for it.
   const isWorkbench = $derived(s.name === 'workbench')

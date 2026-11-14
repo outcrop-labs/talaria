@@ -2,6 +2,7 @@
 // the agent settings MCP tab, which browses and assigns the same registry.
 import { createQuery } from '@tanstack/svelte-query'
 import { errorMessage, getJson, getList, postJson, putJson } from '@/lib/fetch-json'
+import { iconDomains } from '@/lib/mcp-icon'
 export { isInternalServer } from '@/lib/mcp-servers'
 export {
   catalogLine,
@@ -127,14 +128,22 @@ export interface McpServerRow {
 export const connectPopup = (serverId: string, scope: 'org' | 'me') =>
   window.open(`/api/mcp/oauth/start?server=${serverId}&scope=${scope}`, 'talaria-mcp-oauth', 'width=620,height=780')
 
-export function useMcpServers() {
+/** The registry is an `agents.manage` read. A page a member can open passes
+ *  `enabled`, so the request is only sent for someone who may make it. */
+export function useMcpServers(enabled: () => boolean = () => true) {
   return createQuery(() => ({
     queryKey: ['mcp-servers'],
     // "No MCP servers yet" invites an admin to register one they may already
     // have. Only a genuine empty registry earns that screen.
     queryFn: (): Promise<McpServerRow[]> => getList<McpServerRow>('/api/mcp/servers', 'servers'),
+    enabled: enabled(),
   }))
 }
+
+/** Where a registered server's mark might live, best first: the one rule
+ *  for the Tools page and for the same server's row on Connections. */
+export const serverMarkDomains = (s: Pick<McpServerRow, 'url' | 'oauthMeta'>): string[] =>
+  iconDomains({ publisher: s.oauthMeta?.guide?.domain, url: s.url })
 
 export async function patchServer(id: string, body: unknown): Promise<string | null> {
   try {

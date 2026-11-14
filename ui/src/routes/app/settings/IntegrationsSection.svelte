@@ -14,6 +14,7 @@
   import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
+  import McpServerMark from '@/routes/app/McpServerMark.svelte'
   import McpConnectionsSection from './McpConnectionsSection.svelte'
 
   interface GoogleStatus {
@@ -31,9 +32,9 @@
   // strictly as you; outbound mail and invites it drafts wait for your
   // approval (confirm-sends).
   //
-  // No row has a mark. A tool account's row carries a name and a slug and no
-  // address, so its mark could only be guessed, and one real mark above a
-  // column of blanks would set that row's name apart from the rest.
+  // Every row has a mark on the one tile: Google's here, and for a tool
+  // account the mark the Tools page shows for that server, or the neutral
+  // glyph when this viewer cannot read the registry.
   const GOOGLE_INFO = 'Your assistant acts as you. Mail and invites it drafts wait for your approval in the Inbox.'
   const qc = useQueryClient()
   const query = createQuery(() => ({
@@ -75,6 +76,8 @@
   }
 </script>
 
+{#snippet googleMark()}<McpServerMark title="Google" domain="google.com" />{/snippet}
+
 <SettingsSection
   title="Accounts"
   info="Your sign-ins are stored encrypted. Disconnect an account any time, and a tool drops off your assistant on its next restart."
@@ -90,6 +93,7 @@
         <!-- Never show "Not connected" + Connect while the status is unknown:
              that is a false state. Hold the row's shape until the query resolves. -->
         <div aria-hidden="true" class="flex min-h-[56px] items-center gap-3 px-5 py-3.5">
+          <Skeleton class="h-8 w-8 shrink-0 rounded-md" />
           <div class="min-w-0 flex-1 space-y-2">
             <Skeleton class="h-3 w-40 rounded-full" />
             <Skeleton class="h-2.5 w-56 rounded-full" />
@@ -99,7 +103,9 @@
       {/snippet}
       {#snippet empty()}
         <!-- An unregistered client is the ADMIN's gap to close. -->
-        <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin." />
+        <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client in Admin.">
+          {#snippet lead()}{@render googleMark()}{/snippet}
+        </SettingsRow>
       {/snippet}
       {#snippet children(_data)}
         <!-- "Not connected" is a claim about the account, and a failed status
@@ -111,6 +117,7 @@
             ? `${data.email ?? 'Connected'}${data.connectedAt ? ` · connected ${relativeTime(data.connectedAt)}` : ''}`
             : 'Mail, Calendar and Drive.'}
         >
+          {#snippet lead()}{@render googleMark()}{/snippet}
           {#snippet status()}
             <StatusDot status={data?.connected ? 'ok' : 'idle'} />{data?.connected ? 'Connected' : 'Not connected'}
           {/snippet}

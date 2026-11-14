@@ -10,8 +10,10 @@
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { getList, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
+  import { useHasPerm } from '@/lib/session'
   import { toastError } from '@/lib/toast.svelte'
-  import { composeHeader, headerFields, type HeaderDecl, type HeaderField } from '@/routes/app/mcp'
+  import McpServerMark from '@/routes/app/McpServerMark.svelte'
+  import { composeHeader, headerFields, serverMarkDomains, useMcpServers, type HeaderDecl, type HeaderField } from '@/routes/app/mcp'
 
   /** Per-user MCP connected accounts: servers the org registered in per-user
    *  auth mode. Connect yours (a token header, sealed at rest) and your
@@ -49,6 +51,15 @@
     queryKey: ['me-mcp'],
     queryFn: (): Promise<McpConnection[]> => getList<McpConnection>('/api/me/mcp', 'servers'),
   }))
+  // An account row carries a name and no address, so its mark comes from the
+  // registry row of the same server. That list is an `agents.manage` read:
+  // anyone else sends no request and sees the neutral mark.
+  const mayReadRegistry = useHasPerm('agents.manage')
+  const registry = useMcpServers(() => mayReadRegistry.current)
+  const markOf = (s: McpConnection): string[] => {
+    const row = registry.data?.find((r) => r.id === s.id)
+    return row ? serverMarkDomains(row) : []
+  }
   let connecting = $state<string | null>(null)
   let values = $state<Record<string, string>>({})
 
@@ -102,6 +113,7 @@
     {#each data ?? [] as s (s.id)}
       <div>
         <SettingsRow label={s.label} hint={s.description ?? undefined}>
+          {#snippet lead()}<McpServerMark title={s.label} domain={markOf(s)} />{/snippet}
           {#snippet status()}
             {#if s.connected}
               <StatusDot status="ok" />Connected
