@@ -3,6 +3,7 @@
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import ModelIdPicker from '@/components/fleet/ModelIdPicker.svelte'
   import { putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
@@ -29,18 +30,19 @@
   } = $props()
 
   const qc = useQueryClient()
-  let saving = $state<string | null>(null)
+  // These pickers are the tab's only editable controls, so with an app
+  // harness on the page its header says changes save as they are made.
+  const autosave = useAutosave(() => slots.length > 0)
 
   const assign = async (slot: string, model: string | null) => {
-    saving = slot
     try {
       await putJson<{ ok: true }>('/api/admin/app-harness-models', { slot, model })
-      await qc.invalidateQueries({ queryKey: ['model-fitness'] })
     } catch (e) {
       toastError('Could not assign the model', e)
-    } finally {
-      saving = null
+      return
     }
+    autosave.flash(slot)
+    await qc.invalidateQueries({ queryKey: ['model-fitness'] })
   }
 </script>
 
@@ -52,11 +54,8 @@
   >
     <SettingsGroup>
       {#each slots as slot (slot.key)}
-        <SettingsRow label={slot.label}>
+        <SettingsRow label={slot.label} saved={autosave.saved(slot.key)}>
           {#snippet hint()}<span class="font-mono text-xs" title={slot.hint}>{slot.key}</span>{/snippet}
-          {#if saving === slot.key}
-            <span class="font-sans text-[13px] leading-5 text-muted">Saving</span>
-          {/if}
           <ModelIdPicker
             {models}
             value={assigned[slot.key] ?? null}

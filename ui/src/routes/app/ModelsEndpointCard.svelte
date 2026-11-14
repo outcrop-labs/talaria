@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { SlidersHorizontal } from '@lucide/svelte'
+  import { KeyRound, SlidersHorizontal } from '@lucide/svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
+  import type { MenuIcon } from '@/components/ui/context-menu.svelte'
   import ProviderMark from '@/components/fleet/ProviderMark.svelte'
   import type { LlmEndpoint } from '@/lib/fleet-defs'
   import ModelsEndpointModal from './ModelsEndpointModal.svelte'
@@ -14,13 +15,14 @@
   let managing = $state<false | 'manage' | 'key'>(false)
 
   // What is known about the key without a request: a stored one, an env-var
-  // fallback, or neither. A cloud provider cannot answer without one; a
-  // self-hosted server usually asks for none.
+  // fallback, or neither. A cloud provider cannot answer without one, which
+  // is the state that needs a person. A self-hosted server usually asks for
+  // none, and that is a settled state, not a missing one.
   const needsKey = $derived(!ep.hasKey && !ep.apiKeyEnv && ep.class === 'cloud')
   const key = $derived.by((): { status: 'ok' | 'idle' | 'warn'; text: string } => {
     if (ep.hasKey) return { status: 'ok', text: 'Key stored' }
     if (ep.apiKeyEnv) return { status: 'idle', text: 'Key from environment' }
-    return needsKey ? { status: 'warn', text: 'Needs a key' } : { status: 'idle', text: 'No key' }
+    return needsKey ? { status: 'warn', text: 'Needs a key' } : { status: 'idle', text: 'No key required' }
   })
   // A known cloud provider's address says nothing its name does not. A server
   // of your own is told apart by where it is.
@@ -28,7 +30,7 @@
 </script>
 
 <!-- One provider as a row of the providers card. The row opens its dialog, and
-     a button shows only when the provider cannot answer without it. -->
+     Fix shows only when the provider cannot answer without a key. -->
 <div>
   <SettingsRow label={ep.name} onOpen={() => (managing = 'manage')} openLabel={`Manage ${ep.name}`}>
     {#snippet icon()}<ProviderMark provider={ep.provider} name={ep.name} class="border-0 bg-transparent" />{/snippet}
@@ -37,12 +39,13 @@
       {#if showsUrl}· <span class="font-mono text-xs">{ep.baseUrl}</span>{/if}
     {/snippet}
     {#snippet status()}<StatusDot status={key.status} />{key.text}{/snippet}
-    {#if needsKey}
-      <Button variant="outline" size="sm" onclick={() => (managing = 'key')}>Add key</Button>
-    {/if}
+    {#if needsKey}<SettingsRowFix label={`Fix ${ep.name}: add a key`} onclick={() => (managing = 'key')} />{/if}
     <SettingsRowMenu
       label={`Actions for ${ep.name}`}
-      items={[{ label: 'Manage', icon: [SlidersHorizontal, { size: 14 }], onSelect: () => (managing = 'manage') }]}
+      items={[
+        { label: 'Manage', icon: [SlidersHorizontal, { size: 14 }], onSelect: () => (managing = 'manage') },
+        ...(needsKey ? [{ label: 'Add key', icon: [KeyRound, { size: 14 }] as MenuIcon, onSelect: () => (managing = 'key') }] : []),
+      ]}
     />
   </SettingsRow>
   {#if managing}

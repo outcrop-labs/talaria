@@ -2,8 +2,8 @@
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSaveBar from '@/components/settings/SettingsSaveBar.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
-  import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -12,6 +12,7 @@
   import { getJson, putJson } from '@/lib/fetch-json'
   import { useEndpoints } from '@/lib/models'
   import { toastError } from '@/lib/toast.svelte'
+  import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { useModels } from '@/lib/muse.svelte'
   import { anyPending } from '@/components/ui/query-state'
   import CapabilityTags from '@/components/models/CapabilityTags.svelte'
@@ -84,25 +85,32 @@
   const effective = $derived(restricted ? selection : [])
   const dirty = $derived(JSON.stringify([...effective].sort()) !== JSON.stringify([...rawSaved].sort()))
 
+  let saving = $state(false)
+  const savedFlash = useSavedFlash()
+  const discard = () => {
+    modeOverride = null
+    draft = null
+  }
   const save = async () => {
+    saving = true
     try {
       await putJson<{ ok: true }>('/api/admin/settings', { memberModels: effective })
     } catch (e) {
       // Keep the draft: a failed save must not quietly revert the list.
       toastError('Could not save member access', e)
       return
+    } finally {
+      saving = false
     }
-    modeOverride = null
-    draft = null
+    discard()
     await qc.invalidateQueries({ queryKey: ['admin-settings'] })
     await qc.invalidateQueries({ queryKey: ['gateway-models'] })
+    savedFlash.flash()
   }
   const toggle = (id: string) => {
     draft = selection.includes(id) ? selection.filter((x) => x !== id) : [...selection, id]
   }
 
-  // SAVED ON THE BUTTON, not on each switch: the list goes live for every
-  // member the moment it is stored, so a half-made selection must not.
   const summary = $derived(
     (restricted
       ? selection.length === 0
@@ -118,19 +126,12 @@
   description="The models people who are not admins may pick."
   info="This covers a member's preferred model and AI drafting. Keep the expensive models for deliberate, admin-configured use. Each agent's own model is set on the agent and is not affected."
 >
-  {#snippet action()}
-    {#if settings}
-      {#if dirty}<span class="font-sans text-[13px] leading-5 text-muted">Unsaved changes</span>{/if}
-      <Button size="sm" onclick={() => void save()} disabled={!dirty || (restricted && selection.length === 0)}>Save</Button>
-    {/if}
-  {/snippet}
-
   {#if anyPending(catalogQuery, settingsQuery)}
     <!-- The switch and the list both seed from these queries, so hold them
          with skeletons and the switch never flips after load. Both flags are
          read every time (anyPending, query-state.ts says why). -->
     <SettingsGroup>
-      <div class="flex min-h-[60px] items-center gap-6 px-5 py-4">
+      <div class="flex min-h-[56px] items-center gap-6 px-5 py-3.5">
         <Skeleton class="h-3 w-56 rounded-full" />
         <span class="ml-auto"></span>
         <Skeleton class="h-5 w-9 rounded-full" />
@@ -148,21 +149,21 @@
       onRetry={() => void settingsQuery.refetch()}
     />
   {:else}
-    <div class="space-y-4">
-      <SettingsGroup>
-        <SettingsRow label="Limit members to selected models" hint={summary}>
-          <Toggle checked={restricted} onChange={(checked) => (modeOverride = checked)} title="Limit members to selected models" />
-        </SettingsRow>
-      </SettingsGroup>
+    <!-- One card: the switch, the models it limits to, and the Save that
+         makes both live. -->
+    <SettingsGroup>
+      <SettingsRow label="Limit members to selected models" hint={summary}>
+        <Toggle checked={restricted} onChange={(checked) => (modeOverride = checked)} title="Limit members to selected models" />
+      </SettingsRow>
 
       {#if restricted}
         {#if models.length === 0}
-          <SettingsGroup><EmptyState variant="inline" class="px-5 py-4" title="No models registered yet." /></SettingsGroup>
+          <EmptyState variant="inline" class="px-5 py-4" title="No models registered yet." />
         {:else}
-          <div class="overflow-x-auto rounded-lg border border-line bg-panel">
+          <div class="overflow-x-auto">
             <table class="w-full border-collapse text-left">
               <thead>
-                <tr class="border-b border-line font-sans text-xs font-medium leading-4 text-muted">
+                <tr class="border-b border-line-subtle font-sans text-xs font-medium leading-4 text-muted">
                   <th class="w-[38%] px-5 py-2.5 font-medium">Model</th>
                   <th class="px-3 py-2.5 font-medium">Provider</th>
                   <th class="px-3 py-2.5 font-medium">Capabilities</th>
@@ -180,8 +181,9 @@
                          handed. A capability recorded FALSE here is the
                          difference between a member picking a model that
                          works and one that quietly returns nothing on every
-                         structured surface, so what a model lacks leads. -->
-                    <td class="px-3 py-2"><CapabilityTags row={capsRowFor(m.id)} max={3} /></td>
+                         structured surface, so what a model lacks leads, and
+                         is the only thing drawn as a chip. -->
+                    <td class="px-3 py-2"><CapabilityTags row={capsRowFor(m.id)} max={3} quiet /></td>
                     <td class="py-2 pl-3 pr-5">
                       <Toggle
                         class="justify-end"
@@ -197,6 +199,20 @@
           </div>
         {/if}
       {/if}
-    </div>
+
+      <!-- SAVED ON THE BUTTON, not on each switch: the list goes live for
+           every member the moment it is stored, so a half-made selection
+           must not. -->
+      <SettingsSaveBar
+        label="Save access"
+        reason="Goes live for every member when you save."
+        {dirty}
+        {saving}
+        saved={savedFlash.saved}
+        disabled={restricted && selection.length === 0}
+        onSave={() => void save()}
+        onDiscard={discard}
+      />
+    </SettingsGroup>
   {/if}
 </SettingsSection>

@@ -1,8 +1,8 @@
 <script lang="ts">
-  import Chip from '@/components/ui/Chip.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import { cn } from '@/lib/cn'
+  import FitnessMark from './FitnessMark.svelte'
   import {
     BAND_BG,
     BAND_META,
@@ -346,14 +346,15 @@
                   </td>
                   <td class={cn(num, 'py-0 text-fg')}>{best ? usdRate(best.usdPerDay, 'day') : '—'}</td>
                   <td class="pl-3 pr-5">
-                    <span class="flex flex-wrap gap-1">
+                    <!-- The matrix's own marks beside each name: every row has candidates, so they are words and not chips. -->
+                    <span class="flex flex-wrap gap-x-4 gap-y-1">
                       {#each slot.candidates.filter((c) => c.model !== slot.best).slice(0, 3) as c (c.model)}
-                        <Chip
-                          tone={BAND_META[c.band].tone}
+                        <span
+                          class={cn('inline-flex items-center gap-1.5 text-muted', modelName(c.model) ? 'font-sans text-[13px] leading-5' : 'font-mono text-xs leading-5')}
                           title="{c.model}: {BAND_META[c.band].label}. This slot would cost {usdRate(c.usdPerDay, 'day')} on it."
                         >
-                          {shortName(c.model)}
-                        </Chip>
+                          <FitnessMark band={c.band} />{shortName(c.model)}
+                        </span>
                       {/each}
                       {#if slot.candidates.length === 0}
                         <span class="font-sans text-[13px] text-muted">—</span>

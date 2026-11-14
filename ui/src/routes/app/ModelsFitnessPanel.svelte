@@ -233,8 +233,8 @@
 {:else}
   <div class="space-y-8">
     <SettingsSection
-      title="Test results"
-      description="Which models are good at which jobs, from test runs."
+      title="Model fitness"
+      description="How well each model does each job, measured by running it on test tasks."
       info={`One run fills every view here. The matrix says whether a model holds a job, and cost says what holding it would cost you on the work your agents actually do. Gray means nothing has measured it, which is not a pass. This install has ${data.registry.harnesses} harnesses, ${data.registry.fixtures} fixtures and ${data.registry.provocations} safety provocations.`}
     >
       {#snippet action()}

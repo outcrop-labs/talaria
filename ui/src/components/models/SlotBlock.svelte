@@ -38,8 +38,9 @@
     onEffort: (effort: string | null) => void
   } = $props()
 
-  // Capability facts and the last fitness run's per-slot bands: a need chip
-  // turns to a warning when the assigned model is measured not to have it, and
+  // Capability facts and the last fitness run's per-slot bands: a need is a
+  // word on a quiet line until the assigned model is measured not to have it,
+  // which is the exception that earns a warning chip, and
   // the notice is the unfit warning (a run that cannot reach what the role
   // needs, or a run that tested the slot badly). Both advisory; neither
   // blocks. A worker's slot key is the same `agent:<id>` spelling the fitness
@@ -64,22 +65,26 @@
   // The catalogs spell skills and fallbacks as lowercase fragments.
   const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 
+  // "Search" reads "search" in a sentence, and "JSON" stays as it is.
+  const inSentence = (text: string) => (/^[A-Z][a-z]/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text)
+
   // What a role needs, each read against the assigned model's measured facts.
   const needs = $derived(
     slot.kind === 'role'
       ? slot.row.requires.map((cap) => {
           const words = CAPABILITY_WORDS[cap as keyof typeof CAPABILITY_WORDS]
           const view = capsRow?.capabilities.find((c) => c.cap === cap)
-          const lacking = view?.state === 'no'
           return {
             cap,
-            label: lacking ? (words?.lacks ?? cap) : (words?.short ?? cap),
-            tone: lacking ? ('warn' as const) : ('neutral' as const),
+            lacking: view?.state === 'no',
+            word: inSentence(words?.short ?? cap),
+            lacks: words?.lacks ?? cap,
             title: view ? tagTitle(view) : `This job needs a model that can ${words?.plain ?? cap}.`,
           }
         })
       : [],
   )
+  const lacking = $derived(needs.filter((n) => n.lacking))
 </script>
 
 <SettingsRow label={name}>
@@ -91,21 +96,18 @@
   {#snippet hint()}
     <p>{slot.kind === 'role' ? slot.row.hint : slot.row.job}</p>
     {#if needs.length > 0}
-      <div class="mt-1.5 flex flex-wrap items-center gap-1">
-        <span class="mr-1 font-sans text-xs leading-4 text-muted">Needs</span>
-        {#each needs as n (n.cap)}
-          <Chip tone={n.tone} title={n.title}>{n.label}</Chip>
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span class="font-sans text-xs leading-5 text-muted">
+          Needs {#each needs as n, i (n.cap)}{i > 0 ? ', ' : ''}<span title={n.title}>{n.word}</span>{/each}
+        </span>
+        {#each lacking as n (n.cap)}
+          <Chip tone="warn" title={n.title}>{n.lacks}</Chip>
         {/each}
       </div>
     {:else if slot.kind === 'agent' && slot.row.skills.length > 0}
       <!-- A worker declares what its harness already brings, which is why most
            of them want so little from a model. -->
-      <div class="mt-1.5 flex flex-wrap items-center gap-1">
-        <span class="mr-1 font-sans text-xs leading-4 text-muted">Brings</span>
-        {#each slot.row.skills as s (s)}
-          <Chip>{sentence(s)}</Chip>
-        {/each}
-      </div>
+      <p class="font-sans text-xs leading-5 text-muted">Brings {slot.row.skills.join(', ')}</p>
     {/if}
     {#if notice}
       <p class="mt-1.5 max-w-[72ch] text-warning" role="status">{notice.text}</p>

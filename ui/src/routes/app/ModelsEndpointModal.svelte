@@ -167,7 +167,7 @@
             <option value="cloud">Cloud</option>
           </Select>
         {:else}
-          <Chip>{ep.class === 'local' ? 'Self-hosted' : 'Cloud'}</Chip>
+          <span class="text-fg">{ep.class === 'local' ? 'Self-hosted' : 'Cloud'}</span>
         {/if}
       </dd>
       {#if ep.baseUrl}
@@ -205,8 +205,10 @@
           <StatusDot status={ep.apiKeyEnv ? 'idle' : ep.class === 'cloud' ? 'warn' : 'idle'} />
           {#if ep.apiKeyEnv}
             No key stored. Using <span class="font-mono text-xs">${ep.apiKeyEnv}</span>
+          {:else if ep.class === 'cloud'}
+            Needs a key
           {:else}
-            No key stored
+            No key stored. A self-hosted server usually needs none.
           {/if}
         {/if}
       </div>

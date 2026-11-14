@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { ChevronRight } from '@lucide/svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Chip from '@/components/ui/Chip.svelte'
+  import type { DotStatus } from '@/components/ui/chip'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import type { SegmentedOption } from '@/components/ui/segmented'
-  import { cn } from '@/lib/cn'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { slide } from '@/lib/motion'
   import { caseCategory, type HealthSummary, type Suspicion } from './fitness'
 
@@ -23,22 +24,24 @@
   // is what it puts in front of you.
   let { data }: { data: HealthSummary } = $props()
 
-  const TONE: Record<Suspicion, { label: string; tone: 'danger' | 'warn' | 'neutral' | 'accent'; blurb: string }> = {
+  // Every row has a verdict, so it is the row's status (a dot and a word)
+  // and not a chip. The chips left on a row are the unusual things about it.
+  const TONE: Record<Suspicion, { label: string; dot: DotStatus; blurb: string }> = {
     ours: {
       label: 'Ours',
-      tone: 'warn',
+      dot: 'warn',
       blurb:
         'Every model that ran this fixture came back wrong, or the fixture itself reported it could not fairly ask its question. Read the assertion before you read the models.',
     },
     shared: {
       label: 'Most models',
-      tone: 'warn',
+      dot: 'warn',
       blurb: 'More than half of the models tested failed this. Could be a genuinely hard task; could be an assertion only the strongest model satisfies.',
     },
-    model: { label: 'One model', tone: 'neutral', blurb: 'One candidate of several failed this. That is what a fitness suite is for.' },
+    model: { label: 'One model', dot: 'idle', blurb: 'One candidate of several failed this. That is what a fitness suite is for.' },
     unknown: {
       label: 'Needs a second model',
-      tone: 'neutral',
+      dot: 'idle',
       blurb: 'Fewer than two models have reached a verdict on this fixture, so nothing can be concluded from it yet.',
     },
   }
@@ -98,28 +101,19 @@
         {#each shown as f (keyOf(f))}
           {@const open = opened[keyOf(f)] === true}
           <div>
-            <button
-              type="button"
-              onclick={() => (opened = { ...opened, [keyOf(f)]: !open })}
-              aria-expanded={open}
-              class="flex min-h-[60px] w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-hover focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
-            >
-              <ChevronRight size={16} class={cn('shrink-0 text-muted transition-transform duration-150', open && 'rotate-90')} aria-hidden="true" />
-              <span class="min-w-0 flex-1">
-                <span class="block truncate font-sans text-sm font-medium leading-5 text-fg">{f.case}</span>
-                <span class="block truncate font-sans text-[13px] leading-5 text-muted">
-                  {caseCategory(f.harness).label} · <span class="font-mono text-xs">{f.harness}</span>
-                </span>
-              </span>
+            <SettingsRow label={f.case} onclick={() => (opened = { ...opened, [keyOf(f)]: !open })} expanded={open}>
+              {#snippet hint()}{caseCategory(f.harness).label} · <span class="font-mono text-xs">{f.harness}</span>{/snippet}
+              {#snippet status()}
+                <span class="flex items-center gap-2" title={TONE[f.suspicion].blurb}><StatusDot status={TONE[f.suspicion].dot} />{TONE[f.suspicion].label}</span>
+              {/snippet}
               {#if f.gapped > 0}<Chip tone="warn" title="The fixture reported it could not fairly ask its question. That is a statement about the harness.">Gap ×{f.gapped}</Chip>{/if}
               {#if f.timedOut > 0}<Chip tone="warn">Timed out ×{f.timedOut}</Chip>{/if}
               {#if f.unmeasured > 0}<Chip tone="neutral" title="Skipped, or the provider never answered. Not a verdict either way.">Unmeasured ×{f.unmeasured}</Chip>{/if}
-              <span class="shrink-0 font-sans text-[13px] leading-5 tabular-nums text-muted">{f.failed} of {f.tested} failed</span>
-              <Chip tone={TONE[f.suspicion].tone} title={TONE[f.suspicion].blurb}>{TONE[f.suspicion].label}</Chip>
-            </button>
+              <span class="w-28 shrink-0 text-right font-sans text-[13px] leading-5 tabular-nums text-muted">{f.failed} of {f.tested} failed</span>
+            </SettingsRow>
             {#if open}
               <div transition:slide={{ duration: 150 }}>
-                <div class="space-y-3 border-t border-line-subtle py-4 pl-[52px] pr-5">
+                <div class="space-y-3 border-t border-line-subtle px-5 py-4">
                   <p class="max-w-[72ch] font-sans text-[13px] leading-5 text-muted">{TONE[f.suspicion].blurb}</p>
                   <!-- THE SENTENCES, VERBATIM AND GROUPED. Two models failing
                        for the SAME stated reason is a far stronger signal than
