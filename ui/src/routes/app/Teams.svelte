@@ -100,7 +100,7 @@
       class="h-full"
     >
       {#snippet row(t: Team)}
-        <span class="block truncate font-medium leading-5 text-fg">{t.name}</span>
+        <span class="line-clamp-2 break-words font-medium leading-5 text-fg" title={t.name}>{t.name}</span>
         <span class="block truncate text-xs leading-4 text-muted">{teamCounts(t)}</span>
       {/snippet}
 

@@ -10,6 +10,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { useAutosave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -63,8 +64,9 @@
   const session = $derived(sessionQuery.data)
   const isAdmin = $derived(session?.role === 'admin')
   const canManage = $derived(team.role === 'owner')
-  // The name, the description and the access switches save on change, for someone who may change them.
-  const autosave = useAutosave(() => canManage)
+  // The name and the description save on change for an owner, and the access
+  // switches for an admin, who need not own the team.
+  const autosave = useAutosave(() => canManage || isAdmin)
 
   // svelte-ignore state_referenced_locally -- reason: per-team drafts; the view remounts per team selection
   let name = $state(team.name)
@@ -281,21 +283,23 @@
   })
 
   const ROLE_LABEL: Record<TeamRole, string> = { owner: 'Owner', member: 'Member' }
+  // The People list's role column: the caption and every cell take this width.
+  const ROLE = 'w-20 shrink-0'
+  // A name wraps to a second line before it is cut.
+  const NAME = 'line-clamp-2 whitespace-normal break-words'
   const subtitle = $derived(
     team.role ? `${teamCounts(team)} · You are ${team.role === 'owner' ? 'an owner' : 'a member'}` : teamCounts(team),
   )
 
 </script>
 
-<div class="h-full overflow-y-auto p-5">
-  <header class="flex items-start gap-6">
-    <div class="min-w-0 flex-1">
-      <h2 class="font-sans text-lg font-semibold leading-6 text-fg">{team.name}</h2>
-      <p class="mt-1 font-sans text-[13px] leading-5 text-muted">
-        {subtitle}
-      </p>
-    </div>
-    {#if canManage}<DangerLink onClick={onDelete} class="shrink-0">Delete team</DangerLink>{/if}
+<div class="flex h-full flex-col">
+<div class="min-h-0 flex-1 overflow-y-auto p-5">
+  <header>
+    <h2 class="break-words font-sans text-lg font-semibold leading-6 text-fg">{team.name}</h2>
+    <p class="mt-1 font-sans text-[13px] leading-5 text-muted">
+      {subtitle}
+    </p>
   </header>
 
   <div class="mt-6 space-y-8">
@@ -321,11 +325,15 @@
       <SettingsGroup bare>
         {#if membersList.pending}
           <SkeletonRows rows={3} avatar class="py-4" />
+        {:else if members.length > 0}
+          <SettingsHeaderRow label="Name" menu><span class={ROLE}>Role</span></SettingsHeaderRow>
         {/if}
         {#each members as m (m.userId)}
-          <SettingsRow label={m.name ?? m.email ?? m.userId} hint={m.name && m.email ? m.email : undefined}>
+          {@const person = m.name ?? m.email ?? m.userId}
+          <SettingsRow hint={m.name && m.email ? m.email : undefined}>
+            {#snippet label()}<span class={NAME} title={person}>{person}</span>{/snippet}
             {#snippet lead()}<Avatar name={m.name ?? m.email} />{/snippet}
-            {#snippet status()}{ROLE_LABEL[m.role]}{/snippet}
+            <span class="{ROLE} font-sans text-[13px] leading-5 text-muted">{ROLE_LABEL[m.role]}</span>
             <SettingsRowMenu
               label={`Actions for ${m.name ?? m.email ?? 'this person'}`}
               items={canRemove(m.role)
@@ -335,7 +343,7 @@
           </SettingsRow>
         {/each}
         {#if canManage}
-          <SettingsRow label="Add a person" hint="Pick who joins, and as what." apart>
+          <SettingsRow label="Add a person" apart>
             <UserPicker
               class="w-[280px]"
               size="sm"
@@ -359,7 +367,8 @@
       {#if agentsList.notice}<div class="mb-3"><QueryError {...agentsList.notice} /></div>{/if}
       <SettingsGroup bare>
         {#each agents as a (a.agentModel)}
-          <SettingsRow label={a.label ?? a.agentModel}>
+          <SettingsRow>
+            {#snippet label()}<span class={NAME} title={a.label ?? a.agentModel}>{a.label ?? a.agentModel}</span>{/snippet}
             {#snippet lead()}<Avatar name={a.label ?? a.agentModel} />{/snippet}
             {#if canManage}
               <SettingsRowMenu
@@ -441,4 +450,12 @@
       </SettingsSection>
     {/if}
   </div>
+</div>
+<!-- Where the other pick-and-edit pages put it: the pane's pinned foot, at its
+     left, level with the picker's New team. -->
+{#if canManage}
+  <div class="flex h-[53px] shrink-0 items-center border-t border-line px-5">
+    <DangerLink onClick={onDelete}>Delete team</DangerLink>
+  </div>
+{/if}
 </div>
