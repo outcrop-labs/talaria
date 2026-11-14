@@ -116,6 +116,7 @@
   disabled={onclick ? disabled : undefined}
   aria-expanded={onclick ? expanded : undefined}
   data-settings-row={stacked ? 'stacked' : apart ? 'apart' : ''}
+  data-row-opens={opens ? '' : undefined}
   class={cn(
     compact ? 'flex min-h-11 px-5 py-1.5' : 'flex min-h-[56px] px-5 py-3.5',
     // Not stacked still wraps: on a phone a wide control drops under its label.
@@ -195,3 +196,21 @@
     </div>
   {/if}
 </svelte:element>
+
+<style>
+  /* One trailing control at rest: a row that opens shows its kebab when the
+     row is hovered, holds focus, or has its menu open. Opacity, not
+     visibility, so the kebab keeps its cell, its place in the tab order and
+     its name. A device that cannot hover always shows it. */
+  @media (hover: hover) {
+    :global([data-row-opens] > [data-row-controls] [data-row-menu]) {
+      opacity: 0;
+      transition: opacity 120ms;
+    }
+    :global([data-row-opens]:hover > [data-row-controls] [data-row-menu]),
+    :global([data-row-opens]:focus-within > [data-row-controls] [data-row-menu]),
+    :global([data-row-opens] > [data-row-controls] [data-row-menu]:has([data-menu-open])) {
+      opacity: 1;
+    }
+  }
+</style>

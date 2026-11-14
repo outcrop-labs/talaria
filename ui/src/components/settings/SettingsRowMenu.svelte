@@ -26,12 +26,14 @@
 <!-- A fixed cell, so down a list the kebabs share one column. A row with
      nothing in its menu passes an empty list and still holds the cell. As the
      last thing in its row the cell is pulled out by its own inset, so the dots
-     end where a button in the next row ends, in a `SettingsRow` or out of one. -->
+     end where a button in the next row ends, in a `SettingsRow` or out of one.
+     In a row that opens the dots wait for the pointer or focus
+     (`SettingsRow`), and `data-menu-open` keeps them while the menu is open. -->
 <div data-row-menu class="grid w-8 shrink-0 place-items-center last:-mr-2">
   {#if typeof items === 'function' || items.length > 0}
     <DropdownMenu {items} {align} {up}>
       {#snippet trigger(open)}
-        <IconButton title={label} active={open} class={open ? sansFill : undefined}><Ellipsis size={16} /></IconButton>
+        <IconButton title={label} active={open} data-menu-open={open ? '' : undefined} class={open ? sansFill : undefined}><Ellipsis size={16} /></IconButton>
       {/snippet}
     </DropdownMenu>
   {/if}
