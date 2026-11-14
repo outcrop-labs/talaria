@@ -69,7 +69,7 @@
     [MANAGE_HOME]: LayoutDashboard,
     [ADMIN_HOME]: Shield,
   }
-  // An app's row wears the app's own glyph, so the rows of the Apps group
+  // An app's row wears the app's own glyph, so the rows of the App settings group
   // tell apart. It is drawn in the 16px box the drawn icons fill, in the
   // row's own ink.
   const iconOf = (to: string, icon: NavItem['icon'] | undefined): NavItem['icon'] => icon ?? ICONS[to] ?? Blocks

@@ -37,7 +37,7 @@ const labels = (nav: ReturnType<typeof settingsNav>) =>
   Object.fromEntries(nav.groups.map((g) => [g.id, g.rows.map((r) => r.label)]))
 
 describe('settingsNav groups', () => {
-  it('gives an admin Personal, Workspace and Instance, in that order, and no Apps group with no app', () => {
+  it('gives an admin Personal, Workspace and Instance, in that order, and no App settings group with no app', () => {
     const nav = settingsNav(CORE, [], admin, '/manage')
     expect(nav.groups.map((g) => g.label)).toEqual(['Personal', 'Workspace', 'Instance'])
     expect(labels(nav)).toEqual({
@@ -47,9 +47,9 @@ describe('settingsNav groups', () => {
     })
   })
 
-  it('puts every page an app contributes under Apps, between Workspace and Instance, with the app glyph', () => {
+  it('puts every page an app contributes under App settings, between Workspace and Instance, with the app glyph', () => {
     const nav = settingsNav(CORE, [crm], admin, '/settings')
-    expect(nav.groups.map((g) => g.label)).toEqual(['Personal', 'Workspace', 'Apps', 'Instance'])
+    expect(nav.groups.map((g) => g.label)).toEqual(['Personal', 'Workspace', 'App settings', 'Instance'])
     expect(nav.groups[2]!.rows).toEqual([
       { to: '/settings/app:crm', label: 'CRM', icon: 'c' },
       { to: '/x/crm/manage', label: 'CRM setup', icon: 'c', badge: undefined },

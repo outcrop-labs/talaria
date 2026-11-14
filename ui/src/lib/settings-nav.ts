@@ -131,7 +131,7 @@ export function settingsNav(
   const groups: SettingsNavGroup[] = [
     { id: 'personal' as const, label: 'Personal', rows: PERSONAL },
     { id: 'workspace' as const, label: 'Workspace', rows: workspace },
-    { id: 'apps' as const, label: 'Apps', rows: appRows },
+    { id: 'apps' as const, label: 'App settings', rows: appRows },
     { id: 'instance' as const, label: 'Instance', rows: instance },
   ].filter((g) => g.rows.length > 0)
 
