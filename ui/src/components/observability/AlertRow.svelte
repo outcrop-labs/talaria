@@ -11,39 +11,32 @@
   import { navigateHref } from '@/router'
   import { SEVERITY, type Alert } from './alerts'
 
-  // One alert: severity, what is wrong, and the way to where it is fixed.
+  // One alert: severity, what is wrong on one line, why it matters under it,
+  // and the way to where it is fixed.
   let {
     alert,
     named = false,
-    compact = false,
   }: {
     alert: Alert
     /** Spell the severity out beside its dot, as a column. */
     named?: boolean
-    /** One line: the title, then as much of the explanation as fits, with
-     *  all of it in a tooltip. For a summary of the list on another page. */
-    compact?: boolean
   } = $props()
 
   const severity = $derived(SEVERITY[alert.severity])
 </script>
 
-<!-- The explanation gives way first, and only then the title. -->
-{#snippet oneLine()}
-  <span class="flex min-w-0 items-baseline gap-2.5">
-    <span class="max-w-full shrink-0 truncate">{alert.title}</span>
-    {#if alert.detail}
-      <span class="min-w-0 truncate text-[13px] font-normal text-muted" title={alert.detail}>{alert.detail}</span>
-    {/if}
-  </span>
+<!-- py-2: at this height three alerts leave the overview's first screen whole. -->
+{#snippet impact()}
+  <span class="line-clamp-2" title={alert.detail}>{alert.detail}</span>
 {/snippet}
 
 <SettingsRow
-  label={compact ? oneLine : alert.title}
-  hint={compact ? undefined : alert.detail}
+  label={alert.title}
+  wrap
+  hint={alert.detail ? impact : undefined}
   disabled={!alert.href}
   onclick={() => alert.href && void navigateHref(alert.href)}
-  {compact}
+  class="py-2"
 >
   {#snippet lead()}
     {#if named}
