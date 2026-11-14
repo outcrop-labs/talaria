@@ -7,6 +7,8 @@
   import { SERIES, SERVED_ORDER } from './series'
   import ShareBar from './ShareBar.svelte'
   import { table } from './grammar'
+  import ModelName from '@/components/models/ModelName.svelte'
+  import { useModelNames } from '@/components/models/model-names.svelte'
 
   /** Where the last 30 days of tokens were served: the two classes as one
    *  bar, then every model with its class, its share and what it cost. The
@@ -20,6 +22,7 @@
     perModel: CostOverview['perModel']
   } = $props()
 
+  const modelName = useModelNames()
   const total = $derived(split.local + split.cloud + split.other)
   const parts = $derived(SERVED_ORDER.filter((k) => split[k] > 0))
   const percent = (n: number) => `${Math.round((n / total) * 100)}%`
@@ -77,7 +80,9 @@
             {#each models as m (m.llmModel ?? '?')}
               {@const series = SERIES[m.endpointClass ?? 'other']}
               <tr class={table.tr}>
-                <td class={cn(table.td, m.llmModel ? table.id : 'text-muted')}>{m.llmModel ?? 'Unattributed'}</td>
+                <td class={cn(table.td, !m.llmModel && 'text-muted')}>
+                  {#if m.llmModel}<ModelName id={m.llmModel} name={modelName(m.llmModel)} />{:else}Unattributed{/if}
+                </td>
                 <td class={cn(table.td, 'whitespace-nowrap text-[13px] text-muted')}>{series.label}</td>
                 <td class={table.td}><ShareBar share={m.tokens / modelTokens} color={series.color} /></td>
                 <td class={cn(table.td, table.num)}>{formatTokens(m.tokens)}</td>

@@ -97,7 +97,7 @@
         </th>
         {#each ordered as slot (slot.key)}
           <th
-            class="w-24 min-w-24 px-2 py-2.5 text-center align-bottom font-sans text-xs font-medium leading-4 text-muted"
+            class="w-20 min-w-20 px-1.5 py-2.5 text-center align-bottom font-sans text-xs font-medium leading-4 text-muted"
             title="{slot.label}: {slot.hint}{slot.requires.length ? `\nNeeds: ${slot.requires.join(', ')}` : ''}"
           >
             {slotHeading(slot.label)}
@@ -131,7 +131,8 @@
                 {/if}
                 <CapabilityTags row={m} negativeOnly />
               </span>
-              <span class="whitespace-nowrap font-sans text-xs leading-4 text-muted">
+              <!-- The line wraps: held on one line it pushed the last job's column out of the card. -->
+              <span class="font-sans text-xs leading-4 text-muted">
                 {entry ? rowSummaryLine(summary.counts) : 'Not tested yet'}
                 <!-- Tier 3 is a fact about the MODEL, not about any one slot,
                      so it sits on the row and never colors a cell. -->
