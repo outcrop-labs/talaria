@@ -3,15 +3,15 @@
   What reads differently:
   - **Overview** opens on what needs attention (each alert a title, one line on why it matters, and Fix), then four numbers that link to their pages, recent activity and the fleet controls. It fits a 1440×900 window.
   - **Agents** is a grid or list of agents with a name, a role, a status and a model. Role templates and Schedules are tabs of it. An agent opens as a dialog with a section list.
-  - **Tools** is the page that was "MCP". Servers are rows with their brand mark, what they are for, how many tools and agents use them, and one status. The same label is used in the sidebar, the agent dialog and Observability's "Tool calls" tab.
+  - **Tools** is the page that was "MCP". Servers are rows with their brand mark (or two letters of the name where there is none), what they are for, how many tools and agents use them, and one status. The same label is used in the sidebar, the agent dialog and Observability's "Tool calls" tab.
   - **Models** opens on Providers; Roles, Fitness and Access are tabs.
   - **Apps** shows what is waiting for approval as a name, a sentence and who asked. The repository, branch, pull requests and commits are under the row.
   - **Notifications, Profile, Connections, API keys and Assistant** are rows with switches and menus. A page whose controls save as you change them says so once in its header and flashes "Saved" there. A group that needs a Save shows the button only when something changed, with Discard beside it.
-  - **Admin** tabs are Organization, People, Agents, Git hosts, Web search, Knowledge search, Storage, Secrets and Security.
-  - A row that opens ends in a chevron. Its menu of other actions appears when the pointer or the keyboard is on the row, and is always shown on a touch screen.
+  - **Admin** is three pages in the sidebar's Instance group where it was nine tabs: Organization (General, People), Agent policy (Oversight, Git hosts, Web search, Knowledge search) and Data & security (Storage, Secrets, Security). Every address is the one it was. Hints that said "in Admin" name the page and tab.
+  - A row ends in one thing. A row that opens ends in a chevron, and a row that needs one action names it on a button (Connect, Reconnect, Verify, Install). Either way its menu of other actions appears when the pointer or the keyboard is on the row, and is always shown on a touch screen.
 
   Two behaviours changed with it. A menu or popover no longer closes when the page scrolls unless its anchor actually moved, which stops a menu opened right after a scroll from closing under the pointer. A new API key's secret can no longer be lost by closing the dialog early: the reveal step leaves only by Done.
 
-  Nothing outside the area changes: the shared components the area restyles (buttons, menus, dialogs, switches, the editor) render as before everywhere else, and the conventions are written down in `docs/UI-CONVENTIONS.md`.
+  Outside the area two things change: the user menu's "Admin" entry reads "Instance settings", and an agent opened from a conversation uses the area's dialog. The shared components the area restyles (buttons, menus, dialogs, switches, the editor) render as before everywhere else, and the conventions are written down in `docs/UI-CONVENTIONS.md`.
 
   Verified: 52 surfaces of the area were captured in both themes at 1440×900 from the base commit and from this branch, with every API request answered from one fixed data set, and compared screen by screen. Two full capture runs of one commit are byte-identical. Server-render comparisons of the shared components as the rest of the app uses them show no differing output. New unit tests cover the settings search and navigation, the autosave cue, the frontmatter split and join in the editor (44 cases, plus a save round trip), the roster count and the menu's scroll rule. The end-to-end specs that select text or roles on these pages were updated with the pages.
