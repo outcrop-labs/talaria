@@ -3,13 +3,13 @@
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Modal from '@/components/ui/Modal.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
   import Select from '@/components/ui/Select.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -111,11 +111,6 @@
     if (ok) await act('migrate')
   }
 
-  const MODE_LABEL: Record<Config['mode'], string> = {
-    local: 'Local disk',
-    internal: 'Built-in bucket',
-    s3: 'External S3-compatible storage',
-  }
   const files = (n: number) => `${n.toLocaleString()} file${n === 1 ? '' : 's'}`
 
   // A bucket is named by itself and found at its endpoint. The rest of what
@@ -124,8 +119,9 @@
     d.config.mode === 's3' ? d.config : d.config.mode === 'internal' ? d.internal : null
 </script>
 
-{#snippet bucketName(bucket: string | undefined, fallback: string)}
-  {#if bucket}<span class="font-mono text-[13px] font-normal">{bucket}</span>{:else}{fallback}{/if}
+<!-- A bucket is its name and the endpoint it is found at. -->
+{#snippet bucketLine(bucket: string | undefined, endpoint: string | undefined)}
+  <span class="break-all font-mono text-xs">{bucket || 'No bucket set'}</span>{' · '}<span class="break-all font-mono text-xs">{endpoint || 'No endpoint set'}</span>
 {/snippet}
 
 {#snippet result(part: Part)}
@@ -193,7 +189,7 @@
               {#if d.migrate?.failed}{files(d.migrate.failed)} failed to move.{/if}
               {files(d.stats.local)} {d.stats.local === 1 ? 'is' : 'are'} still on local disk.
               {#snippet action()}
-                <Button size="sm" variant="outline" onclick={() => void migrate()} disabled={busy}>Move to bucket</Button>
+                <SettingsRowFix label="Fix files on local disk: move them to the bucket" onclick={() => void migrate()} disabled={busy} />
               {/snippet}
             </NoticeRow>
           {:else if !migrating && d.migrate?.failed}
@@ -202,21 +198,27 @@
         </SettingsGroup>
       </SettingsSection>
 
-      <SettingsSection
-        title="Where files live"
-        description="New uploads go here, and switching never breaks an existing link."
-        info="Local disk keeps everything on this machine. The built-in bucket is Talaria's own bundled object store, with no cloud account needed. External works with any S3-compatible service: AWS S3, Backblaze B2, Cloudflare R2, MinIO."
-      >
+      <SettingsSection title="Where files live" description="New uploads go to the primary, and a replica receives a copy of every file.">
         <SettingsGroup>
-          <SettingsRow onOpen={() => edit('location')} openLabel="Edit where files live">
-            {#snippet label()}{@render bucketName(bucketOf(d)?.bucket, MODE_LABEL.local)}{/snippet}
-            {#snippet meta()}{#if inBucket}<Chip>{external ? 'External' : 'Built-in'}</Chip>{/if}{/snippet}
+          <SettingsRow
+            label="Primary"
+            info="Local disk keeps everything on this machine. The built-in bucket is Talaria's own bundled object store, with no cloud account needed. External works with any S3-compatible service: AWS S3, Backblaze B2, Cloudflare R2, MinIO. Switching never breaks an existing link."
+            onOpen={() => edit('location')}
+            openLabel="Edit where files live"
+          >
             {#snippet hint()}
-              {#if inBucket}<span class="break-all font-mono text-xs">{bucketOf(d)?.endpoint || 'No endpoint set'}</span>{:else}Files are kept on this machine.{/if}
+              {#if inBucket}
+                {#if !external}Built-in bucket{' · '}{/if}{@render bucketLine(bucketOf(d)?.bucket, bucketOf(d)?.endpoint)}
+              {:else}
+                Local disk, so files are kept on this machine.
+              {/if}
             {/snippet}
             {#snippet status()}
-              {#if external && !saved.hasSecret}<RowStatus status="idle" title="The secret access key is not set">Not set</RowStatus>{/if}
+              {#if external && !saved.hasSecret}<RowStatus status="warn">Secret key not set</RowStatus>{/if}
             {/snippet}
+            {#if external && !saved.hasSecret}
+              <SettingsRowFix label="Fix the primary storage: enter its secret access key" onclick={() => edit('location')} />
+            {/if}
             <SettingsRowMenu
               label="Actions for file storage"
               items={[
@@ -224,62 +226,57 @@
                 ...(inBucket
                   ? [{ label: 'Test connection', disabled: busy || (external && !saved.hasSecret), onSelect: () => void act('test') }]
                   : []),
+                ...(inBucket && d.stats.local > 0 && !migrating
+                  ? [{ label: 'Move local files to the bucket', disabled: busy, onSelect: () => void migrate() }]
+                  : []),
               ]}
             />
           </SettingsRow>
           {@render result('location')}
-        </SettingsGroup>
-      </SettingsSection>
-
-      <SettingsSection
-        title="Replica"
-        description="A second provider that receives a copy of every file."
-        info="New uploads are copied as they land, and an outage at the replica never blocks an upload. Sync all copies everything already stored, on disk or in a bucket, into the replica bucket."
-      >
-        <SettingsGroup>
           {#if saved.replica.enabled}
-            <SettingsRow onOpen={() => edit('replica')} openLabel="Edit the replica">
-              {#snippet label()}{@render bucketName(saved.replica.bucket, 'No bucket set')}{/snippet}
-              {#snippet hint()}<span class="break-all font-mono text-xs">{saved.replica.endpoint || 'No endpoint set'}</span>{/snippet}
+            {@const behind = !syncing && !!d.sync?.failed}
+            {@const canSync = !busy && saved.replica.hasSecret && total > 0}
+            <SettingsRow
+              label="Replica"
+              info="New uploads are copied as they land, and an outage at the replica never blocks an upload. Sync all copies everything already stored, on disk or in a bucket, into the replica bucket."
+              onOpen={() => edit('replica')}
+              openLabel="Edit the replica"
+            >
+              {#snippet hint()}{@render bucketLine(saved.replica.bucket, saved.replica.endpoint)}{/snippet}
               {#snippet status()}
-                {#if !saved.replica.hasSecret}<RowStatus status="idle" title="The secret access key is not set">Not set</RowStatus>{/if}
+                {#if syncing && d.sync}
+                  <WaitingMark site="admin/storage-sync" size={14} />
+                  <span class="tabular-nums">Syncing {d.sync.moved.toLocaleString()} of {d.sync.total.toLocaleString()}</span>
+                {:else if !saved.replica.hasSecret}
+                  <RowStatus status="warn">Secret key not set</RowStatus>
+                {:else if behind && d.sync}
+                  <RowStatus status="danger">{files(d.sync.failed)} not copied</RowStatus>
+                {/if}
               {/snippet}
+              {#if !saved.replica.hasSecret}
+                <SettingsRowFix label="Fix the replica: enter its secret access key" onclick={() => edit('replica')} />
+              {:else if behind}
+                <SettingsRowFix label="Fix the replica: sync the files again" disabled={!canSync} onclick={() => void act('sync')} />
+              {/if}
               <SettingsRowMenu
                 label="Actions for the replica"
                 items={[
                   { label: 'Edit', onSelect: () => edit('replica') },
                   { label: 'Test replica', disabled: busy || !saved.replica.hasSecret, onSelect: () => void act('test-replica') },
-                  {
-                    label: 'Sync all to replica',
-                    disabled: busy || syncing || !saved.replica.hasSecret || total === 0,
-                    onSelect: () => void act('sync'),
-                  },
+                  { label: 'Sync all to replica', disabled: !canSync || syncing, onSelect: () => void act('sync') },
                 ]}
               />
             </SettingsRow>
-            {#if syncing && d.sync}
-              <SettingsRow label="Syncing files to the replica">
-                {#snippet lead()}<WaitingMark site="admin/storage-sync" size={14} />{/snippet}
-                <span class="font-sans text-[13px] tabular-nums text-muted">{d.sync.moved.toLocaleString()} of {d.sync.total.toLocaleString()}</span>
-              </SettingsRow>
-            {:else if d.sync?.failed}
-              <NoticeRow status="danger">
-                {files(d.sync.failed)} did not reach the replica.
-                {#snippet action()}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onclick={() => void act('sync')}
-                    disabled={busy || !saved.replica.hasSecret || total === 0}
-                  >
-                    Sync again
-                  </Button>
-                {/snippet}
-              </NoticeRow>
-            {/if}
           {:else}
-            <SettingsRow label="No replica" hint="Files are kept in one place only.">
-              <Button size="sm" variant="outline" onclick={() => edit('replica', { enabled: true })}>Set up replica</Button>
+            <!-- One place is a choice, not a fault, so the row opens the
+                 setup and shows no button. -->
+            <SettingsRow
+              label="Replica"
+              hint="Off, so files are kept in one place only."
+              onOpen={() => edit('replica', { enabled: true })}
+              openLabel="Set up a replica"
+            >
+              <SettingsRowMenu label="Actions for the replica" items={[{ label: 'Set up replica', onSelect: () => edit('replica', { enabled: true }) }]} />
             </SettingsRow>
             {#if !syncing && d.sync?.failed}
               <NoticeRow status="danger">{files(d.sync.failed)} did not reach the replica.</NoticeRow>
@@ -295,7 +292,7 @@
 <Modal
   open={editing !== null && form !== null}
   onClose={() => (editing = null)}
-  title={editing === 'replica' ? 'Replica' : 'Where files live'}
+  title={editing === 'replica' ? 'Replica' : 'Primary storage'}
   width="max-w-2xl"
 >
   {#if form}
@@ -338,7 +335,7 @@
   {#snippet footer()}
     <div class="flex justify-end gap-2">
       <Button variant="ghost" size="sm" onclick={() => (editing = null)}>Cancel</Button>
-      <Button size="sm" onclick={() => void save()} disabled={busy}>{busy ? 'Saving' : 'Save'}</Button>
+      <Button size="sm" onclick={() => void save()} disabled={busy}>{busy ? 'Saving' : editing === 'replica' ? 'Save replica' : 'Save storage'}</Button>
     </div>
   {/snippet}
 </Modal>
