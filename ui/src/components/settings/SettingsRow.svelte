@@ -56,8 +56,9 @@
     /** The whole row is a button. Put no other control in such a row. */
     onclick?: () => void
     /** Clicking the row opens the thing it is about, and the row can still
-     *  hold a status, a fix button and a kebab. The row stays a `div`: the hit
-     *  area is a button laid behind its content. */
+     *  hold a status, a fix action and a kebab. The row stays a `div`: the hit
+     *  area is a button laid behind its content. The row ends in a chevron,
+     *  after the kebab. */
     onOpen?: () => void
     /** The same, when opening is going somewhere: the hit area is a link, so
      *  it opens in a new tab like any other. */
@@ -78,6 +79,8 @@
   } = $props()
 
   const opens = $derived(Boolean(onOpen || openHref))
+  // A row that opens and closes what follows it already draws its own chevron.
+  const pointsOnward = $derived(opens && expanded === undefined && !stacked)
   const openName = $derived(openLabel ?? (typeof label === 'string' ? label : undefined))
   const hitArea =
     'absolute inset-0 cursor-pointer transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2! focus-visible:outline-accent group-hover/row:bg-hover'
@@ -140,7 +143,7 @@
       {/if}
     </div>
   </div>
-  {#if children || status || expanded !== undefined}
+  {#if children || status || expanded !== undefined || pointsOnward}
     <!-- empty:hidden: a control only some viewers get must not hold the row's gap open for the rest. -->
     <div
       data-row-controls
@@ -155,7 +158,7 @@
         <span data-row-status class="mr-auto flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">{@render status()}</span>
       {/if}
       <!-- No space before the chevron's block: a text node there would keep an empty control slot from collapsing. -->
-      {@render children?.()}{#if expanded !== undefined}<ChevronRight size={16} aria-hidden="true" class={cn('text-muted transition-transform duration-150', expanded && 'rotate-90')} />{/if}
+      {@render children?.()}{#if expanded !== undefined}<ChevronRight size={16} aria-hidden="true" class={cn('text-muted transition-transform duration-150', expanded && 'rotate-90')} />{:else if pointsOnward}<span data-row-chevron aria-hidden="true" class="-mr-1 grid w-4 shrink-0 place-items-center text-muted/70 transition-colors group-hover/row:text-fg"><ChevronRight size={16} /></span>{/if}
     </div>
   {/if}
 </svelte:element>

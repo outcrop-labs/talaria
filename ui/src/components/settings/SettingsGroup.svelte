@@ -36,6 +36,18 @@
   :global(.settings-group[data-bare] [data-settings-row]) {
     padding-inline: 0;
   }
+  /* A row that opens ends in a chevron cell. Where a group mixes rows that
+     open with rows that do not, the rest hold the same cell empty, so the
+     kebabs and controls above and below stay in one column. */
+  :global(.settings-group:has([data-row-chevron]) [data-settings-row='']:not(:has([data-row-chevron])) > [data-row-controls]::after) {
+    content: '';
+    flex: none;
+    width: 1rem;
+    margin-right: -0.25rem;
+  }
+  :global(.settings-group:has([data-row-chevron]) [data-settings-row='']:not(:has([data-row-chevron])) > [data-row-controls] > [data-row-menu]:last-child) {
+    margin-right: 0;
+  }
   /* The card is a two-column grid and every row borrows its columns, so the
      right side is as wide as the widest row needs and all rows share it: a
      status starts at its left edge, a control ends at its right. A wrapper
