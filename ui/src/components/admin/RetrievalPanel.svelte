@@ -145,6 +145,7 @@
       {#if rag}
         <SettingsRow label="Vector store" hint="Where the index is kept.">
           {#snippet status()}<RowStatus status={rag.health.qdrant ? 'ok' : 'danger'}>{rag.health.qdrant ? 'Running' : 'Unreachable'}</RowStatus>{/snippet}
+          <SettingsRowMenu label="Actions for the vector store" items={[]} />
         </SettingsRow>
         <SettingsRow
           label="Embeddings"
@@ -158,6 +159,7 @@
             {/if}
           {/snippet}
           {#snippet status()}<RowStatus status={rag.health.embeddings ? 'ok' : 'danger'}>{rag.health.embeddings ? 'Running' : 'Unreachable'}</RowStatus>{/snippet}
+          <SettingsRowMenu label="Actions for embeddings" items={[]} />
         </SettingsRow>
         <SettingsRow label="Backfill">
           {#snippet hint()}

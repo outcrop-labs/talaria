@@ -154,9 +154,10 @@
     {@const syncing = d.sync?.running}
     {@const total = d.stats.local + d.stats.s3 + d.stats.internal}
     {@const places = [
+      // The dashboards' series family: gold and coral read as "needs attention" and "failed" beside a status dot.
       { label: 'External storage', count: d.stats.s3, bar: 'bg-chart-1' },
-      { label: 'Built-in bucket', count: d.stats.internal, bar: 'bg-accent' },
-      { label: `Local disk (${fmtBytes(d.stats.localBytes)})`, count: d.stats.local, bar: 'bg-chart-2' },
+      { label: 'Built-in bucket', count: d.stats.internal, bar: 'bg-fg' },
+      { label: `Local disk (${fmtBytes(d.stats.localBytes)})`, count: d.stats.local, bar: 'bg-line-strong' },
     ]}
     <div class="space-y-8">
       <SettingsSection title="Stored files" description="Every uploaded file, by where it is kept.">
