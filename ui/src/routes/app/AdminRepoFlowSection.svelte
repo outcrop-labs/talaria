@@ -3,6 +3,7 @@
   import NoticeRow from '@/components/admin/NoticeRow.svelte'
   import RowStatus from '@/components/admin/RowStatus.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Input from '@/components/ui/Input.svelte'
@@ -37,7 +38,7 @@
       toastError('Save failed', e)
       return
     }
-    autosave.flash()
+    autosave.flash(repoKey(r))
     await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
   }
   // Every reachable repo is a row; configs for repos a host no longer
@@ -71,10 +72,15 @@
       {#each data.hosts.filter((h) => h.error) as h (h.id)}
         <NoticeRow status="danger">{h.name} could not list its repositories: {h.error}</NoticeRow>
       {/each}
+      {#if rows.length > 0}
+        <SettingsHeaderRow label="Repository">
+          <span class="w-[280px] shrink-0">Target branch</span>
+        </SettingsHeaderRow>
+      {/if}
       {#each rows as r (repoKey(r))}
         {@const f = data.flows.find((x) => x.host === r.host && x.repo === r.repo)}
         {@const unreachable = !data.repos.some((x) => x.host === r.host && x.repo === r.repo)}
-        <SettingsRow hint={manyHosts ? hostName(r.host) : undefined} as="label">
+        <SettingsRow hint={manyHosts ? hostName(r.host) : undefined} as="label" saved={autosave.saved(repoKey(r))}>
           {#snippet label()}<span class="font-mono text-[13px] font-normal">{r.repo}</span>{/snippet}
           {#snippet status()}{#if unreachable}<RowStatus status="danger">Unreachable</RowStatus>{/if}{/snippet}
           <Input

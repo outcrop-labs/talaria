@@ -115,6 +115,9 @@ export function hostState(read: 'pending' | 'failed' | 'ok', status: GitHostStat
   return { status: 'danger', word, fix: 'reconnect' }
 }
 
+/** The widths the host list's header captions and each row's cells share. */
+export const HOST_COLS = { state: 'w-[8.5rem] shrink-0', fix: 'w-12 shrink-0' } as const
+
 /** A repo on a host, as the workbench routes spell it. */
 export interface HostRepo {
   host: string

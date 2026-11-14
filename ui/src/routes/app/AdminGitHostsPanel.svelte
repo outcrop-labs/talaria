@@ -1,6 +1,7 @@
 <script lang="ts">
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -12,7 +13,7 @@
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import AdminGitHostRow from './AdminGitHostRow.svelte'
-  import { useGitHosts, useGitHostsRefresh, type GitHostKind } from './git-hosts'
+  import { HOST_COLS, useGitHosts, useGitHostsRefresh, type GitHostKind } from './git-hosts'
 
   /** Admin → Git hosts: the git providers this instance works repositories
    *  on. Operators choose their providers — GitHub (github.com or an
@@ -79,6 +80,10 @@
         <EmptyState variant="compact" title="No git host yet" hint="Agents cannot start a coding job until you add a host at the top of the page." />
       {/snippet}
       {#snippet children(d)}
+        <SettingsHeaderRow label="Host" menu>
+          <span class={HOST_COLS.state}>Connection</span>
+          <span class={HOST_COLS.fix}></span>
+        </SettingsHeaderRow>
         {#each d.hosts as h (h.id)}<AdminGitHostRow host={h} />{/each}
       {/snippet}
     </QueryState>

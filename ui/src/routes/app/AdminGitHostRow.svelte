@@ -2,6 +2,7 @@
   import { publicIconDomain } from '@/lib/icon-domain'
   import SettingsField from '@/components/settings/SettingsField.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowFix from '@/components/settings/SettingsRowFix.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import FactsList from '@/components/admin/FactsList.svelte'
   import NoticeRow from '@/components/admin/NoticeRow.svelte'
@@ -20,7 +21,7 @@
   import { useWorkspaceSecrets } from '@/lib/workspace-secrets'
   import AdminGithubConnectModal from './AdminGithubConnectModal.svelte'
   import McpServerMark from './McpServerMark.svelte'
-  import { hostInUse, hostState, inUseSummary, useGitHost, useGitHostsRefresh, type GitHost, type GitHostTest } from './git-hosts'
+  import { HOST_COLS, hostInUse, hostState, inUseSummary, useGitHost, useGitHostsRefresh, type GitHost, type GitHostTest } from './git-hosts'
 
   /** One git host in Admin → Git hosts: what it is and whether its connection
    *  answers right now. Its settings and its connection open as dialogs.
@@ -141,6 +142,7 @@
   const menu = $derived.by((): ContextMenuEntry[] => [
     { label: 'Edit host', onSelect: edit },
     { label: 'Test connection', disabled: testing, onSelect: () => void test() },
+    ...(fix ? [{ label: fix, onSelect: openFix }] : []),
     ...(!fix && current.kind === 'github' ? [{ label: 'Change connection', onSelect: () => (connecting = true) }] : []),
     'sep',
     { label: 'Remove host', danger: true, disabled: hostInUse(host), onSelect: () => void remove() },
@@ -171,8 +173,12 @@
     {#snippet hint()}
       <span class="font-mono text-xs">{current.baseUrl}</span>{#if detail}{' · '}{detail}{/if}
     {/snippet}
-    {#snippet status()}<RowStatus status={testing ? 'idle' : conn.status}>{testing ? 'Testing' : conn.word}</RowStatus>{/snippet}
-    {#if fix}<Button variant="outline" size="sm" onclick={openFix}>{fix}</Button>{/if}
+    <span class={HOST_COLS.state}><RowStatus status={testing ? 'idle' : conn.status}>{testing ? 'Testing' : conn.word}</RowStatus></span>
+    {#if fix}
+      <SettingsRowFix label={`Fix ${current.name}: ${fix.toLowerCase()}`} onclick={openFix} />
+    {:else}
+      <span class={HOST_COLS.fix}></span>
+    {/if}
     <SettingsRowMenu label={`Actions for ${current.name}`} items={menu} />
   </SettingsRow>
   {#if tested}
@@ -251,7 +257,7 @@
         </DangerLink>
         <span class="flex-1"></span>
         <Button size="sm" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
-        <Button size="sm" disabled={busy || !name.trim() || !baseUrl.trim()} onclick={() => void save()}>Save</Button>
+        <Button size="sm" disabled={busy || !name.trim() || !baseUrl.trim()} onclick={() => void save()}>Save host</Button>
       </div>
     {/snippet}
   </Modal>

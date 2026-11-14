@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import NoticeRow from '@/components/admin/NoticeRow.svelte'
+  import { useExplicitSave } from '@/components/settings/autosave.svelte'
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
@@ -43,6 +44,9 @@
   }))
   const requests = $derived(requestsQuery.data ?? [])
   const requestsFailed = $derived(requestsQuery.isError && requestsQuery.data === undefined)
+  // A request's visibility and protection are choices that go out with
+  // Create repository. While one waits, or might, the header says nothing.
+  useExplicitSave(() => requestsQuery.isPending || requests.length > 0)
   // The approver's visibility per request; absent = what the agent asked for.
   let chosen = $state<Record<string, Visibility>>({})
   const visibilityOf = (r: RepoReq): Visibility => chosen[r.id] ?? r.visibility ?? 'private'
