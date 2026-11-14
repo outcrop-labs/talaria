@@ -123,8 +123,10 @@
          transitions (the default) are suppressed in exactly that case, which
          is how modals shipped two rounds of "completely unanimated". An
          overlay must animate no matter what mounted it. -->
+    <!-- The settings area's page is lighter and holds a gold primary in its header, which read through beside a wide
+         dialog: there the scrim is heavier, so nothing behind competes with the dialog. -->
     <div
-      class="absolute inset-0 bg-black/50"
+      class={sans ? 'absolute inset-0 bg-black/75 backdrop-grayscale' : 'absolute inset-0 bg-black/50'}
       in:fade|global={{ duration: 220 }}
       out:fade|global={QUICK}
       onclick={dismissible ? onClose : undefined}
