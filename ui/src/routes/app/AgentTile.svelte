@@ -3,7 +3,6 @@
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Panel from '@/components/ui/Panel.svelte'
-  import ModelName from '@/components/models/ModelName.svelte'
   import { cn } from '@/lib/cn'
   import type { AgentBrainHealth, AgentContainers, AgentDef, FleetRollRow, LlmEndpoint } from '@/lib/fleet-defs'
   import AgentBrainChip from './AgentBrainChip.svelte'
@@ -32,38 +31,31 @@
 
   const model = $derived(d.latest?.config?.main?.model ?? null)
   const brainDown = $derived(brain?.targets.some((t) => !t.ok) ?? false)
-
-  // A name that takes two lines leaves the role one, so no card's text runs
-  // past three lines and every card in the grid is the same height.
-  const NAME_LINE_PX = 20
-  let nameEl = $state<HTMLElement>()
-  let nameWraps = $state(false)
-  $effect(() => {
-    const el = nameEl
-    if (!el) return
-    const observer = new ResizeObserver(() => (nameWraps = el.offsetHeight > NAME_LINE_PX * 1.5))
-    observer.observe(el)
-    return () => observer.disconnect()
-  })
 </script>
 
 <AgentItem def={d} {containers} {endpoints} {onDuplicate} {roll}>
   {#snippet frame({ running, openManage, onContextMenu, menuItems, act, pending }: AgentFrame)}
     <Panel
       oncontextmenu={onContextMenu}
-      class={cn('relative flex h-full flex-col gap-4 p-5 transition-colors hover:border-line-strong', !d.enabled && 'opacity-60')}
+      class={cn(
+        'relative flex h-full flex-col gap-4 p-5 transition-colors hover:border-line-strong hover:bg-hover has-[[data-card-open]:focus-visible]:border-line-strong has-[[data-card-open]:focus-visible]:bg-hover',
+        !d.enabled && 'opacity-60',
+      )}
     >
       <div class="flex items-start gap-3">
         <Avatar name={d.displayName} class="h-10 w-10" />
         <!-- The whole card opens the agent: the button's ::after covers it,
-             and the menu and Start sit above that. -->
+             and the menu and Start sit above that. The global focus rule is
+             unlayered, so the button's own ring is forced off and the card's
+             is drawn on the ::after. -->
         <button
           type="button"
+          data-card-open
           onclick={openManage}
-          class="min-w-0 flex-1 text-left after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-accent"
+          class="min-w-0 flex-1 cursor-pointer text-left after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none! focus-visible:after:outline-2 focus-visible:after:-outline-offset-2 focus-visible:after:outline-accent"
         >
-          <span bind:this={nameEl} class="line-clamp-2 font-sans text-sm font-medium leading-5 text-fg" title={d.displayName}>{d.displayName}</span>
-          <span class={cn('font-sans text-[13px] leading-5 text-muted', nameWraps ? 'line-clamp-1' : 'line-clamp-2')} title={d.role ?? undefined}>{d.role ?? 'No role yet'}</span>
+          <span class="line-clamp-3 font-sans text-sm font-medium leading-5 text-fg" title={d.displayName}>{d.displayName}</span>
+          <span class="line-clamp-2 font-sans text-[13px] leading-5 text-muted" title={d.role ?? undefined}>{d.role ?? 'No role yet'}</span>
         </button>
         <div class="relative z-10 -mt-1.5 shrink-0">
           <SettingsRowMenu label={`Actions for ${d.displayName}`} items={menuItems} />
@@ -79,7 +71,8 @@
           {#if brainDown}
             <AgentBrainChip {brain} class="relative z-10" />
           {:else if model}
-            <ModelName id={model} name={modelName} quiet />
+            <!-- One voice down the footers: a model the catalog does not name shows its id in the same type. -->
+            <span class="min-w-0 truncate font-sans text-[13px] leading-5 text-muted" title={model}>{modelName ?? model}</span>
           {/if}
           <AgentControls def={d} {containers} {running} {roll} {act} {pending} />
         </span>

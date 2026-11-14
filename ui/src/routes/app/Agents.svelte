@@ -1,4 +1,6 @@
 <script lang="ts">
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
   import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
@@ -24,7 +26,7 @@
   import FederateModal from '@/components/fleet/FederateModal.svelte'
   import SealConfigsModal from '@/components/fleet/SealConfigsModal.svelte'
   import FleetCronsTab from '@/components/fleet/FleetCronsTab.svelte'
-  import { errorMessage } from '@/lib/fetch-json'
+  import { rosterCount, rosterLine } from '@/components/fleet/roster-count'
   import { useFleet } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
   import { fly, slide } from '@/lib/motion'
@@ -34,7 +36,7 @@
   import { AGENTS_TABS } from '@/lib/settings-nav'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { useModelNames } from '@/components/models/model-names.svelte'
-  import AgentListRow from './AgentListRow.svelte'
+  import AgentListRow, { LIST_ACTION, LIST_MODEL, LIST_STATUS } from './AgentListRow.svelte'
   import AgentTile from './AgentTile.svelte'
 
   const queryClient = useQueryClient()
@@ -154,7 +156,15 @@
   // "no agents"). This copy is only for the create/duplicate modals' template
   // list, where an empty list is a harmless degradation.
   const defs = $derived(defsQuery.data?.defs ?? [])
-  const t = $derived(fleetQuery.data?.totals)
+  // The roster's own line: the overview's count of the same agents, from the
+  // same two reads, so the two pages say one thing. Who was active today is
+  // the fleet's, and is left off when that read has not landed.
+  const countLine = $derived.by(() => {
+    const all = defsQuery.data?.defs
+    if (!all || !containersQuery.data) return null
+    const active = fleetQuery.data?.totals.activeToday
+    return [...rosterLine(rosterCount(all, byDept)), ...(active === undefined ? [] : [`${active} active today`])].join(' · ')
+  })
 
   const modelName = useModelNames()
 
@@ -204,14 +214,17 @@
   // for good whenever containers answered before defs (anyLoading says why).
   const rosterLoading = $derived(anyLoading(defsQuery, containersQuery))
   // Three across only where the 960px column gives each card room for a
-  // name and a role, and every row as tall as the tallest so footers line up.
-  const gridClasses = 'grid auto-rows-fr grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3'
+  // name and a role. A row is as tall as its tallest card, so footers line up
+  // along it and a row of short cards has no empty band.
+  const gridClasses = 'grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3'
   const listClasses = 'overflow-hidden rounded-lg border border-line bg-panel [&>*+*]:border-t [&>*+*]:border-line-subtle'
-  // The list container classes only apply while there are items (or their
-  // skeletons) to frame — error/idle/empty render full-width, unframed.
-  const rosterClasses = $derived(
-    rosterLoading || (defsQuery.data?.defs.length ?? 0) > 0 ? (view === 'grid' ? gridClasses : listClasses) : undefined,
-  )
+  // The grid frames its cards and their skeletons. The list's rows bring
+  // their own card, so only its skeletons need one. Error, idle and empty
+  // render full-width, unframed.
+  const rosterClasses = $derived.by(() => {
+    if (view === 'list') return rosterLoading ? listClasses : undefined
+    return rosterLoading || (defsQuery.data?.defs.length ?? 0) > 0 ? gridClasses : undefined
+  })
 
   // Silhouette widths vary per index so the sketch doesn't look stamped.
   const nameW = ['w-24', 'w-32', 'w-20', 'w-28']
@@ -240,7 +253,7 @@
 
 <!-- One list row's silhouette (see AgentListRow: avatar + name/role + status + menu). -->
 {#snippet rowSkeleton(i: number)}
-  <div aria-hidden="true" class="flex min-h-[60px] items-center gap-4 px-5 py-3">
+  <div aria-hidden="true" class="flex min-h-[64px] items-center gap-4 px-5 py-3">
     <Skeleton class="h-8 w-8 shrink-0 rounded-full" />
     <div class="min-w-0 flex-1 space-y-2">
       <Skeleton class={`h-3.5 rounded-full ${nameW[i % nameW.length]}`} />
@@ -310,12 +323,9 @@
              min-h-8 holds the line while the totals load. -->
         <div class="flex min-h-8 flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <span class="font-sans text-[13px] leading-5 text-muted tabular-nums">
-            {#if t}
-              {t.online} of {t.agents} online · {t.activeToday} active today
-            {:else if fleetQuery.isError}
-              <!-- Missing totals with no explanation read as "nothing is running". -->
-              <span class="text-danger" title={errorMessage(fleetQuery.error)}>Agent status unavailable</span>
-            {:else if fleetQuery.isLoading}
+            {#if countLine !== null}
+              {countLine}
+            {:else if rosterLoading}
               <Skeleton class="h-3 w-40" />
             {/if}
           </span>
@@ -497,13 +507,22 @@
                 {#snippet children(data)}
                   {@const endpoints = data.endpoints}
                   {@const brainByAgent = new Map((data.brains ?? []).map((b) => [b.agent, b]))}
-                  {#each data.defs as d (d.id)}
-                    {#if view === 'grid'}
+                  {#if view === 'grid'}
+                    {#each data.defs as d (d.id)}
                       <AgentTile def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} modelName={modelName(d.latest?.config?.main?.model)} onDuplicate={() => (duplicateFrom = d)} />
-                    {:else}
-                      <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} modelName={modelName(d.latest?.config?.main?.model)} onDuplicate={() => (duplicateFrom = d)} />
-                    {/if}
-                  {/each}
+                    {/each}
+                  {:else}
+                    <SettingsGroup>
+                      <SettingsHeaderRow label="Agent" menu>
+                        <span class={LIST_MODEL}>Model</span>
+                        <span class={LIST_STATUS}>Status</span>
+                        <span class={LIST_ACTION}></span>
+                      </SettingsHeaderRow>
+                      {#each data.defs as d (d.id)}
+                        <AgentListRow def={d} containers={containersOf(d, byDept)} {endpoints} brain={brainByAgent.get(d.model)} roll={rollBySlug.get(d.slug)} modelName={modelName(d.latest?.config?.main?.model)} onDuplicate={() => (duplicateFrom = d)} />
+                      {/each}
+                    </SettingsGroup>
+                  {/if}
                 {/snippet}
               </QueryState>
             </Materialize>
