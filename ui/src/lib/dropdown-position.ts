@@ -27,3 +27,19 @@ export function dropdownHorizStyle(
 
 /** `max-w-72` (18rem) at the default 16px root — the dropdown panel's ceiling. */
 export const DROPDOWN_PANEL_MAX_WIDTH_PX = 288
+
+/** Where an anchored panel's trigger sat when the panel opened. */
+export interface AnchorSpot {
+  top: number
+  left: number
+}
+
+/** Whether the trigger has moved from where it sat at open. An anchored panel
+ *  closes on scroll because it cannot follow its trigger, so a scroll that
+ *  leaves the trigger in place is no reason to close. That is the scroll event
+ *  for a move that finished just before the click: it is dispatched a frame
+ *  later, after the panel is already open. */
+export function anchorMoved(now: AnchorSpot | undefined, atOpen: AnchorSpot | null): boolean {
+  if (!now || !atOpen) return true
+  return Math.abs(now.top - atOpen.top) >= 1 || Math.abs(now.left - atOpen.left) >= 1
+}

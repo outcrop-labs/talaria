@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { anchorMoved, type AnchorSpot } from '@/lib/dropdown-position'
   import { outsidePointer } from '@/lib/outside-click'
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
@@ -69,6 +70,7 @@
   // every open, so a trigger that moves is measured afresh.
   let flipped = $state(false)
   const upward = $derived(up || flipped)
+  let openedAt: AnchorSpot | null = null
 
   const close = () => {
     open = false
@@ -86,6 +88,8 @@
     if (open) return close()
     flipped = false
     pos = place()
+    const r = ref?.getBoundingClientRect()
+    openedAt = r ? { top: r.top, left: r.left } : null
     if (pos) open = true
   }
 
@@ -125,7 +129,7 @@
     if (!open) return
     if (panelEl?.contains(e.target as Node)) return
     if (follow) pos = place()
-    else close()
+    else if (anchorMoved(ref?.getBoundingClientRect(), openedAt)) close()
   }
 </script>
 

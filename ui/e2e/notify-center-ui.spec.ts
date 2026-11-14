@@ -543,6 +543,8 @@ test.describe('the status panel', () => {
     const sendTest = async () => {
       await thisRow.getByRole('button', { name: /^Actions for / }).click()
       await page.getByRole('menuitem', { name: 'Send test' }).click()
+      // A closed menu fades out, and the next step looks a menu item up by name.
+      await expect(page.getByRole('menu')).toHaveCount(0)
     }
     const answered = page.waitForResponse((r) => r.url().endsWith('/api/notifications/test'))
     await sendTest()

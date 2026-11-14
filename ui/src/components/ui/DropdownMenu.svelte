@@ -31,7 +31,7 @@
   import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
-  import { DROPDOWN_PANEL_MAX_WIDTH_PX, dropdownHorizStyle } from '@/lib/dropdown-position'
+  import { anchorMoved, DROPDOWN_PANEL_MAX_WIDTH_PX, dropdownHorizStyle, type AnchorSpot } from '@/lib/dropdown-position'
   import type { ContextMenuEntry, MenuIcon } from './context-menu.svelte'
 
   // Anchored dropdown menu — the SAME shell and item grammar as the context
@@ -78,6 +78,7 @@
   // context), so an absolutely-positioned sibling could never stack above
   // neighboring cards, no z-index would save it.
   let pos = $state<string | null>(null)
+  let openedAt: AnchorSpot | null = null
 
   const close = () => {
     open = false
@@ -97,6 +98,7 @@
     const vert = up ? `bottom: ${window.innerHeight - r.top + 4}px` : `top: ${r.bottom + 4}px`
     const horiz = dropdownHorizStyle(align, r, window.innerWidth, DROPDOWN_PANEL_MAX_WIDTH_PX)
     pos = `position: fixed; z-index: 80; ${vert}; ${horiz}`
+    openedAt = { top: r.top, left: r.left }
     open = true
   }
 
@@ -113,6 +115,7 @@
   function onDocScroll(e: Event) {
     if (!open) return
     if (panelEl?.contains(e.target as Node)) return
+    if (!anchorMoved(ref?.getBoundingClientRect(), openedAt)) return
     close()
   }
 

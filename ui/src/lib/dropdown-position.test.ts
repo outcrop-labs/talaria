@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dropdownHorizStyle } from './dropdown-position'
+import { anchorMoved, dropdownHorizStyle } from './dropdown-position'
 
 describe('dropdownHorizStyle', () => {
   const panel = 288
@@ -31,5 +31,24 @@ describe('dropdownHorizStyle', () => {
   it('clamps a panel wider than the viewport to the left margin', () => {
     const style = dropdownHorizStyle('left', { left: 4, right: 40 }, 200, 288)
     expect(style).toBe('left: 8px')
+  })
+})
+
+describe('anchorMoved', () => {
+  const atOpen = { top: 410, left: 939 }
+
+  it('is false when the trigger sits where it sat at open', () => {
+    expect(anchorMoved({ top: 410, left: 939 }, atOpen)).toBe(false)
+    expect(anchorMoved({ top: 410.4, left: 938.7 }, atOpen)).toBe(false)
+  })
+
+  it('is true once the page under the panel has scrolled the trigger away', () => {
+    expect(anchorMoved({ top: 380, left: 939 }, atOpen)).toBe(true)
+    expect(anchorMoved({ top: 410, left: 900 }, atOpen)).toBe(true)
+  })
+
+  it('is true when either spot is unknown, so the panel still closes', () => {
+    expect(anchorMoved(undefined, atOpen)).toBe(true)
+    expect(anchorMoved({ top: 410, left: 939 }, null)).toBe(true)
   })
 })
