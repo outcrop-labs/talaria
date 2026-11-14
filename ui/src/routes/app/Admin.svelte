@@ -86,7 +86,7 @@
         <!-- The business agents are told about saves with a button, because
              saving it rewrites every agent. The instance's own name and
              address are the card under it. -->
-        <SettingsSection title="Identity" description="The business your agents work for.">
+        <SettingsSection title="Identity">
           <SettingsGroup><AdminOrgPanel /></SettingsGroup>
         </SettingsSection>
         <AdminInstanceDomainPanel />
