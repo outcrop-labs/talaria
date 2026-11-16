@@ -460,17 +460,26 @@ pub fn grantable(key: &str, level: Level) -> Result<&'static Grantable, String> 
 
 // ── The asks ─────────────────────────────────────────────────────────────────
 
-/// The permissions a REPO-SCOPED token asks for: what a job's git push, a
-/// branch create, a default-branch read and a pull-request open need, and
-/// nothing an installation might also hold (administration, workflows,
-/// secrets, packages). The sandbox's credential helper hands this token to
-/// model-authored code; a permission it does not carry is a permission that
-/// code cannot spend.
+/// The permissions the PLATFORM's repo-scoped token asks for: what a branch
+/// create, a default-branch read, a compare and a pull-request open or find
+/// need, and nothing an installation might also hold (administration,
+/// workflows, secrets, packages). Talaria spends it inside the api, for the
+/// workbench's own verbs, and never hands it out: the sandbox's git gets
+/// [`SANDBOX_TOKEN_PERMISSIONS`].
 pub const REPO_TOKEN_PERMISSIONS: &[(&str, Level)] = &[
     ("contents", Level::Write),
     ("pull_requests", Level::Write),
     ("metadata", Level::Read),
 ];
+
+/// The permissions the token the SANDBOX's git is handed asks for: what
+/// `git clone`, `fetch` and `push` spend, and nothing else. The credential
+/// helper hands this token to model-authored code, which can read it for as
+/// long as it lives, so a permission it does not carry is one that code
+/// cannot spend. Pull requests are not here: Talaria opens them itself, from
+/// the api, with [`REPO_TOKEN_PERMISSIONS`] (`finish_job`).
+pub const SANDBOX_TOKEN_PERMISSIONS: &[(&str, Level)] =
+    &[("contents", Level::Write), ("metadata", Level::Read)];
 
 /// The permissions a READ-ONLY repo token asks for: a clone or a fetch of the
 /// repository and nothing else. App install and update use it
@@ -479,12 +488,26 @@ pub const REPO_TOKEN_PERMISSIONS: &[(&str, Level)] = &[
 pub const REPO_READ_PERMISSIONS: &[(&str, Level)] =
     &[("contents", Level::Read), ("metadata", Level::Read)];
 
-/// The permission set a [`RepoAccess`] narrows a token to.
+/// The permission set a [`RepoAccess`] narrows a token to. `Write` is the
+/// sandbox's git (its only caller is the credential door,
+/// talaria-git-hosts), so it is [`SANDBOX_TOKEN_PERMISSIONS`], never the
+/// platform's set.
 pub fn permissions_for(access: RepoAccess) -> PermissionSet {
     PermissionSet::of(match access {
-        RepoAccess::Write => REPO_TOKEN_PERMISSIONS,
+        RepoAccess::Write => SANDBOX_TOKEN_PERMISSIONS,
         RepoAccess::Read => REPO_READ_PERMISSIONS,
     })
+}
+
+/// A token as GitHub's audit log records it (`hashed_token`): the SHA-256 of
+/// the token, base64-encoded. An audit row that carries it can be matched to
+/// GitHub's own log of what that token did, and it reveals nothing a reader
+/// could spend.
+pub fn hashed_token(token: &str) -> String {
+    use base64::engine::general_purpose::STANDARD;
+    use rsa::sha2::Digest;
+    let digest = Sha256::digest(token.as_bytes());
+    STANDARD.encode(&digest[..])
 }
 
 /// What `pr_status` reads with, and nothing it could write with: the pull
@@ -714,6 +737,36 @@ struct Minted {
     shortfall: PermissionSet,
     /// Minted by this call, rather than served from the cache.
     minted: bool,
+}
+
+/// A repo-scoped token on its way out of this crate, and what is known about
+/// it: the answer to [`Github::issue_token`], for a caller that records what
+/// it hands on (the sandbox's credential door audits each one).
+#[derive(Clone)]
+pub struct IssuedToken {
+    pub token: String,
+    /// The installation it was minted on. None for a PAT.
+    pub installation: Option<String>,
+    /// What GitHub said the token carries. None for a PAT, which carries
+    /// whatever its owner gave it and says nothing about it.
+    pub carried: Option<PermissionSet>,
+    /// What the ask named that the installation does not hold.
+    pub shortfall: PermissionSet,
+    /// Minted by this call, rather than served from the cache (or a PAT,
+    /// which is never minted).
+    pub minted: bool,
+}
+
+impl std::fmt::Debug for IssuedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IssuedToken")
+            .field("token", &"<redacted>")
+            .field("installation", &self.installation)
+            .field("carried", &self.carried)
+            .field("shortfall", &self.shortfall)
+            .field("minted", &self.minted)
+            .finish()
+    }
 }
 
 /// An INSTALLATION-WIDE token: every repository the installation covers, with
@@ -1289,14 +1342,26 @@ impl Github {
         }
     }
 
-    /// A usable token for `repo`. PAT passes through (a PAT cannot be
-    /// narrowed or scoped; that blast radius is the org's own choice). App
-    /// mode mints a token for that one repository, on the installation that
-    /// holds it, narrowed to `ask` and never wider (`installation_token`).
-    /// None when the connection is not configured.
-    pub async fn token(&self, repo: &str, ask: &PermissionSet) -> Result<Option<String>, String> {
+    /// A usable token for `repo`, with what is known about it. PAT passes
+    /// through (a PAT cannot be narrowed or scoped; that blast radius is the
+    /// org's own choice), and says nothing about what it carries. App mode
+    /// mints a token for that one repository, on the installation that holds
+    /// it, narrowed to `ask` and never wider (`installation_token`), or
+    /// serves the one the cache holds for that ask. None when the connection
+    /// is not configured.
+    pub async fn issue_token(
+        &self,
+        repo: &str,
+        ask: &PermissionSet,
+    ) -> Result<Option<IssuedToken>, String> {
         if self.cfg.mode.as_deref() == Some("pat") {
-            return self.pat();
+            return Ok(self.pat()?.map(|token| IssuedToken {
+                token,
+                installation: None,
+                carried: None,
+                shortfall: PermissionSet::new(),
+                minted: false,
+            }));
         }
         if !self.app_ready() {
             return Ok(None);
@@ -1311,7 +1376,22 @@ impl Github {
                 minted.shortfall
             );
         }
-        Ok(Some(minted.token))
+        Ok(Some(IssuedToken {
+            token: minted.token,
+            installation: Some(installation_id),
+            carried: Some(minted.carried),
+            shortfall: minted.shortfall,
+            minted: minted.minted,
+        }))
+    }
+
+    /// [`Self::issue_token`]'s token alone, for a caller inside the api that
+    /// spends it and records nothing about it.
+    pub async fn token(&self, repo: &str, ask: &PermissionSet) -> Result<Option<String>, String> {
+        Ok(self
+            .issue_token(repo, ask)
+            .await?
+            .map(|issued| issued.token))
     }
 
     async fn token_or_err(&self, repo: &str, ask: &[(&str, Level)]) -> Result<String, String> {
@@ -2326,8 +2406,41 @@ mod tests {
         assert!(perms.values().all(|p| p == "read"), "{perms:?}");
         assert_eq!(
             permissions_for(RepoAccess::Write),
-            PermissionSet::of(REPO_TOKEN_PERMISSIONS)
+            PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS)
         );
+    }
+
+    /// The sandbox's token: what git spends, and nothing a pull request
+    /// needs. Talaria opens pull requests itself, from the api.
+    #[test]
+    fn the_sandbox_token_asks_for_contents_and_metadata_and_nothing_else() {
+        assert_eq!(
+            access_tokens_body("acme/widgets", &permissions_for(RepoAccess::Write)),
+            r#"{"repositories":["widgets"],"permissions":{"contents":"write","metadata":"read"}}"#
+        );
+        let sandbox = PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS);
+        for key in ["pull_requests", "workflows", "administration", "checks"] {
+            assert!(!sandbox.contains(key), "{key}");
+        }
+        // The platform's own verbs keep what opening a pull request needs.
+        assert_eq!(
+            PermissionSet::of(REPO_TOKEN_PERMISSIONS).get("pull_requests"),
+            Some(Level::Write)
+        );
+    }
+
+    #[test]
+    fn a_hashed_token_is_githubs_base64_sha256() {
+        // GitHub's audit log `hashed_token`: SHA-256, standard base64.
+        assert_eq!(
+            hashed_token(""),
+            "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+        );
+        assert_eq!(
+            hashed_token("abc"),
+            "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
+        );
+        assert_ne!(hashed_token("ghs_a"), hashed_token("ghs_b"));
     }
 
     #[test]
@@ -3422,6 +3535,122 @@ mod tests {
         .unwrap();
         assert_eq!(count("POST", "/app/installations/91081/access_tokens"), 2);
         assert_eq!(count("GET", "/app/installations/91081"), 2);
+    }
+
+    #[tokio::test]
+    async fn the_sandbox_login_posts_contents_and_metadata_even_when_the_installation_holds_more() {
+        // The installation holds pull requests and workflows too. The
+        // sandbox's git is asked a token for what a push spends and no more,
+        // and the second ask is the cached token, said to be one.
+        let sb = test_box();
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/app/installations/91091") => (
+                200,
+                installation(
+                    "91091",
+                    json!({
+                        "contents": "write",
+                        "pull_requests": "write",
+                        "workflows": "write",
+                        "metadata": "read",
+                    }),
+                ),
+            ),
+            ("POST", "/app/installations/91091/access_tokens") => (
+                201,
+                minted(
+                    "tok-sandbox",
+                    "acme/widgets",
+                    json!({ "contents": "write", "metadata": "read" }),
+                ),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let conn = app_conn(&base, &["91091"], &sb);
+        let login = conn
+            .repo_login("acme/widgets", RepoAccess::Write)
+            .await
+            .expect("minted")
+            .expect("a login");
+        assert_eq!(
+            (login.username.as_str(), login.password.as_str()),
+            ("x-access-token", "tok-sandbox")
+        );
+        let mints = calls(
+            &seen.lock().unwrap(),
+            "POST",
+            "/app/installations/91091/access_tokens",
+        )
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+        assert_eq!(mints.len(), 1);
+        assert_eq!(
+            posted_permissions(&mints[0]),
+            json!({ "contents": "write", "metadata": "read" }),
+            "no pull_requests, no workflows: {}",
+            mints[0].body
+        );
+        let again = conn
+            .issue_token("acme/widgets", &permissions_for(RepoAccess::Write))
+            .await
+            .expect("served")
+            .expect("a token");
+        assert_eq!(again.token, "tok-sandbox");
+        assert!(!again.minted, "the second ask is the cached token");
+        assert_eq!(again.installation.as_deref(), Some("91091"));
+        assert_eq!(
+            again.carried,
+            Some(PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS))
+        );
+        assert!(again.shortfall.is_empty());
+        assert_eq!(
+            calls(
+                &seen.lock().unwrap(),
+                "POST",
+                "/app/installations/91091/access_tokens"
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pat_is_issued_as_it_is_and_says_nothing_about_what_it_carries() {
+        let sb = test_box();
+        let cfg = GithubConfig {
+            mode: Some("pat".into()),
+            pat_token_enc: Some(sb.seal("github_pat_x").expect("the pat seals")),
+            app_id: String::new(),
+            installation_ids: Vec::new(),
+            private_key_enc: None,
+        };
+        let conn = Github::new("gh-test-pat", GITHUB_WEB, None, &cfg.to_auth(), sb);
+        let issued = conn
+            .issue_token("acme/widgets", &permissions_for(RepoAccess::Write))
+            .await
+            .expect("no call is made")
+            .expect("the pat");
+        assert_eq!(issued.token, "github_pat_x");
+        assert_eq!(
+            (issued.installation, issued.carried, issued.minted),
+            (None, None, false)
+        );
+        assert!(
+            !format!(
+                "{:?}",
+                IssuedToken {
+                    token: "github_pat_x".into(),
+                    installation: None,
+                    carried: None,
+                    shortfall: PermissionSet::new(),
+                    minted: false,
+                }
+            )
+            .contains("github_pat_x"),
+            "Debug never prints the token"
+        );
     }
 
     #[tokio::test]
