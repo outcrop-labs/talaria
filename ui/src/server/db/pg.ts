@@ -4857,6 +4857,30 @@ alter table tasks drop column if exists conversation_id`,
   // steps, the failing step's output, a heartbeat) that the MCP answers, the
   // ticket strip and the Work view all read. NULL = never provisioned.
   `alter table workbench_jobs add column if not exists provision jsonb`,
+  // WHAT A GITHUB APP ASKS FOR, AND WHAT EACH INSTALLATION ACCEPTED
+  // (talaria-git-hosts' holdings, docs/WORKBENCH.md "Git hosts"). One row per
+  // installation a GitHub host's App connection uses: the App's ask and the
+  // installation's accepted set at the last good read (`GET /app`,
+  // `GET /app/installations/{id}`), its repository selection, suspension and
+  // settings page, when it was read, and why the last read failed (the last
+  // good answer stays). The mint sizes tokens to `held`, the alerts read it
+  // instead of GitHub, and Admin → Git hosts shows what is still waiting for
+  // an org owner. Refreshed every ten minutes, after a refused mint, on a
+  // host's writes and on an admin's Refresh. A new table, so roll-safe: the
+  // previous release never reads it.
+  `create table if not exists git_host_installations (
+     host_id text not null references git_hosts(id) on delete cascade,
+     installation_id bigint not null,
+     account text not null default '',
+     app_permissions jsonb,
+     held jsonb,
+     repository_selection text,
+     suspended_at timestamptz,
+     html_url text,
+     checked_at timestamptz,
+     error text,
+     primary key (host_id, installation_id)
+   )`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

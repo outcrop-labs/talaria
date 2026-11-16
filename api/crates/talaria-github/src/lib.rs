@@ -22,8 +22,10 @@
 // GitHub grants nothing to anyone by itself.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -569,19 +571,57 @@ fn install_tokens() -> &'static TokenCache {
 /// hold it for a whole push, and a token that expires mid-push fails the push.
 const SERVE_MARGIN_MS: i64 = 5 * 60_000;
 
-/// How long what an installation holds is trusted before it is read again.
+/// How long what an installation holds is trusted before it is read again,
+/// when it was read from GitHub.
 const HOLDINGS_TTL_MS: i64 = 5 * 60_000;
+
+/// The same, when it was read from the registry's record ([`HoldingsStore`]).
+/// The record is kept current by a refresh that may run in another process,
+/// so a minute is how long that refresh takes to reach this process's mints.
+const RECORDED_HOLDINGS_TTL_MS: i64 = 60_000;
 
 /// How long a repo→installation route is trusted, whether the listing or a
 /// lookup learned it.
 const ROUTING_TTL_MS: i64 = 10 * 60_000;
 
 /// What each installation holds, per (host, installation), with when it was
-/// read.
-type HoldingsCache = Mutex<HashMap<(String, String), (PermissionSet, i64)>>;
+/// read and how long that read is trusted.
+type HoldingsCache = Mutex<HashMap<(String, String), (PermissionSet, i64, i64)>>;
 fn holdings_cache() -> &'static HoldingsCache {
     static CACHE: OnceLock<HoldingsCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Keep `held` as what installation `installation_id` of host `host_id`
+/// holds, trusted for `ttl_ms` from now.
+fn remember_holdings(host_id: &str, installation_id: &str, held: &PermissionSet, ttl_ms: i64) {
+    holdings_cache().lock().unwrap().insert(
+        (host_id.to_string(), installation_id.to_string()),
+        (held.clone(), now_ms(), ttl_ms),
+    );
+}
+
+// ── Where the holdings are read first ────────────────────────────────────────
+
+/// What a [`HoldingsStore`] read answers with.
+pub type HeldFuture<'a> = Pin<Box<dyn Future<Output = Option<PermissionSet>> + Send + 'a>>;
+
+/// The record a connection reads what an installation holds from before it
+/// asks GitHub: the registry's `git_host_installations` table, which the
+/// holdings refresh keeps (talaria-git-hosts). This crate has no database, so
+/// the registry hands the record in when it connects a host
+/// ([`Github::with_holdings`]). A connection without one asks GitHub, as the
+/// adapter always did, and so does one whose record has no usable answer.
+pub trait HoldingsStore: Send + Sync {
+    /// What installation `installation_id` of host `host_id` held at its last
+    /// good check. None when the record cannot say: there is no row, the
+    /// last check failed, or it is too old to trust. None sends the read to
+    /// GitHub; it never means "nothing".
+    fn held<'a>(&'a self, host_id: &'a str, installation_id: &'a str) -> HeldFuture<'a>;
+
+    /// GitHub refused a mint on that installation (a 422), so the record may
+    /// be out of date: bring it up to date. The mint does not wait for it.
+    fn refused(&self, host_id: &str, installation_id: &str);
 }
 
 /// One host's routes: each repo, by its lowercased `owner/name` (GitHub names
@@ -855,12 +895,22 @@ fn check_reply(
     Ok((carried, unasked))
 }
 
+/// How long a revoke may take before it counts as unconfirmed. The shared
+/// client bounds only the connect, and the caller waits on it: a mint that
+/// threw a token back, or a holdings refresh that holds its host while it
+/// revokes.
+const REVOKE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Revoke an installation token on GitHub (`DELETE /installation/token`,
-/// authenticated by the token itself). True when GitHub confirmed it.
+/// authenticated by the token itself). True when GitHub confirmed it within
+/// [`REVOKE_TIMEOUT`].
 async fn revoke_installation_token(api: &str, token: &str) -> bool {
-    gh(api, "/installation/token", token, "DELETE", None)
-        .await
-        .is_ok_and(|res| res.status().is_success())
+    tokio::time::timeout(
+        REVOKE_TIMEOUT,
+        gh(api, "/installation/token", token, "DELETE", None),
+    )
+    .await
+    .is_ok_and(|sent| sent.is_ok_and(|res| res.status().is_success()))
 }
 
 /// GitHub's own words for a refusal: the reply's `message`, else the body
@@ -919,6 +969,140 @@ pub fn enc(segment: &str) -> String {
     out
 }
 
+// ── What the App asks for, and what an installation accepted ────────────────
+
+/// One installation of the App, as GitHub describes it
+/// (`GET /app/installations/{id}`, or an item of `GET /app/installations`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallationSnapshot {
+    pub id: String,
+    /// The login of the account (an org, or a user) it is installed on.
+    pub account: String,
+    /// What the installation holds: the permissions its account accepted,
+    /// with `metadata: read` always in.
+    pub permissions: PermissionSet,
+    /// `all` or `selected`.
+    pub repository_selection: Option<String>,
+    /// When the account suspended it, if it did (RFC 3339).
+    pub suspended_at: Option<String>,
+    /// Its settings page on GitHub, where an owner of the account reviews
+    /// and accepts a permission change.
+    pub html_url: Option<String>,
+}
+
+/// What an installation object says it holds: its `permissions`, with
+/// `metadata: read` always in. A set this crate cannot read is an error,
+/// never an empty set.
+fn held_in(installation: &Value) -> Result<PermissionSet, String> {
+    let mut permissions =
+        PermissionSet::from_json(installation.get("permissions").unwrap_or(&Value::Null))?;
+    permissions.raise("metadata", Level::Read);
+    Ok(permissions)
+}
+
+/// An installation object's string field, when it has one.
+fn text_in(installation: &Value, key: &str) -> Option<String> {
+    installation
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The login of the account an installation object is on, or "".
+fn account_in(installation: &Value) -> String {
+    installation
+        .get("account")
+        .and_then(|a| a.get("login"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+impl InstallationSnapshot {
+    /// Read GitHub's installation object. A permission set this crate cannot
+    /// read is an error, never an empty set: what it holds is then unknown.
+    pub fn from_reply(v: &Value) -> Result<InstallationSnapshot, String> {
+        let id = installation_id_of(v).ok_or("no id in the installation")?;
+        Ok(InstallationSnapshot {
+            id,
+            account: account_in(v),
+            permissions: held_in(v)?,
+            repository_selection: text_in(v, "repository_selection"),
+            suspended_at: text_in(v, "suspended_at"),
+            html_url: text_in(v, "html_url"),
+        })
+    }
+}
+
+/// One item of the installation picker (an item of `GET /app/installations`):
+/// the id an admin selects, the account, and what the installation holds.
+/// Unlike [`InstallationSnapshot`], what it holds may be unknown: an item
+/// whose permissions this crate cannot read is still listed, because the
+/// admin may need to select it, and the refresh then records why it could
+/// not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallationListing {
+    pub id: String,
+    pub account: String,
+    /// None when GitHub's permissions block could not be read.
+    pub permissions: Option<PermissionSet>,
+    /// `all` or `selected`.
+    pub repository_selection: Option<String>,
+    /// RFC 3339.
+    pub suspended_at: Option<String>,
+}
+
+impl InstallationListing {
+    /// An item of GitHub's list, or None when it has no id or no account
+    /// login (the picker has nothing to show for one).
+    pub fn from_item(v: &Value) -> Option<InstallationListing> {
+        let id = installation_id_of(v)?;
+        let account = account_in(v);
+        if account.is_empty() {
+            return None;
+        }
+        let permissions = held_in(v)
+            .inspect_err(|e| {
+                tracing::warn!(
+                    "[github] what installation {id} ({account}) holds could not be read from the listing: {e}"
+                );
+            })
+            .ok();
+        Some(InstallationListing {
+            id,
+            account,
+            permissions,
+            repository_selection: text_in(v, "repository_selection"),
+            suspended_at: text_in(v, "suspended_at"),
+        })
+    }
+
+    /// The picker's item on the wire: the id stays a number, and
+    /// `permissions` is null when what the installation holds is unknown.
+    pub fn listing_wire(&self) -> Value {
+        json!({
+            "id": self.id.parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::from(self.id.clone())),
+            "account": self.account,
+            "permissions": self.permissions.as_ref().map(PermissionSet::to_json),
+            "repositorySelection": self.repository_selection,
+            "suspended": self.suspended_at.is_some(),
+        })
+    }
+}
+
+/// What [`Github::revoke_tokens_beyond`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Revocation {
+    /// Tokens GitHub confirmed revoked.
+    pub revoked: usize,
+    /// Tokens dropped from the cache whose revoke GitHub did not confirm:
+    /// they live until they expire, within the hour.
+    pub failed: usize,
+    /// The permissions those tokens carried that the installation no longer
+    /// holds.
+    pub keys: PermissionSet,
+}
+
 // ── The connection ───────────────────────────────────────────────────────────
 
 /// One GitHub connection: a `git_hosts` row of kind `github`.
@@ -932,6 +1116,9 @@ pub struct Github {
     /// The REST origin (`https://api.github.com`, `<server>/api/v3`).
     pub api: String,
     sb: SecretBox,
+    /// The registry's record of what each installation holds, read before
+    /// GitHub is asked. None: GitHub is asked.
+    holdings_store: Option<Arc<dyn HoldingsStore>>,
 }
 
 impl std::fmt::Debug for Github {
@@ -960,7 +1147,15 @@ impl Github {
             web,
             api,
             sb,
+            holdings_store: None,
         }
+    }
+
+    /// This connection, reading what its installations hold from `store`
+    /// before it asks GitHub ([`HoldingsStore`]).
+    pub fn with_holdings(mut self, store: Arc<dyn HoldingsStore>) -> Github {
+        self.holdings_store = Some(store);
+        self
     }
 
     /// The REST origin this call goes to: the test seam's, else the row's.
@@ -999,12 +1194,13 @@ impl Github {
             && self.cfg.private_key_enc.is_some()
     }
 
-    /// What installation `installation_id` holds: the permissions its org
-    /// accepted (`GET /app/installations/{id}`, with the App JWT), with
-    /// `metadata: read` always in, because GitHub grants it to every App. It
-    /// is read through a five-minute process cache that [`forget_host`]
-    /// clears, and a failure is never cached. Err means UNKNOWN, never
-    /// "nothing".
+    /// What installation `installation_id` holds: the permissions its
+    /// account accepted, with `metadata: read` always in, because GitHub
+    /// grants it to every App. The registry's record answers first, when the
+    /// connection has one and it can say ([`HoldingsStore`], kept a minute);
+    /// otherwise GitHub does (`GET /app/installations/{id}`, kept five
+    /// minutes). [`forget_host`] clears both, and a failure is never kept.
+    /// Err means UNKNOWN, never "nothing".
     pub async fn installation_permissions(
         &self,
         installation_id: &str,
@@ -1012,17 +1208,44 @@ impl Github {
         self.holdings(installation_id, false).await
     }
 
-    /// [`Self::installation_permissions`], read past the cache when `fresh`.
+    /// [`Self::installation_permissions`], asked of GitHub past the cache and
+    /// the record when `fresh`.
     async fn holdings(&self, installation_id: &str, fresh: bool) -> Result<PermissionSet, String> {
-        let key = (self.host_id.clone(), installation_id.to_string());
-        if !fresh
-            && let Some((held, at)) = holdings_cache().lock().unwrap().get(&key)
-            && now_ms() - at < HOLDINGS_TTL_MS
-        {
-            return Ok(held.clone());
+        if !fresh {
+            let key = (self.host_id.clone(), installation_id.to_string());
+            let kept = holdings_cache().lock().unwrap().get(&key).cloned();
+            if let Some((held, at, ttl)) = kept
+                && now_ms() - at < ttl
+            {
+                return Ok(held);
+            }
+            if let Some(store) = &self.holdings_store
+                && let Some(mut held) = store.held(&self.host_id, installation_id).await
+            {
+                held.raise("metadata", Level::Read);
+                remember_holdings(
+                    &self.host_id,
+                    installation_id,
+                    &held,
+                    RECORDED_HOLDINGS_TTL_MS,
+                );
+                return Ok(held);
+            }
         }
+        Ok(self.installation(installation_id).await?.permissions)
+    }
+
+    /// One installation of this App as GitHub answers it now
+    /// (`GET /app/installations/{id}`, with the App JWT): the account it is
+    /// on, what it holds (`metadata: read` always in), which repositories it
+    /// covers, whether it is suspended, and its settings page. What it holds
+    /// is kept for the mint, so a read here is a read the next token uses.
+    pub async fn installation(
+        &self,
+        installation_id: &str,
+    ) -> Result<InstallationSnapshot, String> {
         let jwt = self.app_jwt()?;
-        let installation = gh_json(
+        let reply = gh_json(
             &self.api(),
             &format!("/app/installations/{}", enc(installation_id)),
             &jwt,
@@ -1030,15 +1253,71 @@ impl Github {
             None,
         )
         .await?;
-        let mut held =
-            PermissionSet::from_json(installation.get("permissions").unwrap_or(&Value::Null))
-                .map_err(|e| format!("installation {installation_id}: {e}"))?;
-        held.raise("metadata", Level::Read);
-        holdings_cache()
-            .lock()
-            .unwrap()
-            .insert(key, (held.clone(), now_ms()));
-        Ok(held)
+        let snapshot = InstallationSnapshot::from_reply(&reply)
+            .map_err(|e| format!("installation {installation_id}: {e}"))?;
+        remember_holdings(
+            &self.host_id,
+            installation_id,
+            &snapshot.permissions,
+            HOLDINGS_TTL_MS,
+        );
+        Ok(snapshot)
+    }
+
+    /// What the App's registration asks every installation for
+    /// (`GET /app`, with the App JWT). An installation holds at most this;
+    /// what it has not accepted yet is waiting for an owner of its account.
+    pub async fn app_permissions(&self) -> Result<PermissionSet, String> {
+        let jwt = self.app_jwt()?;
+        let app = gh_json(&self.api(), "/app", &jwt, "GET", None).await?;
+        PermissionSet::from_json(app.get("permissions").unwrap_or(&Value::Null))
+            .map_err(|e| format!("the App's permissions: {e}"))
+    }
+
+    /// Revoke every token this process keeps for installation
+    /// `installation_id` that carries a permission the installation no longer
+    /// holds (`held`, just read): each is dropped from the cache and deleted
+    /// on GitHub (`DELETE /installation/token`). A key an org owner took away
+    /// must not outlive the decision in a token Talaria minted before it, and
+    /// the next mint asks for what is held now. `metadata` is never counted:
+    /// every token carries it.
+    pub async fn revoke_tokens_beyond(
+        &self,
+        installation_id: &str,
+        held: &PermissionSet,
+    ) -> Revocation {
+        let beyond =
+            |carried: &PermissionSet| carried.without(|k| k == "metadata").missing_from(held);
+        let doomed: Vec<(String, PermissionSet)> = {
+            let mut cache = install_tokens().lock().unwrap();
+            let keys: Vec<TokenKey> = cache
+                .iter()
+                .filter(|(k, t)| {
+                    k.host == self.host_id
+                        && k.inst == installation_id
+                        && !beyond(&t.carried).is_empty()
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            keys.iter()
+                .filter_map(|k| cache.remove(k))
+                .map(|t| {
+                    let keys = beyond(&t.carried);
+                    (t.token, keys)
+                })
+                .collect()
+        };
+        let api = self.api();
+        let mut out = Revocation::default();
+        for (token, keys) in doomed {
+            out.keys = out.keys.union(&keys);
+            if revoke_installation_token(&api, &token).await {
+                out.revoked += 1;
+            } else {
+                out.failed += 1;
+            }
+        }
+        out
     }
 
     /// The holdings, or None (logged) when they cannot be read.
@@ -1164,6 +1443,11 @@ impl Github {
                 // again only if that changes what would be asked.
                 refreshed = true;
                 let held = self.known_holdings(installation_id, true).await;
+                // The registry's record said the same, so it may be out of
+                // date too: it is refreshed, and this mint does not wait.
+                if let Some(store) = &self.holdings_store {
+                    store.refused(&self.host_id, installation_id);
+                }
                 let (next, next_shortfall) = narrow(ask, held.as_ref());
                 shortfall = next_shortfall;
                 if next != effective {
@@ -1502,8 +1786,10 @@ impl Github {
 
     /// App mode's easy-setup helper: once appId+key verify, list where the
     /// app is installed so the admin picks the installation instead of
-    /// hunting an id. Any failure is an empty list, never a throw.
-    pub async fn list_installations(&self) -> Vec<(i64, String)> {
+    /// hunting an id, with what each installation holds. An installation
+    /// whose permissions cannot be read is still listed, as unknown. Any
+    /// failure is an empty list, never a throw.
+    pub async fn list_installations(&self) -> Vec<InstallationListing> {
         if self.cfg.app_id.is_empty() || self.cfg.private_key_enc.is_none() {
             return Vec::new();
         }
@@ -1523,15 +1809,7 @@ impl Github {
             .map(|items| {
                 items
                     .iter()
-                    .filter_map(|i| {
-                        let id = i.get("id").and_then(|v| v.as_i64())?;
-                        let account = i
-                            .get("account")
-                            .and_then(|a| a.get("login"))
-                            .and_then(|v| v.as_str())?
-                            .to_string();
-                        Some((id, account))
-                    })
+                    .filter_map(InstallationListing::from_item)
                     .collect()
             })
             .unwrap_or_default()
@@ -2139,12 +2417,16 @@ impl GitHost for Github {
     }
 
     /// PAT login or App name — who the connection acts as, when verifiable.
+    /// An App also says what its registration asks for (`permissions` on
+    /// `GET /app`, the same read). What each installation accepted is the
+    /// registry's record, not this live read (talaria-git-hosts).
     async fn status(&self) -> HostStatus {
         let configured =
             |configured: bool, account: Option<String>, error: Option<String>| HostStatus {
                 configured,
                 account,
                 error: error.map(|e| truncate_utf16(&e, 200).to_string()),
+                ..HostStatus::default()
             };
         let api = self.api();
         if self.cfg.mode.as_deref() == Some("pat")
@@ -2191,14 +2473,26 @@ impl GitHost for Github {
                 Ok(res) => match res.json::<Value>().await {
                     Ok(j) => {
                         let name = j.get("name").and_then(|v| v.as_str()).map(String::from);
-                        if self.cfg.installation_ids.is_empty() {
-                            return configured(
-                                false,
-                                name,
-                                Some("pick at least one installation".into()),
-                            );
-                        }
-                        configured(true, name, None)
+                        // Unreadable is unknown (None), never an empty ask.
+                        let app_permissions = match PermissionSet::from_json(
+                            j.get("permissions").unwrap_or(&Value::Null),
+                        ) {
+                            Ok(p) => Some(p),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[github] the App of host {} answered permissions that cannot be read: {e}",
+                                    self.host_id
+                                );
+                                None
+                            }
+                        };
+                        let mut st = if self.cfg.installation_ids.is_empty() {
+                            configured(false, name, Some("pick at least one installation".into()))
+                        } else {
+                            configured(true, name, None)
+                        };
+                        st.app_permissions = app_permissions;
+                        st
                     }
                     Err(e) => configured(false, None, Some(format!("github decode: {e}"))),
                 },
@@ -3788,6 +4082,362 @@ mod tests {
         assert!(
             !seen.iter().any(|r| r.path.starts_with("/installation/")),
             "a miss asks GitHub about the one repo, never relists: {seen:?}"
+        );
+    }
+
+    // ── What the App asks for, and what each installation accepted ───────────
+
+    /// GitHub's `GET /app` for an App whose registration asks for four
+    /// permissions, one of which (workflows) an installation has not taken.
+    const APP: &str = r#"{"name":"Talaria Workbench","permissions":{"contents":"write","pull_requests":"write","workflows":"write","metadata":"read"}}"#;
+
+    fn org_installation(id: &str) -> Value {
+        json!({
+            "id": id.parse::<i64>().unwrap(),
+            "account": { "login": "acme", "type": "Organization" },
+            "permissions": { "contents": "write", "pull_requests": "write" },
+            "repository_selection": "selected",
+            "suspended_at": null,
+            "html_url": format!("https://github.com/organizations/acme/settings/installations/{id}"),
+        })
+    }
+
+    #[tokio::test]
+    async fn the_app_and_its_installations_are_read_with_their_permissions() {
+        let sb = test_box();
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/app") => (200, APP.into()),
+            ("GET", "/app/installations") => (
+                200,
+                json!([
+                    org_installation("92001"),
+                    {
+                        "id": 92002,
+                        "account": { "login": "bo", "type": "User" },
+                        "permissions": { "contents": "read" },
+                        "repository_selection": "all",
+                        "suspended_at": "2026-11-01T00:00:00Z",
+                        "html_url": "https://github.com/settings/installations/92002",
+                    },
+                    // A level this crate does not know: the installation is
+                    // still one an admin may need to pick.
+                    {
+                        "id": 92003,
+                        "account": { "login": "cy", "type": "Organization" },
+                        "permissions": { "contents": "write", "copilot": "superuser" },
+                        "repository_selection": "all",
+                    },
+                    // No permissions block at all.
+                    { "id": 92004, "account": { "login": "dee", "type": "Organization" } },
+                    // Nothing for the picker to show: no account.
+                    { "id": 92005 },
+                ])
+                .to_string(),
+            ),
+            ("GET", "/app/installations/92001") => (200, org_installation("92001").to_string()),
+            ("POST", "/app/installations/92001/access_tokens") => (
+                201,
+                minted("tok-92001", "acme/widgets", posted_permissions(req)),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let conn = app_conn(&base, &["92001"], &sb);
+
+        // The status keeps what the registration asks for.
+        let st = conn.status().await;
+        assert!(st.configured && st.error.is_none(), "{st:?}");
+        assert_eq!(st.account.as_deref(), Some("Talaria Workbench"));
+        let app = st.app_permissions.expect("the App's ask is kept");
+        assert_eq!(
+            app,
+            PermissionSet::of(&[
+                ("contents", Level::Write),
+                ("metadata", Level::Read),
+                ("pull_requests", Level::Write),
+                ("workflows", Level::Write),
+            ])
+        );
+        assert!(
+            st.installations.is_empty(),
+            "the live status never reads the installations"
+        );
+
+        // The picker keeps what each installation holds, and lists one
+        // whose permissions it cannot read as unknown rather than leave it
+        // out.
+        let listed = conn.list_installations().await;
+        assert_eq!(listed.len(), 4, "{listed:?}");
+        assert_eq!(listed[0].account, "acme");
+        assert_eq!(
+            listed[0]
+                .permissions
+                .as_ref()
+                .and_then(|p| p.get("metadata")),
+            Some(Level::Read)
+        );
+        assert_eq!(
+            listed[1].suspended_at.as_deref(),
+            Some("2026-11-01T00:00:00Z")
+        );
+        let wire = listed[0].listing_wire();
+        assert_eq!(wire["id"], 92001, "the picker's id stays a number");
+        assert_eq!(wire["permissions"]["pull_requests"], "write");
+        assert_eq!(listed[1].listing_wire()["suspended"], true);
+        for (unread, account) in [(&listed[2], "cy"), (&listed[3], "dee")] {
+            assert_eq!(unread.account, account);
+            assert_eq!(unread.permissions, None, "{unread:?}");
+            let wire = unread.listing_wire();
+            assert_eq!(wire["permissions"], Value::Null, "{wire}");
+            assert_eq!(wire["suspended"], false);
+        }
+
+        // One installation, with what its org accepted. Pending is the App's
+        // ask minus that.
+        let one = conn.installation("92001").await.expect("read");
+        assert_eq!(one.account, "acme");
+        assert_eq!(one.repository_selection.as_deref(), Some("selected"));
+        assert_eq!(
+            one.html_url.as_deref(),
+            Some("https://github.com/organizations/acme/settings/installations/92001")
+        );
+        assert_eq!(
+            one.permissions,
+            PermissionSet::of(&[
+                ("contents", Level::Write),
+                ("metadata", Level::Read),
+                ("pull_requests", Level::Write),
+            ])
+        );
+        assert_eq!(
+            app.missing_from(&one.permissions),
+            PermissionSet::of(&[("workflows", Level::Write)])
+        );
+        assert_eq!(
+            conn.app_permissions().await.expect("read"),
+            app,
+            "the refresh's read is the status's"
+        );
+
+        // That read is what the next mint is sized to: nothing is asked again.
+        conn.token("acme/widgets", &PermissionSet::of(REPO_TOKEN_PERMISSIONS))
+            .await
+            .expect("minted");
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(
+            calls(&seen, "GET", "/app/installations/92001").len(),
+            1,
+            "{seen:?}"
+        );
+    }
+
+    /// A registry record that answers what it is set to, and counts.
+    #[derive(Default)]
+    struct Recorded {
+        held: Mutex<Option<PermissionSet>>,
+        reads: std::sync::atomic::AtomicUsize,
+        refused: Mutex<Vec<String>>,
+    }
+
+    impl HoldingsStore for Recorded {
+        fn held<'a>(&'a self, _host_id: &'a str, _installation_id: &'a str) -> HeldFuture<'a> {
+            Box::pin(async move {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.held.lock().unwrap().clone()
+            })
+        }
+
+        fn refused(&self, host_id: &str, installation_id: &str) {
+            self.refused
+                .lock()
+                .unwrap()
+                .push(format!("{host_id}/{installation_id}"));
+        }
+    }
+
+    fn recorded(held: Option<PermissionSet>) -> Arc<Recorded> {
+        let store = Arc::new(Recorded::default());
+        *store.held.lock().unwrap() = held;
+        store
+    }
+
+    #[tokio::test]
+    async fn the_registrys_record_answers_before_github_and_is_kept_a_minute() {
+        let sb = test_box();
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/app/installations/92011" | "/app/installations/92012") => (
+                200,
+                installation(
+                    "9201x",
+                    json!({ "contents": "write", "pull_requests": "write" }),
+                ),
+            ),
+            ("POST", p) if p.ends_with("/access_tokens") => {
+                let repo = if req.body.contains("\"widgets\"") {
+                    "acme/widgets"
+                } else {
+                    "acme/gadgets"
+                };
+                (201, minted("tok", repo, posted_permissions(req)))
+            }
+            _ => (500, "{}".into()),
+        })
+        .await;
+        // The record says the installation took pull_requests away.
+        let store = recorded(Some(PermissionSet::of(&[("contents", Level::Write)])));
+        let conn = app_conn(&base, &["92011"], &sb).with_holdings(store.clone());
+        let job = conn
+            .installation_token(
+                "92011",
+                "acme/widgets",
+                &PermissionSet::of(REPO_TOKEN_PERMISSIONS),
+            )
+            .await
+            .expect("minted");
+        assert_eq!(
+            job.shortfall,
+            PermissionSet::of(&[("pull_requests", Level::Write)])
+        );
+        conn.token("acme/gadgets", &PermissionSet::of(REPO_READ_PERMISSIONS))
+            .await
+            .expect("minted");
+        assert_eq!(
+            store.reads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the record's answer is kept"
+        );
+        // A record with no usable answer sends the read to GitHub.
+        let silent = recorded(None);
+        let other = app_conn(&base, &["92012"], &sb).with_holdings(silent.clone());
+        other
+            .token("acme/widgets", &PermissionSet::of(REPO_TOKEN_PERMISSIONS))
+            .await
+            .expect("minted");
+        assert_eq!(silent.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            calls(&seen, "GET", "/app/installations/92011").is_empty(),
+            "the record answered: {seen:?}"
+        );
+        assert_eq!(calls(&seen, "GET", "/app/installations/92012").len(), 1);
+        let mints = calls(&seen, "POST", "/app/installations/92011/access_tokens");
+        assert_eq!(
+            posted_permissions(mints[0]),
+            json!({ "contents": "write", "metadata": "read" }),
+            "sized to the record, not to GitHub's older answer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_mint_asks_github_and_tells_the_record_to_refresh() {
+        let sb = test_box();
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/app/installations/92021") => (
+                200,
+                installation(
+                    "92021",
+                    json!({ "contents": "write", "pull_requests": "write" }),
+                ),
+            ),
+            ("POST", "/app/installations/92021/access_tokens") => (
+                422,
+                r#"{"message":"There is at least one repository that does not exist or is not accessible to the parent installation."}"#.into(),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let store = recorded(Some(PermissionSet::of(REPO_TOKEN_PERMISSIONS)));
+        let conn = app_conn(&base, &["92021"], &sb).with_holdings(store.clone());
+        let err = conn
+            .token("acme/gone", &PermissionSet::of(REPO_TOKEN_PERMISSIONS))
+            .await
+            .expect_err("refused");
+        assert!(err.contains("not accessible"), "{err}");
+        assert_eq!(
+            *store.refused.lock().unwrap(),
+            [format!("{}/92021", conn.host_id)]
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(
+            calls(&seen, "GET", "/app/installations/92021").len(),
+            1,
+            "the second look goes to GitHub, past the record: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_permission_the_installation_lost_revokes_the_tokens_that_carry_it() {
+        let sb = test_box();
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (base, seen) = stub(
+            move |req, _| match (req.method.as_str(), req.path.as_str()) {
+                // An org owner takes pull_requests away between the first read
+                // and the refresh's.
+                ("GET", "/app/installations/92031") => {
+                    let held = if reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                        json!({ "contents": "write", "pull_requests": "write" })
+                    } else {
+                        json!({ "contents": "write" })
+                    };
+                    (200, installation("92031", held))
+                }
+                ("POST", "/app/installations/92031/access_tokens") => {
+                    let (token, repo) = if req.body.contains("\"widgets\"") {
+                        ("tok-widgets", "acme/widgets")
+                    } else {
+                        ("tok-gadgets", "acme/gadgets")
+                    };
+                    (201, minted(token, repo, posted_permissions(req)))
+                }
+                ("DELETE", "/installation/token") => (204, String::new()),
+                _ => (500, "{}".into()),
+            },
+        )
+        .await;
+        let conn = app_conn(&base, &["92031"], &sb);
+        let job = PermissionSet::of(REPO_TOKEN_PERMISSIONS);
+        let read = PermissionSet::of(REPO_READ_PERMISSIONS);
+        conn.token("acme/widgets", &job).await.expect("minted");
+        conn.token("acme/gadgets", &read).await.expect("minted");
+
+        // The refresh reads the installation again and revokes what it lost.
+        let now = conn.installation("92031").await.expect("read");
+        let done = conn.revoke_tokens_beyond("92031", &now.permissions).await;
+        assert_eq!(
+            done,
+            Revocation {
+                revoked: 1,
+                failed: 0,
+                keys: PermissionSet::of(&[("pull_requests", Level::Write)]),
+            }
+        );
+        let log = seen.lock().unwrap().clone();
+        let revoked: Vec<&str> = calls(&log, "DELETE", "/installation/token")
+            .iter()
+            .map(|r| r.auth.as_str())
+            .collect();
+        assert_eq!(
+            revoked,
+            ["Bearer tok-widgets"],
+            "a token without the lost key is kept"
+        );
+        // The kept token is still served; the revoked one is minted again,
+        // for what the installation holds now.
+        conn.token("acme/gadgets", &read).await.expect("cached");
+        conn.token("acme/widgets", &job)
+            .await
+            .expect("minted again");
+        let log = seen.lock().unwrap().clone();
+        let mints = calls(&log, "POST", "/app/installations/92031/access_tokens");
+        assert_eq!(mints.len(), 3, "{log:?}");
+        assert_eq!(
+            posted_permissions(mints[2]),
+            json!({ "contents": "write", "metadata": "read" })
+        );
+        // Nothing left to revoke.
+        assert_eq!(
+            conn.revoke_tokens_beyond("92031", &now.permissions).await,
+            Revocation::default()
         );
     }
 

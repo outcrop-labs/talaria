@@ -139,8 +139,11 @@ impl std::fmt::Display for Level {
 
 /// A set of permissions, each at one level. It is ordered by name, so two
 /// spellings of one set (the same keys in another order) are one value with
-/// one canonical JSON. That is what lets a token cache key on it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+/// one canonical JSON. That is what lets a token cache key on it. It
+/// serializes as that JSON object (`{"contents":"write",…}`), the shape hosts
+/// answer in and an admin's page reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
 pub struct PermissionSet(BTreeMap<String, Level>);
 
 impl PermissionSet {
@@ -370,13 +373,55 @@ pub struct OpenPullRequest {
 }
 
 /// A host's live answer to "can you reach it": whether it is configured
-/// enough to try, who it acts as, and why not.
+/// enough to try, who it acts as, and why not. A host whose credential is
+/// a registered app that each account accepts on its own terms (a GitHub
+/// App) also says what the app asks for and what each installation it uses
+/// has accepted; every other host leaves both empty.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostStatus {
     pub configured: bool,
     pub account: Option<String>,
     pub error: Option<String>,
+    /// What the app's registration asks for, read live with the status.
+    /// None when the host has no app, or the read failed.
+    pub app_permissions: Option<PermissionSet>,
+    /// Each installation the connection uses, as the registry last recorded
+    /// it (never asked live with the status: that is the holdings refresh's
+    /// job, and an admin's Refresh).
+    pub installations: Vec<InstallationStatus>,
+}
+
+/// One installation of a host's app, as the registry last checked it: what
+/// the app asked for then, what the installation had accepted, and what is
+/// still waiting for the account's owner to accept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallationStatus {
+    pub id: String,
+    /// The account (an org, or a user) the app is installed on.
+    pub account: String,
+    /// What the app's registration asked for at the last check.
+    pub app_permissions: Option<PermissionSet>,
+    /// What the installation had accepted at the last check. None: never
+    /// read, which is unknown, never "nothing".
+    pub held: Option<PermissionSet>,
+    /// What the app asks for that the installation has not accepted: each
+    /// key it lacks, or holds below the asked level, at the asked level. An
+    /// owner of the account accepts it on the host.
+    pub pending: PermissionSet,
+    /// `all` or `selected`: which of the account's repositories it covers.
+    pub repository_selection: Option<String>,
+    /// When the account suspended the installation, if it has.
+    pub suspended_at: Option<String>,
+    /// When the registry last read it successfully (ISO).
+    pub checked_at: Option<String>,
+    /// Why the last check failed, when it did. What is above is then the
+    /// last good read.
+    pub error: Option<String>,
+    /// The host's own page for the installation, where an owner reviews and
+    /// accepts what is pending.
+    pub url: Option<String>,
 }
 
 /// The number at the end of a pull request's page URL — GitHub's `…/pull/42`
@@ -843,6 +888,8 @@ mod tests {
         assert_eq!(a.canonical(), r#"{"contents":"write","metadata":"read"}"#);
         assert_eq!(a.to_string(), "contents:write, metadata:read");
         assert_eq!(PermissionSet::new().to_string(), "nothing");
+        // It serializes as that same canonical object, never as a list.
+        assert_eq!(serde_json::to_value(&a).unwrap(), a.to_json());
         // A key named twice keeps its higher level.
         assert_eq!(
             PermissionSet::of(&[("contents", Level::Write), ("contents", Level::Read)])
@@ -906,5 +953,44 @@ mod tests {
             password: "s3cret".into(),
         };
         assert!(!format!("{l:?}").contains("s3cret"));
+    }
+
+    /// The status wire an admin's page reads: a host with no app says so
+    /// with a null and an empty list, never by leaving the keys out.
+    #[test]
+    fn a_status_carries_the_apps_ask_and_each_installation_in_camel_case() {
+        let bare = serde_json::to_value(HostStatus::default()).unwrap();
+        assert_eq!(bare["appPermissions"], Value::Null);
+        assert_eq!(bare["installations"], json!([]));
+        let st = HostStatus {
+            configured: true,
+            account: Some("Talaria".into()),
+            error: None,
+            app_permissions: Some(PermissionSet::of(&[("contents", Level::Write)])),
+            installations: vec![InstallationStatus {
+                id: "91".into(),
+                account: "acme".into(),
+                held: Some(PermissionSet::new()),
+                pending: PermissionSet::of(&[("contents", Level::Write)]),
+                checked_at: Some("2026-11-16T00:00:00.000Z".into()),
+                ..InstallationStatus::default()
+            }],
+        };
+        let wire = serde_json::to_value(&st).unwrap();
+        assert_eq!(wire["appPermissions"], json!({ "contents": "write" }));
+        let inst = &wire["installations"][0];
+        assert_eq!(inst["id"], "91");
+        assert_eq!(inst["held"], json!({}));
+        assert_eq!(inst["pending"], json!({ "contents": "write" }));
+        assert_eq!(inst["checkedAt"], "2026-11-16T00:00:00.000Z");
+        for key in [
+            "appPermissions",
+            "repositorySelection",
+            "suspendedAt",
+            "error",
+            "url",
+        ] {
+            assert_eq!(inst[key], Value::Null, "{key}");
+        }
     }
 }

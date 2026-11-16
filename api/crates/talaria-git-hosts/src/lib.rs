@@ -26,11 +26,15 @@
 //              whose origin it names, a repo on the agent's own grant list
 //              (checked before any credential is opened), the adapter's
 //              repo-scoped login, narrowed on GitHub to what a push spends
+//   holdings   what a GitHub host's App asks for and what each installation
+//              it uses has accepted (`git_host_installations`), refreshed on
+//              a schedule, read by the mint, the alerts and the host card
 //
 // The interface every adapter implements, and every type it answers in, is
 // talaria-git-host-types'. `Host` is the dispatch over the registered kinds.
 
 pub mod grants;
+pub mod holdings;
 pub mod registry;
 
 use std::collections::HashMap;
@@ -49,10 +53,12 @@ pub use grants::{
     list_repo_flows, push_allowed, repo_flow, repo_rule, repo_rules, resolve_grant,
     set_granted_repos, set_repo_flow, set_repo_rule,
 };
+pub use holdings::{host_status, refresh_host};
 pub use registry::{HostRow, get_host, host_rows, list_hosts};
 pub use talaria_git_host_types::{
-    CreatedRepo, GitHost, HostKind, HostStatus, Level, Login, OpenPullRequest, OpenedPullRequest,
-    PermissionSet, PullRequestAsk, PullRequestRef, RepoAccess, RepoVisibility, pr_number_from_url,
+    CreatedRepo, GitHost, HostKind, HostStatus, InstallationStatus, Level, Login, OpenPullRequest,
+    OpenedPullRequest, PermissionSet, PullRequestAsk, PullRequestRef, RepoAccess, RepoVisibility,
+    pr_number_from_url,
 };
 pub use talaria_github::hashed_token;
 use talaria_github::permissions_for;
@@ -283,16 +289,21 @@ async fn secret_login(pg: &PgPool, sb: &SecretBox, row: &HostRow) -> Result<Opti
     opened
 }
 
-/// A live connection for `row`.
+/// A live connection for `row`. A GitHub connection reads what its
+/// installations hold from the registry's record before it asks GitHub
+/// ([`holdings`]).
 pub async fn connect(pg: &PgPool, sb: &SecretBox, row: &HostRow) -> Host {
     match row.kind {
-        HostKind::Github => Host::Github(Github::new(
-            &row.id,
-            &row.base_url,
-            row.api_url.as_deref(),
-            &row.auth,
-            sb.clone(),
-        )),
+        HostKind::Github => Host::Github(
+            Github::new(
+                &row.id,
+                &row.base_url,
+                row.api_url.as_deref(),
+                &row.auth,
+                sb.clone(),
+            )
+            .with_holdings(holdings::store(pg, sb)),
+        ),
         HostKind::Forgejo => Host::Forgejo(Forgejo::new(
             &row.id,
             &row.base_url,

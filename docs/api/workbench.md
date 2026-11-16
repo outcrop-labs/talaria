@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-21 routes.
+22 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -39,6 +39,7 @@
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | GET | `admin` |
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | PUT | `admin` |
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | DELETE | `admin` |
+| [`/api/workbench/git-hosts/{id}/refresh`](#apiworkbenchgit-hostsidrefresh) | POST | `admin` |
 | [`/api/workbench/git-hosts/{id}/test`](#apiworkbenchgit-hostsidtest) | POST | `admin` |
 | [`/api/workbench/harnesses`](#apiworkbenchharnesses) | GET | `admin` |
 | [`/api/workbench/harnesses`](#apiworkbenchharnesses) | POST | `admin` |
@@ -388,9 +389,9 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts.
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id.rs)
 
 > /api/workbench/git-hosts/{id}. One git host. GET → the redacted row with a
-> live status (who the connection acts as, or why it cannot connect);
-> `?installations=1` on a GitHub host lists where its App is installed (the
-> easy-setup picker). PUT → change it (secrets sealed; a Forgejo host's
+> live status (who the connection acts as, or why it cannot connect; for a
+> GitHub App, what the App asks for) and each installation the connection
+> uses as the holdings record last read it (what it accepted, what is still
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -408,6 +409,20 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_
 | `apiUrl` | `string?(300)` |  |
 | `repoCreationOrgs` | `string[]?(0, 100, 20)` |  |
 | `secret` | `string?(200)` |  |
+
+## `/api/workbench/git-hosts/{id}/refresh`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_refresh.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_refresh.rs)
+
+> /api/workbench/git-hosts/{id}/refresh. The host card's "Refresh": POST
+> reads the host's GitHub App (what it asks for) and each installation its
+> connection uses (what the installation accepted) again, now, instead of at
+> the next ten-minute pass, and answers the host as GET does. A permission an
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | — | `{host}` | 200, 404 | — |
 
 ## `/api/workbench/git-hosts/{id}/test`
 

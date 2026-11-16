@@ -2,17 +2,17 @@
   import { createQuery } from '@tanstack/svelte-query'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import Button from '@/components/ui/Button.svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { focusGold } from '@/components/chat/chat-chrome'
-  import { cn } from '@/lib/cn'
   import { errorMessage, getList, putJson } from '@/lib/fetch-json'
+  import { permissionSummary } from '@/lib/git-permissions'
   import { fly, slide } from '@/lib/motion'
   import AdminGithubGuideModal from './AdminGithubGuideModal.svelte'
-  import { useGitHostsRefresh, type GitHost } from './git-hosts'
+  import { useGitHostsRefresh, type GitHost, type GitHubInstallationListing } from './git-hosts'
 
   /** A GitHub host's connection — App (recommended) or access token — inside
    *  its card in Admin → Git hosts. The full field-by-field walkthrough lives
@@ -54,9 +54,14 @@
   const installsQuery = createQuery(() => ({
     queryKey: ['git-host-installations', host.id],
     enabled: gh.mode === 'app' && gh.app.keySet,
-    queryFn: (): Promise<Array<{ id: number; account: string }>> =>
-      getList<{ id: number; account: string }>(`${url}?installations=1`, 'installations'),
+    queryFn: (): Promise<GitHubInstallationListing[]> => getList<GitHubInstallationListing>(`${url}?installations=1`, 'installations'),
   }))
+  // Select or drop one installation, by its id as the config spells it.
+  const toggle = (id: number, selected: boolean) =>
+    void save({
+      mode: 'app',
+      app: { installationIds: selected ? gh.app.installationIds.filter((x) => x !== String(id)) : [...gh.app.installationIds, String(id)] },
+    })
   const installations = $derived(installsQuery.data ?? [])
   const installsFailed = $derived(installsQuery.isError && installsQuery.data === undefined)
 </script>
@@ -112,26 +117,18 @@
           <div class="flex flex-wrap items-start gap-x-3 gap-y-1.5">
             <span class="w-20 shrink-0 pt-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Installed on</span>
             <div class="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+              <!-- A toggle chip per installation. Its title says what that
+                   installation holds, so the admin picks knowing the ceiling. -->
               {#each installations as i (i.id)}
                 {@const selected = gh.app.installationIds.includes(String(i.id))}
-                <button
-                  type="button"
-                  disabled={!gh.app.keySet}
-                  onclick={() =>
-                    void save({
-                      mode: 'app',
-                      app: {
-                        installationIds: selected ? gh.app.installationIds.filter((x) => x !== String(i.id)) : [...gh.app.installationIds, String(i.id)],
-                      },
-                    })}
-                  class={cn(
-                    'rounded-md border px-2.5 py-0.5 font-mono text-[11px] transition-colors',
-                    focusGold,
-                    selected ? 'border-[var(--theme-accent-border)] bg-accent/10 text-fg' : 'border-line-subtle text-muted hover:border-line hover:text-fg',
-                  )}
+                <Chip
+                  {selected}
+                  tone={i.suspended ? 'danger' : 'neutral'}
+                  title={`${selected ? 'Selected: click to stop using it' : 'Click to use it'}. ${i.permissions ? `It holds ${permissionSummary(i.permissions)}.` : 'What it holds could not be read.'}${i.suspended ? ' Suspended by its account.' : ''}`}
+                  onSelect={busy ? undefined : () => toggle(i.id, selected)}
                 >
-                  {i.account} (#{i.id})
-                </button>
+                  {i.account} (#{i.id}){i.suspended ? ' · suspended' : ''}
+                </Chip>
               {/each}
               {#if gh.app.keySet && installsFailed}
                 <QueryError variant="inline" error={installsQuery.error} title="Could not list installations" onRetry={() => void installsQuery.refetch()} />
