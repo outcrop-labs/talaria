@@ -56,6 +56,20 @@ impl HostRow {
             .unwrap_or_default()
     }
 
+    /// Every name this host goes by that a workspace secret's Spendable-at
+    /// list could cover: the bare hostname, and the authority too when the
+    /// origin carries a port (`git.example.com` and `git.example.com:3000`).
+    /// A list that names either reaches this host.
+    pub fn names(&self) -> Vec<String> {
+        let mut names = vec![self.hostname()];
+        let authority = self.authority();
+        if authority != names[0] {
+            names.push(authority);
+        }
+        names.retain(|n| !n.is_empty());
+        names
+    }
+
     /// The workspace secret a non-GitHub row authenticates with.
     pub fn secret(&self) -> Option<String> {
         self.auth

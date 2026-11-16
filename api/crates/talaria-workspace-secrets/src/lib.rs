@@ -212,6 +212,14 @@ pub fn host_allowed(host: &str, allowed: &[String]) -> bool {
     })
 }
 
+/// May a secret whose Spendable-at list is `allowed` answer git's ask for
+/// `host`? Its list must cover the host, and must cover none of `withheld`:
+/// hosts whose own grant check is the only way a secret spendable there may
+/// answer (see [`credential_for_host`]). Both are lowercase.
+fn answers_git_at(host: &str, allowed: &[String], withheld: &[String]) -> bool {
+    host_allowed(host, allowed) && !withheld.iter().any(|w| host_allowed(w, allowed))
+}
+
 /// Why a handle did not resolve — reported to the operator, never the model: a
 /// caller that learns which names exist has been handed a map of the
 /// workspace's credentials.
@@ -1596,6 +1604,13 @@ pub async fn list_secrets_for_user(pg: &PgPool, user_id: &str) -> Result<Vec<Sec
 // Here nobody wrote anything: git names a host and we answer, so without the
 // allowlist requirement one grant would hand every credential an agent holds
 // to any host it could be pointed at.
+//
+// `WITHHELD` IS WHAT THE CALLER'S GRANT CHECK OWNS. The allowlist covers
+// subdomains, so a secret for `github.com` also answers `api.github.com` —
+// and the value it hands out works at github.com all the same. A secret whose
+// list covers any host in `withheld` (the registered git hosts this ask is not
+// on, talaria-git-hosts' `CredentialScope`) is passed over before it is
+// opened or spent: it answers only through that host's own grant check.
 pub struct HostCredential {
     pub username: String,
     pub password: String,
@@ -1607,6 +1622,7 @@ pub async fn credential_for_host(
     sb: &SecretBox,
     agent_model: &str,
     host: &str,
+    withheld: &[String],
 ) -> Result<Option<HostCredential>, String> {
     let lower = host.trim().to_lowercase();
     if lower.is_empty() {
@@ -1629,7 +1645,7 @@ pub async fn credential_for_host(
     .map_err(|e| format!("credential read: {e}"))?;
     let Some(doc) = rows
         .iter()
-        .find(|r| host_allowed(&lower, &cell_hosts(r, "allowed_hosts")))
+        .find(|r| answers_git_at(&lower, &cell_hosts(r, "allowed_hosts"), withheld))
     else {
         return Ok(None);
     };
@@ -1890,6 +1906,41 @@ mod tests {
         assert!(host_allowed("x.dev", &[" .x.dev ".to_string()]));
         // An empty entry covers nothing.
         assert!(!host_allowed("x.dev", &["".to_string()]));
+    }
+
+    #[test]
+    fn a_secret_spendable_at_a_withheld_host_answers_git_under_no_other_name() {
+        let hosts = |l: &[&str]| l.iter().map(|h| h.to_string()).collect::<Vec<_>>();
+        let github = hosts(&["github.com"]);
+        // Nothing withheld: the allowlist alone decides, subdomains included.
+        assert!(answers_git_at("github.com", &github, &[]));
+        assert!(answers_git_at("api.github.com", &github, &[]));
+        // github.com registered: the PAT pinned there answers no other name
+        // for it, and nothing for another host on its list either.
+        let registered = hosts(&["github.com"]);
+        assert!(!answers_git_at("api.github.com", &github, &registered));
+        assert!(!answers_git_at("github.com", &github, &registered));
+        let both = hosts(&["github.com", "gitlab.example.com"]);
+        assert!(!answers_git_at("gitlab.example.com", &both, &registered));
+        // A registered origin with a port is withheld by its bare hostname
+        // too, which is what a Spendable-at list names.
+        let forge = hosts(&["git.example.com"]);
+        let registered = hosts(&["git.example.com", "git.example.com:3000"]);
+        assert!(!answers_git_at("git.example.com", &forge, &registered));
+        assert!(!answers_git_at("ci.git.example.com", &forge, &registered));
+        // A secret for a host nobody registered still answers it.
+        let gitlab = hosts(&["gitlab.example.com"]);
+        assert!(answers_git_at("gitlab.example.com", &gitlab, &registered));
+        // The relation is coverage, one way: a list naming only a subdomain
+        // of a registered host does not cover the host, so it still answers
+        // that subdomain. (A host registered at an apex domain must not take
+        // the credentials of every other host under it.)
+        let api_only = hosts(&["api.github.com"]);
+        assert!(answers_git_at(
+            "api.github.com",
+            &api_only,
+            &hosts(&["github.com"])
+        ));
     }
 
     #[test]

@@ -23,7 +23,11 @@
 //   2. on a REGISTERED git host, the repo git named must be on this agent's
 //      grant list there, before the workspace store is asked: its answer is
 //      a spend (audited, and it burns a one-shot), and a PAT pinned for
-//      github.com must not answer for every repo it happens to reach
+//      github.com must not answer for every repo it happens to reach. Nor
+//      under another name: a secret spendable at a registered host answers
+//      only through that host's grant check, so an ask for `api.github.com`,
+//      for a registered origin's hostname without its port, or for another
+//      host on the secret's list passes it over (`CredentialScope::withheld`)
 //   3. the workspace store, then the host's own login for the granted repo
 //   4. one `git.credential` audit row per (agent, token) — on a mint, and on
 //      the first serve of a token this agent had not been handed — never one
@@ -145,10 +149,11 @@ pub async fn post(
     // git host's own login, and an operator who pinned one expects it used —
     // on a registered host, for the repos this agent was granted there.
     let sb = secretbox_or_500(&state, "[secrets] credential read failed").await?;
-    let stored = match credential_for_host(&state.pg, &sb, &caller.model, &host).await {
-        Ok(c) => c,
-        Err(e) => return Ok(internal("[secrets] credential read failed", e)),
-    };
+    let stored =
+        match credential_for_host(&state.pg, &sb, &caller.model, &host, scope.withheld()).await {
+            Ok(c) => c,
+            Err(e) => return Ok(internal("[secrets] credential read failed", e)),
+        };
     let served = match (stored, scope) {
         (Some(c), scope) => Served {
             username: c.username,
@@ -169,7 +174,7 @@ pub async fn post(
         // one repo and narrowed to what a push spends) — the credential a
         // workbench job needs to push, and the one that used to ride into the
         // model's context inside the clone URL.
-        (None, CredentialScope::Granted { row, rule }) => {
+        (None, CredentialScope::Granted { row, rule, .. }) => {
             match hosts::grant_login(&state.pg, &sb, &row, &rule.repo).await {
                 Ok(Some(g)) => Served {
                     username: g.login.username,
@@ -198,7 +203,7 @@ pub async fn post(
         }
         (None, _) => {
             tracing::warn!(
-                "[secrets] {} has no credential allowed for {host}{asked}",
+                "[secrets] {} has no credential allowed for {host}{asked} (a workspace secret also spendable at a registered git host answers only for a repo granted there)",
                 caller.model
             );
             return Ok(no_credential());
@@ -669,7 +674,6 @@ mod tests {
         #[ignore = "needs a live database (DATABASE_URL)"]
         async fn a_workspace_secret_on_a_registered_host_answers_only_for_granted_repos() {
             let state = state().await;
-            let sb = state.secretbox().await.expect("secretbox loads");
             let tag = tag();
             let (id, model, key) = agent(&state, &tag, true).await;
             let (host_id, authority) = host(&state, &tag, None, json!({})).await;
@@ -679,40 +683,25 @@ mod tests {
             let elsewhere = format!("gcl-{tag}-elsewhere.test");
             let name = format!("gcl-{tag}");
             let value = format!("github_pat_{tag}");
-            create_secret_doc(
-                &state.pg,
-                &sb,
-                &CreateSecret {
-                    name: name.clone(),
-                    title: "Git credential live".into(),
-                    entries: vec![SecretEntryInput {
-                        key: "token".into(),
-                        label: "Token".into(),
-                        value: value.clone(),
-                    }],
-                    kind: None,
-                    note: None,
-                    created_by: None,
-                    expires_at: None,
-                    uses: None,
-                    grant_to: Some(vec![model.clone()]),
-                    allowed_hosts: Some(vec![authority.clone(), elsewhere.clone()]),
-                    revealable: false,
-                    owner_user_id: None,
-                    folder_id: None,
-                    readers: None,
-                },
+            pat(
+                &state,
+                &name,
+                &value,
+                &model,
+                vec![authority.clone(), elsewhere.clone()],
             )
-            .await
-            .expect("the secret is created");
-            let spent = || async {
-                sqlx::query_scalar::<_, bool>(
-                    "select last_used_at is not null from workspace_secrets where name = $1",
-                )
-                .bind(&name)
-                .fetch_one(&state.pg)
-                .await
-                .unwrap()
+            .await;
+            let spent = |name: String| {
+                let pg = state.pg.clone();
+                async move {
+                    sqlx::query_scalar::<_, bool>(
+                        "select last_used_at is not null from workspace_secrets where name = $1",
+                    )
+                    .bind(name)
+                    .fetch_one(&pg)
+                    .await
+                    .unwrap()
+                }
             };
 
             // A repo the agent was not granted on the registered host: no
@@ -721,14 +710,33 @@ mod tests {
             assert_eq!(status, StatusCode::NOT_FOUND);
             let (status, _) = ask(&state, &key, &authority, None).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "no repo named is no answer");
-            assert!(!spent().await, "the workspace store was not asked");
+            assert!(
+                !spent(name.clone()).await,
+                "the workspace store was not asked"
+            );
+            assert!(credential_rows(&state, &id).await.is_empty());
+
+            // Under no other name: a subdomain of the registered host is no
+            // registered authority, and the secret its list covers it by is
+            // passed over all the same, for an ungranted repo and a granted
+            // one alike. Nor does it answer for the other host on its list,
+            // which nobody registered: the value works at the registered
+            // host whatever name it was asked under.
+            let sub = format!("sub.{authority}");
+            let (status, _) = ask(&state, &key, &sub, Some("acme/other.git")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            let (status, _) = ask(&state, &key, &sub, Some("acme/widgets.git")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            let (status, _) = ask(&state, &key, &elsewhere, Some("any/repo.git")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            assert!(!spent(name.clone()).await, "nothing was spent");
             assert!(credential_rows(&state, &id).await.is_empty());
 
             // The granted repo: the secret, which keeps its precedence.
             let (status, body) = ask(&state, &key, &authority, Some("acme/widgets.git")).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["password"], value.as_str());
-            assert!(spent().await);
+            assert!(spent(name.clone()).await);
             let rows = credential_rows(&state, &id).await;
             assert_eq!(rows.len(), 1, "{rows:?}");
             assert_eq!(rows[0]["source"], "workspace_secret");
@@ -741,16 +749,67 @@ mod tests {
             );
             assert!(!rows[0].to_string().contains(&value), "never the token");
 
-            // An unregistered host is unchanged: the store answers by host.
+            // An unregistered host is unchanged: a secret pinned for it alone
+            // answers by host, for any repo.
+            let other = format!("gcl-{tag}-elsewhere");
+            let other_value = format!("glpat_{tag}");
+            pat(
+                &state,
+                &other,
+                &other_value,
+                &model,
+                vec![elsewhere.clone()],
+            )
+            .await;
             let (status, body) = ask(&state, &key, &elsewhere, Some("any/repo.git")).await;
             assert_eq!(status, StatusCode::OK, "{body}");
-            assert_eq!(body["password"], value.as_str());
-            // The same token again, to the same agent: no second row.
+            assert_eq!(body["password"], other_value.as_str());
+            let rows = credential_rows(&state, &id).await;
+            assert_eq!(rows.len(), 2, "{rows:?}");
+            assert_eq!(rows[1]["secret"], other.as_str());
+            assert_eq!(rows[1]["host_id"], Value::Null);
+            // The same tokens again, to the same agent: no more rows.
             let (status, _) = ask(&state, &key, &authority, Some("acme/widgets.git")).await;
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(credential_rows(&state, &id).await.len(), 1);
+            let (status, _) = ask(&state, &key, &elsewhere, Some("any/repo.git")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(credential_rows(&state, &id).await.len(), 2);
 
+            talaria_workspace_secrets::delete_secret_doc(&state.pg, &other)
+                .await
+                .unwrap();
             cleanup(&state, &[&id], &host_id, Some(&name)).await;
+        }
+
+        /// A token workspace secret granted to `model`, spendable at `hosts`.
+        async fn pat(state: &AppState, name: &str, value: &str, model: &str, hosts: Vec<String>) {
+            let sb = state.secretbox().await.expect("secretbox loads");
+            create_secret_doc(
+                &state.pg,
+                &sb,
+                &CreateSecret {
+                    name: name.to_string(),
+                    title: format!("Git credential live {name}"),
+                    entries: vec![SecretEntryInput {
+                        key: "token".into(),
+                        label: "Token".into(),
+                        value: value.to_string(),
+                    }],
+                    kind: None,
+                    note: None,
+                    created_by: None,
+                    expires_at: None,
+                    uses: None,
+                    grant_to: Some(vec![model.to_string()]),
+                    allowed_hosts: Some(hosts),
+                    revealable: false,
+                    owner_user_id: None,
+                    folder_id: None,
+                    readers: None,
+                },
+            )
+            .await
+            .expect("the secret is created");
         }
 
         /// GitHub as the mint meets it: an installation that holds more than

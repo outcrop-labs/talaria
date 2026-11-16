@@ -364,11 +364,23 @@ pub async fn host_row_for_url(pg: &PgPool, url: &str) -> Result<Option<HostRow>,
 /// opened, spent or minted: the workspace store's answer is a spend (audited,
 /// and it burns a one-shot), so a repo the agent may not touch must be
 /// refused before that store is ever asked.
+///
+/// A WORKSPACE SECRET SPENDABLE AT A REGISTERED HOST answers only through
+/// that host's grant check. The store matches a secret by its Spendable-at
+/// list, which covers subdomains (`github.com` covers `api.github.com`) and
+/// names a hostname without its port, while a host is registered at exactly
+/// one authority. So the PAT pinned for github.com would otherwise answer an
+/// ask for `api.github.com`, for a registered origin's bare hostname without
+/// its port, or for another host on the same list — for any repo — and the
+/// value it hands out works at github.com all the same. `withheld` names
+/// every registered host such an answer must not cover ([`HostRow::names`]),
+/// and the store passes over a secret whose list covers one of them.
 #[derive(Debug)]
 pub enum CredentialScope {
     /// No registered host is at the authority git named. The workspace store
-    /// alone answers, by host, as it always has.
-    Unregistered,
+    /// answers by host, as it always has, minus a secret that is also
+    /// spendable at a registered host: `withheld` names every one.
+    Unregistered { withheld: Vec<String> },
     /// A registered host, and the repo git named is not on this agent's grant
     /// list there, or git named no repo at all. Nothing answers.
     Ungranted {
@@ -377,9 +389,27 @@ pub enum CredentialScope {
     },
     /// A registered host, and a repo this agent holds a grant on. The
     /// workspace store answers first (a credential somebody pinned for the
-    /// host is the more specific answer), then the host's own login. The row
-    /// is boxed only to keep the variants of one size.
-    Granted { row: Box<HostRow>, rule: RepoRule },
+    /// host is the more specific answer), then the host's own login. A
+    /// secret also spendable at ANOTHER registered host passed only this
+    /// host's grant check, so `withheld` names every other one. The row is
+    /// boxed only to keep the variants of one size.
+    Granted {
+        row: Box<HostRow>,
+        rule: RepoRule,
+        withheld: Vec<String>,
+    },
+}
+
+impl CredentialScope {
+    /// The registered host names a workspace secret must not cover to answer
+    /// this ask (see the variants). An `Ungranted` ask asks no store at all.
+    pub fn withheld(&self) -> &[String] {
+        match self {
+            CredentialScope::Unregistered { withheld }
+            | CredentialScope::Granted { withheld, .. } => withheld,
+            CredentialScope::Ungranted { .. } => &[],
+        }
+    }
 }
 
 /// THE GRANT CHECK of `/api/secrets/git-credential`, by the authority and the
@@ -395,25 +425,39 @@ pub async fn credential_scope(
     authority: &str,
     path: Option<&str>,
 ) -> Result<CredentialScope, String> {
-    let Some(row) = host_row_at(pg, authority).await? else {
-        return Ok(CredentialScope::Unregistered);
+    let rows = host_rows(pg).await?;
+    let want = authority.trim().to_lowercase();
+    let Some(row) = rows.iter().find(|r| r.authority() == want) else {
+        return Ok(CredentialScope::Unregistered {
+            withheld: withheld_names(&rows, None),
+        });
     };
     let Some(repo) = repo_of_path(path.unwrap_or_default()) else {
         return Ok(CredentialScope::Ungranted {
-            host_id: row.id,
+            host_id: row.id.clone(),
             repo: None,
         });
     };
     match repo_rule(pg, agent_id, &row.id, &repo).await {
         Some(rule) => Ok(CredentialScope::Granted {
-            row: Box::new(row),
+            withheld: withheld_names(&rows, Some(row.id.as_str())),
+            row: Box::new(row.clone()),
             rule,
         }),
         None => Ok(CredentialScope::Ungranted {
-            host_id: row.id,
+            host_id: row.id.clone(),
             repo: Some(repo),
         }),
     }
+}
+
+/// The names of every registered host but `except` — what a workspace secret
+/// must not cover to answer an ask that is not on that host's grant list.
+fn withheld_names(rows: &[HostRow], except: Option<&str>) -> Vec<String> {
+    rows.iter()
+        .filter(|r| Some(r.id.as_str()) != except)
+        .flat_map(HostRow::names)
+        .collect()
 }
 
 /// A login handed to an agent's git by the registered host, what it was for,
@@ -523,5 +567,49 @@ mod tests {
         assert_eq!(repo_of_path(""), None);
         assert_eq!(repo_of_path("acme"), None);
         assert_eq!(repo_of_path("acme/app/extra"), None);
+    }
+
+    #[test]
+    fn a_registered_host_withholds_every_name_a_secret_could_cover_it_by() {
+        let row = |id: &str, base_url: &str| HostRow {
+            id: id.into(),
+            kind: HostKind::Forgejo,
+            name: id.into(),
+            base_url: base_url.into(),
+            api_url: None,
+            auth: serde_json::json!({}),
+            repo_creation_orgs: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let rows = vec![
+            row("github", "https://github.com"),
+            row("forge", "https://Git.Example.com:3000"),
+        ];
+        // A default port is one name; an origin with a port is reached by its
+        // bare hostname too, which is what a Spendable-at list names.
+        assert_eq!(rows[0].names(), vec!["github.com"]);
+        assert_eq!(
+            rows[1].names(),
+            vec!["git.example.com", "git.example.com:3000"]
+        );
+        // An ask on no registered host withholds them all.
+        assert_eq!(
+            withheld_names(&rows, None),
+            vec!["github.com", "git.example.com", "git.example.com:3000"]
+        );
+        // An ask granted on one withholds every other.
+        assert_eq!(
+            withheld_names(&rows, Some("github")),
+            vec!["git.example.com", "git.example.com:3000"]
+        );
+        let scope = CredentialScope::Ungranted {
+            host_id: "github".into(),
+            repo: None,
+        };
+        assert!(
+            scope.withheld().is_empty(),
+            "an ungranted ask asks no store"
+        );
     }
 }
