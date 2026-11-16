@@ -21,6 +21,7 @@ pub mod workbench_env_repo;
 pub mod workbench_flow;
 pub mod workbench_git_hosts;
 pub mod workbench_git_hosts_id;
+pub mod workbench_git_hosts_id_refresh;
 pub mod workbench_git_hosts_id_test;
 pub mod workbench_harnesses;
 pub mod workbench_jobs;

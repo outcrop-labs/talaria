@@ -1559,8 +1559,9 @@ pub fn router(state: AppState) -> Router {
         )
         // The workbench family, the agent sandbox plane: the per-repo git
         // flow, the operator's git hosts (talaria-git-hosts — list/add,
-        // read/patch/remove, test connection; admin, they hold org
-        // credentials), the human side of
+        // read/patch/remove, test connection, refresh what a GitHub App's
+        // installations accepted; admin, they hold org credentials), the
+        // human side of
         // workbench jobs (the ticket strip + approve/reject/merge-to-testing),
         // the repo-creation approval queue, and the per-agent repo grants.
         // Who is a developer is the agent's own switch (fleet/defs PATCH).
@@ -1582,6 +1583,11 @@ pub fn router(state: AppState) -> Router {
                 .put(talaria_routes_workbench::workbench::workbench_git_hosts_id::put)
                 .delete(talaria_routes_workbench::workbench::workbench_git_hosts_id::delete)
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
+        .route(
+            "/api/workbench/git-hosts/{id}/refresh",
+            post(talaria_routes_workbench::workbench::workbench_git_hosts_id_refresh::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/workbench/git-hosts/{id}/test",

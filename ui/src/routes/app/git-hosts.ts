@@ -5,13 +5,54 @@
 // SET, a Forgejo row names the workspace secret that holds its token.
 import { createQuery, useQueryClient } from '@tanstack/svelte-query'
 import { getJson } from '@/lib/fetch-json'
+import type { PermissionMap } from '@/lib/git-permissions'
 
 export type GitHostKind = 'github' | 'forgejo'
+
+/** One installation of a GitHub host's App, as the holdings record last read
+ *  it (talaria-git-hosts' `git_host_installations`), never asked live. */
+export interface GitHostInstallation {
+  id: string
+  /** The org (or user) it is installed on; empty until first read. */
+  account: string
+  /** What the App's registration asked for at the last good read. */
+  appPermissions: PermissionMap | null
+  /** What the installation had accepted then. Null: never read (unknown). */
+  held: PermissionMap | null
+  /** The App's ask minus what it held, both from that read — what the
+   *  alerts call waiting for org-owner approval. */
+  pending: PermissionMap
+  repositorySelection: 'all' | 'selected' | null
+  suspendedAt: string | null
+  /** When it was last read successfully (ISO). */
+  checkedAt: string | null
+  /** Why the last read failed, when it did; the fields above are then the
+   *  last good read. */
+  error: string | null
+  /** The installation's settings page on GitHub, where an owner accepts. */
+  url: string | null
+}
 
 export interface GitHostStatus {
   configured: boolean
   account: string | null
   error: string | null
+  /** What a GitHub App's registration asks for, read live with the status.
+   *  Null on every other host, and when the read failed. */
+  appPermissions: PermissionMap | null
+  /** Each installation the connection uses (a GitHub App's), from the
+   *  record. Empty on every other host. */
+  installations: GitHostInstallation[]
+}
+
+/** An item of the installation picker (`?installations=1`): every account
+ *  the App is installed on, with what that installation holds. */
+export interface GitHubInstallationListing {
+  id: number
+  account: string
+  permissions: PermissionMap
+  repositorySelection: 'all' | 'selected' | null
+  suspended: boolean
 }
 
 export interface GitHost {

@@ -1,9 +1,13 @@
 // /api/workbench/git-hosts/{id}. One git host. GET → the redacted row with a
-// live status (who the connection acts as, or why it cannot connect);
-// `?installations=1` on a GitHub host lists where its App is installed (the
-// easy-setup picker). PUT → change it (secrets sealed; a Forgejo host's
-// workspace secret checked against the host). DELETE → remove a host nothing
-// names any more. requireAdmin, like the list.
+// live status (who the connection acts as, or why it cannot connect; for a
+// GitHub App, what the App asks for) and each installation the connection
+// uses as the holdings record last read it (what it accepted, what is still
+// waiting for an org owner, when it was checked); `?installations=1` on a
+// GitHub host lists where its App is installed, with what each installation
+// holds (the easy-setup picker). PUT → change it (secrets sealed; a Forgejo
+// host's workspace secret checked against the host; the record is read again
+// before the answer). DELETE → remove a host nothing names any more.
+// requireAdmin, like the list.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -16,8 +20,8 @@ use talaria_body::{
     optional_max_string_member, optional_string_array_member, parse, string_member,
 };
 use talaria_error::{house_error, internal, object_or_400};
+use talaria_git_hosts::HostRow;
 use talaria_git_hosts::registry::{self, HostPatch};
-use talaria_git_hosts::{GitHost, HostRow};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
@@ -55,13 +59,13 @@ pub async fn get(
                 .list_installations()
                 .await
                 .iter()
-                .map(|(id, account)| json!({ "id": id, "account": account }))
+                .map(|i| i.listing_wire())
                 .collect(),
             None => Vec::new(),
         };
         return Ok(Json(json!({ "installations": list })).into_response());
     }
-    let st = host.status().await;
+    let st = talaria_git_hosts::host_status(&state.pg, &host, &row).await;
     Ok(Json(json!({ "host": row.wire_with(&st) })).into_response())
 }
 
@@ -138,10 +142,8 @@ pub async fn put(
         "workbench.git_host_update",
         updated.id.clone(),
     );
-    let st = talaria_git_hosts::connect(&state.pg, &sb, &updated)
-        .await
-        .status()
-        .await;
+    let host = talaria_git_hosts::connect(&state.pg, &sb, &updated).await;
+    let st = talaria_git_hosts::host_status(&state.pg, &host, &updated).await;
     Ok(Json(json!({ "host": updated.wire_with(&st) })).into_response())
 }
 

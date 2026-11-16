@@ -12,7 +12,9 @@
 //
 // A row that anything still names (a grant, a job, a repo request, an
 // install request, a plugin) cannot be removed: the foreign keys refuse, and
-// the route says what still uses it.
+// the route says what still uses it. Every add and change reads the host's
+// App and installations again (holdings.rs); its installation rows go with
+// it on removal.
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -427,6 +429,9 @@ pub async fn create_host(
         });
     }
     crate::forget(new.id);
+    // What its App asks for and each installation accepted, read now: the
+    // card that answers this write shows them.
+    crate::holdings::refresh_after_write(pg, sb, new.id).await;
     get_host(pg, new.id)
         .await?
         .ok_or_else(|| "git host write: the row did not land".into())
@@ -510,6 +515,9 @@ pub async fn update_host(
     .await
     .map_err(|e| format!("git host write: {e}"))?;
     crate::forget(id);
+    // A new key, App or installation changes what the record says: it is
+    // read again before the card that answers this write is drawn.
+    crate::holdings::refresh_after_write(pg, sb, id).await;
     get_host(pg, id).await
 }
 
