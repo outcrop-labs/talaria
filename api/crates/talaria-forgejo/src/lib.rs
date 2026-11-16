@@ -27,10 +27,13 @@ use serde_json::{Value, json};
 use talaria_body::truncate_utf16;
 use talaria_gateway::provider::http;
 pub use talaria_git_host_types::{
-    CreatedRepo, GitHost, HostKind, HostStatus, Login, OpenPullRequest, OpenedPullRequest,
-    PullRequestAsk, PullRequestRef, RepoAccess, RepoVisibility,
+    CreatedRepo, GitHost, HostKind, HostStatus, IssuedLogin, Login, Narrowing, OpenPullRequest,
+    OpenedPullRequest, PullRequestAsk, PullRequestRef, RepoAccess, RepoVisibility,
 };
 use talaria_git_host_types::{PrStatusParts, pr_status_wire, value_at};
+
+/// Why a Forgejo host offers no per-agent permission ([`Narrowing::HostWide`]).
+pub const HOST_WIDE: &str = "a Forgejo or Gitea host answers with its own token, which carries what its owner gave it — Talaria cannot narrow it per agent, so the host's own token decides";
 
 /// The most one REST call may take.
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -356,13 +359,24 @@ impl GitHost for Forgejo {
         Ok(out)
     }
 
+    /// A Forgejo token is the host's own: never narrowed per repository or
+    /// per agent (see the module header).
+    fn narrowing(&self) -> Narrowing {
+        Narrowing::HostWide(HOST_WIDE)
+    }
+
     /// The host's token, whatever `access` asked: a Forgejo token cannot be
-    /// scoped to one repository or narrowed per call (see the module header).
-    async fn repo_login(&self, _repo: &str, _access: RepoAccess) -> Result<Option<Login>, String> {
+    /// scoped to one repository or narrowed per call (see the module header),
+    /// so nothing is claimed about what it carries.
+    async fn repo_login(
+        &self,
+        _repo: &str,
+        _access: &RepoAccess,
+    ) -> Result<Option<IssuedLogin>, String> {
         if let Some(e) = &self.login_error {
             return Err(e.clone());
         }
-        Ok(self.login.clone())
+        Ok(self.login.clone().map(IssuedLogin::plain))
     }
 
     async fn default_branch(&self, repo: &str) -> Result<String, String> {
@@ -878,11 +892,12 @@ mod tests {
         );
         assert_eq!(
             broken
-                .repo_login("a/b", RepoAccess::Read)
+                .repo_login("a/b", &RepoAccess::Read)
                 .await
                 .unwrap_err(),
             "the workspace secret \"forge\" has expired"
         );
+        assert_eq!(broken.narrowing(), Narrowing::HostWide(HOST_WIDE));
     }
 
     #[tokio::test]

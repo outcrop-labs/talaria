@@ -4,7 +4,9 @@
 // scheduler (failing jobs, and whether it is running at all), the notification
 // outbox (depth, age, breaker, what has been lost), what each GitHub App
 // installation has accepted (the record talaria-git-hosts keeps — never GitHub
-// itself), and stuck tickets on boards the requesting user can access.
+// itself), the agents given GitHub permissions it has not, a git token revoke
+// GitHub did not confirm, and stuck tickets on boards the requesting user can
+// access.
 //
 // THE RULE THIS FILE IS FOR: anything whose failure mode is SILENCE has to be
 // asked here, because nothing else asks it. A dead container is obvious the
@@ -329,10 +331,27 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
     // every page load. A permission change nobody has accepted is a token
     // minted without it, and an installation nobody could read is one whose
     // pending change shows nowhere — both are silence until someone looks.
+    // Beside them, from the same record and the agents' permissions: an
+    // agent given a GitHub permission the installation has not accepted
+    // carries it on no token, which nothing else says; and a revoke GitHub
+    // did not confirm in the last hour is a token still alive that an admin
+    // meant to take back.
     if is_admin(pg, user_id).await {
         match talaria_git_hosts::holdings::recorded_holdings(pg).await {
-            Ok(hosts) => alerts.extend(git_host_alerts(&hosts, now_ms())),
+            Ok(hosts) => {
+                alerts.extend(git_host_alerts(&hosts, now_ms()));
+                match talaria_git_hosts::permissions::all_extras(pg).await {
+                    Ok(extras) => alerts.extend(dormant_permissions_alert(
+                        &talaria_git_hosts::permissions::dormant_extras(&hosts, &extras),
+                    )),
+                    Err(e) => tracing::warn!("[alerts] {e}"),
+                }
+            }
             Err(e) => tracing::warn!("[alerts] {e}"),
+        }
+        match unconfirmed_revokes(pg).await {
+            Ok(n) => alerts.extend(revoke_failed_alert(n)),
+            Err(e) => tracing::warn!("[alerts] token revoke read failed: {e}"),
         }
     }
 
@@ -882,6 +901,85 @@ pub fn git_host_alerts(hosts: &[HostHoldings], now_ms: i64) -> Vec<Alert> {
     out
 }
 
+/// The alert for agents given a GitHub permission on a host whose
+/// installation has not accepted it (`dormant`, as talaria-git-hosts'
+/// `dormant_extras` finds them): Talaria granted it, and every token of
+/// those repos goes without it until an owner of the account accepts the
+/// App's change on GitHub. None when there are none.
+pub fn dormant_permissions_alert(
+    dormant: &[talaria_git_hosts::permissions::Dormant],
+) -> Option<Alert> {
+    if dormant.is_empty() {
+        return None;
+    }
+    let mut agents: Vec<&str> = dormant.iter().map(|d| d.agent_id.as_str()).collect();
+    agents.sort_unstable();
+    agents.dedup();
+    let n = agents.len();
+    let each: Vec<String> = dormant
+        .iter()
+        .map(|d| {
+            format!(
+                "{} on {}: {} ({})",
+                d.agent_name,
+                d.host_name,
+                d.missing,
+                d.repos.join(", ")
+            )
+        })
+        .collect();
+    Some(Alert {
+        severity: AlertSeverity::Warning,
+        title: if n == 1 {
+            "1 agent holds GitHub permissions the installation has not accepted".into()
+        } else {
+            format!("{n} agents hold GitHub permissions the installation has not accepted")
+        },
+        detail: format!(
+            "{}. An admin gave {} in Talaria, and the tokens of those repos go without until an owner of the account accepts the GitHub App's permission change on GitHub (Admin → Git hosts names each installation and where to accept it).",
+            each.join("; "),
+            if each.len() == 1 { "it" } else { "them" }
+        ),
+        href: GIT_HOSTS_HREF,
+    })
+}
+
+/// How many agent git tokens Talaria revoked in the last hour without
+/// GitHub confirming it (`github.token_revoke_failed` rows, each counting
+/// the tokens it names). An installation token lives an hour, so older
+/// ones have expired.
+async fn unconfirmed_revokes(pg: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "select coalesce(sum(coalesce((after->>'failed')::bigint, 1)), 0)::bigint from audit_log \
+         where action = 'github.token_revoke_failed' and created_at > now() - interval '1 hour'",
+    )
+    .fetch_one(pg)
+    .await
+}
+
+/// The alert for tokens revoked without GitHub confirming it: they were
+/// dropped from every cache, but GitHub may still honour them until they
+/// expire. None when there are none.
+pub fn revoke_failed_alert(n: i64) -> Option<Alert> {
+    (n > 0).then(|| Alert {
+        severity: AlertSeverity::Warning,
+        title: if n == 1 {
+            "A GitHub token Talaria revoked was not confirmed revoked".into()
+        } else {
+            format!("{n} GitHub tokens Talaria revoked were not confirmed revoked")
+        },
+        detail: format!(
+            "In the last hour Talaria took back {} from agents whose GitHub access narrowed, and GitHub did not confirm the revoke. Talaria will not hand {} out again, but GitHub may honour {} until {} expire{}, within the hour. The audit trail (github.token_revoke_failed) names the agent.",
+            if n == 1 { "a token" } else { "tokens" },
+            if n == 1 { "it" } else { "them" },
+            if n == 1 { "it" } else { "them" },
+            if n == 1 { "it" } else { "they" },
+            if n == 1 { "s" } else { "" }
+        ),
+        href: GIT_HOSTS_HREF,
+    })
+}
+
 /// Where the unpriced alert sends an admin: the Cost tab's unpriced panel.
 pub const UNPRICED_HREF: &str = "/observability/cost#unpriced";
 
@@ -1152,6 +1250,68 @@ mod tests {
                 .contains("beta (installation 92 on GitHub): not checked for 32 minutes"),
             "{}",
             alerts[1].detail
+        );
+    }
+
+    #[test]
+    fn agents_given_what_the_installation_has_not_accepted_are_named_with_their_repos() {
+        use talaria_git_hosts::permissions::Dormant;
+        assert!(dormant_permissions_alert(&[]).is_none());
+        let wf = perms(&[("workflows", Level::Write)]);
+        let dormant = |agent: &str, name: &str, repos: &[&str]| Dormant {
+            agent_id: agent.into(),
+            agent_name: name.into(),
+            host_id: "github".into(),
+            host_name: "GitHub".into(),
+            missing: wf.clone(),
+            repos: repos.iter().map(|r| r.to_string()).collect(),
+        };
+        let one = dormant_permissions_alert(&[dormant("a1", "Billy", &["acme/site"])]).unwrap();
+        assert_eq!(one.severity, AlertSeverity::Warning);
+        assert_eq!(
+            one.title,
+            "1 agent holds GitHub permissions the installation has not accepted"
+        );
+        assert!(
+            one.detail
+                .starts_with("Billy on GitHub: workflows:write (acme/site)."),
+            "{}",
+            one.detail
+        );
+        assert_eq!(one.href, "/admin/git");
+        let two = dormant_permissions_alert(&[
+            dormant("a1", "Billy", &["acme/site"]),
+            dormant("a2", "Ana", &["acme/app", "acme/api"]),
+        ])
+        .unwrap();
+        assert_eq!(
+            two.title,
+            "2 agents hold GitHub permissions the installation has not accepted"
+        );
+        assert!(
+            two.detail
+                .contains("Ana on GitHub: workflows:write (acme/app, acme/api)")
+        );
+    }
+
+    #[test]
+    fn a_revoke_github_did_not_confirm_is_said_until_its_token_has_expired() {
+        assert!(revoke_failed_alert(0).is_none());
+        let one = revoke_failed_alert(1).unwrap();
+        assert_eq!(
+            one.title,
+            "A GitHub token Talaria revoked was not confirmed revoked"
+        );
+        assert!(one.detail.contains("until it expires"), "{}", one.detail);
+        let three = revoke_failed_alert(3).unwrap();
+        assert_eq!(
+            three.title,
+            "3 GitHub tokens Talaria revoked were not confirmed revoked"
+        );
+        assert!(
+            three.detail.contains("until they expire,"),
+            "{}",
+            three.detail
         );
     }
 

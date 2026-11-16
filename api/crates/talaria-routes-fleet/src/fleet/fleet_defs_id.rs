@@ -22,6 +22,7 @@ use talaria_body::{
     too_small_msg, utf16_len, zod_type_name,
 };
 use talaria_error::{house_error, internal, object_or_400};
+use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::{actor_of, require_agent_manager};
 use talaria_state::AppState;
 use talaria_templates::set_agent_templates;
@@ -180,6 +181,20 @@ pub async fn patch(
         && let Err(e) = apply_developer_toolsets(&state.pg, &def_id, on).await
     {
         return Ok(internal("[fleet/defs] developer toolsets failed", e));
+    }
+    // The switch's git half: off, the credential door answers this agent
+    // nothing, and every git token it was already handed is taken back, in
+    // every api process (talaria-git-hosts' revoke).
+    if developer_changed && developer == Some(false) {
+        talaria_git_hosts::revoke::revoke_agent_tokens(
+            &state.pg,
+            &RealtimeDeps::publish_only(state.redis().await.ok()),
+            None,
+            &def_id,
+            None,
+            "its Developer Agent switch was turned off",
+        )
+        .await;
     }
     let max_children_changed = match max_children {
         Some(n) => match set_max_children(&state.pg, &def_id, n).await {

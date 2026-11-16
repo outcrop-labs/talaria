@@ -28,7 +28,10 @@
 //      only through that host's grant check, so an ask for `api.github.com`,
 //      for a registered origin's hostname without its port, or for another
 //      host on the secret's list passes it over (`CredentialScope::withheld`)
-//   3. the workspace store, then the host's own login for the granted repo
+//   3. the workspace store, then the host's own login for the granted repo:
+//      on GitHub a token for this agent alone, carrying what the agent was
+//      given on the host that git spends (`workflows`), re-checked after the
+//      mint against a grant narrowed meanwhile (talaria-git-hosts)
 //   4. one `git.credential` audit row per (agent, token) — on a mint, and on
 //      the first serve of a token this agent had not been handed — never one
 //      per helper call (git asks on every fetch and push)
@@ -171,11 +174,12 @@ pub async fn post(
         },
         // The login of the git host registered at the host git named
         // (talaria-git-hosts: on GitHub, an installation token scoped to the
-        // one repo and narrowed to what a push spends) — the credential a
-        // workbench job needs to push, and the one that used to ride into the
-        // model's context inside the clone URL.
+        // one repo, filed under this agent, and narrowed to what a push spends
+        // plus the permissions an admin gave this agent on the host that git
+        // spends) — the credential a workbench job needs to push, and the one
+        // that used to ride into the model's context inside the clone URL.
         (None, CredentialScope::Granted { row, rule, .. }) => {
-            match hosts::grant_login(&state.pg, &sb, &row, &rule.repo).await {
+            match hosts::grant_login(&state.pg, &sb, &row, &rule.repo, &agent_id).await {
                 Ok(Some(g)) => Served {
                     username: g.login.username,
                     password: g.login.password,

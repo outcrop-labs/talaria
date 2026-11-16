@@ -29,13 +29,22 @@
 //   holdings   what a GitHub host's App asks for and what each installation
 //              it uses has accepted (`git_host_installations`), refreshed on
 //              a schedule, read by the mint, the alerts and the host card
+//   permissions which GitHub permissions each agent holds on each host above
+//              the base (`agent_github_permissions`), set by an admin only,
+//              minted into the agent's sandbox token where git spends them
+//   revoke     taking an agent's tokens back when what it may do narrows, in
+//              this api process and, by a Redis broadcast, in every other
 //
 // The interface every adapter implements, and every type it answers in, is
 // talaria-git-host-types'. `Host` is the dispatch over the registered kinds.
 
 pub mod grants;
 pub mod holdings;
+pub mod permissions;
+#[cfg(test)]
+mod permissions_live;
 pub mod registry;
+pub mod revoke;
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -49,19 +58,18 @@ use talaria_github::Github;
 use talaria_secretbox::SecretBox;
 
 pub use grants::{
-    PROTECTED_BRANCHES, RepoFlow, RepoRef, RepoRule, effective_base, granted_repos,
-    list_repo_flows, push_allowed, repo_flow, repo_rule, repo_rules, resolve_grant,
+    GrantChange, PROTECTED_BRANCHES, RepoFlow, RepoRef, RepoRule, add_grant, effective_base,
+    granted_repos, list_repo_flows, push_allowed, repo_flow, repo_rule, repo_rules, resolve_grant,
     set_granted_repos, set_repo_flow, set_repo_rule,
 };
 pub use holdings::{host_status, refresh_host};
 pub use registry::{HostRow, get_host, host_rows, list_hosts};
 pub use talaria_git_host_types::{
-    CreatedRepo, GitHost, HostKind, HostStatus, InstallationStatus, Level, Login, OpenPullRequest,
-    OpenedPullRequest, PermissionSet, PullRequestAsk, PullRequestRef, RepoAccess, RepoVisibility,
-    pr_number_from_url,
+    CreatedRepo, GitHost, HostKind, HostStatus, InstallationStatus, IssuedLogin, Level, Login,
+    Narrowing, OpenPullRequest, OpenedPullRequest, PermissionSet, PullRequestAsk, PullRequestRef,
+    RepoAccess, RepoVisibility, pr_number_from_url,
 };
 pub use talaria_github::hashed_token;
-use talaria_github::permissions_for;
 
 /// A live connection to one registered host, of whichever kind it is.
 #[derive(Clone, Debug)]
@@ -125,7 +133,18 @@ impl GitHost for Host {
         }
     }
 
-    async fn repo_login(&self, repo: &str, access: RepoAccess) -> Result<Option<Login>, String> {
+    fn narrowing(&self) -> Narrowing {
+        match self {
+            Host::Github(h) => h.narrowing(),
+            Host::Forgejo(h) => h.narrowing(),
+        }
+    }
+
+    async fn repo_login(
+        &self,
+        repo: &str,
+        access: &RepoAccess,
+    ) -> Result<Option<IssuedLogin>, String> {
         match self {
             Host::Github(h) => h.repo_login(repo, access).await,
             Host::Forgejo(h) => h.repo_login(repo, access).await,
@@ -313,6 +332,25 @@ pub async fn connect(pg: &PgPool, sb: &SecretBox, row: &HostRow) -> Host {
     }
 }
 
+/// Whether `row`'s connection can narrow a credential per agent
+/// ([`GitHost::narrowing`]), from its configuration alone: no secret is
+/// opened and nothing is asked of the host.
+pub fn narrowing_of(row: &HostRow) -> Narrowing {
+    match row.kind {
+        HostKind::Github => Github::new(
+            &row.id,
+            &row.base_url,
+            row.api_url.as_deref(),
+            &row.auth,
+            SecretBox::default(),
+        )
+        .narrowing(),
+        HostKind::Forgejo => {
+            Forgejo::new(&row.id, &row.base_url, row.api_url.as_deref(), Ok(None)).narrowing()
+        }
+    }
+}
+
 /// The live connection for host `id`. Err names a host that is not
 /// registered (it was removed, or never added).
 pub async fn host(pg: &PgPool, sb: &SecretBox, id: &str) -> Result<Host, String> {
@@ -491,45 +529,82 @@ pub struct AgentCredential {
 }
 
 /// GIT'S CREDENTIAL from the registered host, for a repo [`credential_scope`]
-/// found granted: the host's own login for that one repository, which is
-/// what a workbench job needs in order to push. On GitHub (App mode) an
-/// installation token scoped to the repo and narrowed to
-/// [`talaria_github::SANDBOX_TOKEN_PERMISSIONS`] — contents and metadata,
-/// never pull requests, which Talaria opens itself. Elsewhere the host's own
-/// token, which cannot be narrowed.
+/// found granted to `agent_id`: the host's own login for that one repository,
+/// which is what a workbench job needs in order to push. On GitHub (App mode)
+/// an installation token scoped to the repo, filed under the agent, and
+/// narrowed to [`talaria_github::SANDBOX_TOKEN_PERMISSIONS`] — contents and
+/// metadata, never pull requests, which Talaria opens itself — plus the
+/// agent's permissions on the host that git spends (`workflows`, when an
+/// admin gave it; [`permissions`]). Elsewhere the host's own token, which
+/// cannot be narrowed.
+///
+/// THE RE-CHECK. What the agent may do is read before the mint, and an admin
+/// can narrow it while the mint is out: the narrowing's revoke then finds no
+/// token to take back, and the one being minted would carry the old grant
+/// for an hour. So after a mint the grant, the Developer switch and the
+/// agent's permissions on the host are read again. Changed: the fresh token
+/// is revoked, and the agent gets nothing (the grant or the switch went) or
+/// one more mint against what it may do now. A token served from the cache
+/// is not re-checked: the narrowing's revoke took it out of every cache.
 pub async fn grant_login(
     pg: &PgPool,
     sb: &SecretBox,
     row: &HostRow,
     repo: &str,
+    agent_id: &str,
 ) -> Result<Option<AgentCredential>, String> {
-    let credential = |login: Login| AgentCredential {
-        login,
+    let host = connect(pg, sb, row).await;
+    let extra = permissions::host_permissions(pg, agent_id, &row.id).await?;
+    let job = |extra: PermissionSet| RepoAccess::Job {
+        agent_id: agent_id.to_string(),
+        extra,
+    };
+    let Some(issued) = host.repo_login(repo, &job(extra.clone())).await? else {
+        return Ok(None);
+    };
+    if !issued.minted {
+        return Ok(Some(agent_credential(row, repo, issued)));
+    }
+    let now = permissions::recheck(pg, agent_id, &row.id, repo).await?;
+    if now.as_ref() == Some(&extra) {
+        return Ok(Some(agent_credential(row, repo, issued)));
+    }
+    let revoked = match &host {
+        Host::Github(github) => github.revoke_issued(&issued.login.password).await,
+        Host::Forgejo(_) => false,
+    };
+    tracing::warn!(
+        "[git-hosts] what agent {agent_id} may do on {repo} ({}) changed while its token was minted — the fresh token was {}; {}",
+        row.id,
+        if revoked {
+            "revoked"
+        } else {
+            "dropped, though GitHub did not confirm its revoke"
+        },
+        match &now {
+            Some(_) => "minting once more against the grant as it stands",
+            None => "the grant or the Developer switch is gone, so it gets nothing",
+        }
+    );
+    let Some(now) = now else {
+        return Ok(None);
+    };
+    Ok(host
+        .repo_login(repo, &job(now))
+        .await?
+        .map(|issued| agent_credential(row, repo, issued)))
+}
+
+/// The credential door's record of a login `row` issued for `repo`.
+fn agent_credential(row: &HostRow, repo: &str, issued: IssuedLogin) -> AgentCredential {
+    AgentCredential {
+        login: issued.login,
         host_id: row.id.clone(),
         repo: repo.to_string(),
-        installation: None,
-        carried: None,
-        shortfall: PermissionSet::new(),
-        minted: false,
-    };
-    match connect(pg, sb, row).await {
-        Host::Github(github) => Ok(github
-            .issue_token(repo, &permissions_for(RepoAccess::Write))
-            .await?
-            .map(|issued| AgentCredential {
-                installation: issued.installation,
-                carried: issued.carried,
-                shortfall: issued.shortfall,
-                minted: issued.minted,
-                ..credential(Login {
-                    username: "x-access-token".into(),
-                    password: issued.token,
-                })
-            })),
-        host => Ok(host
-            .repo_login(repo, RepoAccess::Write)
-            .await?
-            .map(credential)),
+        installation: issued.installation,
+        carried: issued.carried,
+        shortfall: issued.shortfall,
+        minted: issued.minted,
     }
 }
 

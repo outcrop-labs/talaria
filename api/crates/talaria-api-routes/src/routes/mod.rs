@@ -1563,7 +1563,8 @@ pub fn router(state: AppState) -> Router {
         // installations accepted; admin, they hold org credentials), the
         // human side of
         // workbench jobs (the ticket strip + approve/reject/merge-to-testing),
-        // the repo-creation approval queue, and the per-agent repo grants.
+        // the repo-creation approval queue, the per-agent repo grants, and
+        // the GitHub permissions an admin gives an agent on each host.
         // Who is a developer is the agent's own switch (fleet/defs PATCH).
         .route(
             "/api/workbench/flow",
@@ -1593,6 +1594,12 @@ pub fn router(state: AppState) -> Router {
             "/api/workbench/git-hosts/{id}/test",
             post(talaria_routes_workbench::workbench::workbench_git_hosts_id_test::post)
                 .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workbench/github-permissions/{agentId}",
+            get(talaria_routes_workbench::workbench::workbench_github_permissions_agent_id::get)
+                .put(talaria_routes_workbench::workbench::workbench_github_permissions_agent_id::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workbench/harnesses",

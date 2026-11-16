@@ -236,18 +236,41 @@ pub async fn put(
             Some("not asked for by the approver".to_string()),
         ),
     };
-    // The requester gets the repo granted the moment it exists — appended
-    // after their existing grants, deduped.
-    let mut grants = hosts::granted_repos(&state.pg, &req.1).await;
-    let new_grant = hosts::RepoRef {
-        host_id: row.id.clone(),
-        repo: created.full_name.clone(),
+    // The requester gets the repo granted the moment it exists: that one
+    // grant added, every other left as it is. Never the grant set read and
+    // written back, which would drop a grant an admin changed in between.
+    let granted = match hosts::add_grant(&state.pg, &req.1, &row.id, &created.full_name).await {
+        Ok(new) => new,
+        Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
     };
-    if !grants.contains(&new_grant) {
-        grants.push(new_grant);
-    }
-    if let Err(e) = hosts::set_granted_repos(&state.pg, &req.1, &grants).await {
-        return Ok(house_error(StatusCode::BAD_REQUEST, &e));
+    // A grant added on a host where the agent holds GitHub permissions
+    // carries them from its first token: the trail says so, as the grants
+    // editor's does.
+    if granted {
+        let held = talaria_git_hosts::permissions::host_permissions(&state.pg, &req.1, &row.id)
+            .await
+            .unwrap_or_default();
+        let mut entry = json!({ "host": row.id, "repo": created.full_name, "createdFor": req.0 });
+        if !held.is_empty() {
+            entry["hostPermissions"] = held.to_json();
+            entry["protected"] = json!(protected);
+        }
+        let (pg, audit_actor, agent_id) = (state.pg.clone(), actor.clone(), req.1.clone());
+        tokio::spawn(async move {
+            log_audit(
+                &pg,
+                AuditEntry {
+                    actor: &audit_actor,
+                    action: "workbench.repo_grant",
+                    target_type: "agent",
+                    target_id: Some(&agent_id),
+                    target_label: None,
+                    before: None,
+                    after: Some(json!({ "added": [entry], "removed": [] })),
+                },
+            )
+            .await;
+        });
     }
     if let Err(e) = sqlx::query(
         "update workbench_repo_requests set status = 'approved', decided_by = $1, \
