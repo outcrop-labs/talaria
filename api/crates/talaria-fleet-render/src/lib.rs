@@ -942,9 +942,10 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "    echo \"talaria: git did not name a repository — set origin to https://$host/<owner>/<repo>.git and retry, or work in the job workdir. Do not run git credential fill; it prints the token.\" >&2\n",
     "  fi\n",
     "  echo \"talaria: no credential for $host${path:+/$path}\" >&2\n",
+    "  [ -z \"$why\" ] || echo \"talaria: $why\" >&2\n",
     "  exit 0\n",
     "}\n",
-    "host=\"\"; proto=\"\"; path=\"\"\n",
+    "host=\"\"; proto=\"\"; path=\"\"; why=\"\"\n",
     "while IFS=\"=\" read -r k v; do\n",
     "  [ \"$k\" = \"host\" ] && host=\"$v\"\n",
     "  [ \"$k\" = \"protocol\" ] && proto=\"$v\"\n",
@@ -972,10 +973,20 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "jstr() { printf %s \"$1\" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g'; }\n",
     "body=\"{\\\"host\\\":\\\"$(jstr \"$host\")\\\",\\\"protocol\\\":\\\"$(jstr \"$proto\")\\\",\\\"path\\\":\\\"$(jstr \"$path\")\\\"}\"\n",
     "if command -v curl >/dev/null 2>&1; then\n",
-    "  resp=$(curl -sS --fail -X POST \"$url\" \\\n",
+    "  # No --fail: a refusal's body says why. The status follows the body on\n",
+    "  # a line of its own, and a 403's sentence is passed on, because it names\n",
+    "  # what an admin changes (the agent's Developer Agent switch); a 404 says\n",
+    "  # no more than the line decline prints.\n",
+    "  out=$(curl -sS -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
-    "    -H \"content-type: application/json\" -d \"$body\" 2>/dev/null) \\\n",
+    "    -H \"content-type: application/json\" -d \"$body\" -w '\\n%{http_code}' 2>/dev/null) \\\n",
     "    || decline\n",
+    "  code=$(printf '%s\\n' \"$out\" | sed -n '$p')\n",
+    "  resp=$(printf '%s\\n' \"$out\" | sed '$d')\n",
+    "  if [ \"$code\" = \"403\" ]; then\n",
+    "    why=$(printf %s \"$resp\" | sed -n 's/.*\"error\":\"\\([^\"]*\\)\".*/\\1/p')\n",
+    "  fi\n",
+    "  case \"$code\" in 2??) ;; *) decline ;; esac\n",
     "elif command -v wget >/dev/null 2>&1; then\n",
     "  # TWO WGETS EXIST and they disagree. BusyBox (every alpine-derived\n",
     "  # harness image) takes --post-data; GNU wget takes --body-data with\n",
@@ -6783,12 +6794,20 @@ empty_list: []
 
     #[test]
     fn the_git_helper_reads_origin_when_git_omits_the_path() {
-        fn run(with_origin: bool, curl_ok: bool, ask: &[u8]) -> (i32, String, String, String) {
+        // `reply`: what the stub curl prints, as curl does with `-w` — the
+        // body, then the status on a line of its own — or None for a curl
+        // that fails outright.
+        fn run(
+            with_origin: bool,
+            reply: Option<(&str, u16)>,
+            ask: &[u8],
+        ) -> (i32, String, String, String) {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static RUN: AtomicUsize = AtomicUsize::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "talaria-cred-{}-{}-{}",
+                "talaria-cred-{}-{}",
                 std::process::id(),
-                u8::from(with_origin),
-                u8::from(curl_ok)
+                RUN.fetch_add(1, Ordering::SeqCst)
             ));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(dir.join("stub")).unwrap();
@@ -6800,13 +6819,12 @@ empty_list: []
             let exec = std::fs::Permissions::from_mode(0o755);
             std::fs::set_permissions(&helper, exec.clone()).unwrap();
             let capture = dir.join("body");
-            let curl = if curl_ok {
-                format!(
-                    "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\nprintf '%s' '{{\"username\":\"x-access-token\",\"password\":\"sekret\"}}'\n",
+            let curl = match reply {
+                Some((body, status)) => format!(
+                    "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\nprintf '%s\\n%s' '{body}' '{status}'\n",
                     capture.display()
-                )
-            } else {
-                "#!/bin/sh\nexit 1\n".to_string()
+                ),
+                None => "#!/bin/sh\nexit 1\n".to_string(),
             };
             let curl_path = dir.join("stub/curl");
             std::fs::write(&curl_path, curl).unwrap();
@@ -6867,8 +6885,9 @@ empty_list: []
             )
         }
 
+        let granted = Some((r#"{"username":"x-access-token","password":"sekret"}"#, 200));
         let pathless = b"protocol=https\nhost=github.com\n\n";
-        let (code, stdout, stderr, body) = run(true, true, pathless);
+        let (code, stdout, stderr, body) = run(true, granted, pathless);
         assert_eq!(code, 0, "{stderr}");
         assert!(stdout.contains("username=x-access-token"), "{stdout}");
         let asked: Value = serde_json::from_str(&body).expect("the body is JSON");
@@ -6882,7 +6901,7 @@ empty_list: []
         // break the body nor add a field to it.
         let (code, _, stderr, body) = run(
             false,
-            true,
+            granted,
             b"protocol=https\nhost=github.com\npath=acme/wid\",\"host\":\"evil.example.git\n\n",
         );
         assert_eq!(code, 0, "{stderr}");
@@ -6893,7 +6912,7 @@ empty_list: []
             "{body}"
         );
 
-        let (code, stdout, stderr, _) = run(false, false, pathless);
+        let (code, stdout, stderr, _) = run(false, None, pathless);
         assert_eq!(code, 0, "a decline must not hang git: {stderr}");
         assert!(
             stdout.is_empty(),
@@ -6902,6 +6921,36 @@ empty_list: []
         assert!(stderr.contains("no credential for github.com"), "{stderr}");
         assert!(stderr.contains("did not name a repository"), "{stderr}");
         assert!(stderr.contains("git credential fill"), "{stderr}");
+
+        // A 403 says why, and the helper passes the sentence on: it names
+        // the switch an admin turns, which "no credential" alone does not.
+        let scoped = b"protocol=https\nhost=github.com\npath=acme/widgets.git\n\n";
+        let refused = Some((
+            r#"{"error":"this agent is not a Developer Agent, so Talaria gives it no git credential and no push"}"#,
+            403,
+        ));
+        let (code, stdout, stderr, _) = run(false, refused, scoped);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.is_empty(), "a refusal prints no login: {stdout}");
+        assert!(
+            stderr.contains("no credential for github.com/acme/widgets.git"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("talaria: this agent is not a Developer Agent"),
+            "{stderr}"
+        );
+        // A 404 is a plain no: nothing more than the decline line, and a
+        // body that carries a password is still no answer under a refusal.
+        let missing = Some((
+            r#"{"error":"no credential for that host","password":"x"}"#,
+            404,
+        ));
+        let (code, stdout, stderr, _) = run(false, missing, scoped);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(!stderr.contains("that host"), "{stderr}");
+        assert!(stderr.contains("no credential for github.com"), "{stderr}");
     }
 
     /// What one run of the generated pre-push hook did.
