@@ -1026,7 +1026,9 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
 ///     `"` (git refuses control characters and `\` in one, not quotes), and
 ///     an unescaped one broke the body: every string is escaped now. A value
 ///     that still makes the body unreadable is refused by the route, and a
-///     refused body is a refused push.
+///     refused body is a refused push. A ref name may hold `$(…)` or
+///     backticks too; it is only ever expanded inside double quotes, so it
+///     stays text and runs nothing.
 const GIT_PRE_PUSH_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# Written by Talaria (fleet-render). Git gives this hook the refs about\n",
@@ -1052,17 +1054,15 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "host=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://([^@/]+@)?([^/]+)/.*$#\\2#p' -e 's#^([^@]+@)?([^:/]+):.*$#\\2#p')\n",
     "# A JSON string's inside: backslash and double quote escaped.\n",
     "jstr() { printf %s \"$1\" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g'; }\n",
-    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
-    "refs=\"\"; n=0\n",
-    "while read -r _ _ remote_ref _; do\n",
-    "  [ -n \"$remote_ref\" ] || continue\n",
-    "  case \"$remote_ref\" in refs/heads/*) ;; *) continue ;; esac\n",
-    "  n=$((n+1)); refs=\"$refs\\\"$(jstr \"$remote_ref\")\\\",\"\n",
-    "done <<EOF\n",
-    "$input\n",
-    "EOF\n",
-    "[ \"$n\" -gt 0 ] || exit 0\n",
+    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>. Each\n",
+    "# branch ref becomes one escaped JSON string. A ref's text is data, never\n",
+    "# shell: it is only ever expanded inside double quotes.\n",
+    "refs=$(printf '%s\\n' \"$input\" | while read -r _ _ remote_ref _; do\n",
+    "  [ \"${remote_ref#refs/heads/}\" != \"$remote_ref\" ] || continue\n",
+    "  printf '\"%s\",' \"$(jstr \"$remote_ref\")\"\n",
+    "done)\n",
     "refs=\"${refs%,}\"\n",
+    "[ -n \"$refs\" ] || exit 0\n",
     "url=\"$TALARIA_API_URL/api/secrets/git-push-check\"\n",
     "body=\"{\\\"repo\\\":\\\"$(jstr \"$repo\")\\\",\\\"host\\\":\\\"$(jstr \"$host\")\\\",\\\"refs\\\":[$refs]}\"\n",
     "if command -v curl >/dev/null 2>&1; then\n",
@@ -7141,6 +7141,33 @@ empty_list: []
             None,
         );
         assert_eq!(run.body()["repo"], "acme/pushed");
+    }
+
+    #[test]
+    fn a_ref_name_is_data_and_never_runs() {
+        // Git allows `$`, `(`, `)` and backticks in a ref name. The hook
+        // only ever expands one inside double quotes, so a name shaped like a
+        // command substitution reaches the route as text and runs nothing.
+        let marker_dir =
+            std::env::temp_dir().join(format!("talaria-hook-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&marker_dir).unwrap();
+        let marker = marker_dir.join("ran");
+        let _ = std::fs::remove_file(&marker);
+        let refs = format!(
+            "refs/heads/x 1111 refs/heads/a$(:>{m})b 0000\nrefs/heads/y 2222 refs/heads/c`:>{m}`d 0000\n",
+            m = marker.display()
+        );
+        let run = run_pre_push(&["origin", ORIGIN], &refs, r#"{"ok":true}"#, None);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert!(!marker.exists(), "a ref name ran as a command");
+        assert_eq!(
+            run.body()["refs"],
+            json!([
+                format!("refs/heads/a$(:>{})b", marker.display()),
+                format!("refs/heads/c`:>{}`d", marker.display()),
+            ])
+        );
+        let _ = std::fs::remove_dir_all(&marker_dir);
     }
 
     #[test]
