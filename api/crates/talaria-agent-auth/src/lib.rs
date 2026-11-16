@@ -86,6 +86,21 @@ pub fn refuse_legacy(caller: &AgentCaller, what: &str) -> Option<Response> {
     ))
 }
 
+/// Is this agent (by model) a Developer Agent: enabled, with its Developer
+/// switch (`agent_defs.developer`) on? THE one check behind everything the
+/// switch grants — the gateway's Workbench access (talaria-mcp) and the
+/// sandbox's git door (`/api/secrets/git-credential` and
+/// `/api/secrets/git-push-check`) — so the switch and what it opens can never
+/// disagree. An unknown or disabled agent is not one.
+pub async fn agent_is_developer(pg: &PgPool, agent_model: &str) -> Result<bool, sqlx::Error> {
+    let on: Option<bool> =
+        sqlx::query_scalar("select developer from agent_defs where model = $1 and enabled")
+            .bind(agent_model)
+            .fetch_optional(pg)
+            .await?;
+    Ok(on.unwrap_or(false))
+}
+
 // ── Minting ──────────────────────────────────────────────────────────────────
 
 /// Issue a fresh credential for an agent, invalidating any previous one.

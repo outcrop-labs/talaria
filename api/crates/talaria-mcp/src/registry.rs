@@ -1214,16 +1214,6 @@ fn intersect(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<Strin
 /// switch (agent_defs.developer), never an assignment or team row.
 pub const WORKBENCH_SERVER: &str = "workbench";
 
-/// Is this agent (by model) a Developer Agent?
-async fn agent_is_developer(pg: &PgPool, agent_model: &str) -> Result<bool, sqlx::Error> {
-    let on: Option<bool> =
-        sqlx::query_scalar("select developer from agent_defs where model = $1 and enabled")
-            .bind(agent_model)
-            .fetch_optional(pg)
-            .await?;
-    Ok(on.unwrap_or(false))
-}
-
 /// Union of tool allowlists. `None` = all tools, so it dominates.
 fn union_tools(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> {
     match (a, b) {
@@ -1291,7 +1281,7 @@ pub async fn effective_mcp_for(
         // A legacy shared-key caller is identified, not proven: it never
         // drives the Workbench as the agent it names.
         if !talaria_agent_auth::subject_proven(subject)
-            || !agent_is_developer(pg, agent_model)
+            || !talaria_agent_auth::agent_is_developer(pg, agent_model)
                 .await
                 .map_err(|e| e.to_string())?
         {
