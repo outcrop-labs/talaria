@@ -39,7 +39,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use talaria_agent_auth::{agent_is_developer, now_ms, refuse_legacy, require_agent};
-use talaria_audit::{AuditEntry, log_audit};
+use talaria_audit::{AuditEntry, try_log_audit};
 use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_git_hosts::{self as hosts, CredentialScope, PermissionSet};
@@ -205,9 +205,13 @@ pub async fn post(
         }
     };
 
+    // The pair is claimed before the row is written, so two concurrent first
+    // serves write one row; a row that fails to land gives the claim back,
+    // so the next serve writes it. A failed audit never withholds the
+    // credential: auditing must not break what it records.
     let hashed = hosts::hashed_token(&served.password);
     if remember_serve(&agent_id, &hashed, now_ms()) || served.source.minted() {
-        log_audit(
+        let written = try_log_audit(
             &state.pg,
             AuditEntry {
                 actor: &caller.model,
@@ -220,6 +224,14 @@ pub async fn post(
             },
         )
         .await;
+        if let Err(e) = written {
+            forget_serve(&agent_id, &hashed);
+            tracing::warn!(
+                "[secrets] the git.credential audit row for {} ({}) was not written: {e}",
+                caller.model,
+                served.name
+            );
+        }
     }
     tracing::warn!(
         "[secrets] {} spent {} for {host} via git credential helper",
@@ -334,6 +346,15 @@ fn remember_serve(agent_id: &str, hashed: &str, now: i64) -> bool {
     true
 }
 
+/// Give back a claim [`remember_serve`] made, because its audit row did not
+/// land: the next serve of that token to that agent is a first serve again.
+fn forget_serve(agent_id: &str, hashed: &str) {
+    served_pairs()
+        .lock()
+        .unwrap()
+        .remove(&(agent_id.to_string(), hashed.to_string()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,6 +376,14 @@ mod tests {
         assert!(
             remember_serve(&agent, "h1", t0 + SERVED_TTL_MS),
             "past the window the pair is written again"
+        );
+        // A row that did not land gives its claim back.
+        let t1 = t0 + SERVED_TTL_MS;
+        assert!(!remember_serve(&agent, "h2", t1 + 1), "still claimed");
+        forget_serve(&agent, "h2");
+        assert!(
+            remember_serve(&agent, "h2", t1 + 2),
+            "after a failed write the next serve is a first serve"
         );
     }
 
