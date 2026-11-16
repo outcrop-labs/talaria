@@ -82,10 +82,11 @@ impl std::fmt::Debug for Login {
     }
 }
 
-/// What a repo-scoped credential may do. `Write` is a workbench job's (push a
-/// branch, open a pull request); `Read` is a clone's (app install and
-/// update). An adapter that can narrow a token narrows it to this; one that
-/// cannot says so in its own docs.
+/// What a repo-scoped credential may do. `Write` is a workbench job's git in
+/// the sandbox (clone, fetch, push a branch; Talaria opens the pull request
+/// itself, from the api); `Read` is a clone's (app install and update). An
+/// adapter that can narrow a token narrows it to this; one that cannot says
+/// so in its own docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoAccess {
     Write,
