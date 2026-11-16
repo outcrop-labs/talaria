@@ -86,7 +86,7 @@ pub struct InstallationRow {
     pub suspended_at: Option<String>,
     /// The installation's settings page on GitHub.
     pub html_url: Option<String>,
-    /// When the last good read was, epoch ms.
+    /// When the last good read was, epoch ms on this process's clock.
     pub checked_at_ms: Option<i64>,
     /// Why the last read failed, when it did.
     pub error: Option<String>,
@@ -151,7 +151,7 @@ const SELECT: &str = "select host_id, installation_id, account, app_permissions,
        repository_selection, \
        (trunc(extract(epoch from suspended_at) * 1000))::bigint, \
        html_url, \
-       (trunc(extract(epoch from checked_at) * 1000))::bigint, \
+       (trunc(extract(epoch from clock_timestamp() - checked_at) * 1000))::bigint, \
        error \
      from git_host_installations";
 
@@ -172,7 +172,12 @@ fn row_of(r: Row) -> InstallationRow {
         repository_selection: r.5,
         suspended_at: r.6.map(epoch_ms_to_iso),
         html_url: r.7,
-        checked_at_ms: r.8,
+        // The row's age, measured on the database's clock (the clock that
+        // stamped `checked_at`), set back from this process's: every reader
+        // compares `checked_at_ms` with `now_ms()`, and a database clock
+        // ahead of the api's would otherwise keep a record trusted long past
+        // STALE_AFTER_MS, or one behind it mark a fresh record stale.
+        checked_at_ms: r.8.map(|age| now_ms() - age),
         error: r.9,
     }
 }
