@@ -549,7 +549,8 @@ const SERVE_MARGIN_MS: i64 = 5 * 60_000;
 /// How long what an installation holds is trusted before it is read again.
 const HOLDINGS_TTL_MS: i64 = 5 * 60_000;
 
-/// How long the repo→installation routing table is trusted.
+/// How long a repo→installation route is trusted, whether the listing or a
+/// lookup learned it.
 const ROUTING_TTL_MS: i64 = 10 * 60_000;
 
 /// What each installation holds, per (host, installation), with when it was
@@ -560,16 +561,27 @@ fn holdings_cache() -> &'static HoldingsCache {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-#[derive(Clone)]
-struct RepoInstallCache {
-    map: HashMap<String, String>,
-    at: i64,
+/// One host's routes: each repo, by its lowercased `owner/name` (GitHub names
+/// ignore case), with the installation it is minted on and when that was
+/// learned.
+type RoutingTable = HashMap<String, (String, i64)>;
+
+/// The repo→installation routing table, per host. The repository listing
+/// fills it whole; a mint for a repo the listing did not show asks GitHub
+/// and adds that one answer.
+fn repo_install_cache() -> &'static Mutex<HashMap<String, RoutingTable>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, RoutingTable>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The repo→installation routing table, per host.
-fn repo_install_cache() -> &'static Mutex<HashMap<String, RepoInstallCache>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, RepoInstallCache>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// Route `repo` on host `host_id` to installation `inst`, as of now.
+fn learn_route(host_id: &str, repo: &str, inst: &str) {
+    repo_install_cache()
+        .lock()
+        .unwrap()
+        .entry(host_id.to_string())
+        .or_default()
+        .insert(repo.to_ascii_lowercase(), (inst.to_string(), now_ms()));
 }
 
 /// Forget every cached token, holdings read and routing entry of host
@@ -616,8 +628,19 @@ pub enum MintError {
         repo: String,
         shortfall: PermissionSet,
     },
-    /// The host has several installations and none of them lists the repo.
-    Unrouted { repo: String },
+    /// The ask names nothing a repository token may carry: it is empty, or
+    /// every key in it is one no repo token may carry. An empty permissions
+    /// block is never posted, because GitHub documents only the omitted one
+    /// (a token carrying everything the installation holds), and nothing
+    /// says `{}` is not read the same way.
+    NothingAsked { repo: String },
+    /// The host has several installations, and GitHub says none of the ones
+    /// this connection uses covers the repo. `unselected` is the installation
+    /// that does, when GitHub named one the admin has not selected.
+    Unrouted {
+        repo: String,
+        unselected: Option<String>,
+    },
     /// The connection, the transport, or a reply that could not be read.
     Other(String),
 }
@@ -653,9 +676,23 @@ impl std::fmt::Display for MintError {
                 f,
                 "the GitHub App's installation holds none of what a token for {repo} needs ({shortfall}), so none was asked for — the App's owner adds it to the App, then an org owner accepts it on GitHub"
             ),
-            MintError::Unrouted { repo } => write!(
+            MintError::NothingAsked { repo } => write!(
                 f,
-                "none of this host's GitHub App installations lists {repo} — install the App on that repository (or add the repository to its installation), then select the installation in Admin → Git hosts"
+                "a token for {repo} was asked for nothing a repository token may carry, so none was asked of GitHub"
+            ),
+            MintError::Unrouted {
+                repo,
+                unselected: Some(id),
+            } => write!(
+                f,
+                "the GitHub App's installation {id} covers {repo}, but this host's connection does not use that installation — an admin selects it in Admin → Git hosts"
+            ),
+            MintError::Unrouted {
+                repo,
+                unselected: None,
+            } => write!(
+                f,
+                "no installation of this host's GitHub App covers {repo} — install the App on that repository (or add the repository to its installation), then select the installation in Admin → Git hosts"
             ),
             MintError::Other(why) => f.write_str(why),
         }
@@ -694,12 +731,14 @@ impl InstallationWide {
 /// The permissions a mint posts for `ask`, and what the ask lacks. The first
 /// is the ask met with what the installation holds, minus every key a repo
 /// token may never carry; the second is each asked key the installation does
-/// not hold at the asked level. Holdings unknown: the ask goes unchanged (and
-/// GitHub is then the one to refuse it), and nothing is known to be short.
+/// not hold at the asked level (never one no repo token may carry: that one
+/// is not asked for at all, so it is no gap an admin should fill). Holdings
+/// unknown: the ask goes unchanged (and GitHub is then the one to refuse it),
+/// and nothing is known to be short.
 fn narrow(ask: &PermissionSet, held: Option<&PermissionSet>) -> (PermissionSet, PermissionSet) {
     let allowed = ask.without(never_on_repo_token);
     match held {
-        Some(held) => (allowed.meet(held), ask.missing_from(held)),
+        Some(held) => (allowed.meet(held), allowed.missing_from(held)),
         None => (allowed, PermissionSet::new()),
     }
 }
@@ -971,7 +1010,9 @@ impl Github {
     ///   2. The ask is met with it, minus every key a repo token may never
     ///      carry ([`narrow`]). A token is asked only for what the
     ///      installation can give, and what it cannot is the shortfall.
-    ///      Holdings unknown: the ask goes as it is.
+    ///      Holdings unknown: the ask goes as it is. An empty permissions
+    ///      block is never posted: an ask that comes to nothing is refused
+    ///      here, before GitHub sees it.
     ///   3. The body always names the one repository and the permissions
     ///      ([`access_tokens_body`]). A refusal is never retried without them:
     ///      that token would carry everything the installation holds. On a
@@ -1008,8 +1049,6 @@ impl Github {
             });
         }
 
-        let jwt = self.app_jwt().map_err(MintError::Other)?;
-        let base = self.api();
         let never: Vec<&str> = ask
             .iter()
             .map(|(k, _)| k)
@@ -1021,14 +1060,25 @@ impl Github {
                 never.join(", ")
             );
         }
+        // An ask that names nothing a repo token may carry is never posted:
+        // its permissions block would be `{}`, and GitHub documents only what
+        // a missing block means (everything the installation holds).
+        let allowed = ask.without(never_on_repo_token);
+        if allowed.is_empty() {
+            return Err(MintError::NothingAsked {
+                repo: repo.to_string(),
+            });
+        }
+        let jwt = self.app_jwt().map_err(MintError::Other)?;
+        let base = self.api();
         let held = self.known_holdings(installation_id, false).await;
         let (mut effective, mut shortfall) = narrow(ask, held.as_ref());
-        // Nothing worth a token: what the installation would give is at most
-        // the metadata every token carries anyway.
+        // Nothing worth a token: what the installation would give is nothing
+        // at all, or at most the metadata every token carries anyway.
         let beyond_metadata = |s: &PermissionSet| !s.without(|k| k == "metadata").is_empty();
         let mut refreshed = false;
         let reply: Value = loop {
-            if beyond_metadata(ask) && !beyond_metadata(&effective) {
+            if effective.is_empty() || (beyond_metadata(&allowed) && !beyond_metadata(&effective)) {
                 return Err(MintError::NothingHeld {
                     repo: repo.to_string(),
                     shortfall,
@@ -1199,37 +1249,44 @@ impl Github {
     }
 
     /// The installation a token for `repo` is minted on. One installation:
-    /// that one. Several: the one the routing table lists the repo under,
-    /// with the table rebuilt once on a miss. A repo no installation lists is
-    /// refused, never sent to the first installation: that is another org's,
-    /// and a token minted there was never this repo's.
+    /// that one. Several: the one the routing table holds for the repo, and
+    /// on a miss the one GitHub says covers it
+    /// (`GET /repos/{owner}/{repo}/installation`, with the App JWT), which
+    /// the table then keeps. The listing is not rebuilt for a miss: it stops
+    /// at five pages per installation and skips one that fails, so a repo it
+    /// does not show may still be covered. A repo GitHub says no selected
+    /// installation covers is refused, never sent to the first installation:
+    /// that is another org's, and a token minted there was never this
+    /// repo's. When GitHub cannot be asked, the error says that, not that the
+    /// App is missing.
     async fn installation_for(&self, repo: &str) -> Result<String, MintError> {
         if let [only] = self.cfg.installation_ids.as_slice() {
             return Ok(only.clone());
         }
-        let routed = || {
-            repo_install_cache()
-                .lock()
-                .unwrap()
-                .get(&self.host_id)
-                .filter(|table| now_ms() - table.at <= ROUTING_TTL_MS)
-                .and_then(|table| {
-                    table.map.get(repo).cloned().or_else(|| {
-                        table
-                            .map
-                            .iter()
-                            .find(|(r, _)| r.eq_ignore_ascii_case(repo))
-                            .map(|(_, inst)| inst.clone())
-                    })
-                })
-        };
-        if let Some(inst) = routed() {
+        let routed = repo_install_cache()
+            .lock()
+            .unwrap()
+            .get(&self.host_id)
+            .and_then(|table| table.get(&repo.to_ascii_lowercase()).cloned());
+        if let Some((inst, at)) = routed
+            && now_ms() - at <= ROUTING_TTL_MS
+        {
             return Ok(inst);
         }
-        let _ = self.reachable().await;
-        routed().ok_or_else(|| MintError::Unrouted {
-            repo: repo.to_string(),
-        })
+        let jwt = self.app_jwt().map_err(MintError::Other)?;
+        match repo_installation_with(&self.api(), &jwt, repo).await {
+            Ok(Some(id)) if self.cfg.installation_ids.contains(&id) => {
+                learn_route(&self.host_id, repo, &id);
+                Ok(id)
+            }
+            Ok(unselected) => Err(MintError::Unrouted {
+                repo: repo.to_string(),
+                unselected,
+            }),
+            Err(e) => Err(MintError::Other(format!(
+                "which of this host's GitHub App installations covers {repo} could not be asked ({e}), so no token was minted"
+            ))),
+        }
     }
 
     /// A usable token for `repo`. PAT passes through (a PAT cannot be
@@ -1265,9 +1322,11 @@ impl Github {
 
     /// Repos the connection can reach — the union across all selected
     /// installations (multi-org), paged, capped at 5 pages per source. The
-    /// listing doubles as the repo→installation routing table for token
-    /// minting; the cache lives for 10 minutes. Each installation is listed
-    /// with its installation-wide token, which never leaves this call.
+    /// listing refills the repo→installation routing table for token
+    /// minting, whose routes live for 10 minutes; a repo it does not show is
+    /// routed by asking GitHub ([`Self::installation_for`]). Each
+    /// installation is listed with its installation-wide token, which never
+    /// leaves this call.
     async fn reachable(&self) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         if self.cfg.mode.as_deref() == Some("pat") {
@@ -1282,7 +1341,8 @@ impl Github {
         if self.cfg.mode.as_deref() != Some("app") || self.cfg.installation_ids.is_empty() {
             return out;
         }
-        let mut map: HashMap<String, String> = HashMap::new();
+        let at = now_ms();
+        let mut table: RoutingTable = HashMap::new();
         for inst in &self.cfg.installation_ids {
             // A failing installation is skipped, not fatal: the union covers
             // the rest, and one broken org must not blind the routing table.
@@ -1303,8 +1363,10 @@ impl Github {
                 .paged_repos(token.bearer(), "/installation/repositories?per_page=100")
                 .await
             {
-                if !map.contains_key(&repo) {
-                    map.insert(repo.clone(), inst.clone());
+                if let std::collections::hash_map::Entry::Vacant(slot) =
+                    table.entry(repo.to_ascii_lowercase())
+                {
+                    slot.insert((inst.clone(), at));
                     out.push(repo);
                 }
             }
@@ -1312,7 +1374,7 @@ impl Github {
         repo_install_cache()
             .lock()
             .unwrap()
-            .insert(self.host_id.clone(), RepoInstallCache { map, at: now_ms() });
+            .insert(self.host_id.clone(), table);
         out
     }
 
@@ -1481,20 +1543,58 @@ async fn org_installation_with(
         .json()
         .await
         .map_err(|e| format!("github decode: {e}"))?;
-    let id = match j.get("id") {
-        Some(Value::Number(n)) => n.to_string(),
-        Some(Value::String(s)) => s.clone(),
-        _ => {
-            return Err(format!(
-                "GitHub GET /orgs/{org}/installation: no id in reply"
-            ));
-        }
-    };
+    let id = installation_id_of(&j)
+        .ok_or_else(|| format!("GitHub GET /orgs/{org}/installation: no id in reply"))?;
     Ok(if selected.iter().any(|s| s == &id) {
         OrgInstallation::Selected(id)
     } else {
         OrgInstallation::NotSelected(id)
     })
+}
+
+/// An installation's `id`, which GitHub sends as a number (a string is
+/// taken too).
+fn installation_id_of(installation: &Value) -> Option<String> {
+    match installation.get("id") {
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// `GET /repos/{owner}/{repo}/installation` with the App JWT: the
+/// installation of this App that covers `repo`, or None when GitHub says
+/// none does (404). Err is GitHub or the connection failing, never an
+/// answer about the repo. It answers from GitHub's own records, so a repo
+/// past the listing's page cap is found as well as any other.
+async fn repo_installation_with(
+    api: &str,
+    jwt: &str,
+    repo: &str,
+) -> Result<Option<String>, String> {
+    let (owner, name) = repo
+        .split_once('/')
+        .ok_or_else(|| format!("{repo} is not an owner/name"))?;
+    let path = format!("/repos/{}/{}/installation", enc(owner), enc(name));
+    let res = gh(api, &path, jwt, "GET", None).await?;
+    let status = res.status().as_u16();
+    if status == 404 {
+        return Ok(None);
+    }
+    if !res.status().is_success() {
+        let text = res.text().await.unwrap_or_default();
+        return Err(format!(
+            "GitHub GET {path} → {status}: {}",
+            github_message(&text)
+        ));
+    }
+    let j: Value = res
+        .json()
+        .await
+        .map_err(|e| format!("github decode: {e}"))?;
+    installation_id_of(&j)
+        .map(Some)
+        .ok_or_else(|| format!("GitHub GET {path}: no id in reply"))
 }
 
 // ── Repo creation (request_repo → a human approves → the App creates) ───────
@@ -1628,11 +1728,11 @@ async fn create_repo_in(
     } else {
         None
     };
-    // The pool changed.
-    repo_install_cache()
-        .lock()
-        .unwrap()
-        .remove(&gh_conn.host_id);
+    // The pool changed: a token for the new repo goes to the installation
+    // that created it.
+    if !full_name.is_empty() {
+        learn_route(&gh_conn.host_id, &full_name, &installation);
+    }
     Ok(CreatedRepo {
         full_name,
         url: j
@@ -2201,8 +2301,8 @@ mod tests {
         assert!(v["permissions"].get("administration").is_none());
         assert!(v["permissions"].get("workflows").is_none());
         // There is no body without a permissions block: even an empty set is
-        // a block, never the installation's own grants. (An empty ask is
-        // never posted at all; see the mint tests.)
+        // a block, never the installation's own grants. (The mint never posts
+        // an empty one: an_ask_for_nothing_is_never_posted.)
         let empty: Value =
             serde_json::from_str(&access_tokens_body("acme/widgets", &PermissionSet::new()))
                 .unwrap();
@@ -3017,6 +3117,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_ask_for_nothing_is_never_posted() {
+        // The holdings of 91091 cannot be read, so nothing narrows an ask on
+        // its way to GitHub. An empty ask, or one of keys no repo token may
+        // carry, would go out as `{}`, and what GitHub mints for that is not
+        // documented: it is refused before GitHub sees it.
+        let sb = test_box();
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/app/installations/91091") => (503, r#"{"message":"unavailable"}"#.into()),
+            ("GET", "/app/installations/91092") => (
+                200,
+                installation("91092", json!({ "contents": "write", "metadata": "read" })),
+            ),
+            ("POST", _) => (
+                201,
+                minted(
+                    "tok-everything",
+                    "acme/widgets",
+                    json!({ "contents": "write", "workflows": "write", "secrets": "write", "metadata": "read" }),
+                ),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let conn = app_conn(&base, &["91091"], &sb);
+        for ask in [
+            PermissionSet::new(),
+            PermissionSet::of(&[("administration", Level::Write)]),
+        ] {
+            let err = conn
+                .installation_token("91091", "acme/widgets", &ask)
+                .await
+                .err()
+                .expect("nothing to ask for");
+            assert!(matches!(err, MintError::NothingAsked { .. }), "{err}");
+            let said = conn
+                .token("acme/widgets", &ask)
+                .await
+                .expect_err("nothing to ask for");
+            assert!(
+                said.contains("asked for nothing a repository token may carry"),
+                "{said}"
+            );
+        }
+        // Holdings known: an ask the installation holds none of (and without
+        // the metadata it always holds) narrows to nothing, and is refused
+        // with what it lacks rather than posted as `{}`.
+        let lacking = app_conn(&base, &["91092"], &sb);
+        let err = lacking
+            .installation_token(
+                "91092",
+                "acme/widgets",
+                &PermissionSet::of(&[("checks", Level::Read)]),
+            )
+            .await
+            .err()
+            .expect("nothing held");
+        assert_eq!(
+            err,
+            MintError::NothingHeld {
+                repo: "acme/widgets".into(),
+                shortfall: PermissionSet::of(&[("checks", Level::Read)]),
+            }
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            !seen.iter().any(|r| r.method == "POST"),
+            "a mint was posted: {seen:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_token_wider_than_asked_is_revoked_and_never_used() {
         let sb = test_box();
         let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
@@ -3254,7 +3425,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_host_with_several_installations_refuses_a_repo_none_of_them_lists() {
+    async fn a_host_with_several_installations_routes_a_repo_to_the_one_github_names() {
         let sb = test_box();
         let (base, seen) = stub(|req, _| {
             match (req.method.as_str(), req.path.as_str(), req.auth.as_str()) {
@@ -3273,62 +3444,121 @@ mod tests {
                 ("GET", "/installation/repositories?per_page=100", "Bearer wide-91071") => {
                     (200, r#"{"repositories":[{"full_name":"one/a"}]}"#.into())
                 }
+                // two/far is past the listing (its page cap, say): only
+                // GitHub's own answer routes it.
                 ("GET", "/installation/repositories?per_page=100", "Bearer wide-91072") => {
                     (200, r#"{"repositories":[{"full_name":"two/b"}]}"#.into())
                 }
-                ("GET", "/app/installations/91072", _) => (
+                ("GET", "/repos/two/far/installation", _) => (200, r#"{"id":91072}"#.into()),
+                ("GET", "/app/installations/91071" | "/app/installations/91072", _) => (
                     200,
                     installation(
-                        "91072",
+                        "9107x",
                         json!({ "contents": "write", "pull_requests": "write", "metadata": "read" }),
                     ),
                 ),
+                ("POST", "/app/installations/91071/access_tokens", _) => (
+                    201,
+                    minted("scoped-91071", "one/a", posted_permissions(req)),
+                ),
                 ("POST", "/app/installations/91072/access_tokens", _) => (
                     201,
-                    minted(
-                        "scoped-91072",
-                        "two/b",
-                        json!({ "contents": "write", "pull_requests": "write", "metadata": "read" }),
-                    ),
+                    minted("scoped-91072", "two/far", posted_permissions(req)),
                 ),
                 _ => (500, "{}".into()),
             }
         })
         .await;
         let conn = app_conn(&base, &["91071", "91072"], &sb);
+        assert_eq!(
+            conn.reachable_repos().await.expect("listed"),
+            ["one/a", "two/b"]
+        );
+        // A listed repo is routed by the listing, with no lookup.
+        let one = conn
+            .token("one/a", &PermissionSet::of(REPO_TOKEN_PERMISSIONS))
+            .await
+            .expect("routed");
+        assert_eq!(one.as_deref(), Some("scoped-91071"));
+        // A repo the listing does not show is routed by GitHub's answer, on
+        // that installation and never the first, and the answer is kept.
+        for ask in [REPO_TOKEN_PERMISSIONS, REPO_READ_PERMISSIONS] {
+            let far = conn
+                .token("two/far", &PermissionSet::of(ask))
+                .await
+                .expect("routed");
+            assert_eq!(far.as_deref(), Some("scoped-91072"));
+        }
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            calls(&seen, "GET", "/repos/one/a/installation").is_empty(),
+            "{seen:?}"
+        );
+        let lookups = calls(&seen, "GET", "/repos/two/far/installation");
+        assert_eq!(lookups.len(), 1, "the route is kept: {seen:?}");
+        assert!(
+            lookups[0].auth.starts_with("Bearer ey"),
+            "the lookup carries the App JWT"
+        );
+        let scoped = |inst: &str| {
+            seen.iter()
+                .filter(|r| {
+                    r.method == "POST"
+                        && r.path == format!("/app/installations/{inst}/access_tokens")
+                        && !r.body.is_empty()
+                })
+                .count()
+        };
+        assert_eq!((scoped("91071"), scoped("91072")), (1, 2), "{seen:?}");
+    }
+
+    #[tokio::test]
+    async fn a_host_with_several_installations_refuses_a_repo_no_selected_one_covers() {
+        let sb = test_box();
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/repos/ghost/c/installation") => (404, r#"{"message":"Not Found"}"#.into()),
+            ("GET", "/repos/side/d/installation") => (200, r#"{"id":99999}"#.into()),
+            ("GET", "/repos/blip/e/installation") => (502, r#"{"message":"Server Error"}"#.into()),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let conn = app_conn(&base, &["91073", "91074"], &sb);
         let ask = PermissionSet::of(REPO_TOKEN_PERMISSIONS);
         let err = conn
             .token("ghost/c", &ask)
             .await
-            .expect_err("no installation lists it");
+            .expect_err("no installation covers it");
         assert!(
-            err.contains("ghost/c") && err.contains("installations"),
+            err.contains("no installation of this host's GitHub App covers ghost/c"),
             "{err}"
         );
-        {
-            let seen = seen.lock().unwrap();
-            assert!(
-                seen.iter()
-                    .any(|r| r.path == "/installation/repositories?per_page=100"),
-                "the routing table was rebuilt: {seen:?}"
-            );
-            assert!(
-                !seen
-                    .iter()
-                    .any(|r| r.method == "POST" && !r.body.is_empty()),
-                "no token was asked for the unlisted repo, on the first installation or any: {seen:?}"
-            );
-        }
-        // A listed repo is minted on the installation that lists it, never
-        // on the first.
-        let token = conn.token("two/b", &ask).await.expect("routed");
-        assert_eq!(token.as_deref(), Some("scoped-91072"));
+        let err = conn
+            .token("side/d", &ask)
+            .await
+            .expect_err("covered by an installation the admin did not select");
+        assert!(
+            err.contains("installation 99999") && err.contains("does not use"),
+            "{err}"
+        );
+        // GitHub could not be asked: that is what the error says, and it
+        // never tells the admin to install the App.
+        let err = conn
+            .token("blip/e", &ask)
+            .await
+            .expect_err("GitHub could not be asked");
+        assert!(
+            err.contains("could not be asked") && err.contains("502"),
+            "{err}"
+        );
+        assert!(!err.contains("install the App"), "{err}");
         let seen = seen.lock().unwrap().clone();
         assert!(
-            !seen
-                .iter()
-                .any(|r| r.path == "/app/installations/91071/access_tokens" && !r.body.is_empty()),
-            "{seen:?}"
+            !seen.iter().any(|r| r.method == "POST"),
+            "no token was asked for, on the first installation or any: {seen:?}"
+        );
+        assert!(
+            !seen.iter().any(|r| r.path.starts_with("/installation/")),
+            "a miss asks GitHub about the one repo, never relists: {seen:?}"
         );
     }
 
