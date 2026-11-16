@@ -506,7 +506,8 @@ pub fn permissions_for(access: RepoAccess) -> PermissionSet {
 pub fn hashed_token(token: &str) -> String {
     use base64::engine::general_purpose::STANDARD;
     use rsa::sha2::Digest;
-    STANDARD.encode(Sha256::digest(token.as_bytes()).as_slice())
+    let digest = Sha256::digest(token.as_bytes());
+    STANDARD.encode(&digest[..])
 }
 
 /// What `pr_status` reads with, and nothing it could write with: the pull
