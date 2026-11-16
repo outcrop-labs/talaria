@@ -3945,6 +3945,7 @@ mod tests {
                 "91031",
                 "acme/widgets",
                 &PermissionSet::of(REPO_TOKEN_PERMISSIONS),
+                None,
             )
             .await
             .expect("minted");
@@ -3964,6 +3965,7 @@ mod tests {
                 "91031",
                 "acme/gadgets",
                 &PermissionSet::of(PR_STATUS_PERMISSIONS),
+                None,
             )
             .await
             .expect("minted");
@@ -3977,6 +3979,7 @@ mod tests {
                 "91031",
                 "acme/other",
                 &PermissionSet::of(&[("checks", Level::Read), ("metadata", Level::Read)]),
+                None,
             )
             .await
             .err()
@@ -4030,7 +4033,7 @@ mod tests {
             PermissionSet::of(&[("administration", Level::Write)]),
         ] {
             let err = conn
-                .installation_token("91091", "acme/widgets", &ask)
+                .installation_token("91091", "acme/widgets", &ask, None)
                 .await
                 .err()
                 .expect("nothing to ask for");
@@ -4053,6 +4056,7 @@ mod tests {
                 "91092",
                 "acme/widgets",
                 &PermissionSet::of(&[("checks", Level::Read)]),
+                None,
             )
             .await
             .err()
@@ -4174,14 +4178,14 @@ mod tests {
         let conn = app_conn(&base, &["91051"], &sb);
         let ask = PermissionSet::of(&[("contents", Level::Read), ("metadata", Level::Read)]);
         let plain = conn
-            .installation_token("91051", "acme/plain", &ask)
+            .installation_token("91051", "acme/plain", &ask, None)
             .await
             .expect("metadata is implied");
         assert_eq!(plain.token, "tok-plain");
         assert!(plain.shortfall.is_empty(), "{}", plain.shortfall);
         let only_contents = PermissionSet::of(&[("contents", Level::Read)]);
         let extra = conn
-            .installation_token("91051", "acme/extra", &only_contents)
+            .installation_token("91051", "acme/extra", &only_contents, None)
             .await
             .expect("an unasked key is said, not refused");
         assert_eq!(extra.token, "tok-extra");
@@ -5110,6 +5114,7 @@ mod tests {
                 "92011",
                 "acme/widgets",
                 &PermissionSet::of(REPO_TOKEN_PERMISSIONS),
+                None,
             )
             .await
             .expect("minted");
