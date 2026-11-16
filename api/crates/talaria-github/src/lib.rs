@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -842,12 +842,22 @@ fn check_reply(
     Ok((carried, unasked))
 }
 
+/// How long a revoke may take before it counts as unconfirmed. The shared
+/// client bounds only the connect, and the caller waits on it: a mint that
+/// threw a token back, or a holdings refresh that holds its host while it
+/// revokes.
+const REVOKE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Revoke an installation token on GitHub (`DELETE /installation/token`,
-/// authenticated by the token itself). True when GitHub confirmed it.
+/// authenticated by the token itself). True when GitHub confirmed it within
+/// [`REVOKE_TIMEOUT`].
 async fn revoke_installation_token(api: &str, token: &str) -> bool {
-    gh(api, "/installation/token", token, "DELETE", None)
-        .await
-        .is_ok_and(|res| res.status().is_success())
+    tokio::time::timeout(
+        REVOKE_TIMEOUT,
+        gh(api, "/installation/token", token, "DELETE", None),
+    )
+    .await
+    .is_ok_and(|sent| sent.is_ok_and(|res| res.status().is_success()))
 }
 
 /// GitHub's own words for a refusal: the reply's `message`, else the body
@@ -927,37 +937,100 @@ pub struct InstallationSnapshot {
     pub html_url: Option<String>,
 }
 
+/// What an installation object says it holds: its `permissions`, with
+/// `metadata: read` always in. A set this crate cannot read is an error,
+/// never an empty set.
+fn held_in(installation: &Value) -> Result<PermissionSet, String> {
+    let mut permissions =
+        PermissionSet::from_json(installation.get("permissions").unwrap_or(&Value::Null))?;
+    permissions.raise("metadata", Level::Read);
+    Ok(permissions)
+}
+
+/// An installation object's string field, when it has one.
+fn text_in(installation: &Value, key: &str) -> Option<String> {
+    installation
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// The login of the account an installation object is on, or "".
+fn account_in(installation: &Value) -> String {
+    installation
+        .get("account")
+        .and_then(|a| a.get("login"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 impl InstallationSnapshot {
     /// Read GitHub's installation object. A permission set this crate cannot
     /// read is an error, never an empty set: what it holds is then unknown.
     pub fn from_reply(v: &Value) -> Result<InstallationSnapshot, String> {
         let id = installation_id_of(v).ok_or("no id in the installation")?;
-        let mut permissions =
-            PermissionSet::from_json(v.get("permissions").unwrap_or(&Value::Null))?;
-        permissions.raise("metadata", Level::Read);
-        let text = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
         Ok(InstallationSnapshot {
             id,
-            account: v
-                .get("account")
-                .and_then(|a| a.get("login"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            account: account_in(v),
+            permissions: held_in(v)?,
+            repository_selection: text_in(v, "repository_selection"),
+            suspended_at: text_in(v, "suspended_at"),
+            html_url: text_in(v, "html_url"),
+        })
+    }
+}
+
+/// One item of the installation picker (an item of `GET /app/installations`):
+/// the id an admin selects, the account, and what the installation holds.
+/// Unlike [`InstallationSnapshot`], what it holds may be unknown: an item
+/// whose permissions this crate cannot read is still listed, because the
+/// admin may need to select it, and the refresh then records why it could
+/// not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallationListing {
+    pub id: String,
+    pub account: String,
+    /// None when GitHub's permissions block could not be read.
+    pub permissions: Option<PermissionSet>,
+    /// `all` or `selected`.
+    pub repository_selection: Option<String>,
+    /// RFC 3339.
+    pub suspended_at: Option<String>,
+}
+
+impl InstallationListing {
+    /// An item of GitHub's list, or None when it has no id or no account
+    /// login (the picker has nothing to show for one).
+    pub fn from_item(v: &Value) -> Option<InstallationListing> {
+        let id = installation_id_of(v)?;
+        let account = account_in(v);
+        if account.is_empty() {
+            return None;
+        }
+        let permissions = held_in(v)
+            .inspect_err(|e| {
+                tracing::warn!(
+                    "[github] what installation {id} ({account}) holds could not be read from the listing: {e}"
+                );
+            })
+            .ok();
+        Some(InstallationListing {
+            id,
+            account,
             permissions,
-            repository_selection: text("repository_selection"),
-            suspended_at: text("suspended_at"),
-            html_url: text("html_url"),
+            repository_selection: text_in(v, "repository_selection"),
+            suspended_at: text_in(v, "suspended_at"),
         })
     }
 
-    /// The installation picker's item: the numeric id an admin selects, the
-    /// account, and what the installation holds.
+    /// The picker's item on the wire: the id stays a number, and
+    /// `permissions` is null when what the installation holds is unknown.
     pub fn listing_wire(&self) -> Value {
         json!({
             "id": self.id.parse::<i64>().map(Value::from).unwrap_or_else(|_| Value::from(self.id.clone())),
             "account": self.account,
-            "permissions": self.permissions.to_json(),
+            "permissions": self.permissions.as_ref().map(PermissionSet::to_json),
             "repositorySelection": self.repository_selection,
             "suspended": self.suspended_at.is_some(),
         })
@@ -1633,9 +1706,10 @@ impl Github {
 
     /// App mode's easy-setup helper: once appId+key verify, list where the
     /// app is installed so the admin picks the installation instead of
-    /// hunting an id, with what each installation holds. Any failure is an
-    /// empty list, never a throw.
-    pub async fn list_installations(&self) -> Vec<InstallationSnapshot> {
+    /// hunting an id, with what each installation holds. An installation
+    /// whose permissions cannot be read is still listed, as unknown. Any
+    /// failure is an empty list, never a throw.
+    pub async fn list_installations(&self) -> Vec<InstallationListing> {
         if self.cfg.app_id.is_empty() || self.cfg.private_key_enc.is_none() {
             return Vec::new();
         }
@@ -1655,17 +1729,7 @@ impl Github {
             .map(|items| {
                 items
                     .iter()
-                    .filter_map(|i| match InstallationSnapshot::from_reply(i) {
-                        Ok(snapshot) if !snapshot.account.is_empty() => Some(snapshot),
-                        Ok(_) => None,
-                        Err(e) => {
-                            tracing::warn!(
-                                "[github] an installation of host {} is left out of the picker: {e}",
-                                self.host_id
-                            );
-                            None
-                        }
-                    })
+                    .filter_map(InstallationListing::from_item)
                     .collect()
             })
             .unwrap_or_default()
@@ -3826,6 +3890,18 @@ mod tests {
                         "suspended_at": "2026-11-01T00:00:00Z",
                         "html_url": "https://github.com/settings/installations/92002",
                     },
+                    // A level this crate does not know: the installation is
+                    // still one an admin may need to pick.
+                    {
+                        "id": 92003,
+                        "account": { "login": "cy", "type": "Organization" },
+                        "permissions": { "contents": "write", "copilot": "superuser" },
+                        "repository_selection": "all",
+                    },
+                    // No permissions block at all.
+                    { "id": 92004, "account": { "login": "dee", "type": "Organization" } },
+                    // Nothing for the picker to show: no account.
+                    { "id": 92005 },
                 ])
                 .to_string(),
             ),
@@ -3858,11 +3934,19 @@ mod tests {
             "the live status never reads the installations"
         );
 
-        // The picker keeps what each installation holds.
+        // The picker keeps what each installation holds, and lists one
+        // whose permissions it cannot read as unknown rather than leave it
+        // out.
         let listed = conn.list_installations().await;
-        assert_eq!(listed.len(), 2, "{listed:?}");
+        assert_eq!(listed.len(), 4, "{listed:?}");
         assert_eq!(listed[0].account, "acme");
-        assert_eq!(listed[0].permissions.get("metadata"), Some(Level::Read));
+        assert_eq!(
+            listed[0]
+                .permissions
+                .as_ref()
+                .and_then(|p| p.get("metadata")),
+            Some(Level::Read)
+        );
         assert_eq!(
             listed[1].suspended_at.as_deref(),
             Some("2026-11-01T00:00:00Z")
@@ -3871,6 +3955,13 @@ mod tests {
         assert_eq!(wire["id"], 92001, "the picker's id stays a number");
         assert_eq!(wire["permissions"]["pull_requests"], "write");
         assert_eq!(listed[1].listing_wire()["suspended"], true);
+        for (unread, account) in [(&listed[2], "cy"), (&listed[3], "dee")] {
+            assert_eq!(unread.account, account);
+            assert_eq!(unread.permissions, None, "{unread:?}");
+            let wire = unread.listing_wire();
+            assert_eq!(wire["permissions"], Value::Null, "{wire}");
+            assert_eq!(wire["suspended"], false);
+        }
 
         // One installation, with what its org accepted. Pending is the App's
         // ask minus that.

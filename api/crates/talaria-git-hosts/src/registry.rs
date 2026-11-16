@@ -189,6 +189,20 @@ pub async fn get_host(pg: &PgPool, id: &str) -> Result<Option<HostRow>, String> 
     Ok(row.and_then(row_of))
 }
 
+/// [`get_host`] on a caller's connection, inside its transaction: the
+/// holdings record reads the host again under its write lock.
+pub(crate) async fn get_host_on(
+    conn: &mut sqlx::PgConnection,
+    id: &str,
+) -> Result<Option<HostRow>, String> {
+    let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!("{SELECT} where id = $1")))
+        .bind(id)
+        .fetch_optional(conn)
+        .await
+        .map_err(|e| format!("git host read: {e}"))?;
+    Ok(row.and_then(row_of))
+}
+
 // ── Validation ───────────────────────────────────────────────────────────────
 
 /// A host id: a short lowercase slug, because the workbench tables and the

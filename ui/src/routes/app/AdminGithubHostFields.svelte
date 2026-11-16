@@ -124,7 +124,7 @@
                 <Chip
                   {selected}
                   tone={i.suspended ? 'danger' : 'neutral'}
-                  title={`${selected ? 'Selected: click to stop using it' : 'Click to use it'}. It holds ${permissionSummary(i.permissions)}.${i.suspended ? ' Suspended by its account.' : ''}`}
+                  title={`${selected ? 'Selected: click to stop using it' : 'Click to use it'}. ${i.permissions ? `It holds ${permissionSummary(i.permissions)}.` : 'What it holds could not be read.'}${i.suspended ? ' Suspended by its account.' : ''}`}
                   onSelect={busy ? undefined : () => toggle(i.id, selected)}
                 >
                   {i.account} (#{i.id}){i.suspended ? ' · suspended' : ''}

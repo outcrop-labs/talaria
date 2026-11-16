@@ -22,7 +22,9 @@
 // uses gets its row: the App's ask, what the installation holds, its
 // repository selection, whether it is suspended, its settings page, and when
 // it was read. A read that fails keeps the last good answer and says why in
-// `error`. A row for an installation no longer selected goes. A permission
+// `error`. Each GitHub read is bounded, and of two refreshes that overlap the
+// record keeps the read that began later, whichever lands first (`record`).
+// A row for an installation no longer selected goes. A permission
 // an installation no longer holds revokes every token this process keeps
 // that carries it, and writes an audit row. (A permission newly accepted is
 // reported; the per-agent grants that waited on it are the grants' concern.)
@@ -40,6 +42,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -51,7 +54,7 @@ use talaria_github::{Github, HeldFuture, HoldingsStore, InstallationSnapshot};
 use talaria_secretbox::SecretBox;
 
 use crate::Host;
-use crate::registry::{HostRow, get_host, host_rows};
+use crate::registry::{HostRow, get_host, get_host_on, host_rows};
 
 /// How often the scheduler reads every host's App and installations again.
 pub const REFRESH_EVERY_MS: u64 = 10 * 60_000;
@@ -332,10 +335,62 @@ pub fn held_change(
     }
 }
 
-/// One refresh at a time in this process: a refused mint, the scheduler and
-/// an admin's button can all ask at once, and each would otherwise diff
-/// against a row another is about to replace.
-static REFRESHING: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
+/// How long one GitHub read of a refresh may take. The shared client bounds
+/// only the connect, and a GitHub that accepts the connection and then
+/// stalls must not hold the host's refresh for ever: past this the read is
+/// recorded as failed, and the next pass reads again.
+const GITHUB_READ_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long an admin's write to a host waits for the refresh it starts
+/// before answering. The refresh goes on past it and records what it learns;
+/// the card shows that on its next read.
+const AFTER_WRITE_WAIT: Duration = Duration::from_secs(30);
+
+/// One refresh of a host at a time in this process: a refused mint, the
+/// scheduler and an admin's button can all ask at once, and reading GitHub
+/// twice over for one answer is waste. Keyed per host, so a host whose
+/// GitHub is slow to answer never holds up another, and a host with nothing
+/// to read never waits at all. Which read the record keeps when two overlap
+/// is not this lock's job: that is [`record`]'s guard, across processes.
+static REFRESHING: LazyLock<HostLocks> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Each host's refresh lock, by host id.
+type HostLocks = Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+/// The lock [`REFRESHING`] keeps for host `host_id`.
+fn host_lock(host_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    REFRESHING
+        .lock()
+        .unwrap()
+        .entry(host_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+/// `read`, or the sentence a row keeps when GitHub did not answer within
+/// `limit`.
+async fn within<T>(
+    limit: Duration,
+    read: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::time::timeout(limit, read).await.unwrap_or_else(|_| {
+        Err(format!(
+            "GitHub did not answer within {} s",
+            limit.as_secs()
+        ))
+    })
+}
+
+/// The database's clock, epoch ms. A read is stamped with it when it
+/// begins, so reads made by different api processes compare on one clock.
+async fn db_now_ms(pg: &PgPool) -> Result<i64, String> {
+    sqlx::query_scalar::<_, i64>(
+        "select (trunc(extract(epoch from clock_timestamp()) * 1000))::bigint",
+    )
+    .fetch_one(pg)
+    .await
+    .map_err(|e| format!("git host installations read: {e}"))
+}
 
 /// The sentence a row keeps for an installation GitHub could not be asked
 /// about.
@@ -356,12 +411,151 @@ fn clip(s: &str) -> String {
     s.chars().take(300).collect()
 }
 
+/// One installation as a refresh read it.
+struct Read {
+    /// As the host's config spells it.
+    id: String,
+    n: i64,
+    answer: Result<InstallationSnapshot, String>,
+}
+
+/// What [`record`] did with one read.
+#[derive(Debug, PartialEq, Eq)]
+enum Fate {
+    /// The row now says what the read said. `before` is what the row held
+    /// until then (None: never read).
+    Recorded { before: Option<PermissionSet> },
+    /// The row already holds a good read that began after this one did:
+    /// this one says nothing about now, and is not acted on.
+    Superseded,
+}
+
+/// Write what one refresh read, and say what each read replaced.
+///
+/// Every writer takes the host's advisory lock first, so the row each read
+/// is measured against is the row it replaces. The reads themselves were
+/// made before the lock, though, and two refreshes (two api processes, or a
+/// write and a refused mint) can finish in either order. So:
+///   · The host is read again here, under the lock. A read of an
+///     installation it no longer uses is dropped, and so is every row of
+///     one: an admin may have changed the host while GitHub was asked.
+///   · A good read stamps the row with when the read began (`started_ms`),
+///     and replaces only a row no good read since then has written. A
+///     failed read records its error on the same terms. An older read that
+///     lands second is [`Fate::Superseded`].
+async fn record(
+    pg: &PgPool,
+    host_id: &str,
+    started_ms: i64,
+    app: Option<&PermissionSet>,
+    reads: Vec<Read>,
+) -> Result<Vec<(Read, Fate)>, String> {
+    let write = |e: sqlx::Error| format!("git host installations write: {e}");
+    let mut tx = pg.begin().await.map_err(write)?;
+    sqlx::query("select pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("git_host_installations:{host_id}"))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("git host installations lock: {e}"))?;
+    // None when the host is gone: its rows went with it.
+    let selected: Vec<i64> = get_host_on(&mut *tx, host_id)
+        .await?
+        .map(|row| {
+            tracked_installations(&row)
+                .iter()
+                .filter_map(|id| id.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let before: HashMap<i64, Option<PermissionSet>> = sqlx::query_as::<_, (i64, Option<Value>)>(
+        "select installation_id, held from git_host_installations where host_id = $1",
+    )
+    .bind(host_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| format!("git host installations read: {e}"))?
+    .into_iter()
+    .map(|(n, held)| (n, stored_set(held)))
+    .collect();
+    sqlx::query(
+        "delete from git_host_installations where host_id = $1 and installation_id <> all($2::bigint[])",
+    )
+    .bind(host_id)
+    .bind(&selected)
+    .execute(&mut *tx)
+    .await
+    .map_err(write)?;
+    let at = epoch_ms_to_iso(started_ms);
+    let app_json = app.map(PermissionSet::to_json);
+    let mut out = Vec::new();
+    for read in reads {
+        if !selected.contains(&read.n) {
+            continue;
+        }
+        let written: Option<i64> = match &read.answer {
+            Ok(s) => {
+                sqlx::query_scalar::<_, i64>(
+                    "insert into git_host_installations \
+                       (host_id, installation_id, account, app_permissions, held, \
+                        repository_selection, suspended_at, html_url, checked_at, error) \
+                     values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, $9::timestamptz, null) \
+                     on conflict (host_id, installation_id) do update set \
+                       account = excluded.account, app_permissions = excluded.app_permissions, \
+                       held = excluded.held, repository_selection = excluded.repository_selection, \
+                       suspended_at = excluded.suspended_at, html_url = excluded.html_url, \
+                       checked_at = excluded.checked_at, error = null \
+                     where git_host_installations.checked_at is null \
+                        or git_host_installations.checked_at < excluded.checked_at \
+                     returning installation_id",
+                )
+                .bind(host_id)
+                .bind(read.n)
+                .bind(&s.account)
+                .bind(&app_json)
+                .bind(s.permissions.to_json())
+                .bind(&s.repository_selection)
+                .bind(&s.suspended_at)
+                .bind(&s.html_url)
+                .bind(&at)
+                .fetch_optional(&mut *tx)
+                .await
+            }
+            // The last good read stays; the row says why this one failed.
+            Err(why) => {
+                sqlx::query_scalar::<_, i64>(
+                    "insert into git_host_installations (host_id, installation_id, error) \
+                     values ($1, $2, $3) \
+                     on conflict (host_id, installation_id) do update set error = excluded.error \
+                     where git_host_installations.checked_at is null \
+                        or git_host_installations.checked_at < $4::timestamptz \
+                     returning installation_id",
+                )
+                .bind(host_id)
+                .bind(read.n)
+                .bind(why)
+                .bind(&at)
+                .fetch_optional(&mut *tx)
+                .await
+            }
+        }
+        .map_err(write)?;
+        let fate = match written {
+            Some(_) => Fate::Recorded {
+                before: before.get(&read.n).cloned().flatten(),
+            },
+            None => Fate::Superseded,
+        };
+        out.push((read, fate));
+    }
+    tx.commit().await.map_err(write)?;
+    Ok(out)
+}
+
 /// Read host `host_id`'s App and each installation its connection uses
 /// again, record what they say, and act on what changed (see the header).
 /// Err is the database failing; GitHub failing is recorded on the rows, and
 /// is an answer.
 pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<Refreshed, String> {
-    let _one = REFRESHING.lock().await;
     let Some(row) = get_host(pg, host_id).await? else {
         return Ok(Refreshed::default());
     };
@@ -377,20 +571,19 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
             }
         })
         .collect();
-    let numbers: Vec<i64> = tracked.iter().map(|(_, n)| *n).collect();
     if tracked.is_empty() {
         // Nothing to follow (not GitHub, a token, or an App not finished):
-        // a row left from before would be read as this host's truth.
-        sqlx::query("delete from git_host_installations where host_id = $1")
-            .bind(host_id)
-            .execute(pg)
-            .await
-            .map_err(|e| format!("git host installations write: {e}"))?;
+        // a row left from before would be read as this host's truth. No
+        // GitHub to ask, so no other refresh of the host to wait for.
+        record(pg, host_id, 0, None, Vec::new()).await?;
         return Ok(Refreshed::default());
     }
 
-    // GitHub first, outside any transaction. A failed App read skips the
-    // installations: the same App JWT asks for both.
+    let lock = host_lock(host_id);
+    let _one = lock.lock().await;
+    let started_ms = db_now_ms(pg).await?;
+    // GitHub first, outside any transaction, each read bounded. A failed App
+    // read skips the installations: the same App JWT asks for both.
     let gh = Github::new(
         &row.id,
         &row.base_url,
@@ -398,95 +591,23 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
         &row.auth,
         sb.clone(),
     );
-    let app = gh.app_permissions().await;
-    let mut reads: Vec<(String, i64, Result<InstallationSnapshot, String>)> = Vec::new();
-    for (id, n) in &tracked {
-        let read = match &app {
-            Ok(_) => gh.installation(id).await.map_err(|e| read_failure(id, &e)),
+    let app = within(GITHUB_READ_TIMEOUT, gh.app_permissions()).await;
+    let mut reads: Vec<Read> = Vec::new();
+    for (id, n) in tracked {
+        let answer = match &app {
+            Ok(_) => within(GITHUB_READ_TIMEOUT, gh.installation(&id))
+                .await
+                .map_err(|e| read_failure(&id, &e)),
             Err(e) => Err(clip(&format!("the App itself could not be read: {e}"))),
         };
-        reads.push((id.clone(), *n, read));
+        reads.push(Read { id, n, answer });
     }
-
-    let mut tx = pg
-        .begin()
-        .await
-        .map_err(|e| format!("git host installations write: {e}"))?;
-    // Across processes: one writer per host at a time, so the earlier read
-    // each one diffs against is the row the other just wrote.
-    sqlx::query("select pg_advisory_xact_lock(hashtext($1))")
-        .bind(format!("git_host_installations:{host_id}"))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("git host installations lock: {e}"))?;
-    let before: HashMap<i64, Option<PermissionSet>> = sqlx::query_as::<_, (i64, Option<Value>)>(
-        "select installation_id, held from git_host_installations where host_id = $1",
-    )
-    .bind(host_id)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|e| format!("git host installations read: {e}"))?
-    .into_iter()
-    .map(|(n, held)| (n, stored_set(held)))
-    .collect();
-    sqlx::query(
-        "delete from git_host_installations where host_id = $1 and installation_id <> all($2::bigint[])",
-    )
-    .bind(host_id)
-    .bind(&numbers)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("git host installations write: {e}"))?;
-    let app_json = app.as_ref().ok().map(PermissionSet::to_json);
-    for (_, n, read) in &reads {
-        let written = match read {
-            Ok(s) => {
-                sqlx::query(
-                    "insert into git_host_installations \
-                       (host_id, installation_id, account, app_permissions, held, \
-                        repository_selection, suspended_at, html_url, checked_at, error) \
-                     values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8, now(), null) \
-                     on conflict (host_id, installation_id) do update set \
-                       account = excluded.account, app_permissions = excluded.app_permissions, \
-                       held = excluded.held, repository_selection = excluded.repository_selection, \
-                       suspended_at = excluded.suspended_at, html_url = excluded.html_url, \
-                       checked_at = excluded.checked_at, error = null",
-                )
-                .bind(host_id)
-                .bind(n)
-                .bind(&s.account)
-                .bind(&app_json)
-                .bind(s.permissions.to_json())
-                .bind(&s.repository_selection)
-                .bind(&s.suspended_at)
-                .bind(&s.html_url)
-                .execute(&mut *tx)
-                .await
-            }
-            // The last good read stays; the row says why this one failed.
-            Err(why) => {
-                sqlx::query(
-                    "insert into git_host_installations (host_id, installation_id, error) \
-                     values ($1, $2, $3) \
-                     on conflict (host_id, installation_id) do update set error = excluded.error",
-                )
-                .bind(host_id)
-                .bind(n)
-                .bind(why)
-                .execute(&mut *tx)
-                .await
-            }
-        };
-        written.map_err(|e| format!("git host installations write: {e}"))?;
-    }
-    tx.commit()
-        .await
-        .map_err(|e| format!("git host installations write: {e}"))?;
+    let recorded = record(pg, host_id, started_ms, app.as_ref().ok(), reads).await?;
 
     // What changed, acted on after the record is written.
     let mut out = Refreshed::default();
-    for (id, n, read) in reads {
-        let snapshot = match read {
+    for (Read { id, answer, .. }, fate) in recorded {
+        let snapshot = match answer {
             Ok(s) => s,
             Err(why) => {
                 out.failed += 1;
@@ -496,16 +617,21 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
                 continue;
             }
         };
+        let Fate::Recorded { before } = fate else {
+            // A read that began later is the row: what changed is its to say,
+            // and a revoke on this older answer could be wrong.
+            tracing::info!(
+                "[git-hosts] installation {id} of host {host_id} was read again while this read was out; the newer read stands"
+            );
+            continue;
+        };
         out.checked += 1;
         if let Ok(app) = &app
             && !app.missing_from(&snapshot.permissions).is_empty()
         {
             out.pending += 1;
         }
-        let (gained, lost) = held_change(
-            before.get(&n).and_then(Option::as_ref),
-            &snapshot.permissions,
-        );
+        let (gained, lost) = held_change(before.as_ref(), &snapshot.permissions);
         // Every token this process keeps for the installation is measured
         // against what it holds now, not only against the last read: a row
         // never read before has nothing to diff, and a token still carries
@@ -575,12 +701,26 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
 }
 
 /// [`refresh_host`] after an admin's write to the host: the write stands
-/// whatever the refresh answers, and a failure is logged.
+/// whatever the refresh answers, and a failure is logged. The write's answer
+/// waits for it at most [`AFTER_WRITE_WAIT`]: a slow GitHub must not hold an
+/// admin's save. The refresh runs on its own task, so it is never cut off
+/// part-way (a revoke half done, a transaction rolled back); past the wait
+/// it finishes in the background and records what it learns.
 pub async fn refresh_after_write(pg: &PgPool, sb: &SecretBox, host_id: &str) {
-    if let Err(e) = refresh_host(pg, sb, host_id).await {
-        tracing::warn!(
+    let (pg, sb, id) = (pg.clone(), sb.clone(), host_id.to_string());
+    let refresh = tokio::spawn(async move { refresh_host(&pg, &sb, &id).await });
+    match tokio::time::timeout(AFTER_WRITE_WAIT, refresh).await {
+        Ok(Ok(Ok(_))) => {}
+        Ok(Ok(Err(e))) => tracing::warn!(
             "[git-hosts] host {host_id} changed, and its record could not be refreshed: {e}"
-        );
+        ),
+        Ok(Err(e)) => tracing::warn!(
+            "[git-hosts] host {host_id} changed, and the refresh of its record stopped: {e}"
+        ),
+        Err(_) => tracing::info!(
+            "[git-hosts] host {host_id} changed; GitHub is still being read after {} s, so the write is answered without it and the record lands when the read ends",
+            AFTER_WRITE_WAIT.as_secs()
+        ),
     }
 }
 
@@ -893,6 +1033,47 @@ mod tests {
         let other = read_failure("91", "github request: connection refused");
         assert_eq!(other, "github request: connection refused");
     }
+
+    /// A GitHub that takes the connection and never answers is a failed
+    /// read once its bound passes, never a refresh that waits for ever.
+    #[tokio::test]
+    async fn a_read_github_never_answers_fails_at_its_bound() {
+        let stalled = within(
+            Duration::from_millis(20),
+            std::future::pending::<Result<(), String>>(),
+        )
+        .await;
+        assert!(
+            stalled
+                .as_ref()
+                .is_err_and(|e| e.contains("did not answer")),
+            "{stalled:?}"
+        );
+        assert_eq!(
+            within(Duration::from_secs(5), async { Ok::<_, String>(7) }).await,
+            Ok(7)
+        );
+    }
+
+    /// A refresh holds its own host's lock only: one host GitHub is slow
+    /// to answer never holds up another.
+    #[tokio::test]
+    async fn each_host_refreshes_under_its_own_lock() {
+        let a = host_lock("lock-test-a");
+        let _held = a.lock().await;
+        assert!(
+            Arc::ptr_eq(&a, &host_lock("lock-test-a")),
+            "one lock per host"
+        );
+        assert!(
+            host_lock("lock-test-a").try_lock().is_err(),
+            "the same host waits"
+        );
+        assert!(
+            host_lock("lock-test-b").try_lock().is_ok(),
+            "another host does not"
+        );
+    }
 }
 
 /// LIVE: the refresh against a real database and a loopback GitHub — the
@@ -1108,6 +1289,48 @@ mod live {
             recorded_held(&pg, &id, "93002").await,
             None,
             "never read is no answer"
+        );
+
+        // Two refreshes that overlap can land in either order, and the
+        // record keeps the newer read. One that began before the row's last
+        // good read is not written over it, and neither is its failure;
+        // neither is acted on. A read of an installation the host does not
+        // use is dropped.
+        let began = acme.checked_at_ms.expect("read") - 60_000;
+        let narrower = InstallationSnapshot {
+            id: "93001".into(),
+            account: "acme".into(),
+            permissions: PermissionSet::of(&[("contents", w), ("metadata", r)]),
+            repository_selection: Some("selected".into()),
+            suspended_at: None,
+            html_url: None,
+        };
+        let read = |id: &str, answer: Result<InstallationSnapshot, String>| Read {
+            id: id.into(),
+            n: id.parse().unwrap(),
+            answer,
+        };
+        let fates: Vec<Fate> = record(
+            &pg,
+            &id,
+            began,
+            None,
+            vec![
+                read("93001", Ok(narrower.clone())),
+                read("93001", Err("an older failure".into())),
+                read("93003", Ok(narrower)),
+            ],
+        )
+        .await
+        .expect("the record is written")
+        .into_iter()
+        .map(|(_, fate)| fate)
+        .collect();
+        assert_eq!(fates, [Fate::Superseded, Fate::Superseded]);
+        assert_eq!(
+            installation_rows(&pg, &id).await.expect("read"),
+            rows,
+            "the newer read stands, and no row is made for 93003"
         );
 
         // The card's wire: the App's ask live, each installation from the

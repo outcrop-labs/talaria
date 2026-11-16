@@ -20,20 +20,12 @@ use talaria_body::{
     optional_max_string_member, optional_string_array_member, parse, string_member,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_git_hosts::HostRow;
 use talaria_git_hosts::registry::{self, HostPatch};
 use talaria_session::{actor_of, require_admin};
 use talaria_state::AppState;
 
+use super::git_host_or_404;
 use super::workbench_git_hosts::{GithubBody, audit, github_body};
-
-async fn row_or_404(state: &AppState, id: &str) -> Result<HostRow, Response> {
-    match registry::get_host(&state.pg, id).await {
-        Ok(Some(row)) => Ok(row),
-        Ok(None) => Err(house_error(StatusCode::NOT_FOUND, "no such git host")),
-        Err(e) => Err(internal("[workbench/git-hosts] host read failed", e)),
-    }
-}
 
 pub async fn get(
     State(state): State<AppState>,
@@ -42,7 +34,7 @@ pub async fn get(
     uri: Uri,
 ) -> Result<Response, Response> {
     require_admin(&state, &headers).await?;
-    let row = row_or_404(&state, &id).await?;
+    let row = git_host_or_404(&state, &id).await?;
     let sb = state.secretbox().await.unwrap_or_default();
     let host = talaria_git_hosts::connect(&state.pg, &sb, &row).await;
     // ?installations=… — any NON-EMPTY value counts.

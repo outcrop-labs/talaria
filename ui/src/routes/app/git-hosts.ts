@@ -50,7 +50,9 @@ export interface GitHostStatus {
 export interface GitHubInstallationListing {
   id: number
   account: string
-  permissions: PermissionMap
+  /** Null when GitHub's answer could not be read: the installation is
+   *  still listed, so it can be picked. */
+  permissions: PermissionMap | null
   repositorySelection: 'all' | 'selected' | null
   suspended: boolean
 }

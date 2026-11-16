@@ -9,14 +9,15 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_error::{house_error, internal};
-use talaria_git_hosts::registry;
+use talaria_error::internal;
 use talaria_session::require_admin;
 use talaria_state::AppState;
+
+use super::git_host_or_404;
 
 pub async fn post(
     State(state): State<AppState>,
@@ -24,11 +25,7 @@ pub async fn post(
     Path(id): Path<String>,
 ) -> Result<Response, Response> {
     require_admin(&state, &headers).await?;
-    let row = match registry::get_host(&state.pg, &id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "no such git host")),
-        Err(e) => return Ok(internal("[workbench/git-hosts] host read failed", e)),
-    };
+    let row = git_host_or_404(&state, &id).await?;
     let sb = state.secretbox().await.unwrap_or_default();
     // GitHub failing is recorded on the rows and shown on the card; only
     // the record itself failing to write is an error here.
