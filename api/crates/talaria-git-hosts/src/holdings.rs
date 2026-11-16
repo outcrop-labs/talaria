@@ -458,7 +458,7 @@ async fn record(
         .await
         .map_err(|e| format!("git host installations lock: {e}"))?;
     // None when the host is gone: its rows went with it.
-    let selected: Vec<i64> = get_host_on(&mut *tx, host_id)
+    let selected: Vec<i64> = get_host_on(&mut tx, host_id)
         .await?
         .map(|row| {
             tracked_installations(&row)
