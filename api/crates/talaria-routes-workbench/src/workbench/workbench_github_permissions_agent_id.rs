@@ -66,6 +66,18 @@ fn app_permissions(selected: &[String], rows: &[InstallationRow]) -> Option<Perm
     })
 }
 
+/// The 409 a write measured from a stale read gets, with what is there now.
+fn changed_since(current: &PermissionSet) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": "this agent's GitHub permissions on that host changed since you read them — read them again",
+            "current": current.to_json(),
+        })),
+    )
+        .into_response()
+}
+
 /// One `{key: level}` member of the body, as a permission set.
 fn permission_member(obj: &Map<String, Value>, key: &str) -> Result<PermissionSet, String> {
     match obj.get(key) {
@@ -239,6 +251,15 @@ pub async fn put(
             ));
         }
     };
+    // A stale read is told so before anything is checked against it: the
+    // gates below are measured from `from`, and an editor that read before
+    // someone else wrote must read again. The write itself compares again,
+    // so a change landing after this read is refused the same way.
+    match permissions::host_permissions(&state.pg, &agent_id, &row.id).await {
+        Ok(current) if current != from => return Ok(changed_since(&current)),
+        Ok(_) => {}
+        Err(e) => return Ok(internal("[workbench/github-permissions] read failed", e)),
+    }
     // A host whose token cannot be narrowed takes nothing: no grant here
     // would be enforced, so none is claimed.
     if !to.is_empty()
@@ -336,16 +357,7 @@ pub async fn put(
     };
     match set_agent_host_permissions_cas(&state.pg, &agent_id, &row.id, &from, &to, &change).await {
         Ok(Cas::Ok) => {}
-        Ok(Cas::Changed(current)) => {
-            return Ok((
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "this agent's GitHub permissions on that host changed since you read them — read them again",
-                    "current": current.to_json(),
-                })),
-            )
-                .into_response());
-        }
+        Ok(Cas::Changed(current)) => return Ok(changed_since(&current)),
         Err(e) => return Ok(internal("[workbench/github-permissions] write failed", e)),
     }
     // Anything taken back is taken out of every token already handed out.
