@@ -163,7 +163,7 @@ pub async fn set_granted_repos(
             .into_iter()
             .map(|(host_id, repo)| RepoRef { host_id, repo })
             .collect();
-        out.sort_by(|a, b| (&a.host_id, &a.repo).cmp(&(&b.host_id, &b.repo)));
+        out.sort_by(|a, b| a.host_id.cmp(&b.host_id).then_with(|| a.repo.cmp(&b.repo)));
         out
     };
     Ok(GrantChange {

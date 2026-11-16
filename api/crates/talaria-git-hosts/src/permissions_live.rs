@@ -447,23 +447,24 @@ async fn a_mint_raced_by_a_narrowing_is_revoked_and_minted_again_against_the_gra
     // workflows taken back, mint 2 finds its grant gone.
     let ids: Arc<Mutex<Option<(String, String)>>> = Arc::default();
     let (hook_pg, hook_ids) = (pg.clone(), ids.clone());
-    let hook: Hook = Arc::new(move |n| {
-        let (pg, ids) = (hook_pg.clone(), hook_ids.clone());
-        Box::pin(async move {
-            let Some((a, h)) = ids.lock().unwrap().clone() else {
-                return;
-            };
-            match n {
-                0 => {
-                    sqlx::query("delete from agent_github_permissions where agent_id = $1::uuid and host_id = $2")
+    let hook: Hook = Arc::new(
+        move |n: usize| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            let (pg, ids) = (hook_pg.clone(), hook_ids.clone());
+            Box::pin(async move {
+                let Some((a, h)) = ids.lock().unwrap().clone() else {
+                    return;
+                };
+                match n {
+                    0 => {
+                        sqlx::query("delete from agent_github_permissions where agent_id = $1::uuid and host_id = $2")
                         .bind(&a)
                         .bind(&h)
                         .execute(&pg)
                         .await
                         .unwrap();
-                }
-                2 => {
-                    sqlx::query(
+                    }
+                    2 => {
+                        sqlx::query(
                         "delete from workbench_repos where agent_id = $1::uuid and host_id = $2",
                     )
                     .bind(&a)
@@ -471,11 +472,12 @@ async fn a_mint_raced_by_a_narrowing_is_revoked_and_minted_again_against_the_gra
                     .execute(&pg)
                     .await
                     .unwrap();
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-        })
-    });
+            })
+        },
+    );
     let held = Arc::new(Mutex::new(
         json!({ "contents": "write", "workflows": "write", "metadata": "read" }),
     ));

@@ -1988,6 +1988,7 @@ impl Github {
     ///      `unprotected`. True is `unknown`: whether that protection
     ///      requires a pull request is in settings only an administration
     ///      token can read.
+    ///
     /// A ruleset's bypass list is unreadable without administration too, so
     /// `protected` assumes the App is not on it, and says so.
     pub async fn default_branch_protection(&self, repo: &str) -> BranchProtection {
