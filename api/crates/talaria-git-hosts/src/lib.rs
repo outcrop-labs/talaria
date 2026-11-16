@@ -23,8 +23,9 @@
 //              branch law, and each repo's PR base (`workbench_repos`,
 //              `workbench_repo_flow`)
 //   credential the sandbox's git asks for a login by host and path: the host
-//              whose origin it names, a repo on the agent's own grant list,
-//              the adapter's repo-scoped login
+//              whose origin it names, a repo on the agent's own grant list
+//              (checked before any credential is opened), the adapter's
+//              repo-scoped login, narrowed on GitHub to what a push spends
 //
 // The interface every adapter implements, and every type it answers in, is
 // talaria-git-host-types'. `Host` is the dispatch over the registered kinds.
@@ -50,9 +51,11 @@ pub use grants::{
 };
 pub use registry::{HostRow, get_host, host_rows, list_hosts};
 pub use talaria_git_host_types::{
-    CreatedRepo, GitHost, HostKind, HostStatus, Login, OpenPullRequest, OpenedPullRequest,
-    PullRequestAsk, PullRequestRef, RepoAccess, RepoVisibility, pr_number_from_url,
+    CreatedRepo, GitHost, HostKind, HostStatus, Level, Login, OpenPullRequest, OpenedPullRequest,
+    PermissionSet, PullRequestAsk, PullRequestRef, RepoAccess, RepoVisibility, pr_number_from_url,
 };
+pub use talaria_github::hashed_token;
+use talaria_github::permissions_for;
 
 /// A live connection to one registered host, of whichever kind it is.
 #[derive(Clone, Debug)]
@@ -357,52 +360,122 @@ pub async fn host_row_for_url(pg: &PgPool, url: &str) -> Result<Option<HostRow>,
 
 // ── The sandbox's git credential ─────────────────────────────────────────────
 
-/// A login handed to an agent's git, and what it was for.
+/// Where the sandbox's credential ask lands, decided BEFORE any credential is
+/// opened, spent or minted: the workspace store's answer is a spend (audited,
+/// and it burns a one-shot), so a repo the agent may not touch must be
+/// refused before that store is ever asked.
+#[derive(Debug)]
+pub enum CredentialScope {
+    /// No registered host is at the authority git named. The workspace store
+    /// alone answers, by host, as it always has.
+    Unregistered,
+    /// A registered host, and the repo git named is not on this agent's grant
+    /// list there, or git named no repo at all. Nothing answers.
+    Ungranted {
+        host_id: String,
+        repo: Option<String>,
+    },
+    /// A registered host, and a repo this agent holds a grant on. The
+    /// workspace store answers first (a credential somebody pinned for the
+    /// host is the more specific answer), then the host's own login. The row
+    /// is boxed only to keep the variants of one size.
+    Granted { row: Box<HostRow>, rule: RepoRule },
+}
+
+/// THE GRANT CHECK of `/api/secrets/git-credential`, by the authority and the
+/// path git sends. On a registered host the path is what scopes an answer to
+/// one repository: git sends it when `credential.useHttpPath` is set (the
+/// rendered gitconfig sets it, and the helper reads `origin` when git omits
+/// it), and a path that names no repo is a request nothing can be scoped to.
+/// The grant is the one-row read ([`repo_rule`]): exactly the repo, on
+/// exactly that host.
+pub async fn credential_scope(
+    pg: &PgPool,
+    agent_id: &str,
+    authority: &str,
+    path: Option<&str>,
+) -> Result<CredentialScope, String> {
+    let Some(row) = host_row_at(pg, authority).await? else {
+        return Ok(CredentialScope::Unregistered);
+    };
+    let Some(repo) = repo_of_path(path.unwrap_or_default()) else {
+        return Ok(CredentialScope::Ungranted {
+            host_id: row.id,
+            repo: None,
+        });
+    };
+    match repo_rule(pg, agent_id, &row.id, &repo).await {
+        Some(rule) => Ok(CredentialScope::Granted {
+            row: Box::new(row),
+            rule,
+        }),
+        None => Ok(CredentialScope::Ungranted {
+            host_id: row.id,
+            repo: Some(repo),
+        }),
+    }
+}
+
+/// A login handed to an agent's git by the registered host, what it was for,
+/// and what is known about it — what the credential door's audit row records.
 pub struct AgentCredential {
     pub login: Login,
     pub host_id: String,
     pub repo: String,
+    /// The GitHub App installation the token was minted on. None for a PAT
+    /// and for every other kind of host.
+    pub installation: Option<String>,
+    /// What the token carries, when the host says (a GitHub App token). None
+    /// when it does not: a PAT or a Forgejo token carries whatever its owner
+    /// gave it.
+    pub carried: Option<PermissionSet>,
+    /// What the ask named that the GitHub App's installation does not hold.
+    pub shortfall: PermissionSet,
+    /// Minted by this call, rather than served from a cache or stored.
+    pub minted: bool,
 }
 
-/// GIT'S CREDENTIAL, for a repo this agent was actually granted — the
-/// second source behind `/api/secrets/git-credential`, after the workspace
-/// store: the registered host's own login for that one repository, which is
-/// what a workbench job needs in order to push.
-///
-/// SCOPED BY THE PATH GIT ASKS ABOUT. Git sends `path` when
-/// `credential.useHttpPath` is set — the rendered gitconfig sets it — so the
-/// request names the repository, and an agent gets a login only for a repo
-/// on its own grant list, on the host git named. Without that, this would
-/// hand every agent a credential for every repo the host can reach.
-pub async fn agent_git_credential(
+/// GIT'S CREDENTIAL from the registered host, for a repo [`credential_scope`]
+/// found granted: the host's own login for that one repository, which is
+/// what a workbench job needs in order to push. On GitHub (App mode) an
+/// installation token scoped to the repo and narrowed to
+/// [`talaria_github::SANDBOX_TOKEN_PERMISSIONS`] — contents and metadata,
+/// never pull requests, which Talaria opens itself. Elsewhere the host's own
+/// token, which cannot be narrowed.
+pub async fn grant_login(
     pg: &PgPool,
     sb: &SecretBox,
-    agent_id: &str,
-    authority: &str,
-    path: Option<&str>,
+    row: &HostRow,
+    repo: &str,
 ) -> Result<Option<AgentCredential>, String> {
-    let Some(row) = host_row_at(pg, authority).await? else {
-        return Ok(None);
+    let credential = |login: Login| AgentCredential {
+        login,
+        host_id: row.id.clone(),
+        repo: repo.to_string(),
+        installation: None,
+        carried: None,
+        shortfall: PermissionSet::new(),
+        minted: false,
     };
-    let Some(repo) = repo_of_path(path.unwrap_or_default()) else {
-        return Ok(None);
-    };
-    let granted = granted_repos(pg, agent_id)
-        .await
-        .into_iter()
-        .any(|g| g.host_id == row.id && g.repo == repo);
-    if !granted {
-        return Ok(None);
+    match connect(pg, sb, row).await {
+        Host::Github(github) => Ok(github
+            .issue_token(repo, &permissions_for(RepoAccess::Write))
+            .await?
+            .map(|issued| AgentCredential {
+                installation: issued.installation,
+                carried: issued.carried,
+                shortfall: issued.shortfall,
+                minted: issued.minted,
+                ..credential(Login {
+                    username: "x-access-token".into(),
+                    password: issued.token,
+                })
+            })),
+        host => Ok(host
+            .repo_login(repo, RepoAccess::Write)
+            .await?
+            .map(credential)),
     }
-    let host = connect(pg, sb, &row).await;
-    Ok(host
-        .repo_login(&repo, RepoAccess::Write)
-        .await?
-        .map(|login| AgentCredential {
-            login,
-            host_id: row.id.clone(),
-            repo,
-        }))
 }
 
 /// `owner/name` from the path git sends (`owner/name.git`, with or without a
