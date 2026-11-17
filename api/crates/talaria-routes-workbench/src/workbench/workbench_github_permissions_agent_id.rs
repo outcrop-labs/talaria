@@ -10,10 +10,12 @@
 // GET → each host the agent holds a repo or a set on: what it carries and
 // whether that is the default, each key with whether the installation holds
 // it, what the host's App asks for (from the holdings record, never GitHub),
-// and each granted repo with the installation that mints its token, what
-// that installation accepted and the shortfall; plus the default and the
-// catalog of every key GitHub knows. The agent's managers and fleet readers
-// read it, and `canEdit` says whether this caller writes.
+// each installation the host uses (what it holds, what it has not accepted
+// yet, its page on GitHub), and each granted repo with the installation that
+// mints its token, what that installation accepted and the shortfall; plus
+// the default and the catalog of every key GitHub knows. The agent's
+// managers and fleet readers read it, and `canEdit` says whether this caller
+// writes.
 //
 // PUT {host, from, to} → ADMIN ONLY: an agent's managers see these read-only
 // (docs/PERMISSIONS.md, "Agent managers"). A compare-and-set: `from` is what
@@ -36,7 +38,9 @@ use serde_json::{Map, Value, json};
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_body::{parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_git_hosts::holdings::{InstallationRow, installation_rows, tracked_installations};
+use talaria_git_hosts::holdings::{
+    InstallationRow, installation_rows, installation_statuses, tracked_installations,
+};
 use talaria_git_hosts::permissions::{
     self, AgentHostPermissions, Cas, PermissionsChange, default_set, effective,
     installation_for_repo, set_agent_host_permissions_cas,
@@ -256,6 +260,11 @@ async fn host_wire(
     block["updatedAt"] = json!(mine.map(|m| epoch_ms_to_iso(m.updated_at_ms)));
     block["appPermissions"] =
         json!(app_permissions(&selected, &installations).map(|a| a.to_json()));
+    // Each installation the host uses, as the record has it: what it holds,
+    // what the App asks for that it has not accepted yet, and its page on
+    // GitHub, where an owner accepts it. The editor says why a key is not
+    // held from these.
+    block["installations"] = json!(installation_statuses(&selected, &installations));
     block["repos"] = json!(repo_wire);
     block
 }
@@ -601,6 +610,7 @@ mod tests {
             assert_eq!(block["permissions"], full);
             assert_eq!(block["isDefault"], false);
             assert_eq!(block["repos"][0]["installation"], "95001");
+            assert_eq!(block["installations"][0]["id"], "95001", "{block}");
             assert_eq!(block["repos"][0]["shortfall"], json!({}));
             let key = |k: &str| {
                 block["keys"]

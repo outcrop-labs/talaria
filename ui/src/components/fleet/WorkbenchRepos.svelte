@@ -9,6 +9,7 @@
   import { toastError } from '@/lib/toast.svelte'
   import { slide } from '@/lib/motion'
   import { p } from '@/router'
+  import WorkbenchGithubPermissions from './WorkbenchGithubPermissions.svelte'
 
   // Explicit per-agent repo grants — the workbench touches ONLY these — and
   // each grant's BRANCH LAW: the base a human merges, whether the agent may
@@ -16,6 +17,8 @@
   // the git host too: the same owner/name on two hosts is two repositories.
   // The rules ride the same write as the chips, and the pre-push hook
   // enforces every line in the container before bytes reach the remote.
+  // Below them, what the agent's token carries on each host it holds a repo
+  // on (WorkbenchGithubPermissions): one block per host, not per repo.
   let { agentId }: { agentId: string } = $props()
 
   interface HostRepo {
@@ -101,6 +104,8 @@
       toastError('Save failed', e)
     }
     await qc.invalidateQueries({ queryKey: ['workbench-repos', agentId] })
+    // A grant added or removed on a host changes that host's block below.
+    await qc.invalidateQueries({ queryKey: ['workbench-github-permissions', agentId] })
   }
   const manyHosts = (d: ReposBody) => d.hosts.length > 1
   const hostName = (d: ReposBody, id: string) => d.hosts.find((h) => h.id === id)?.name ?? id
@@ -175,6 +180,7 @@
           {/if}
         </div>
       {/if}
+      <WorkbenchGithubPermissions {agentId} />
     </div>
   {/snippet}
 </QueryState>

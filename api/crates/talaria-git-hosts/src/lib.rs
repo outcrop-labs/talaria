@@ -37,6 +37,8 @@
 //   requests   an agent asking for a GitHub permission it lacks
 //              (`workbench_permission_requests`), and an admin's decision:
 //              approved into the agent's set, or denied
+//   token_view what the agent is told its credential carries on each granted
+//              repo (list_repos, doctor), from the record and never spent
 //
 // The interface every adapter implements, and every type it answers in, is
 // talaria-git-host-types'. `Host` is the dispatch over the registered kinds.
@@ -51,6 +53,7 @@ pub mod requests;
 #[cfg(test)]
 mod requests_live;
 pub mod revoke;
+pub mod token_view;
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
