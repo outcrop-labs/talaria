@@ -15,7 +15,8 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { delJson, errorMessage, getJson, putJson } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
+  import { relativeTime } from '@/lib/fleet'
   import { slide } from '@/lib/motion'
   import { GOOGLE_API_LIBRARY as GOOGLE_APIS } from '@/lib/google-apis'
 
@@ -42,6 +43,10 @@
      *  the connections client. */
     hd: string | null
     agentic: Agentic
+    /** Google's answer to the last "Check with Google" for this client:
+     *  `ok` only when Google's Gmail MCP server accepted the call; `text` is
+     *  Google's own words when it refused. */
+    lastCheck: { ok: boolean; status: number; text: string | null; at: string } | null
   }
   interface Payload {
     status: ClientStatus
@@ -54,6 +59,9 @@
     warnings: Array<{ code: string; message: string }>
     /** The signed-in admin's OWN Google connection (Settings → Connections). */
     personalConnected: boolean
+    /** The client that made that connection: "Check with Google" calls with
+     *  it, so only that client's card can run the check. */
+    personalClientId: string | null
     /** Each role's list is what that client must have registered. */
     redirectUris: Array<{ uri: string; what: string; role: Role }>
     /** Every stored grant, counted per OAuth client that minted it. `role` is
@@ -103,7 +111,9 @@
   const choiceOf = (declared: boolean | null): AgenticChoice =>
     declared === true ? 'ticked' : declared === false ? 'unticked' : 'unsure'
   const AGENTIC_INFO =
-    "Google Auth Platform → Clients → this client → “Use this client for an AI-powered agent”. Only clients with it ticked may call Google's Workspace MCP servers, and Google says to keep sign-in and other non-agent features on a client without it. Google offers no way to read the box, so record what it shows. Recording it changes no flow."
+    "Google Auth Platform → Clients → this client → “Use this client for an AI-powered agent”. Only clients with it ticked may call Google's Workspace MCP servers, and Google says to keep sign-in and other non-agent features on a client without it. Google offers no way to read the box, so record what it shows. Recording it changes no REST flow; a client recorded as unticked keeps its connections away from Google's MCP servers until Google accepts a check."
+  const CHECK_INFO =
+    "Calls Gmail's MCP server once (list_labels, 1 unit of its quota) with your own Google connection, which must have been made with this client. Google's MCP servers refuse a client not marked for AI agents, so an accepted call is Google confirming the mark. A refusal is shown in Google's words and proves nothing about the mark: the same call fails for a project not in the Workspace Developer Preview, or without the Gmail MCP service enabled."
 
   const qc = useQueryClient()
   const query = createQuery(() => ({
@@ -222,7 +232,8 @@
   }
 
   // A declaration saves on change, like any picker: it records a fact about
-  // the client and changes no flow.
+  // the client and changes no REST flow (one declared unticked keeps its
+  // grants off Google's MCP servers until Google accepts a check).
   const declare = async (role: Role, id: string, choice: AgenticChoice) => {
     if (busy) return
     // The refusal lands on the card that was clicked.
@@ -238,6 +249,36 @@
       fail(errorMessage(e))
     }
     busy = false
+    await qc.invalidateQueries({ queryKey: ['google-client'] })
+  }
+
+  // "Check with Google": one call to Gmail's MCP server with the admin's own
+  // connection made by this client; Google's answer is stored on the client.
+  // Only the card whose client made that connection can run it; the others
+  // say why, in the server's terms.
+  let checking = $state<Role | null>(null)
+  const checkUnavailable = (role: Role): string => {
+    const lead = 'Check with Google calls with your own Google connection made with this client.'
+    const signinNote =
+      role === 'signin' ? ' A sign-in client that has only ever run login made none, and needs no check: signing in is not an agent.' : ''
+    if (!data?.personalConnected) return `${lead} Connect your account first.${signinNote}`
+    if (!data.personalClientId) return `${lead} Yours records its client on its next refresh, within the hour.`
+    return `${lead} Yours was made with ${data.personalClientId}.${signinNote}`
+  }
+  const checkWithGoogle = async (role: Role) => {
+    if (busy) return
+    const fail = (m: string | null) => (role === 'signin' ? (signinError = m) : (error = m))
+    busy = true
+    checking = role
+    fail(null)
+    try {
+      // The answer (the panel's shape plus `check`) is read back through the query.
+      await postJson<unknown>(`/api/admin/google-client/check?role=${role}`)
+    } catch (e) {
+      fail(errorMessage(e))
+    }
+    busy = false
+    checking = null
     await qc.invalidateQueries({ queryKey: ['google-client'] })
   }
 
@@ -273,6 +314,36 @@
       <Segmented size="xs" options={AGENTIC} value={choiceOf(client.agentic.declared)} onChange={(c) => void declare(role, client.clientId, c)} />
     {/if}
   </div>
+  {#if client.configured}
+    <!-- Google's own answer, the only provider-side evidence of the mark:
+         shown as Google sent it, never summarised. -->
+    <div class="flex flex-wrap items-start gap-2 text-xs">
+      {#if data?.personalClientId && data.personalClientId === client.clientId}
+        <Button size="xs" variant="outline" onclick={() => void checkWithGoogle(role)} disabled={busy}>
+          {checking === role ? 'Checking…' : 'Check with Google'}
+        </Button>
+      {:else}
+        <span class="font-sans text-[10px] text-muted">{checkUnavailable(role)}</span>
+      {/if}
+      <InfoTip text={CHECK_INFO} />
+      {#if client.lastCheck}
+        <div class="flex min-w-0 flex-1 items-start gap-2">
+          <StatusDot status={client.lastCheck.ok ? 'ok' : 'warn'} class="mt-1" />
+          <span class="min-w-0 text-fg">
+            {#if client.lastCheck.ok}
+              Google's Gmail MCP server accepted this client's call (HTTP {client.lastCheck.status}): Google confirms the mark.
+            {:else}
+              Google answered HTTP {client.lastCheck.status}{client.lastCheck.text ? ':' : ', with no words.'}
+              {#if client.lastCheck.text}<span class="break-words">«{client.lastCheck.text}»</span>{/if}
+            {/if}
+            <span class="font-sans text-[10px] text-muted">· {relativeTime(client.lastCheck.at)}</span>
+          </span>
+        </div>
+      {:else}
+        <span class="font-sans text-[10px] text-muted">not checked yet</span>
+      {/if}
+    </div>
+  {/if}
 {/snippet}
 
 {#snippet uriList(uris: Payload['redirectUris'])}

@@ -4088,6 +4088,7 @@ dependencies = [
  "talaria-google-drive",
  "talaria-google-errors",
  "talaria-google-gmail",
+ "talaria-google-mcp",
  "talaria-google-oauth",
  "talaria-google-org",
  "talaria-google-pending",
@@ -5308,9 +5309,10 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-google-client",
  "talaria-google-connections",
- "talaria-google-org",
  "talaria-secretbox",
+ "tokio",
  "tracing",
  "url",
 ]
@@ -5462,6 +5464,17 @@ dependencies = [
  "talaria-secretbox",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "talaria-google-mcp"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "talaria-gateway",
+ "talaria-google-errors",
+ "talaria-mcp-jsonrpc",
 ]
 
 [[package]]
