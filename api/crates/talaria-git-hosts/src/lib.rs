@@ -34,6 +34,8 @@
 //              admin only, or the default; minted into the agent's token
 //   revoke     taking an agent's tokens back when what it may do narrows, in
 //              this api process and, by a Redis broadcast, in every other
+//   token_view what the agent is told its credential carries on each granted
+//              repo (list_repos, doctor), from the record and never spent
 //
 // The interface every adapter implements, and every type it answers in, is
 // talaria-git-host-types'. `Host` is the dispatch over the registered kinds.
@@ -45,6 +47,7 @@ pub mod permissions;
 mod permissions_live;
 pub mod registry;
 pub mod revoke;
+pub mod token_view;
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};

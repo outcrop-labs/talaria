@@ -939,7 +939,7 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "[ \"$1\" = \"get\" ] || exit 0\n",
     "decline() {\n",
     "  if [ -z \"$path\" ]; then\n",
-    "    echo \"talaria: git did not name a repository — set origin to https://$host/<owner>/<repo>.git and retry, or work in the job workdir. Do not run git credential fill; it prints the token.\" >&2\n",
+    "    echo \"talaria: git did not name a repository — set origin to https://$host/<owner>/<repo>.git and retry, or work in the job workdir. A git credential fill names path=<owner>/<repo>.git, and never runs bare: what it prints is the token, so read it inside \\$(...) for one command.\" >&2\n",
     "  fi\n",
     "  echo \"talaria: no credential for $host${path:+/$path}\" >&2\n",
     "  [ -z \"$why\" ] || echo \"talaria: $why\" >&2\n",
@@ -1107,6 +1107,27 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
 /// answer could only be scoped to github.com, i.e. every repo the
 /// installation can reach.
 const GITCONFIG: &str = "[credential]\n\thelper = /usr/local/bin/git-credential-talaria\n\tuseHttpPath = true\n[core]\n\thooksPath = /usr/local/share/talaria-git-hooks\n";
+
+/// HOW AN AGENT READS ITS GITHUB TOKEN FOR ONE API CALL. The credential the
+/// helper hands git for a repo is the agent's token for that one repository
+/// (on a GitHub App host, the set an admin gave it, met with what the
+/// installation holds), and the agent spends it on the API itself: `git
+/// credential fill` asks the same helper, for the repo `path` names, and the
+/// token lives in one shell variable for one command. Never printed, never
+/// exported, never written down. `GIT_TERMINAL_PROMPT=0`: a decline must end
+/// the command, not wait on a username prompt nobody will answer. The skills
+/// teach this line verbatim (talaria-toolkit), and a test runs it through git
+/// and the helper above.
+const API_TOKEN_LINE: &str = "TOKEN=$(printf 'protocol=https\\nhost=github.com\\npath=OWNER/REPO.git\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill | sed -n 's/^password=//p')";
+
+/// The workspace pointer every harness reads in its working directory
+/// (AGENTS.md, and CLAUDE.md for a harness that reads that name): where the
+/// skills live, and how git and the GitHub API authenticate.
+fn workspace_pointer() -> String {
+    format!(
+        "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never put a token in a remote URL.\n\nOn GitHub that credential is also your API token for the one repository, carrying what `list_repos` shows for it (`github.carries`). Read it for one command and spend it in that same command; never print, echo, export or store it:\n\n```sh\n{API_TOKEN_LINE}\ncurl -sS -H \"Authorization: Bearer $TOKEN\" https://api.github.com/repos/OWNER/REPO/pulls\n```\n\n`host=` is the host in the repo's clone URL. `GH_TOKEN=\"$TOKEN\" gh api repos/OWNER/REPO/pulls` works the same where `gh` is installed. A permission your token lacks is an admin's to give: ask with `request_git_permission`.\n"
+    )
+}
 
 async fn set_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -2155,16 +2176,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             harness_mounts.extend(pi_config_mounts(&wb_dir, &fleet_skills));
             // The workspace pointers every harness reads in its working
             // directory — where the skills live, whichever tool lands there.
-            let _ = tokio::fs::write(
-                wb_dir.join("AGENTS.md"),
-                "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never `gh`, never a token in a remote URL.\n",
-            )
-            .await;
-            let _ = tokio::fs::write(
-                wb_dir.join("CLAUDE.md"),
-                "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never `gh`, never a token in a remote URL.\n",
-            )
-            .await;
+            let pointer = workspace_pointer();
+            let _ = tokio::fs::write(wb_dir.join("AGENTS.md"), &pointer).await;
+            let _ = tokio::fs::write(wb_dir.join("CLAUDE.md"), &pointer).await;
         }
 
         let mut vols: Vec<String> = Vec::new();
@@ -6756,7 +6770,7 @@ empty_list: []
             "no curl or wget in this image",
             "no credential for $host${path:+/$path}",
             "git -c credential.helper= config --get remote.origin.url",
-            "Do not run git credential fill",
+            "never runs bare: what it prints is the token",
             "sed -n 's/.*\"username\":\"\\([^\"]*\\)\".*/\\1/p')\n",
         ] {
             assert!(
@@ -6951,6 +6965,125 @@ empty_list: []
         assert!(stdout.is_empty(), "{stdout}");
         assert!(!stderr.contains("that host"), "{stderr}");
         assert!(stderr.contains("no credential for github.com"), "{stderr}");
+    }
+
+    /// RUN the line the agents are taught for a GitHub API call, through real
+    /// git and the rendered helper, the way the sandbox has them: a gitconfig
+    /// that names the helper and turns on useHttpPath, and a stub curl
+    /// standing in for the credential door. What the line puts in `$TOKEN`
+    /// is what this answers, along with the body the helper sent.
+    fn run_api_token_line(reply: Option<&str>) -> (i32, String, String, Value) {
+        let dir = std::env::temp_dir().join(format!(
+            "talaria-api-token-{}-{}",
+            std::process::id(),
+            reply.is_some()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("stub")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let exec = std::fs::Permissions::from_mode(0o755);
+        let helper = dir.join("git-credential-talaria");
+        std::fs::write(&helper, GIT_CREDENTIAL_HELPER).unwrap();
+        std::fs::set_permissions(&helper, exec.clone()).unwrap();
+        let config = dir.join("gitconfig");
+        std::fs::write(
+            &config,
+            GITCONFIG.replace(
+                "/usr/local/bin/git-credential-talaria",
+                &helper.display().to_string(),
+            ),
+        )
+        .unwrap();
+        let capture = dir.join("body");
+        let curl = match reply {
+            Some(body) => format!(
+                "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\nprintf '%s\\n%s' '{body}' 200\n",
+                capture.display()
+            ),
+            None => "#!/bin/sh\nexit 1\n".to_string(),
+        };
+        let curl_path = dir.join("stub/curl");
+        std::fs::write(&curl_path, curl).unwrap();
+        std::fs::set_permissions(&curl_path, exec).unwrap();
+        let script = format!(
+            "{}\nprintf %s \"$TOKEN\"\n",
+            API_TOKEN_LINE.replace("OWNER/REPO", "acme/widgets")
+        );
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .current_dir(&dir)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.join("stub").display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("HOME", &dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", &config)
+            .env_remove("GIT_ASKPASS")
+            .env_remove("SSH_ASKPASS")
+            .env("TALARIA_API_URL", "http://talaria.test")
+            .env("TALARIA_AGENT_KEY", "tak_test")
+            .env("API_SERVER_MODEL_NAME", "engineer-engineering")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let body = std::fs::read_to_string(&capture)
+            .ok()
+            .and_then(|b| serde_json::from_str(&b).ok())
+            .unwrap_or(Value::Null);
+        let _ = std::fs::remove_dir_all(&dir);
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+            body,
+        )
+    }
+
+    #[test]
+    fn the_api_token_line_reads_the_repos_token_through_git_and_the_helper() {
+        // Granted: the helper asks the door for exactly that repository on
+        // that host, and the token lands in $TOKEN, never on the output
+        // until the script itself prints it.
+        let (code, stdout, stderr, body) = run_api_token_line(Some(
+            r#"{"username":"x-access-token","password":"ghs_sekret"}"#,
+        ));
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stdout, "ghs_sekret", "{stderr}");
+        assert_eq!(body["host"], "github.com", "{body}");
+        assert_eq!(body["path"], "acme/widgets.git", "{body}");
+        assert_eq!(body["protocol"], "https", "{body}");
+        assert!(!stderr.contains("ghs_sekret"), "{stderr}");
+
+        // Declined: the command ends with an empty $TOKEN, rather than
+        // waiting on a username prompt nobody will answer.
+        let (_, stdout, stderr, _) = run_api_token_line(None);
+        assert_eq!(stdout, "", "{stderr}");
+        assert!(
+            stderr.contains("no credential for github.com/acme/widgets.git"),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    fn the_workspace_pointer_and_the_skill_teach_the_same_api_token_line() {
+        let pointer = workspace_pointer();
+        assert!(pointer.contains(API_TOKEN_LINE), "{pointer}");
+        assert!(pointer.contains("list_repos"), "{pointer}");
+        assert!(pointer.contains("request_git_permission"), "{pointer}");
+        assert!(!pointer.contains("Never `gh`"), "{pointer}");
+        // The skill ships to every agent container; the line it teaches is
+        // the one the test above runs.
+        let skill = include_str!("../../../../scripts/skills/talaria-toolkit/SKILL.md");
+        assert!(
+            skill.contains(API_TOKEN_LINE),
+            "scripts/skills/talaria-toolkit/SKILL.md must teach the API token line verbatim:\n{API_TOKEN_LINE}"
+        );
     }
 
     /// What one run of the generated pre-push hook did.

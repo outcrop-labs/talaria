@@ -48,6 +48,7 @@ use talaria_fleet_layout::describe_agent;
 use talaria_gateway::usage as gw_usage;
 use talaria_git_hosts as hosts;
 use talaria_git_hosts::GitHost;
+use talaria_git_hosts::token_view;
 use talaria_mcp_jsonrpc::{ListedTool, ToolOutcome, dispatch_jsonrpc};
 use talaria_realtime::RealtimeDeps;
 use talaria_runs_define::run_definition;
@@ -284,7 +285,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "list_repos",
-            "description": "The repositories YOUR workbench is granted, and the git host each lives on (`grants`: {host, repo}). Work only these — anything else is out of bounds. When the same owner/name is granted on two hosts, pass `host` to start_job and request_app_install.",
+            "description": "The repositories YOUR workbench is granted, and the git host each lives on (`grants`: {host, repo, github}). Work only these — anything else is out of bounds. When the same owner/name is granted on two hosts, pass `host` to start_job and request_app_install. On a GitHub host, each grant's `github` says what the token git pushes with carries for that one repo (`carries`, and `shortfall`: what your set names that the GitHub App's installation does not hold yet). That token is also your GitHub API token for the repo; `githubApi` says how to read it for one command.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
@@ -820,6 +821,15 @@ async fn call_tool(
             } else {
                 format!("repos: {}", repos_line(&repos))
             });
+            // One line per granted repo: where git's credential comes from
+            // there and what it carries, the token the agent pushes and calls
+            // the host's API with.
+            match token_view::grant_credentials(pg, &agent.id, &agent_model, &repos).await {
+                Ok(tokens) => checks.extend(tokens.iter().map(|t| t.doctor_line())),
+                Err(e) => checks.push(format!(
+                    "git tokens: what your token carries on each repo could not be read — {e}"
+                )),
+            }
             let models = roles.wire();
             // A coding account changes which models a job actually runs on, so
             // the self-diagnosis has to say so — otherwise `models` above
@@ -897,9 +907,14 @@ async fn call_tool(
             .bind(&agent.id)
             .fetch_all(pg)
             .await;
+            // What git's credential carries on each grant, from the record
+            // (talaria-git-hosts' token_view): the agent spends that token
+            // itself, on git and on the host's API.
+            let tokens = token_view::grant_credentials(pg, &agent.id, &agent_model, &grants).await;
             let mut out = json!({
                 "repos": grants.iter().map(|g| g.repo.clone()).collect::<Vec<_>>(),
-                "grants": grants,
+                "grants": grants_wire(&grants, tokens.as_deref().unwrap_or_default()),
+                "githubApi": GITHUB_API_NOTE,
                 "models": models,
                 "note": "Pick effort by the size of the work: light = quick fixes, standard = regular features (plan required), heavy = hard cross-cutting work (plan required, waits for human approval, used sparingly). Effort decides planning and how much room the job reserves; Oh My Pi picks its own models from the roles above as it works.",
             });
@@ -913,6 +928,12 @@ async fn call_tool(
                 Err(e) => {
                     out["repoRequestsError"] = json!(format!("repo requests unreadable: {e}"))
                 }
+            }
+            // Likewise: a grant without `github` because the read failed
+            // says so, rather than reading as a host that is not GitHub.
+            if let Err(e) = &tokens {
+                out["githubError"] =
+                    json!(format!("what your git token carries is unreadable: {e}"));
             }
             CallOutcome::Ok(out)
         }
@@ -2879,6 +2900,31 @@ fn repos_line(grants: &[hosts::RepoRef]) -> String {
         .join(", ")
 }
 
+/// How the agent reads its GitHub token for one API call: list_repos'
+/// `githubApi`. The same words as the talaria-toolkit skill's "Git and
+/// GitHub" section and the workspace AGENTS.md (talaria-fleet-render, whose
+/// test runs the command through git and the rendered helper).
+pub const GITHUB_API_NOTE: &str = "The credential git gets for a GitHub repo is also your GitHub API token for that one repository, carrying what its grant's `github.carries` says. Read it for one command and spend it in that same command; never print, echo, export or store it: TOKEN=$(printf 'protocol=https\\nhost=github.com\\npath=OWNER/REPO.git\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill | sed -n 's/^password=//p') && curl -sS -H \"Authorization: Bearer $TOKEN\" <github.api>/repos/OWNER/REPO/pulls (host= is the host in the repo's clone URL; `GH_TOKEN=\"$TOKEN\" gh api repos/OWNER/REPO/...` works the same where gh is installed). A permission your set does not name is an admin's to give: ask for it with request_git_permission.";
+
+/// list_repos' `grants`: each `{host, repo}`, with `github` (talaria-git-hosts'
+/// token_view: null on a host that is not GitHub) when what its credential
+/// carries was read.
+fn grants_wire(grants: &[hosts::RepoRef], tokens: &[token_view::GrantCredential]) -> Vec<Value> {
+    grants
+        .iter()
+        .map(|g| {
+            let mut wire = json!({ "host": g.host_id, "repo": g.repo });
+            if let Some(t) = tokens
+                .iter()
+                .find(|t| t.host_id == g.host_id && t.repo == g.repo)
+            {
+                wire["github"] = t.github_wire();
+            }
+            wire
+        })
+        .collect()
+}
+
 /// The host `request_repo` files on: the one named, else the one whose
 /// approved orgs include `org`. Err is the refusal the agent reads — the
 /// same allowlist the approval enforces.
@@ -4191,6 +4237,16 @@ mod tests {
         }
 
         async fn reset(pg: &PgPool) {
+            sqlx::query("delete from workspace_secrets where name = 'wbrevise-github'")
+                .execute(pg)
+                .await
+                .unwrap();
+            sqlx::query(
+                "delete from git_host_installations where host_id = 'github' and installation_id = 70001",
+            )
+            .execute(pg)
+            .await
+            .unwrap();
             sqlx::query("delete from agent_defs where department = $1")
                 .bind(DEPT)
                 .execute(pg)
@@ -4516,15 +4572,79 @@ mod tests {
                 .execute(&pg)
                 .await
                 .unwrap();
+                // What the installation holds, as a refresh would record it.
+                sqlx::query(
+                    "insert into git_host_installations (host_id, installation_id, account, held, checked_at) \
+                     values ('github', 70001, 'acme', $1, now()) \
+                     on conflict (host_id, installation_id) do update set held = excluded.held, \
+                       checked_at = excluded.checked_at, error = null",
+                )
+                .bind(json!({ "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write" }))
+                .execute(&pg)
+                .await
+                .unwrap();
                 let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
                 assert_eq!(listed["repos"], json!([REPO]));
-                assert_eq!(
-                    listed["grants"],
-                    json!([{ "host": "github", "repo": REPO }])
+                let default = json!({ "contents": "write", "metadata": "read", "pull_requests": "write" });
+                let grant = &listed["grants"][0];
+                assert_eq!(grant["host"], "github");
+                assert_eq!(grant["repo"], REPO);
+                assert_eq!(grant["github"]["narrowing"], "perRepo", "{grant}");
+                assert_eq!(grant["github"]["isDefault"], true);
+                assert_eq!(grant["github"]["set"], default);
+                assert_eq!(grant["github"]["carries"], default);
+                assert_eq!(grant["github"]["shortfall"], json!({}));
+                assert_eq!(grant["github"]["installation"], "70001");
+                assert!(grant["github"]["api"].is_string(), "{grant}");
+                assert!(
+                    listed["githubApi"].as_str().unwrap().contains("git credential fill"),
+                    "{listed}"
                 );
+                assert!(listed.get("githubError").is_none(), "{listed}");
                 assert_eq!(listed["repoRequests"][0]["repo"], "acme/talaria-app-notes");
                 assert_eq!(listed["repoRequests"][0]["status"], "rejected");
                 assert_eq!(listed["repoRequests"][0]["note"], "use acme/wiki instead");
+
+                // An admin's set: the token carries what the installation
+                // holds of it, metadata always, and the rest is shortfall.
+                sqlx::query(
+                    "insert into agent_github_permissions (agent_id, host_id, permissions) \
+                     values ($1::uuid, 'github', $2)",
+                )
+                .bind(&agent_id)
+                .bind(json!({ "contents": "write", "workflows": "write" }))
+                .execute(&pg)
+                .await
+                .unwrap();
+                let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
+                let github = &listed["grants"][0]["github"];
+                assert_eq!(github["isDefault"], false);
+                assert_eq!(github["carries"], json!({ "contents": "write", "metadata": "read" }));
+                assert_eq!(github["shortfall"], json!({ "workflows": "write" }));
+
+                // A workspace secret granted to the agent and spendable at
+                // github.com answers git first: the token is that secret,
+                // and nothing is claimed about what it carries.
+                let secret: String = sqlx::query_scalar(
+                    "insert into workspace_secrets (name, title, allowed_hosts) \
+                     values ('wbrevise-github', 'WB Revise GitHub', '{github.com}') returning id::text",
+                )
+                .fetch_one(&pg)
+                .await
+                .unwrap();
+                sqlx::query(
+                    "insert into workspace_secret_grants (secret_id, agent_model) values ($1::uuid, $2)",
+                )
+                .bind(&secret)
+                .bind(MODEL)
+                .execute(&pg)
+                .await
+                .unwrap();
+                let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
+                let github = &listed["grants"][0]["github"];
+                assert_eq!(github["narrowing"], "workspaceSecret", "{github}");
+                assert_eq!(github["secret"], "wbrevise-github");
+                assert_eq!(github["carries"], Value::Null);
             })
             .await;
 

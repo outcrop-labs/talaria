@@ -1617,17 +1617,16 @@ pub struct HostCredential {
     pub name: String,
 }
 
-pub async fn credential_for_host(
+/// The secret git's ask at `host` is answered from for `agent_model`, as
+/// `(id, name)`, chosen before anything is opened or spent: granted to the
+/// agent (directly or through its folder), a non-empty Spendable-at list
+/// that covers `host` and no host in `withheld`, not expired, not used up.
+async fn host_secret(
     pg: &PgPool,
-    sb: &SecretBox,
     agent_model: &str,
-    host: &str,
+    lower: &str,
     withheld: &[String],
-) -> Result<Option<HostCredential>, String> {
-    let lower = host.trim().to_lowercase();
-    if lower.is_empty() {
-        return Ok(None);
-    }
+) -> Result<Option<(String, String)>, String> {
     let rows = sqlx::query(
         "select s.id::text, s.name, s.title, coalesce(s.allowed_hosts, '{}') as allowed_hosts \
            from workspace_secrets s \
@@ -1643,14 +1642,47 @@ pub async fn credential_for_host(
     .fetch_all(pg)
     .await
     .map_err(|e| format!("credential read: {e}"))?;
-    let Some(doc) = rows
+    Ok(rows
         .iter()
-        .find(|r| answers_git_at(&lower, &cell_hosts(r, "allowed_hosts"), withheld))
-    else {
+        .find(|r| answers_git_at(lower, &cell_hosts(r, "allowed_hosts"), withheld))
+        .map(|doc| (cell_str(doc, "id"), cell_str(doc, "name"))))
+}
+
+/// The name of the workspace secret [`credential_for_host`] would answer
+/// git's ask at `host` from, read without opening or spending it: what the
+/// agent's own diagnosis says its credential there is (talaria-git-hosts'
+/// `token_view`). None when the host's own login answers instead.
+pub async fn secret_answering_git_at(
+    pg: &PgPool,
+    agent_model: &str,
+    host: &str,
+    withheld: &[String],
+) -> Result<Option<String>, String> {
+    let lower = host.trim().to_lowercase();
+    if lower.is_empty() {
+        return Ok(None);
+    }
+    Ok(host_secret(pg, agent_model, &lower, withheld)
+        .await?
+        .map(|(_, name)| name))
+}
+
+pub async fn credential_for_host(
+    pg: &PgPool,
+    sb: &SecretBox,
+    agent_model: &str,
+    host: &str,
+    withheld: &[String],
+) -> Result<Option<HostCredential>, String> {
+    let lower = host.trim().to_lowercase();
+    if lower.is_empty() {
+        return Ok(None);
+    }
+    let Some((doc_id, doc_name)) = host_secret(pg, agent_model, &lower, withheld).await? else {
         return Ok(None);
     };
 
-    let entries = cipher_entries(pg, &cell_str(doc, "id")).await?;
+    let entries = cipher_entries(pg, &doc_id).await?;
 
     let (user_entry, pass_entry) = login_entries(&entries);
     let Some(pass_entry) = pass_entry else {
@@ -1683,7 +1715,6 @@ pub async fn credential_for_host(
     // the substitution itself. And it is the QUALIFIED handle: a
     // username/password doc has two entries, and the bare form refuses as
     // AMBIGUOUS by design.
-    let doc_name = cell_str(doc, "name");
     let spent = resolve_handles(
         pg,
         sb,
