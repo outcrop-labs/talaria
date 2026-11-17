@@ -1758,6 +1758,24 @@ CREATE TABLE public.workbench_jobs (
     host_id text DEFAULT 'github'::text NOT NULL,
     provision jsonb
 );
+CREATE TABLE public.workbench_permission_requests (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    agent_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    host_id text NOT NULL,
+    repo text NOT NULL,
+    permission text NOT NULL,
+    level text NOT NULL,
+    why text DEFAULT ''::text NOT NULL,
+    evidence jsonb,
+    task_id uuid,
+    status text DEFAULT 'pending'::text NOT NULL,
+    decided_by uuid,
+    decision_note text,
+    decided_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
     name text NOT NULL,
@@ -2210,6 +2228,8 @@ ALTER TABLE ONLY public.workbench_harness_defs
     ADD CONSTRAINT workbench_harness_defs_pkey PRIMARY KEY (slug);
 ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.workbench_profiles
     ADD CONSTRAINT workbench_profiles_pkey PRIMARY KEY (slug);
 ALTER TABLE ONLY public.workbench_repo_flow
@@ -2331,6 +2351,7 @@ CREATE INDEX usage_events_created_idx ON public.usage_events USING btree (create
 CREATE INDEX usage_events_task_idx ON public.usage_events USING btree (task_id) WHERE (task_id IS NOT NULL);
 CREATE INDEX usage_events_unpriced_generation_idx ON public.usage_events USING btree (generation_id) WHERE ((generation_id IS NOT NULL) AND (provider_cost IS NULL));
 CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, queued_at);
+CREATE UNIQUE INDEX workbench_permission_requests_one_open ON public.workbench_permission_requests USING btree (agent_id, host_id, permission) WHERE (status = ANY (ARRAY['pending'::text, 'awaiting_github'::text]));
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
 CREATE TRIGGER agent_coding_accounts_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_accounts FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
 CREATE TRIGGER agent_coding_blocks_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_account_blocks FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
@@ -2730,6 +2751,14 @@ ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id);
 ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repo_flow
     ADD CONSTRAINT workbench_repo_flow_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id);
 ALTER TABLE ONLY public.workbench_repo_requests

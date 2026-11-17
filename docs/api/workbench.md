@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-23 routes.
+24 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -47,6 +47,8 @@
 | [`/api/workbench/harnesses`](#apiworkbenchharnesses) | POST | `admin` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | GET | `session` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | PUT | `session` |
+| [`/api/workbench/permission-requests`](#apiworkbenchpermission-requests) | GET | `admin` |
+| [`/api/workbench/permission-requests`](#apiworkbenchpermission-requests) | PUT | `admin` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | GET | `admin` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | PUT | `admin` |
 | [`/api/workbench/repos/{agentId}`](#apiworkbenchreposagentid) | GET | `session` + `agent-reader` |
@@ -507,6 +509,30 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_jobs.rs`](
 | `jobId` | `uuid` |  |
 | `action` | `enum(approve|reject)` |  |
 | `note` | `string?(500)` |  |
+
+## `/api/workbench/permission-requests`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_permission_requests.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_permission_requests.rs)
+
+> /api/workbench/permission-requests. The GitHub permissions agents asked
+> for (`request_git_permission`; talaria-git-hosts' requests). GET → every
+> open request (pending, or approved and waiting on GitHub), each with what
+> GitHub's side holds, every repo the agent holds on that host (an approval
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{requests}` | 200 | — |
+| PUT | `admin` | [body](#put-apiworkbenchpermission-requests-body) | `{ok, status, permissions, appliesTo}` | 200, 400, 403, 404, 409 | — |
+
+### PUT `/api/workbench/permission-requests` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid` |  |
+| `action` | `enum(approve|deny)` |  |
+| `level` | `enum(read|write|admin)?` | The level the decider was shown, required to approve: a raise since is a 409, never a grant nobody confirmed. A denial checks it when sent. |
+| `note` | `string?(500)` | Why the decider decided: on the ticket, and in list_repos for the agent. |
 
 ## `/api/workbench/repo-requests`
 

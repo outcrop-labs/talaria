@@ -4959,6 +4959,37 @@ alter table tasks drop column if exists conversation_id`,
       and coalesce(s.value->>'clientId', '') <> ''
       and coalesce(s.value->>'clientSecretEnc', '') <> ''
       and agent_google_connections.oauth_client_id is null`,
+  // AN AGENT ASKS FOR A GITHUB PERMISSION (`request_git_permission`), and an
+  // admin decides it (talaria-git-hosts' requests, docs/WORKBENCH.md "Asking
+  // for a permission"). One row per (agent, host, permission) while open: a
+  // second raise appends to `why` and `evidence` (the partial unique index
+  // below). `repo` is where the need arose; an approval merges the key into
+  // the agent's set on the HOST (agent_github_permissions). `status`:
+  // pending → granted (the installation holds it) or awaiting_github (an org
+  // owner has not accepted it yet; a holdings refresh flips it to granted
+  // when it does), denied, or withdrawn (its last grant on the host went).
+  // A new table, so roll-safe: the previous release never reads it.
+  `create table if not exists workbench_permission_requests (
+     id uuid primary key default gen_random_uuid(),
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     agent_model text not null,
+     host_id text not null references git_hosts(id) on delete cascade,
+     repo text not null,
+     permission text not null,
+     level text not null,
+     why text not null default '',
+     evidence jsonb,
+     task_id uuid references tasks(id) on delete set null,
+     status text not null default 'pending',
+     decided_by uuid references users(id) on delete set null,
+     decision_note text,
+     decided_at timestamptz,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create unique index if not exists workbench_permission_requests_one_open
+     on workbench_permission_requests (agent_id, host_id, permission)
+     where status in ('pending', 'awaiting_github')`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

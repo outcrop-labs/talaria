@@ -29,7 +29,9 @@
 // that carries it, and writes an audit row. A permission newly accepted that
 // an admin had already given an agent on the host is effective from that
 // agent's next token: each such agent gets a
-// `workbench.github_permission_activated` row (crate::permissions).
+// `workbench.github_permission_activated` row (crate::permissions). And a
+// permission request approved ahead of GitHub (`awaiting_github`) becomes
+// granted once the installation holds it (crate::requests).
 //
 // WHO READS IT, AND HOW.
 //   · The mint (talaria-github) reads `held` through [`TableHoldings`] before
@@ -720,6 +722,15 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
     }
     if !accepted.is_empty() {
         out.activated = record_activations(pg, host_id, single, &accepted).await;
+    }
+    // Requests an admin approved ahead of GitHub are measured against what
+    // the installations hold now — every refresh, not only on a diff: a
+    // record read for the first time has nothing to diff against.
+    let settled = crate::requests::settle_awaiting(pg, host_id).await;
+    if settled > 0 {
+        tracing::info!(
+            "[git-hosts] {settled} permission request(s) on {host_id} waiting on GitHub settled"
+        );
     }
     Ok(out)
 }

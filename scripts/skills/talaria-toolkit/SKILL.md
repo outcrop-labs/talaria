@@ -34,6 +34,8 @@ Talaria IS the company workspace: tickets, knowledge, documents, channels, resea
 
 Run it as one tool call: a `TOKEN` set in one call is gone in the next. When the helper declines (the repo is not granted, or its token would carry nothing; `doctor` says which), the token is empty and the guard stops the call under the helper's reason, instead of a 401 from calling as nobody. `host=` is the host in the repo's clone URL, and the API answers at the grant's `github.api` (`https://api.github.com` for github.com). `GH_TOKEN="$TOKEN" gh api repos/OWNER/REPO/pulls` in place of curl works the same where `gh` is installed; the image does not ship it. The token is scoped to that one repository: a call about another granted repo reads that repo's token. When the API answers 403 or 404 for something your work needs, your token does not carry it: ask an admin for the permission with `request_git_permission`, and never build a way around it. The one exception is an organization key `github.carries` already lists: it rides only where GitHub takes it on a token for one repository, so a 403 on it is GitHub's limit, not a permission to ask for again.
 
+**A GitHub permission your token lacks is a request, not a problem.** When GitHub refuses something on a granted repo for want of a permission (a 403 `Resource not accessible by integration`, a push refused `without workflows permission`, an `X-Accepted-GitHub-Permissions` header naming what it needed), call the workbench's `request_git_permission` with the repo, each permission by GitHub's name at the level it wanted (`workflows` `write`), what GitHub said, and the ticket. An admin decides; `list_repos` (`permissionRequests`) shows the outcome, and so does the ticket you first asked from, and an approval reaches your next git credential. Do not retry the call or ask again while it is open, and do not `report_problem` it.
+
 **Reaching main is a human's call, not yours.** Push your work to a branch named for the ticket, let `finish_job` open the PR, and put the link in your outcome or comment — `main` is protected and will refuse your pushes, which is the design, not an error to work around. Never force-push, never rewrite history on shared branches, and never commit secrets; a person reviews and merges.
 
 ## The hard rules
@@ -65,4 +67,5 @@ Run it as one tool call: a `TOKEN` set in one call is gone in the next. When the
 | Call the GitHub API | the repo's own token, read for one command (The GitHub API, above); what it carries is in `list_repos` |
 | Build or maintain a Talaria app | **talaria-apps** skill — a repo of its own, `@talaria/sdk`, checked with `talaria-app`, never Rust |
 | A talaria tool isn't in your tool list | deferred, not missing — `tool_search("talaria")`, then call by exact name |
+| GitHub refused for want of a permission | `request_git_permission` (workbench) |
 | Something is broken | `report_problem` |

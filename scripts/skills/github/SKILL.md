@@ -37,3 +37,10 @@ carries (`github.carries`): an admin sets that per agent, by default contents
 and pull requests to write and metadata to read. Never print or store the
 token. A permission it does not carry is an ask, not a workaround: request it
 with `request_git_permission`.
+
+When GitHub refuses something on a granted repo because your credential lacks
+a permission (`Resource not accessible by integration`, a push refused
+`without workflows permission`), do not create a token and do not report it
+as broken: ask for it with the workbench's `request_git_permission` (the repo,
+each permission by GitHub's name and level, what GitHub said). An admin
+decides, and `list_repos` shows the outcome.

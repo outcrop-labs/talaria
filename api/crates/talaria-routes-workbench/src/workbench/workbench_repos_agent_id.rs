@@ -5,8 +5,9 @@
 // list); PUT → replace the grant set (validated against the pool; a host
 // whose reach could not be read keeps the grants it has). The agent's
 // managers. Every grant added or removed is audited
-// (`workbench.repo_grant`), and a removed grant's tokens are revoked in
-// every api process.
+// (`workbench.repo_grant`), a removed grant's tokens are revoked in every
+// api process, and the agent's open GitHub permission requests on a host
+// where it holds no repo any more are withdrawn.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -267,6 +268,12 @@ async fn record_grant_change(
     };
     let added: Vec<Value> = change.added.iter().map(entry).collect();
     let removed: Vec<Value> = change.removed.iter().map(entry).collect();
+    let mut after = json!({ "added": added, "removed": removed });
+    if !change.withdrawn.is_empty() {
+        // The permission requests the write withdrew (its last grant on
+        // their host went).
+        after["withdrawnRequests"] = json!(change.withdrawn);
+    }
     log_audit(
         &state.pg,
         AuditEntry {
@@ -276,10 +283,23 @@ async fn record_grant_change(
             target_id: Some(agent_id),
             target_label: Some(agent_label),
             before: None,
-            after: Some(json!({ "added": added, "removed": removed })),
+            after: Some(after),
         },
     )
     .await;
+    // A GitHub permission request withdrawn with the agent's last grant on
+    // its host is no longer anyone's to decide: its approval reads.
+    if !change.withdrawn.is_empty() {
+        let notify =
+            talaria_notify::NotifyDeps::publishing(state.pg.clone(), state.redis().await.ok());
+        for id in &change.withdrawn {
+            talaria_approvals::resolve_approval(
+                &notify,
+                &talaria_git_hosts::requests::approval_key(id),
+            )
+            .await;
+        }
+    }
     if change.removed.is_empty() {
         return;
     }

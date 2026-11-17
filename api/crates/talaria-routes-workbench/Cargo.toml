@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 talaria-agent-managers = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-approvals = { workspace = true }
 talaria-attribution = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-boards = { workspace = true }
@@ -34,6 +35,7 @@ talaria-research = { workspace = true }
 talaria-research-origin = { workspace = true }
 talaria-session = { workspace = true }
 talaria-state = { workspace = true }
+talaria-statuses = { workspace = true }
 talaria-tasks = { workspace = true }
 talaria-teams = { workspace = true }
 talaria-users = { workspace = true }
