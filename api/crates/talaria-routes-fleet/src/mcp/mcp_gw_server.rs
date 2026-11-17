@@ -1466,56 +1466,108 @@ async fn google_refused(
     let body = first.text().await.unwrap_or_default();
     talaria_error::log_upstream_error(&format!("mcp-gw:google-{}", g.product.id), status, &body);
     let refusal = read(status, &body);
-    if status != 401 {
-        // A 403 may be one file or one quota: recorded, never flagged. Any
-        // other refusal (429, 5xx, 4xx) is only relayed in Google's words.
-        let refusal = if status == 403 {
-            record(refusal, false).await
+    // Google's first refusal of the stored token: answered now, unless it
+    // is a 401 — the token's own — which earns one retry on a fresh token.
+    if let GoogleErrorStep::Answer { record: keep, flag } = first_google_error(status) {
+        let refusal = if keep {
+            record(refusal, flag).await
         } else {
             refusal
         };
-        return Err(answer(&refusal, false));
+        return Err(answer(&refusal, flag));
     }
-    // 401: the token itself. Once more, on a fresh one.
     if let Err(e) = forget_access_token(&state.pg, &g.grant).await {
         tracing::warn!("[mcp/google] dropping the cached token failed: {e}");
     }
     let now = talaria_agent_auth::now_ms();
     let fresh = match vend_for_caller(&state.pg, sb, subject, Purpose::HostedMcp, now).await {
-        Ok(Vend::Token(t)) => t.token,
+        Ok(Vend::Token(t)) => Some(t.token),
         // The door has nothing for this principal now — the refresh itself
-        // was refused (and recorded where it belongs) or the grant went.
-        _ => {
-            let refusal = record(refusal, false).await;
-            return Err(answer(&refusal, false));
-        }
+        // was refused (and recorded where it belongs, in Google's words) or
+        // the grant went.
+        _ => None,
     };
-    let second = match resend(fresh).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            talaria_error::log_upstream_error(
-                &format!("mcp-gw:google-{}", g.product.id),
-                "unreachable",
-                &e.to_string(),
-            );
-            let refusal = record(refusal, false).await;
-            return Err(answer(&refusal, false));
-        }
+    let second = match fresh {
+        Some(token) => match resend(token).send().await {
+            Ok(r) => Some(r),
+            Err(e) => {
+                talaria_error::log_upstream_error(
+                    &format!("mcp-gw:google-{}", g.product.id),
+                    "unreachable",
+                    &e.to_string(),
+                );
+                None
+            }
+        },
+        None => None,
+    };
+    let Some(second) = second else {
+        let (keep, flag) = NO_FRESH_TOKEN;
+        let refusal = if keep {
+            record(refusal, flag).await
+        } else {
+            refusal
+        };
+        return Err(answer(&refusal, flag));
     };
     let status = second.status().as_u16();
-    if status < 400 {
+    let Some((keep, flag)) = retried_google_error(status) else {
         return Ok(second);
-    }
+    };
     let body = second.text().await.unwrap_or_default();
     talaria_error::log_upstream_error(&format!("mcp-gw:google-{}", g.product.id), status, &body);
-    let flag = status == 401;
     let refusal = read(status, &body);
-    let refusal = if matches!(status, 401 | 403) {
+    let refusal = if keep {
         record(refusal, flag).await
     } else {
         refusal
     };
     Err(answer(&refusal, flag))
+}
+
+/// What the relay does with Google's first HTTP error on a Google Workspace
+/// MCP call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoogleErrorStep {
+    /// Drop the cached token, vend a fresh one and send once more.
+    Retry,
+    /// Answer the agent in Google's words; `record` keeps the refusal on the
+    /// grant, `flag` also sets its reconnect reason.
+    Answer { record: bool, flag: bool },
+}
+
+/// Google's first refusal: a 401 is the token's, and earns one retry on a
+/// fresh token; a 403 is recorded and never flags (one file, one quota);
+/// anything else (429, 4xx, 5xx) is only quoted.
+fn first_google_error(status: u16) -> GoogleErrorStep {
+    match status {
+        401 => GoogleErrorStep::Retry,
+        403 => GoogleErrorStep::Answer {
+            record: true,
+            flag: false,
+        },
+        _ => GoogleErrorStep::Answer {
+            record: false,
+            flag: false,
+        },
+    }
+}
+
+/// A 401 with no fresh token to retry on (the door refused, or the resend
+/// never got an answer): the first refusal is recorded, unflagged — the
+/// door's own refusal already recorded what it learned.
+const NO_FRESH_TOKEN: (bool, bool) = (true, false);
+
+/// The retried call's answer: None relays it (no refusal); otherwise
+/// `(record, flag)` — a 401 a fresh token did not cure flags the grant for a
+/// reconnect; a 403 is recorded only; anything else is only quoted.
+fn retried_google_error(status: u16) -> Option<(bool, bool)> {
+    match status {
+        s if s < 400 => None,
+        401 => Some((true, true)),
+        403 => Some((true, false)),
+        _ => Some((false, false)),
+    }
 }
 
 /// GET — the streamable-HTTP notification stream (server → client): plain
@@ -2139,6 +2191,41 @@ mod tests {
             );
         }
         assert!(google_refusal(None, &server, &g).is_none());
+    }
+
+    /// Every HTTP error Google can answer a relayed call with, first and
+    /// after the retry: only a 401 retries; only a 401 that a fresh token
+    /// did not cure flags the grant; 401 and 403 are recorded; the rest are
+    /// only quoted; a retried success is relayed.
+    #[test]
+    fn what_each_google_error_does_to_the_grant() {
+        assert_eq!(first_google_error(401), GoogleErrorStep::Retry);
+        assert_eq!(
+            first_google_error(403),
+            GoogleErrorStep::Answer {
+                record: true,
+                flag: false
+            }
+        );
+        for other in [400, 404, 429, 500, 502, 503] {
+            assert_eq!(
+                first_google_error(other),
+                GoogleErrorStep::Answer {
+                    record: false,
+                    flag: false
+                },
+                "{other}"
+            );
+        }
+        assert_eq!(NO_FRESH_TOKEN, (true, false));
+        for ok in [200, 202, 204, 302] {
+            assert_eq!(retried_google_error(ok), None, "{ok}");
+        }
+        assert_eq!(retried_google_error(401), Some((true, true)));
+        assert_eq!(retried_google_error(403), Some((true, false)));
+        for other in [400, 404, 429, 500] {
+            assert_eq!(retried_google_error(other), Some((false, false)), "{other}");
+        }
     }
 
     #[test]

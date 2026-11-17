@@ -290,9 +290,9 @@ refusal and the agent record all read through it:
    grant sits in. So when the connections client was flipped to agentic,
    every stored grant already qualifies, with no reconnect.
 
-Nothing calls Google's MCP servers for an agent yet. The Workspace MCP pack
-is a later change, and so is a separate agent client (full separation). The
-agent record shows what such a call would do today: `GET
+The Workspace MCP pack (below) is the door's first `HostedMcp` caller. A
+separate agent client (full separation) is a later change. The agent record
+shows what such a call would do: `GET
 /api/fleet/defs/{id}/google` carries `agentic` (`verified`,
 `declared_agentic`, `declared_not_agentic`, `unknown`, or null with no
 recorded client) and `mcpRefusal`: why such a call would be refused and the
@@ -301,6 +301,117 @@ account's grant for an `org` agent too, as they already did for the other
 two kinds. The org account's address and its `reconnectReason` stay
 admin-only, as on the org connection's own routes: an agent manager who is
 not an admin reads them as null.
+
+### Google's Workspace MCP servers (Developer Preview)
+
+Google runs its own MCP servers for Gmail, Drive, Calendar, Docs, Sheets,
+Slides, Chat, People and Universal Search. Talaria can put them behind its MCP
+gateway, **off by default and per instance**, read-only in this release. They
+are in Google's **Developer Preview**, whose terms say: "features in Developer
+Preview may not be included in public applications prior to the General
+Availability announcement." (<https://developers.google.com/workspace/preview>).
+Talaria's own Google tools (the `talaria` toolkit's `read_email`,
+`draft_email`, `read_calendar` and the rest) are unchanged and stay the
+primary surface; nothing is superseded before Google announces GA.
+
+**Turning one on.** Admin → Org → **Google Workspace MCP**. Each product has a
+switch; enabling it asks the admin to acknowledge the preview terms
+(`POST /api/admin/google/mcp/{product}` with `acknowledgePreview: true`,
+audited as `google.mcp_enable`). It creates one registry row,
+`google-<product>` with `auth_mode = 'google'`, **assigned to no agent**, and
+asks Google for its catalog. Assign it to agents on the MCP page like any
+other server; the owner-access and team rules apply unchanged. Disabling
+(`DELETE …/{product}`, `google.mcp_disable`) removes the row and its
+assignments. The row's address, credentials and auth mode belong to the pack:
+the MCP page refuses to change them, and the custom-URL form refuses Google's
+Workspace MCP hosts (`*mcp.googleapis.com`, `people.googleapis.com/mcp`) with
+a sentence naming the pack. Registered by URL they would take no Google grant,
+and every call would come back as Google's refusal.
+
+**Whose account a call uses.** Each call speaks as the calling agent's own
+Google principal, through the one door with `Purpose::HostedMcp`:
+
+- `owner` → that person's own connection; an owner with none is told to
+  connect Google in Settings → Connections, and the org account is **never**
+  used instead.
+- `org` → the org account (Admin → Org).
+- `agent` → the agent's own identity (its page).
+
+A legacy shared-key caller is refused outright. A grant minted by a client
+declared *Unticked* for "Use this client for an AI-powered agent", with no
+acceptance from Google on record, never reaches Google: the agent reads the
+door's sentence (the JSON-RPC `-32001` answer the gateway gives a server that
+is not connected). A token that cannot be had reads in Google's words. The
+bearer is injected by the gateway; refresh and access tokens never enter an
+agent's container, a tool result or a log. Calls go to the product's endpoint
+as the code names it, never to the row's stored URL.
+
+**What runs.** A tool runs only when it is on the pinned read list
+(`talaria-google-mcp`'s `policy::READ_LIST`: every tool Google's live catalogs
+marked `readOnlyHint: true` on 2026-11-17) **and** the server's cached catalog
+marks it `readOnlyHint: true`. Google calls tool annotations untrusted hints,
+so neither fact is enough alone. Everything else is refused before anything
+reaches Google, with a sentence that says nothing was sent:
+
+| Default | Tools | In this release |
+|---|---|---|
+| **allow** | the pinned reads, e.g. Gmail `search_threads`, `get_thread`, `list_labels`; Calendar `list_events`, `suggest_time`; Drive `search_files`, `read_file_content`; Docs `read_doc` | relayed |
+| **hold** | every write (Gmail `create_draft` and the label tools, Calendar `create_event`/`update_event`/`delete_event`/`respond_to_event`, Drive `create_file`/`copy_file`, Docs/Sheets/Slides updates, Chat `send_message`), and any tool Google adds later | **refused**: a person approves each held call once that approval ships; until then none runs |
+| **deny** | trash and untrash, mark and unmark spam, `apply_sensitive_*` | refused, always |
+
+A call whose arguments name a workspace secret (`«secret:…»`) is refused too:
+secrets are never sent to Google's Workspace MCP servers.
+
+**Scopes come from Google.** Each tool's protected-resource document
+(`https://<server>/.well-known/oauth-protected-resource/<tool>`, RFC 9728)
+lists the scopes Google accepts for it. The catalog refresh stores that list
+per tool (`requiredScopesAnyOf`), and a call whose grant holds none of them is
+answered before Google is asked: which scopes the tool takes, and whether a
+reconnect would grant one. Talaria's personal connect (`drive`,
+`calendar.events`, `gmail.modify`, `gmail.send`) covers every pinned read but
+Calendar's `list_calendars` (it takes `calendar`, `calendar.readonly` or the
+calendar-list scopes; the org connect's `calendar` covers it) and the Chat and
+People tools, whose scopes no Talaria connect asks for.
+
+**When Google refuses.** The agent reads Google's words, quoted, as a tool
+result with `isError` (an HTTP 401 handed to the agent's own MCP client would
+send it looking for an OAuth flow Talaria owns). A 401 or 403 is also stored
+on the grant as `last_mcp_refusal` (`{status, text, tool, at}`), and the admin
+panel lists the latest. A 401 drops the cached token and retries once on a
+fresh one; a 401 that persists sets the grant's `reconnect_reason` with
+Google's words, until its next successful refresh. A 403 never flags: it may
+be one file or one quota. A 429 or 5xx is only quoted. No refusal is matched
+for a class: Google's answer to a client not marked for AI agents has not been
+captured.
+
+**What the operator does in Google Cloud.**
+1. Enrol the Workspace account and the Google Cloud project in the [Google
+   Workspace Developer Preview Program](https://developers.google.com/workspace/preview).
+2. Enable each product's REST API **and** its MCP service — the panel prints
+   the command, e.g. `gcloud services enable gmailmcp.googleapis.com
+   gmail.googleapis.com calendarmcp.googleapis.com calendar-json.googleapis.com`.
+   People has no MCP service of its own; Universal Search is
+   `workspacemcp.googleapis.com`. Chat also needs a Chat app with interactive
+   features turned off.
+3. Mark the connections client "Use this client for an AI-powered agent", say
+   so on its card, and press **Check with Google**.
+
+**What is not proven live.** Nobody here is enrolled in the Developer Preview,
+so no authenticated call to Google's Workspace MCP servers has been made. The
+catalogs, the per-tool protected-resource documents, the `initialize` answer
+and the 401 bodies were captured from Google without a credential on
+2026-11-17 (`api/crates/talaria-google-mcp/fixtures/`). An accepted
+`tools/call`, a 403, an authenticated `tools/list` (it may differ from the
+unauthenticated one), elicitation or MRTR on a read, and Google's refusal of an
+unmarked client are all still unobserved.
+
+**Testing against a stand-in.** A DEBUG build only (`talaria dev`'s `cargo
+run`, or CI's `--api-from-ci` artifact) reads
+`TALARIA_TEST_GOOGLE_MCP_ORIGINS=gmail=http://127.0.0.1:7811,calendar=…` and
+sends those products' calls to a loopback stub instead of Google; anything but
+a loopback `http://` origin is ignored, and a release build has no such
+variable. The gateway's address guard still applies, so the stack also needs
+`TALARIA_FETCH_ALLOW_HOSTS=127.0.0.1`.
 
 ### Which client a connection refreshes with
 
