@@ -4881,6 +4881,53 @@ alter table tasks drop column if exists conversation_id`,
      error text,
      primary key (host_id, installation_id)
    )`,
+  // EVERY GOOGLE CONNECTION REMEMBERS THE CLIENT THAT MINTED IT
+  // (docs/GOOGLE-WORKSPACE.md "Which client a connection refreshes with").
+  // OAuth binds a refresh token to the client it was issued to, so each token
+  // store records that client and refreshes with it wherever it now sits
+  // (talaria-google-connections' vend_grant): an operator may move a client
+  // between the connections and sign-in slots without stranding a grant.
+  // `reconnect_reason` is Google's words from the last time it refused that
+  // client (invalid_client, unauthorized_client) — the grant is kept, never
+  // cleared, and a successful refresh forgets it; `reconnect_flagged_at` is
+  // when that refusal was first seen. Nullable columns, so roll-safe: the
+  // previous release neither reads nor writes them (a reconnect it stores
+  // keeps the old stamp until the next refresh corrects it).
+  `alter table google_connections
+     add column if not exists oauth_client_id text,
+     add column if not exists reconnect_reason text,
+     add column if not exists reconnect_flagged_at timestamptz`,
+  `alter table google_org_connection
+     add column if not exists oauth_client_id text,
+     add column if not exists reconnect_reason text,
+     add column if not exists reconnect_flagged_at timestamptz`,
+  `alter table agent_google_connections
+     add column if not exists oauth_client_id text,
+     add column if not exists reconnect_reason text,
+     add column if not exists reconnect_flagged_at timestamptz`,
+  // The grants stored before this: every refresh so far ran on the Admin
+  // UI's connections record whenever it was complete, so that record's
+  // client is the one they refresh with today. An install configured in
+  // ui/.env has no record to read here; its grants are stamped on their next
+  // refresh, by asking Google which configured client accepts them.
+  `update google_connections set oauth_client_id = s.value->>'clientId'
+     from app_settings s
+    where s.key = 'google_oauth_client'
+      and coalesce(s.value->>'clientId', '') <> ''
+      and coalesce(s.value->>'clientSecretEnc', '') <> ''
+      and google_connections.oauth_client_id is null`,
+  `update google_org_connection set oauth_client_id = s.value->>'clientId'
+     from app_settings s
+    where s.key = 'google_oauth_client'
+      and coalesce(s.value->>'clientId', '') <> ''
+      and coalesce(s.value->>'clientSecretEnc', '') <> ''
+      and google_org_connection.oauth_client_id is null`,
+  `update agent_google_connections set oauth_client_id = s.value->>'clientId'
+     from app_settings s
+    where s.key = 'google_oauth_client'
+      and coalesce(s.value->>'clientId', '') <> ''
+      and coalesce(s.value->>'clientSecretEnc', '') <> ''
+      and agent_google_connections.oauth_client_id is null`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

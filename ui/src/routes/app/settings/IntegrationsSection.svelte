@@ -21,6 +21,11 @@
     email: string | null
     scope: string[]
     connectedAt: string | null
+    /** The OAuth client that minted the stored grant (null until recorded). */
+    clientId: string | null
+    /** Why the connection needs a person — its client is configured nowhere
+     *  here, or Google refused that client (in Google's words) — else null. */
+    reconnectReason: string | null
   }
 
   // Connected accounts. Per-user OAuth: connecting grants Talaria (and the
@@ -115,7 +120,7 @@
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1.5 text-sm font-medium text-fg">
           Google Workspace
-          {#if data?.connected}<StatusDot status="ok" />{/if}
+          {#if data?.connected}<StatusDot status={data.reconnectReason ? 'warn' : 'ok'} />{/if}
         </div>
         <div class="truncate font-mono text-[11px] text-muted">
           {data?.connected
@@ -124,6 +129,11 @@
         </div>
       </div>
       {#if data?.connected}
+        {#if data.reconnectReason}
+          <a href="/api/integrations/google/connect" class={buttonClasses({ size: 'sm' })}>
+            Reconnect
+          </a>
+        {/if}
         <Button variant="danger-outline" size="sm" onclick={() => void disconnect()}>
           Disconnect
         </Button>
@@ -133,6 +143,13 @@
         </a>
       {/if}
     </div>
+    {#if data?.connected && data.reconnectReason}
+      <!-- The server's sentence, Google's words inside it when Google refused. -->
+      <div class="mt-2 flex max-w-prose items-start gap-2 text-xs text-warning">
+        <StatusDot status="warn" class="mt-1" />
+        <span>{data.reconnectReason}</span>
+      </div>
+    {/if}
     <p class="mt-2 max-w-prose text-xs text-muted">
       Your assistant reads your mail and calendar live, finds Drive files, and drafts emails and events as you. Every send waits for your approval in the Inbox. Also powers doc/sheet export into your Drive.
     </p>

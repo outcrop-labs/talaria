@@ -6,9 +6,14 @@
 // Deliberately requireAdmin: these are org credentials, not a grantable
 // surface.
 //   GET → both clients' redacted status, which client login runs on, the
-//   panel's warnings, and the redirect URIs each client needs in Google Cloud
-//   Console · PUT `?role=connections|signin` (default connections) → save
-//   that client · DELETE `?role=…` → drop that record (env fallback resumes;
+//   panel's warnings, the redirect URIs each client needs in Google Cloud
+//   Console, and the census: every stored grant counted per OAuth client
+//   that minted it (personal, org, agent; how many carry a refusal), with
+//   the slot that client sits in now — null when it is configured nowhere,
+//   and a null clientId for grants not yet recorded · PUT
+//   `?role=connections|signin` (default connections) → save that client; a
+//   new secret forgets the refusals recorded on that client's grants · DELETE
+//   `?role=…` → drop that record (env fallback resumes;
 //   an empty sign-in slot hands login back to the connections client, and
 //   with no connections client and no AUTH_GOOGLE_HD login stops, sign-in
 //   client or not — login never runs without the connections side's domain).
@@ -20,13 +25,16 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use talaria_api_facades::google::client::configured_google_clients;
 use talaria_api_facades::google::client::{
     ClientConfigPatch, ClientRole, GoogleClientStatus, agentic_declaration,
     clear_google_client_config, client_evidence, client_warnings, declare_agentic,
     google_client_status, google_login_enabled, google_login_pinned_by_env,
     resolve_google_signin_client, set_google_client_config,
 };
-use talaria_api_facades::google::connections::get_connection_status;
+use talaria_api_facades::google::connections::{
+    clear_client_flags, get_connection_status, grant_census,
+};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
     nullable_boolean_member, nullable_optional_string_member, parse, string_member,
@@ -83,6 +91,35 @@ fn answer(clients: &Clients) -> Response {
     .into_response()
 }
 
+/// Stored grants per minting client, each with the slot that client sits in
+/// now (`role`, `source`) — null for a client configured nowhere, whose
+/// grants answer a named reconnect. The census an operator reads before and
+/// after moving clients between slots.
+async fn census(state: &AppState, sb: &SecretBox) -> Result<Vec<serde_json::Value>, sqlx::Error> {
+    let (rows, configured) = tokio::join!(
+        grant_census(&state.pg),
+        configured_google_clients(&state.pg, sb)
+    );
+    Ok(rows?
+        .into_iter()
+        .map(|c| {
+            let slot = c
+                .client_id
+                .as_deref()
+                .and_then(|id| configured.iter().find(|k| k.client_id == id));
+            json!({
+                "clientId": c.client_id,
+                "role": slot.map(|k| k.role.as_str()),
+                "source": slot.map(|k| k.source),
+                "personal": c.personal,
+                "org": c.org,
+                "agent": c.agent,
+                "flagged": c.flagged,
+            })
+        })
+        .collect())
+}
+
 /// Each role's list is exactly what that client must have registered: the
 /// three connect callbacks on the connections client, the login callback on
 /// the sign-in client — and on the connections client too while login still
@@ -124,13 +161,18 @@ pub async fn get(
         talaria_api_facades::google::oauth::resolve_origin(origin.as_deref(), &headers, &uri);
     // The admin's OWN account connection — drives the "connect your account"
     // affordance in the panel (offered only once a client resolves).
-    let (clients, conn) = tokio::join!(
+    let (clients, conn, census) = tokio::join!(
         read_clients(&state, &sb),
-        get_connection_status(&state.pg, &user.id)
+        get_connection_status(&state.pg, &user.id),
+        census(&state, &sb)
     );
     let conn = match conn {
         Ok(c) => c,
         Err(e) => return Ok(internal("[admin/google-client] connection read failed", e)),
+    };
+    let census = match census {
+        Ok(c) => c,
+        Err(e) => return Ok(internal("[admin/google-client] census read failed", e)),
     };
     Ok(Json(json!({
         "status": clients.connections,
@@ -141,6 +183,7 @@ pub async fn get(
         "warnings": client_warnings(&clients.connections, &clients.signin, clients.login_enabled),
         "personalConnected": conn.connected,
         "redirectUris": redirect_uris(&origin, clients.signin.configured),
+        "census": census,
     }))
     .into_response())
 }
@@ -192,6 +235,15 @@ pub async fn put(
     if let Err(e) = set_google_client_config(&state.pg, &sb, role, &patch).await {
         // The one refusal is a client id that trims to nothing — a 500.
         return Ok(internal("[admin/google-client] set failed", e));
+    }
+    // A new secret may be the fix for a refusal recorded on this client's
+    // grants: forget those, and let the next refresh ask Google again.
+    if client_secret
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+        && let Err(e) = clear_client_flags(&state.pg, client_id.trim()).await
+    {
+        tracing::error!("[admin/google-client] clearing refusal flags failed: {e}");
     }
     // `after` carries hd only when the body's hd was a string — '' rides,
     // null/absent are dropped.

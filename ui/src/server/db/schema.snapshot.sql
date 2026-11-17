@@ -177,7 +177,10 @@ CREATE TABLE public.agent_google_connections (
     access_expires_at timestamp with time zone,
     connected_by uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    oauth_client_id text,
+    reconnect_reason text,
+    reconnect_flagged_at timestamp with time zone
 );
 CREATE TABLE public.agent_google_oauth_states (
     state text NOT NULL,
@@ -776,7 +779,10 @@ CREATE TABLE public.google_connections (
     access_token_enc text,
     access_expires_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    oauth_client_id text,
+    reconnect_reason text,
+    reconnect_flagged_at timestamp with time zone
 );
 CREATE TABLE public.google_org_connection (
     id integer DEFAULT 1 NOT NULL,
@@ -793,6 +799,9 @@ CREATE TABLE public.google_org_connection (
     calendar_id text,
     send_as text,
     shared_drive_id text,
+    oauth_client_id text,
+    reconnect_reason text,
+    reconnect_flagged_at timestamp with time zone,
     CONSTRAINT google_org_connection_id_check CHECK ((id = 1))
 );
 CREATE TABLE public.google_pending_actions (

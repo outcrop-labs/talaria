@@ -77,7 +77,8 @@ async fn scratch(tag: &str, sb: &SecretBox) -> (PgPool, PgPool, String, String) 
             "create table {schema}.google_connections (user_id uuid primary key, google_sub text not null, \
              email text, scope text not null default '', refresh_token_enc text, access_token_enc text, \
              access_expires_at timestamptz, created_at timestamptz not null default now(), \
-             updated_at timestamptz not null default now())"
+             updated_at timestamptz not null default now(), oauth_client_id text, \
+             reconnect_reason text, reconnect_flagged_at timestamptz)"
         ),
         format!(
             "create table {schema}.app_settings (key text primary key, value jsonb not null, \
@@ -207,6 +208,18 @@ async fn a_refused_client_releases_the_row_and_quotes_google() {
     .await
     .expect("connection");
     assert!(kept.is_some(), "a refused client never clears the grant");
+    // ...and the row carries Google's words for the cards.
+    let flagged: Option<String> = sqlx::query_scalar(
+        "select reconnect_reason from google_connections where user_id = $1::uuid",
+    )
+    .bind(OWNER)
+    .fetch_one(&pg)
+    .await
+    .expect("flag");
+    assert_eq!(
+        flagged.as_deref(),
+        Some("invalid_client: The OAuth client was not found.")
+    );
 
     teardown(pg, &admin, &schema).await;
 }
@@ -261,7 +274,7 @@ async fn a_fault_before_google_is_called_still_releases_the_row() {
     // real database fault.
     sqlx::query(
         "create table google_org_connection (id int primary key, refresh_token_enc text, \
-         access_token_enc text, access_expires_at timestamptz)",
+         access_token_enc text, access_expires_at timestamptz, oauth_client_id text)",
     )
     .execute(&pg)
     .await

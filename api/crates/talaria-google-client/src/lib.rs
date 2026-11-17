@@ -20,6 +20,13 @@
 // no domain written down anywhere, the sign-in client does not run login at
 // all: removing the connections client turns login off, as it always did.
 //
+// A slot names the client NEW grants are minted with. A stored grant
+// remembers the client that minted it (`oauth_client_id` on each token row)
+// and refreshes with that client wherever it now sits — either slot, or an
+// env pair an Admin record shadows (`configured_google_clients`,
+// `resolve_google_client_by_id`). Moving a client from one slot to the other
+// therefore strands no grant; removing it everywhere does, by name.
+//
 // Each client also carries what is known about its agentic mark, keyed by
 // client id in `google_client_evidence` (env pins for headless installs).
 // Google exposes no API and no token claim for the mark, so for now the only
@@ -198,6 +205,76 @@ fn connections_hd(
             .or_else(|| env_hd(env))
             .map(Some),
     }
+}
+
+/// Every client this server can refresh a stored grant with, in the order a
+/// grant that does not yet know its client tries them: the connections
+/// client (record, else env), the connections env pair when the record
+/// shadows a different one, the sign-in slot's own client, and the sign-in
+/// env pair when its record shadows a different one. One entry per client id,
+/// the first slot it sits in. A shadowed env pair is here on purpose: a
+/// grant minted by it before an Admin record took over the slot still
+/// refreshes with it.
+fn configured_with(
+    conn_stored: &Value,
+    signin_stored: &Value,
+    open: &dyn Fn(&str) -> Option<String>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Vec<GoogleClient> {
+    let none: &dyn Fn(&str) -> Option<String> = &|_| None;
+    let empty = empty_object();
+    let signin_hd = connections_hd(conn_stored, open, env).flatten();
+    let mut out: Vec<GoogleClient> = Vec::new();
+    let mut push = |client: GoogleClient| {
+        if !out.iter().any(|c| c.client_id == client.client_id) {
+            out.push(client);
+        }
+    };
+    if let Some(client) = pick_connections(conn_stored, open, env) {
+        push(client);
+    }
+    // The env pair alone: an empty record makes `pick_connections` read env.
+    if let Some(client) = pick_connections(&empty, none, env) {
+        push(client);
+    }
+    for stored in [signin_stored, &empty] {
+        if let Some((client_id, client_secret, source)) =
+            own_client(ClientRole::SignIn, stored, open, env)
+        {
+            push(GoogleClient {
+                client_id,
+                client_secret,
+                hd: signin_hd.clone(),
+                source,
+                role: ClientRole::SignIn,
+            });
+        }
+    }
+    out
+}
+
+/// Every client a stored grant can refresh with (`configured_with`'s order).
+/// Every read is fresh.
+pub async fn configured_google_clients(pg: &PgPool, sb: &SecretBox) -> Vec<GoogleClient> {
+    let conn = stored_record(pg, ClientRole::Connections).await;
+    let signin = stored_record(pg, ClientRole::SignIn).await;
+    configured_with(&conn, &signin, &|enc| sb.open(enc).ok(), &process_env)
+}
+
+/// The configured client with this id, in whichever slot or env twin it sits,
+/// or None when no slot holds it any more. A stored grant refreshes with the
+/// client that minted it, so moving that client to the other slot (or
+/// replacing the slot's record while the old env pair stays set) keeps the
+/// grant alive.
+pub async fn resolve_google_client_by_id(
+    pg: &PgPool,
+    sb: &SecretBox,
+    client_id: &str,
+) -> Option<GoogleClient> {
+    configured_google_clients(pg, sb)
+        .await
+        .into_iter()
+        .find(|c| c.client_id == client_id)
 }
 
 /// The client login runs on: the sign-in slot's own client when it has one
@@ -844,6 +921,90 @@ mod tests {
             ("AUTH_GOOGLE_SIGNIN_CLIENT_SECRET", "se"),
         ]);
         assert!(pick_connections(&empty_object(), &open, &signin_only).is_none());
+    }
+
+    fn ids(clients: &[GoogleClient]) -> Vec<(&str, ClientRole, &'static str)> {
+        clients
+            .iter()
+            .map(|c| (c.client_id.as_str(), c.role, c.source))
+            .collect()
+    }
+
+    #[test]
+    fn every_configured_client_is_found_by_id_in_trial_order() {
+        let conn = record("conn-a", Some("sa"), Some("radhires.com"));
+        let signin = signin_record("signin-b", Some("sb"));
+        let env = env_of(&[
+            ("AUTH_GOOGLE_CLIENT_ID", "conn-env"),
+            ("AUTH_GOOGLE_CLIENT_SECRET", "ce"),
+            ("AUTH_GOOGLE_SIGNIN_CLIENT_ID", "signin-env"),
+            ("AUTH_GOOGLE_SIGNIN_CLIENT_SECRET", "se"),
+        ]);
+        let all = configured_with(&conn, &signin, &open, &env);
+        // Connections first (the record, then the env pair it shadows), then
+        // the sign-in slot's own, then its shadowed env pair.
+        assert_eq!(
+            ids(&all),
+            [
+                ("conn-a", ClientRole::Connections, "admin"),
+                ("conn-env", ClientRole::Connections, "env"),
+                ("signin-b", ClientRole::SignIn, "admin"),
+                ("signin-env", ClientRole::SignIn, "env"),
+            ]
+        );
+        // Each carries its own secret, so a refresh by id sends the right pair.
+        let secret = |id: &str| {
+            all.iter()
+                .find(|c| c.client_id == id)
+                .map(|c| c.client_secret.as_str())
+        };
+        assert_eq!(secret("conn-a"), Some("sa"));
+        assert_eq!(secret("conn-env"), Some("ce"));
+        assert_eq!(secret("signin-b"), Some("sb"));
+        assert_eq!(secret("signin-env"), Some("se"));
+        assert_eq!(secret("rotated-away"), None);
+    }
+
+    #[test]
+    fn a_client_moved_between_slots_stays_one_entry_and_is_still_found() {
+        // Orientation N: the old client A moved to the sign-in slot, a new
+        // client C saved as connections. A-minted grants still find A.
+        let all = configured_with(
+            &record("conn-c", Some("sc"), None),
+            &signin_record("conn-a", Some("sa")),
+            &open,
+            &env_of(&[]),
+        );
+        assert_eq!(
+            ids(&all),
+            [
+                ("conn-c", ClientRole::Connections, "admin"),
+                ("conn-a", ClientRole::SignIn, "admin"),
+            ]
+        );
+        // The same id in a record and in env is one client, in its first slot.
+        let env = env_of(&[
+            ("AUTH_GOOGLE_CLIENT_ID", "conn-a"),
+            ("AUTH_GOOGLE_CLIENT_SECRET", "sa"),
+            ("AUTH_GOOGLE_SIGNIN_CLIENT_ID", "conn-a"),
+            ("AUTH_GOOGLE_SIGNIN_CLIENT_SECRET", "sa"),
+        ]);
+        let all = configured_with(
+            &record("conn-a", Some("sa"), None),
+            &empty_object(),
+            &open,
+            &env,
+        );
+        assert_eq!(ids(&all), [("conn-a", ClientRole::Connections, "admin")]);
+        // A half-saved record or a lost key is no client; nothing at all is
+        // an empty list.
+        let all = configured_with(
+            &record("conn-a", None, None),
+            &json!({ "clientId": "signin-b", "clientSecretEnc": "v1:lost" }),
+            &open,
+            &env_of(&[]),
+        );
+        assert!(all.is_empty());
     }
 
     #[test]

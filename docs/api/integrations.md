@@ -71,11 +71,13 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 
 > /api/integrations/google. This user's Google connection: status (never
 > exposes tokens) and disconnect (forget, and revoke unless the grant is
-> shared with another stored connection).
+> shared with another stored connection). The status names the OAuth client
+> that minted the stored grant (`clientId`, null until recorded) and, when
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{available, connected, email, scope, connectedAt}` | 200 | — |
+| GET | `session` | — | `{available, connected, email, scope, connectedAt, clientId, reconnectReason}` | 200 | — |
 | DELETE | `session` | — | `{ok, revoked, revokeNote}` | 200 | — |
 
 ## `/api/integrations/google/agent/calendar`
@@ -712,11 +714,12 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 > /api/integrations/google/org — the shared org Google connection
 > (admin-managed); general fleet agents act as this identity for
 > Drive/Docs/Calendar/Gmail. GET → status + targets · PUT → save build
-> targets · DELETE → disconnect.
+> targets · DELETE → disconnect. The status carries `clientId` (the OAuth
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{available, connected, email, scope, connectedAt, targets}` | 200 | — |
+| GET | `admin` | — | `{available, connected, email, scope, connectedAt, targets, clientId, reconnectReason}` | 200 | — |
 | PUT | `admin` | [body](#put-apiintegrationsgoogleorg-body) | `{ok, connected, email, scope, connectedAt, targets}` | 200, 400 | — |
 | DELETE | `admin` | — | `{ok, revoked, revokeNote}` | 200 | — |
 
