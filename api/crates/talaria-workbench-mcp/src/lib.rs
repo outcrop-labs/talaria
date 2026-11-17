@@ -2901,9 +2901,9 @@ fn repos_line(grants: &[hosts::RepoRef]) -> String {
 }
 
 /// How the agent reads its GitHub token for one API call: list_repos'
-/// `githubApi`. The same words as the talaria-toolkit skill's "Git and
-/// GitHub" section and the workspace AGENTS.md (talaria-fleet-render, whose
-/// test runs the command through git and the rendered helper).
+/// `githubApi`. The line is the one the talaria-toolkit skill's "The GitHub
+/// API" and the workspace AGENTS.md teach (talaria-fleet-render's
+/// `API_TOKEN_LINE`, whose test runs it through git and the rendered helper).
 pub const GITHUB_API_NOTE: &str = "The credential git gets for a GitHub repo is also your GitHub API token for that one repository, carrying what its grant's `github.carries` says. Read it for one command and spend it in that same command; never print, echo, export or store it: TOKEN=$(printf 'protocol=https\\nhost=github.com\\npath=OWNER/REPO.git\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill | sed -n 's/^password=//p') && curl -sS -H \"Authorization: Bearer $TOKEN\" <github.api>/repos/OWNER/REPO/pulls (host= is the host in the repo's clone URL; `GH_TOKEN=\"$TOKEN\" gh api repos/OWNER/REPO/...` works the same where gh is installed). A permission your set does not name is an admin's to give: ask for it with request_git_permission.";
 
 /// list_repos' `grants`: each `{host, repo}`, with `github` (talaria-git-hosts'
