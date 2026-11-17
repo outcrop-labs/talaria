@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-33 routes.
+34 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -43,6 +43,7 @@
 | [`/api/admin/google-client`](#apiadmingoogle-client) | PUT | `admin` |
 | [`/api/admin/google-client`](#apiadmingoogle-client) | DELETE | `admin` |
 | [`/api/admin/google-client/agentic`](#apiadmingoogle-clientagentic) | PUT | `admin` |
+| [`/api/admin/google-client/check`](#apiadmingoogle-clientcheck) | POST | `admin` |
 | [`/api/admin/google-client/login`](#apiadmingoogle-clientlogin) | PUT | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | GET | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | PUT | `admin` |
@@ -458,6 +459,20 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../
 | :--- | :--- | :--- |
 | `clientId` | `string(1, 200)` |  |
 | `agentic` | `bool? nullable` |  |
+
+## `/api/admin/google-client/check`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_client.rs)
+
+> /api/admin/google-client. The Google OAuth clients, by role — the
+> CONNECTIONS client every Google connection (personal, org, per-agent) runs
+> on, and the optional SIGN-IN client Google login runs on (login uses the
+> connections client while that slot is empty). Admins register them here
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings, check}` | 200, 400, 409, 502 | audit |
 
 ## `/api/admin/google-client/login`
 

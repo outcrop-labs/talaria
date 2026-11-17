@@ -79,9 +79,14 @@ pub fn parse_principal_put(
     }
 }
 
-/// The identity's wire. `clientId` is the OAuth client that minted the
-/// connection this kind uses (null for the org account, and until recorded);
-/// `reconnectReason` is why that connection needs a person, or null.
+/// The identity's wire. `connected`, `email` and `clientId` describe the
+/// grant this kind's token comes from — the owner's connection, the agent's
+/// own, or the org account's (`clientId` null until recorded);
+/// `reconnectReason` is why that grant needs a person, or null. `agentic` is
+/// what is known of its client's AI-agent mark (`verified` by Google,
+/// `declared_agentic`, `declared_not_agentic`, `unknown`; null with no
+/// recorded client), and `mcpRefusal` the sentence a Google Workspace MCP
+/// call would answer with instead of reaching Google, or null.
 async fn identity_json(state: &AppState, id: &AgentGoogleIdentity) -> Value {
     let sb = state.secretbox().await.unwrap_or_default();
     let configured = configured_google_clients(&state.pg, &sb).await;
@@ -97,6 +102,8 @@ async fn identity_json(state: &AppState, id: &AgentGoogleIdentity) -> Value {
             id.flagged.as_deref(),
             &configured,
         ),
+        "agentic": id.agentic,
+        "mcpRefusal": id.mcp_refusal,
     })
 }
 
@@ -126,7 +133,8 @@ pub async fn get(
     let Some((_, model, _)) = agent_model(&state, &id).await? else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
-    match agent_google_identity(&state.pg, &model).await {
+    let sb = state.secretbox().await.unwrap_or_default();
+    match agent_google_identity(&state.pg, &sb, &model).await {
         Ok(id) => Ok(Json(identity_json(&state, &id).await).into_response()),
         Err(e) => Ok(internal("[fleet/defs/google] identity read failed", e)),
     }
@@ -233,7 +241,8 @@ pub async fn put(
         },
     )
     .await;
-    match agent_google_identity(&state.pg, &model).await {
+    let sb = state.secretbox().await.unwrap_or_default();
+    match agent_google_identity(&state.pg, &sb, &model).await {
         Ok(id) => Ok(Json(identity_json(&state, &id).await).into_response()),
         Err(e) => Ok(internal("[fleet/defs/google] identity read failed", e)),
     }
@@ -272,7 +281,7 @@ pub async fn delete(
         },
     )
     .await;
-    match agent_google_identity(&state.pg, &model).await {
+    match agent_google_identity(&state.pg, &sb, &model).await {
         Ok(id) => {
             let mut body = identity_json(&state, &id).await;
             body["revoked"] = json!(revoke.revoked());

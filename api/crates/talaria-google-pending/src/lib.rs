@@ -14,18 +14,18 @@ use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
 use std::sync::OnceLock;
-use talaria_google_agent::get_agent_access_token;
+use talaria_google_agent::{AgentPrincipal, PrincipalKind, Purpose, Vend, vend_principal_token};
 use talaria_google_calendar::{
     CreateEventInput, cancel_event_with_token, create_event_with_token, update_event_with_token,
 };
-use talaria_google_connections::{TokenError, get_access_token};
+use talaria_google_connections::TokenError;
 use talaria_google_docs::{create_doc_with_token, update_doc_with_token};
 use talaria_google_drive::{
     create_drive_folder_with_token, move_drive_file_with_token, rename_drive_file_with_token,
 };
 use talaria_google_errors::{quote_raw, upstream_reason};
 use talaria_google_gmail::{SendInput, send_message_with_token};
-use talaria_google_org::{get_org_access_token, get_org_email, get_org_targets};
+use talaria_google_org::{get_org_email, get_org_targets};
 use talaria_google_sheets::update_sheet_with_token;
 use talaria_google_slides::{TextReplacement, replace_text_with_token};
 use talaria_realtime::RealtimeDeps;
@@ -568,32 +568,28 @@ pub async fn decide_action(
 
     // Approve → the token of the identity that was queued, not whichever
     // account is_org happens to imply. Agent rows are admin-approved
-    // (is_org) and still execute as the agent's own Google account.
-    let vended = match principal_kind.as_str() {
-        "agent" => {
-            get_agent_access_token(
-                pg,
-                sb,
-                agent_model
-                    .as_deref()
-                    .expect("agent-identity actions carry an agent model"),
-                now_ms,
-            )
-            .await
-        }
-        "owner" => {
-            get_access_token(
-                pg,
-                sb,
-                owner_user_id
-                    .as_deref()
-                    .expect("personal actions carry an owner"),
-                now_ms,
-            )
-            .await
-        }
-        _ => get_org_access_token(pg, sb, now_ms).await,
-    };
+    // (is_org) and still execute as the agent's own Google account. The
+    // agent-token door picks the grant from the stored principal (an owner
+    // row with no owner names none, never the org account's); an unknown
+    // stored kind runs as the org account, as it always has.
+    let principal = AgentPrincipal::from_kind(
+        PrincipalKind::parse(&principal_kind).unwrap_or(PrincipalKind::Org),
+        owner_user_id.clone(),
+    );
+    let vended = vend_principal_token(
+        pg,
+        sb,
+        &principal,
+        agent_model.as_deref().unwrap_or_default(),
+        Purpose::Rest,
+        now_ms,
+    )
+    .await
+    .map(|vend| match vend {
+        Vend::Token(google) => Some(google.token),
+        // `NotAgentic` is HostedMcp's alone; these actions call REST.
+        Vend::NotConnected | Vend::NotAgentic(_) => None,
+    });
     let reconnect = match principal_kind.as_str() {
         "agent" => "Reconnect this agent's Google account on its record to run this.",
         "org" => "Reconnect the org Google account to run this.",

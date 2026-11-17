@@ -1032,6 +1032,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("PUT") }),
         )
         .route(
+            "/api/admin/google-client/check",
+            post(talaria_routes_admin::admin::admin_google_client::post_check)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/admin/instance",
             get(talaria_routes_admin::admin::admin_instance::get)
                 .put(talaria_routes_admin::admin::admin_instance::put)

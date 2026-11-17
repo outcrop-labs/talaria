@@ -366,6 +366,8 @@ talaria-work-mode = { path = "crates/talaria-work-mode" }
 
 talaria-google-gmail = { path = "crates/talaria-google-gmail" }
 
+talaria-google-mcp = { path = "crates/talaria-google-mcp" }
+
 talaria-google-oauth = { path = "crates/talaria-google-oauth" }
 
 talaria-google-org = { path = "crates/talaria-google-org" }
