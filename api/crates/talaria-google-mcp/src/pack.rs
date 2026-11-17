@@ -255,6 +255,16 @@ pub fn held_sentence(
     )
 }
 
+/// What the agent reads when an identical call was approved and is running
+/// on Google right now: nothing new was queued, and it must not call again
+/// to find out.
+pub fn running_sentence(p: &Product, tool: &str, id: &str) -> String {
+    format!(
+        "An identical call ({id}) was approved and is running on Google's {} MCP server right now; nothing new was queued. Do not call \u{201c}{tool}\u{201d} again to check: read_pending_send no longer lists it once it has run.",
+        p.name
+    )
+}
+
 /// The gateway's sentence for a tool call carrying a workspace secret
 /// handle: never spent into Google's servers.
 pub const SECRET_HANDLE_REFUSAL: &str = "This call names a workspace secret («secret:…»). Secrets are never spent into Google's Workspace MCP servers, so nothing was sent to them.";
@@ -448,6 +458,12 @@ mod tests {
         assert!(owner.contains("list_pending_sends"));
         let admin = held_sentence(&GMAIL, "create_draft", "p-2", true, false);
         assert!(admin.contains("an admin approves it"));
+        let running = running_sentence(&GMAIL, "create_draft", "p-1");
+        assert!(
+            running.contains("(p-1) was approved and is running"),
+            "{running}"
+        );
+        assert!(running.contains("nothing new was queued"));
         let again = held_sentence(&GMAIL, "create_draft", "p-1", false, true);
         assert!(
             again.starts_with(

@@ -293,6 +293,17 @@ pub(super) async fn hold(
     };
     let action_id = queued.action.id.clone();
 
+    // An identical call an approval is running right now: no second row, no
+    // second card, and no unlock spent on it.
+    if queued.already_pending && queued.action.status == "executing" {
+        let sentence = pack::running_sentence(&p, tool, &action_id);
+        tracing::info!(
+            "[mcp/google] {agent_model}: {}/{tool} is already running as {action_id}",
+            server.name
+        );
+        return answer(held_reply(&id, &sentence), Outcome::Held, Some(sentence));
+    }
+
     // D7: one more call of a tool its owner approved in this conversation in
     // the last half hour runs now — a personal principal only, and only
     // while a grant for exactly this server and tool is unspent. The grant

@@ -1304,6 +1304,17 @@ mod live {
             assert!(!other.already_pending, "{tool} {agent}");
             assert_ne!(other.action.id, first.action.id);
         }
+        // While an approval runs it, a retry converges on it too: no second
+        // card whose approval would run the write twice.
+        sqlx::query("update google_pending_actions set status = 'executing' where id = $1::uuid")
+            .bind(&first.action.id)
+            .execute(&pg)
+            .await
+            .unwrap();
+        let running = queue("create_event", json!({ "summary": "Standup" }), "pa-ops").await;
+        assert!(running.already_pending);
+        assert_eq!(running.action.id, first.action.id);
+        assert_eq!(running.action.status, "executing");
         // Once decided, the same call is a fresh ask.
         sqlx::query("update google_pending_actions set status = 'rejected' where id = $1::uuid")
             .bind(&first.action.id)

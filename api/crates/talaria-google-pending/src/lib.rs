@@ -223,14 +223,16 @@ async fn find_same_pending_draft(
 ) -> Result<Option<PendingAction>, String> {
     // A held Google Workspace MCP call is the same ask when the same agent
     // called the same tool on the same server with the same arguments, for
-    // the same approver: a retried call converges on the waiting row, so one
-    // approval never runs it twice.
+    // the same approver: a retried call converges on the row still waiting —
+    // or on the one an approval is running right now (`executing`, up to the
+    // replay's two minutes), so a retry asked while it runs never becomes a
+    // second card whose approval would run the write twice.
     if input.kind == MCP_CALL {
         let row: Option<PendingRow> = sqlx::query_as(concat!(
             "select ",
             pending_columns!(),
             " from google_pending_actions \
-              where kind = 'mcp_call' and status = 'pending' \
+              where kind = 'mcp_call' and status in ('pending', 'executing') \
                 and is_org = $1 and owner_user_id is not distinct from $2::uuid \
                 and agent_model = $3 \
                 and payload->'serverId' = $4->'serverId' \
