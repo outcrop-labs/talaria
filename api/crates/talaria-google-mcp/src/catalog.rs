@@ -268,7 +268,7 @@ pub fn missing_scope_sentence(
         .iter()
         .find(|s| requestable.iter().any(|r| scope_key(r) == scope_key(s)));
     let lead = format!(
-        "Google's {} MCP server runs \u{201c}{}\u{201d} only with one of these scopes: {accepted}. This Google connection was granted none of them. Nothing was sent to Google.",
+        "Google's {} MCP server runs \u{201c}{}\u{201d} only with one of these scopes: {accepted}. This Google connection was granted none of them. Nothing was sent to Google's Workspace MCP servers.",
         p.name, m.tool
     );
     match grantable {
@@ -465,7 +465,7 @@ mod tests {
             helps.contains("Reconnect to grant calendar (needed by list_calendars)"),
             "{helps}"
         );
-        assert!(helps.contains("Nothing was sent to Google."));
+        assert!(helps.contains("Nothing was sent to Google's Workspace MCP servers."));
         let hopeless = missing_scope_sentence(&cal, &m, &["openid"], "unused");
         assert!(
             hopeless.ends_with("so reconnecting would not help."),

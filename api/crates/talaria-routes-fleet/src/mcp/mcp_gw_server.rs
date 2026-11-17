@@ -2139,7 +2139,7 @@ mod tests {
                 "{sentence}"
             );
             assert!(
-                sentence.contains("Nothing was sent to Google."),
+                sentence.contains("Nothing was sent to Google's Workspace MCP servers."),
                 "{sentence}"
             );
         }

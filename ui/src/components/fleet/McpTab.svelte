@@ -179,7 +179,7 @@
           <span
             class="rounded border border-warning/40 px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning"
             title={s.authMode === 'google'
-              ? "A Google Workspace MCP server: it acts with this agent's own Google principal (its owner's connection, the org account, or its own identity), and that account is not connected. Until it is, the agent is told who connects it."
+              ? "A Google Workspace MCP server: it acts with this agent's own Google principal (its owner's connection, the org account, or its own identity), and that account is not connected, or was connected with an OAuth client declared not marked for AI agents. Until that changes, the agent is told who fixes it."
               : s.authMode === 'per-user'
               ? 'A per-user server: the agent carries it now, and its calls work once its owner connects their account under Settings → Connections. Until then the agent is told where to connect.'
               : s.probe?.state === 'reconnect'

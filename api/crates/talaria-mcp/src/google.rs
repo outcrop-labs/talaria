@@ -171,10 +171,12 @@ pub async fn scope_of(pg: &PgPool, grant: &GrantRow) -> Option<String> {
     grant_scope(pg, grant).await.ok().flatten()
 }
 
-/// Would the door have a grant to vend for this agent? No token is read and
-/// nothing is refreshed — the render's "needs a connection" mark.
+/// Does this agent's Google principal need a connection before the door
+/// would vend it a token for Google's Workspace MCP servers — no grant, or a
+/// grant minted by a client declared not marked for AI agents? No token is
+/// read and nothing is refreshed: the render's "needs a connection" mark.
 pub async fn needs_connection(pg: &PgPool, agent_model: &str) -> bool {
-    !talaria_google_agent::principal_connected(pg, agent_model)
+    !talaria_google_agent::hosted_mcp_ready(pg, agent_model)
         .await
         .unwrap_or(false)
 }

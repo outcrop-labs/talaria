@@ -393,17 +393,28 @@ pub async fn outbound_write_refusal(
     Ok(write_refusal(&principal, connected))
 }
 
-/// Does the grant an agent's principal names hold a refresh token — would
-/// the door have something to vend? Reads the grant's face only: no token,
-/// no refresh. An owner with no user names no grant (false), never the org
-/// account's. The MCP render's "needs a connection" mark for a Google
-/// Workspace MCP server.
-pub async fn principal_connected(pg: &PgPool, agent_model: &str) -> Result<bool, sqlx::Error> {
+/// Would the door have a token for this agent to take to Google's Workspace
+/// MCP servers? Its principal's grant holds a refresh token, and that grant's
+/// minting client is not declared unticked for AI agents with no acceptance
+/// from Google on record (an unrecorded client counts, as the door counts
+/// it). Reads the grant's face and the evidence only: no token, no refresh.
+/// An owner with no user names no grant (false), never the org account's.
+/// The MCP render's "needs a connection" mark for a Google Workspace MCP
+/// server.
+pub async fn hosted_mcp_ready(pg: &PgPool, agent_model: &str) -> Result<bool, sqlx::Error> {
     let principal = load_principal(pg, agent_model).await?;
-    match principal_grant(&principal, agent_model) {
-        None => Ok(false),
-        Some(row) => Ok(grant_face(pg, &row).await?.connected),
+    let Some(row) = principal_grant(&principal, agent_model) else {
+        return Ok(false);
+    };
+    let face = grant_face(pg, &row).await?;
+    if !face.connected {
+        return Ok(false);
     }
+    let Some(client) = face.client_id.as_deref().filter(|c| !c.is_empty()) else {
+        return Ok(true);
+    };
+    let evidence = client_evidence(pg).await;
+    Ok(agentic_standing(&evidence, client) != AgenticStanding::DeclaredNotAgentic)
 }
 
 async fn load_principal(pg: &PgPool, agent_model: &str) -> Result<AgentPrincipal, sqlx::Error> {

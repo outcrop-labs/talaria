@@ -351,7 +351,9 @@ as the code names it, never to the row's stored URL.
 marked `readOnlyHint: true` on 2026-11-17) **and** the server's cached catalog
 marks it `readOnlyHint: true`. Google calls tool annotations untrusted hints,
 so neither fact is enough alone. Everything else is refused before anything
-reaches Google, with a sentence that says nothing was sent:
+reaches Google's MCP servers, with a sentence that says so (the token is
+vended first, so its refresh may already have reached Google's token
+endpoint):
 
 | Default | Tools | In this release |
 |---|---|---|

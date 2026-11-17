@@ -149,16 +149,18 @@ pub const CUSTOM_URL_REFUSAL: &str = "Google's Workspace MCP servers are added t
 
 /// The gateway's sentence for a tool it will not relay. `held` is a tool
 /// whose default is HOLD (refused while holds are not built); otherwise the
-/// tool is denied outright. Says nothing was sent.
+/// tool is denied outright. Says nothing was sent to Google's Workspace MCP
+/// servers — not "to Google": the token was vended first, and its refresh
+/// may already have reached Google's token endpoint.
 pub fn refusal_sentence(p: &Product, tool: &str, held: bool) -> String {
     if held {
         format!(
-            "\u{201c}{tool}\u{201d} on Google's {} MCP server is not one of the read-only tools this workspace runs through Google's MCP servers. A tool that changes something needs a person to approve each call, and that approval is not available for Google's MCP servers yet. Nothing was sent to Google. To change something in Google Workspace, use the talaria toolkit's own Google tools (draft_email, draft_calendar_event, update_google_doc and the rest), which follow this workspace's approval rules.",
+            "\u{201c}{tool}\u{201d} on Google's {} MCP server is not one of the read-only tools this workspace runs through Google's MCP servers. A tool that changes something needs a person to approve each call, and that approval is not available for Google's MCP servers yet. Nothing was sent to Google's Workspace MCP servers. To change something in Google Workspace, use the talaria toolkit's own Google tools (draft_email, draft_calendar_event, update_google_doc and the rest), which follow this workspace's approval rules.",
             p.name
         )
     } else {
         format!(
-            "\u{201c}{tool}\u{201d} on Google's {} MCP server is never run for an agent here: Talaria does not let an agent move mail to or out of the trash, mark or unmark spam, or apply a sensitive label through Google's MCP servers. Nothing was sent to Google.",
+            "\u{201c}{tool}\u{201d} on Google's {} MCP server is never run for an agent here: Talaria does not let an agent move mail to or out of the trash, mark or unmark spam, or apply a sensitive label through Google's MCP servers. Nothing was sent to Google's Workspace MCP servers.",
             p.name
         )
     }
@@ -166,7 +168,7 @@ pub fn refusal_sentence(p: &Product, tool: &str, held: bool) -> String {
 
 /// The gateway's sentence for a tool call carrying a workspace secret
 /// handle: never spent into Google's servers.
-pub const SECRET_HANDLE_REFUSAL: &str = "This call names a workspace secret («secret:…»). Secrets are never sent to Google's Workspace MCP servers. Nothing was sent to Google.";
+pub const SECRET_HANDLE_REFUSAL: &str = "This call names a workspace secret («secret:…»). Secrets are never spent into Google's Workspace MCP servers, so nothing was sent to them.";
 
 #[cfg(test)]
 mod tests {
@@ -260,8 +262,11 @@ mod tests {
     #[test]
     fn every_refusal_says_nothing_was_sent() {
         for held in [true, false] {
-            assert!(refusal_sentence(&GMAIL, "trash_thread", held).contains("Nothing was sent"));
+            assert!(
+                refusal_sentence(&GMAIL, "trash_thread", held)
+                    .contains("Nothing was sent to Google's Workspace MCP servers.")
+            );
         }
-        assert!(SECRET_HANDLE_REFUSAL.contains("Nothing was sent"));
+        assert!(SECRET_HANDLE_REFUSAL.contains("nothing was sent to them"));
     }
 }
