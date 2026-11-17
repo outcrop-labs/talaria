@@ -8,7 +8,9 @@
 // Workspace MCP server (the pack, Developer Preview) is listed too, as
 // `authKind: "google"`: it takes no account of its own here — your assistant
 // uses it through your Google connection (Settings → Connections → Google),
-// and `connected` says whether that connection is in place. PUT refuses it.
+// `connected` says whether that connection is in place, and `needsReconnect`
+// whether it needs you first (Google refused it last time, or it was made
+// with an OAuth client declared not marked for AI agents). PUT refuses it.
 
 use axum::Json;
 use axum::extract::State;
@@ -41,13 +43,31 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         .iter()
         .filter(|s| s.enabled && s.auth_mode == talaria_api_facades::mcp::google::AUTH_MODE)
         .collect();
-    let google_connected = if google_rows.is_empty() {
-        false
+    // Connected, and whether that connection needs the person: Google refused
+    // it last time (`flagged`), or it was made with a client declared not
+    // marked for AI agents with no acceptance from Google on record — the
+    // one door would keep it from these servers.
+    let (google_connected, google_attention) = if google_rows.is_empty() {
+        (false, false)
     } else {
         match talaria_api_facades::google::connections::get_connection_status(&state.pg, &user.id)
             .await
         {
-            Ok(status) => status.connected,
+            Ok(status) => {
+                let unmarked = match status.client_id.as_deref() {
+                    Some(client) if status.connected => {
+                        let evidence =
+                            talaria_api_facades::google::client::client_evidence(&state.pg).await;
+                        talaria_api_facades::google::client::agentic_standing(&evidence, client)
+                            == talaria_api_facades::google::client::AgenticStanding::DeclaredNotAgentic
+                    }
+                    _ => false,
+                };
+                (
+                    status.connected,
+                    status.connected && (status.flagged.is_some() || unmarked),
+                )
+            }
             Err(e) => return Ok(internal("[me/mcp] google connection read failed", e)),
         }
     };
@@ -60,7 +80,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             "requiredHeaders": [],
             "authKind": "google",
             "connected": google_connected,
-            "needsReconnect": false,
+            "needsReconnect": google_attention,
         }));
     }
     for s in servers

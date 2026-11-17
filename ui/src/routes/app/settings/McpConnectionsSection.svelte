@@ -116,13 +116,15 @@
                 <!-- No account of its own: it rides your Google connection,
                      connected and disconnected under Google above. -->
                 <span
-                  class="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] {s.connected ? 'text-success' : 'text-muted'}"
-                  title={s.connected
-                    ? 'Your assistant uses this server through your Google connection.'
-                    : 'Connect Google above, and your assistant can use this server as you.'}
+                  class="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] {s.needsReconnect ? 'text-warning' : s.connected ? 'text-success' : 'text-muted'}"
+                  title={s.needsReconnect
+                    ? 'Your Google connection needs attention before your assistant can use this server: Google refused it last time, or it was made with an OAuth client declared not marked for AI agents. Reconnect Google above; if that does not clear it, an admin needs a connections client marked for AI agents.'
+                    : s.connected
+                      ? 'Your assistant uses this server through your Google connection.'
+                      : 'Connect Google above, and your assistant can use this server as you.'}
                 >
-                  <StatusDot status={s.connected ? 'ok' : 'idle'} />
-                  {s.connected ? 'via your Google connection' : 'needs your Google connection'}
+                  <StatusDot status={s.needsReconnect ? 'warn' : s.connected ? 'ok' : 'idle'} />
+                  {s.needsReconnect ? 'reconnect google above' : s.connected ? 'via your Google connection' : 'needs your Google connection'}
                 </span>
               {:else if s.connected}
                 <span class="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
