@@ -12,7 +12,7 @@
 use sqlx::PgPool;
 use talaria_agent_auth::{AgentSubject, epoch_ms_to_iso, subject_model, subject_proven};
 use talaria_google_connections::{
-    EXPIRY_SKEW_MS, TokenError, get_access_token, get_connection_status, request_refresh,
+    GrantRow, TokenError, get_access_token, get_connection_status, vend_grant,
 };
 use talaria_google_org::get_org_access_token;
 use talaria_secretbox::SecretBox;
@@ -220,7 +220,9 @@ async fn legacy_owner(pg: &PgPool, agent_model: &str) -> Result<Option<String>, 
 
 /// What the admin record shows. `connected` is the identity this kind
 /// actually uses — the owner's connection, the agent's, or (for org) not
-/// this row's concern.
+/// this row's concern. `client_id` and `flagged` describe that same
+/// connection: the OAuth client that minted its grant, and Google's words
+/// from the last refusal of that client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentGoogleIdentity {
     pub kind: PrincipalKind,
@@ -228,6 +230,8 @@ pub struct AgentGoogleIdentity {
     pub connected: bool,
     pub email: Option<String>,
     pub legacy_owner_user_id: Option<String>,
+    pub client_id: Option<String>,
+    pub flagged: Option<String>,
 }
 
 pub async fn agent_google_identity(
@@ -236,23 +240,30 @@ pub async fn agent_google_identity(
 ) -> Result<AgentGoogleIdentity, sqlx::Error> {
     let principal = load_principal(pg, agent_model).await?;
     let legacy_owner_user_id = legacy_owner(pg, agent_model).await?;
-    let (connected, email) = match principal.kind {
+    let face = match principal.kind {
         PrincipalKind::Owner => match principal.owner_user_id.as_deref() {
             Some(user_id) => {
                 let status = get_connection_status(pg, user_id).await?;
-                (status.connected, status.email)
+                ConnectionFace {
+                    connected: status.connected,
+                    email: status.email,
+                    client_id: status.client_id,
+                    flagged: status.flagged,
+                }
             }
-            None => (false, None),
+            None => ConnectionFace::default(),
         },
         PrincipalKind::Agent => agent_connection_face(pg, agent_model).await?,
-        PrincipalKind::Org => (false, None),
+        PrincipalKind::Org => ConnectionFace::default(),
     };
     Ok(AgentGoogleIdentity {
         kind: principal.kind,
         principal_user_id: principal.owner_user_id,
-        connected,
-        email,
+        connected: face.connected,
+        email: face.email,
         legacy_owner_user_id,
+        client_id: face.client_id,
+        flagged: face.flagged,
     })
 }
 
@@ -355,9 +366,13 @@ pub struct SaveAgentConnection<'a> {
     pub access_token: Option<&'a str>,
     pub expires_in_seconds: Option<i64>,
     pub connected_by: Option<&'a str>,
+    /// The OAuth client the exchange ran on (`SaveConnection`'s).
+    pub oauth_client_id: &'a str,
     pub now_ms: i64,
 }
 
+/// Store an agent's own Google connection. A missing refresh token keeps the
+/// stored one and the client that minted it, as the per-user save does.
 pub async fn save_agent_connection(
     pg: &PgPool,
     sb: &SecretBox,
@@ -383,13 +398,19 @@ pub async fn save_agent_connection(
     };
     sqlx::query(
         "insert into agent_google_connections \
-             (agent_model, google_sub, email, scope, refresh_token_enc, access_token_enc, access_expires_at, connected_by, updated_at) \
-         values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::uuid, now()) \
+             (agent_model, google_sub, email, scope, refresh_token_enc, access_token_enc, access_expires_at, connected_by, oauth_client_id, updated_at) \
+         values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::uuid, $9, now()) \
          on conflict (agent_model) do update set \
              google_sub = excluded.google_sub, \
              email = excluded.email, \
              scope = excluded.scope, \
              refresh_token_enc = coalesce(excluded.refresh_token_enc, agent_google_connections.refresh_token_enc), \
+             oauth_client_id = case when excluded.refresh_token_enc is null \
+                 then agent_google_connections.oauth_client_id else excluded.oauth_client_id end, \
+             reconnect_reason = case when excluded.refresh_token_enc is null \
+                 then agent_google_connections.reconnect_reason end, \
+             reconnect_flagged_at = case when excluded.refresh_token_enc is null \
+                 then agent_google_connections.reconnect_flagged_at end, \
              access_token_enc = excluded.access_token_enc, \
              access_expires_at = excluded.access_expires_at, \
              connected_by = excluded.connected_by, \
@@ -403,70 +424,27 @@ pub async fn save_agent_connection(
     .bind(&access_enc)
     .bind(&expires_at)
     .bind(input.connected_by)
+    .bind(input.oauth_client_id)
     .execute(pg)
     .await
     .map_err(|e| format!("agent google connection save: {e}"))?;
     Ok(())
 }
 
+/// A valid access token for the agent's own Google identity
+/// (`vend_grant` on its row): refreshed with the client that minted it.
+/// `Ok(None)` ⇒ not connected.
 pub async fn get_agent_access_token(
     pg: &PgPool,
     sb: &SecretBox,
     agent_model: &str,
     now_ms: i64,
 ) -> Result<Option<String>, TokenError> {
-    let row: Option<(Option<String>, Option<String>, Option<i64>)> = sqlx::query_as(
-        "select refresh_token_enc, access_token_enc, \
-                (trunc(extract(epoch from access_expires_at) * 1000))::bigint \
-         from agent_google_connections where agent_model = $1",
+    Ok(
+        vend_grant(pg, sb, &GrantRow::Agent(agent_model.to_string()), now_ms)
+            .await?
+            .map(|v| v.token),
     )
-    .bind(agent_model)
-    .fetch_optional(pg)
-    .await
-    .map_err(|e| TokenError::Other(format!("agent google connection read: {e}")))?;
-    let Some((refresh_enc, access_enc, access_expires_ms)) = row else {
-        return Ok(None);
-    };
-    let Some(refresh_enc) = refresh_enc.filter(|s| !s.is_empty()) else {
-        return Ok(None);
-    };
-    if let (Some(enc), Some(expires_ms)) = (access_enc, access_expires_ms)
-        && expires_ms - EXPIRY_SKEW_MS > now_ms
-        && let Ok(token) = sb.open(&enc)
-    {
-        return Ok(Some(token));
-    }
-    let refresh_token = sb
-        .open(&refresh_enc)
-        .map_err(|e| TokenError::Other(format!("agent google refresh token unseal: {e}")))?;
-    let (access_token, expires_in) = match request_refresh(pg, sb, &refresh_token).await {
-        Ok(ok) => ok,
-        Err(e @ TokenError::InvalidGrant(_)) => {
-            let _ = sqlx::query(
-                "update agent_google_connections set refresh_token_enc = null where agent_model = $1",
-            )
-            .bind(agent_model)
-            .execute(pg)
-            .await;
-            return Err(e);
-        }
-        Err(e) => return Err(e),
-    };
-    let expires_at = expires_in.map(|secs| epoch_ms_to_iso(now_ms + secs * 1000));
-    let sealed = sb
-        .seal(&access_token)
-        .map_err(|e| TokenError::Other(format!("agent google access token seal: {e}")))?;
-    let _ = sqlx::query(
-        "update agent_google_connections \
-         set access_token_enc = $2, access_expires_at = $3::timestamptz, updated_at = now() \
-         where agent_model = $1",
-    )
-    .bind(agent_model)
-    .bind(sealed)
-    .bind(expires_at)
-    .execute(pg)
-    .await;
-    Ok(Some(access_token))
 }
 
 async fn agent_connection_present(pg: &PgPool, agent_model: &str) -> Result<bool, sqlx::Error> {
@@ -481,19 +459,44 @@ async fn agent_connection_present(pg: &PgPool, agent_model: &str) -> Result<bool
         .is_some_and(|enc| !enc.is_empty()))
 }
 
+/// One connection as the agent record shows it.
+#[derive(Default)]
+struct ConnectionFace {
+    connected: bool,
+    email: Option<String>,
+    client_id: Option<String>,
+    flagged: Option<String>,
+}
+
 async fn agent_connection_face(
     pg: &PgPool,
     agent_model: &str,
-) -> Result<(bool, Option<String>), sqlx::Error> {
-    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "select email, refresh_token_enc from agent_google_connections where agent_model = $1",
+) -> Result<ConnectionFace, sqlx::Error> {
+    type FaceRow = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: Option<FaceRow> = sqlx::query_as(
+        "select email, refresh_token_enc, oauth_client_id, reconnect_reason \
+         from agent_google_connections where agent_model = $1",
     )
     .bind(agent_model)
     .fetch_optional(pg)
     .await?;
     Ok(match row {
-        Some((email, enc)) => (enc.is_some_and(|s| !s.is_empty()), email),
-        None => (false, None),
+        Some((email, enc, client_id, flagged)) => {
+            let connected = enc.is_some_and(|s| !s.is_empty());
+            ConnectionFace {
+                connected,
+                email,
+                // A grant cleared by Google names no client and no refusal.
+                client_id: client_id.filter(|_| connected),
+                flagged: flagged.filter(|_| connected),
+            }
+        }
+        None => ConnectionFace::default(),
     })
 }
 

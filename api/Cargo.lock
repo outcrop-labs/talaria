@@ -4692,6 +4692,7 @@ dependencies = [
  "talaria-daily-brief-focus",
  "talaria-daily-brief-types",
  "talaria-google-calendar",
+ "talaria-google-connections",
  "talaria-harness",
  "talaria-harness-defs",
  "talaria-me",

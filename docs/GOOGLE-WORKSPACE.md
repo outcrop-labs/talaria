@@ -114,8 +114,12 @@ multi-account setup path.
   credential we must store. A `talaria reset secrets` clears every Google token
   store: per-user (`google_connections`), org (`google_org_connection`) and
   per-agent (`agent_google_connections`).
-- Access tokens are cached (also encrypted) and refreshed transparently; an
-  `invalid_grant` clears the connection so the UI prompts a reconnect.
+- Access tokens are cached (also encrypted) and refreshed transparently,
+  with the OAuth client that minted the grant (see [Which client a connection
+  refreshes with](#which-client-a-connection-refreshes-with)). An
+  `invalid_grant` clears the connection so the UI prompts a reconnect. An
+  `invalid_client` or `unauthorized_client` never does: it is the server's
+  client at fault, so the connection is kept and flagged with Google's words.
 - Scopes actually requested (`WORKSPACE_SCOPES` in `talaria-google-oauth`):
   **`openid`**, **`email`**, full **`drive`** (browse, import, rename, move,
   trash, create — `drive.file` / `drive.readonly` could not manage the Drive
@@ -170,7 +174,7 @@ has a card for each, and each has an env twin:
   its secret). So removing the connections client stops login, as it always
   did, and the panel says why.
 - Moving login to a sign-in client changes no stored connection: every
-  grant keeps refreshing with the connections client, which minted it.
+  grant keeps refreshing with the client that minted it.
 
 **Why two.** Google now sorts OAuth clients into agentic and not, with the
 checkbox **"Use this client for an AI-powered agent"** under *Google Auth
@@ -196,11 +200,12 @@ Workspace REST APIs, are not affected by this change."
 - **The connections client is not marked, and was not by November 12.** It
   stays non-agentic. Nothing breaks: the REST surfaces keep working, and
   login can stay on it. Reaching Google's MCP servers will need a new agentic
-  client. **Do not swap a new client into the connections slot while
-  connections are stored:** today every stored grant refreshes with whichever
-  client is in that slot, and OAuth binds a refresh token to the client it
-  was issued to (RFC 6749 §6). Grants that remember their own client are
-  separate, later work.
+  client. Create it as a Web client with the agentic box ticked and the three
+  connect callbacks, move the old client to the sign-in slot (it keeps login,
+  and keeps every grant it minted refreshing), and save the new one as the
+  connections client. New connects mint on the new client; each existing
+  connection moves to it when its owner reconnects. *Stored connections by
+  client* on the connections card counts them per client as you go.
 
 **Declaring the mark.** Google exposes no API and no token claim for the
 checkbox, so each card asks what Google Cloud shows: *Ticked*, *Unticked* or
@@ -213,6 +218,81 @@ The panel warns when the sign-in client is declared agentic, and when login
 is on, runs on the connections client, and that client is declared agentic.
 It also warns when a sign-in client is set but there is no connections client
 and no domain for login to take.
+
+### Which client a connection refreshes with
+
+OAuth binds a refresh token to the client it was issued to (RFC 6749 §6).
+So every stored connection, whether personal (`google_connections`), the org
+account (`google_org_connection`) or an agent identity
+(`agent_google_connections`), records the client that minted it in
+`oauth_client_id`. It refreshes with that client wherever the client now
+sits: either slot, or an env pair that an Admin record shadows. The slot
+decides only which client *new* connects use.
+
+- **Recorded on connect.** Each connect callback records the client its
+  exchange ran on. If Google sends no new refresh token on a reconnect, the
+  old token stays, and so does the client recorded for it.
+- **Connections from before.** The upgrade records the Admin UI's
+  connections client on every stored connection, because that is the client
+  every refresh ran on until now. An install configured only in `ui/.env`
+  has no record to read. Its connections record their client on their next
+  refresh. Each configured client is tried in order (connections, the env
+  pair it shadows, sign-in, then its env pair), and the first one Google
+  accepts is recorded.
+- **A client configured nowhere.** A connection whose client is no longer
+  configured is never sent to Google. Agents, Home and the cards read *"This
+  Google connection was granted to OAuth client `<id>`, which is no longer
+  configured on this server. Reconnect it, or an admin can add that client
+  back under Admin → Google Workspace."* Agent routes, Home and a person's
+  artifact export to Drive answer it as a 409 `reconnect_needed`, the daily
+  brief keeps it as its schedule line, and an approval releases back to
+  `pending` with it.
+- **Google refuses the client.** For `invalid_client` (a wrong secret
+  pasted, a deleted client), or `unauthorized_client` from the client the
+  connection names, the connection is kept and `reconnect_reason` stores
+  Google's words, such as
+  `invalid_client: The provided client secret is invalid.`.
+  `reconnect_flagged_at` stores when that refusal was first seen. Clearing
+  the connection would disconnect everyone on one bad paste, and would open
+  the login domain gate, which reads the org connection's refresh token. The
+  next successful refresh clears the flag, and so does saving a new secret
+  for that client.
+- **Google refuses the grant.** `invalid_grant` still clears the
+  connection. For a connection with no recorded client, it is cleared only
+  when at least one configured client answered `invalid_grant` and every
+  other one answered `invalid_grant` or `unauthorized_client`. RFC 6749
+  §5.2 defines `unauthorized_client` as *"The authenticated client is not
+  authorized to use this authorization grant type."*: the client
+  authenticated, but the grant is not its own. That is read from the
+  `error` code, never the sentence. When a client refused itself
+  (`invalid_client`) or Google could not be reached, the connection is kept,
+  and in the first case flagged with each client's answer, by id. A flagged
+  connection with no recorded client reads *"Google refused this connection
+  with every OAuth client configured here: «…». The connection was kept.
+  Reconnect it; if Google refuses again, an admin needs to check those
+  clients under Admin → Google Workspace."*
+- **A roll-back's limit.** A connection is only ever sent to the client it
+  names. If the previous release stores a reconnect after a roll-back, the
+  row keeps its old client id. If the slots were swapped in between, that
+  connection names the wrong client, and its next refresh is refused
+  (cleared on `invalid_grant`, flagged otherwise) until the person
+  reconnects on this release.
+- **Where it shows.** `GET /api/integrations/google`, `GET
+  /api/integrations/google/org` and `GET /api/fleet/defs/{id}/google` carry
+  `clientId` and `reconnectReason`. The personal, assistant, org and agent
+  cards show the reason with a Reconnect. `GET /api/admin/google-client`
+  carries `census`: every live connection counted per client, with the slot
+  that client sits in now (`shadowed` when it is only the `ui/.env` pair
+  behind that slot's Admin record, which refreshes what it minted and mints
+  nothing new), how many are flagged, and the connections not yet recorded.
+
+**Not yet captured:** Google's answer to a refresh token presented with a
+client that did not mint it. The trial's outcome is the same whether that
+answer is `invalid_grant` or `unauthorized_client`: a live connection moves
+on to the next client, and a dead one is cleared. Only an `invalid_client`
+there would differ: the dead connection would be kept and flagged, which is
+the safe side. A connection that names its client is only ever sent with
+that client.
 
 ### Credentials and redirect URIs
 
@@ -303,6 +383,8 @@ servers, which is not yet captured.
 | A Google call an agent or person made (`google_fail_with`) | 502 `Google <Product> refused: «SERVICE_DISABLED: Google Sheets API has not been used in project … Enable it by visiting …»`. A scope refusal is still the 409 `reconnect_needed`, with `Google said: «…»` appended. Only a failure with no Google body (a timeout, a local fault) still reads `Could not reach Google <Product>.` |
 | An agent's token (every `/api/integrations/google/agent/*` route and the agent arm of `POST /api/artifacts/{id}/export/google`) | `resolve_agent_google` no longer turns a failed token into "No Google account is connected". `invalid_grant` is a 409 `reconnect_needed`, which quotes Google and says the stored grant was cleared. `invalid_client` / `unauthorized_client` is a 502 `client_rejected`, which quotes Google, keeps the connection, and names the admin's fix. Anything else is a 502 that quotes Google when it answered. |
 | Approving a held action (`POST /api/integrations/google/pending/{id}`, chips, Inbox, the brief) | A token that fails at approval **releases the row back to `pending`**. It used to sit in `executing` until the ten-minute takeover. The answer quotes Google, and the same sentence stays on the row as `result.error`. The agent's queue reads (`GET /api/integrations/google/agent/pending[/{id}]`) show it as `lastError`. A refused grant answers 409 `not_connected` (a reconnect fixes it); a refused OAuth client answers 502 `client_rejected` (the admin's fix), and any other refused refresh 502 `google_error`. An action Google rejected answers `Google rejected the action: «…»`, or `The action did not run: «…»`, folded and capped, when no Google error body came back. A chip-unlocked draft that runs at once (`draft_email`, `draft_calendar_event`) answers the agent with the same sentence, and says when the draft is back in the queue as pending. |
+| A connection whose OAuth client is configured nowhere here | 409 `reconnect_needed`: `This Google connection was granted to OAuth client <id>, which is no longer configured on this server. Reconnect it, or an admin can add that client back under Admin → Google Workspace.` Nothing is sent to Google. Approving a held action releases it to `pending` with that sentence and `Nothing ran.` |
+| A refused OAuth client, on the cards | The connection is kept, and `reconnectReason` reads `Google refused the OAuth client this connection refreshes with: «invalid_client: The provided client secret is invalid.». The connection was kept; an admin needs to check that client under Admin → Google Workspace.` |
 | A disconnect (`DELETE /api/integrations/google`, `…/google/org`, `/api/fleet/defs/{id}/google`) | The connection is forgotten either way. When Google refuses the revoke, `revokeNote` reads `Disconnected here, but not revoked at Google: Google answered 400: invalid_token.`, the same code-then-sentence quote. |
 | The connect bounces (`/settings/connections?google=`, `/admin?googleOrg=`, `/agents?googleAgent=`) | `exchange_failed` and `denied` carry `&reason=<code>`. That is Google's OAuth error code from the refused exchange, or the `?error=` Google redirected with: `invalid_client`, `invalid_grant`, `access_denied`. The flash shows `Google said: <code>.` Only a bare snake_case code ever rides the URL, and the page drops anything else. The Agents page now reads its bounce; before this, nothing did. |
 

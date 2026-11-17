@@ -14,7 +14,9 @@ use axum::response::Response;
 use serde_json::Value;
 
 use talaria_error::house_error_msg;
-use talaria_google_connections::TokenError;
+// Google's error body inside a failure message: one reader of the
+// `<what> failed: <status> <body>` shape, shared with the refresh's flag.
+use talaria_google_connections::{TokenError, client_gone_in, google_error_body};
 
 /// A Google service call's failure. `NotConnected` is a state, not an outage.
 /// `Failed` carries the sentence Google sent — logged, and quoted back.
@@ -48,19 +50,6 @@ pub const REASON_MAX_CHARS: usize = 300;
 // capped by its own constant: the two caps are one rule, so a drift fails the
 // build instead of quoting the two shapes at different lengths.
 const _: () = assert!(REASON_MAX_CHARS == talaria_google_connections::OAUTH_REASON_MAX_CHARS);
-
-/// Google's error body inside a failure message: the first `{` from which a
-/// JSON object with an `error` member parses. Every engine formats its
-/// failure as `<what> failed: <status> <body>`, so the body is the tail.
-fn google_error_body(message: &str) -> Option<Value> {
-    message.match_indices('{').find_map(|(at, _)| {
-        let mut stream = serde_json::Deserializer::from_str(&message[at..]).into_iter::<Value>();
-        match stream.next() {
-            Some(Ok(v)) if v.get("error").is_some() => Some(v),
-            _ => None,
-        }
-    })
-}
 
 /// What Google said, in its own words, from a failure message — or None when
 /// the message holds no Google error body (a transport failure, a local
@@ -186,6 +175,13 @@ pub fn google_fail_with(e: GoogleError, surface: &str, code: &'static str) -> Re
             "not_connected",
             "Connect a Google account first.",
         ),
+        // The grant's minting client is configured nowhere: nothing reached
+        // Google, and the named reconnect is the whole answer.
+        GoogleError::Failed(m) if client_gone_in(&m).is_some() => house_error_msg(
+            StatusCode::CONFLICT,
+            "reconnect_needed",
+            &client_gone_in(&m).unwrap_or_default(),
+        ),
         GoogleError::Failed(m) if reconnect_needed(&m) => house_error_msg(
             StatusCode::CONFLICT,
             "reconnect_needed",
@@ -226,7 +222,10 @@ pub fn refused_sentence(surface: &str, reason: Option<&str>) -> String {
 /// - `InvalidGrant` → 409 `reconnect_needed`: Google refused the stored
 ///   grant, the vend already cleared it, and a reconnect is the fix.
 /// - `ClientRejected` → 502 `client_rejected`: Google refused this server's
-///   OAuth client; the connection was kept and an admin owns the fix.
+///   OAuth client; the connection was kept (and flagged) and an admin owns
+///   the fix.
+/// - `ClientGone` → 409 `reconnect_needed`: the client that minted the grant
+///   is configured nowhere here, so nothing was sent; the sentence names it.
 /// - `Other` → 502 `google_error`, quoting Google when it answered.
 pub fn google_token_fail(e: TokenError, surface: &str) -> Response {
     let reason = upstream_reason(&e.to_string());
@@ -258,6 +257,10 @@ pub fn google_token_fail(e: TokenError, surface: &str) -> Response {
                     None => "Google refused this server's OAuth client. The connection was kept; an admin needs to check the client under Admin → Google Workspace.".to_string(),
                 },
             )
+        }
+        TokenError::ClientGone(sentence) => {
+            tracing::warn!("[google/{}] {}", surface.to_lowercase(), sentence);
+            house_error_msg(StatusCode::CONFLICT, "reconnect_needed", &sentence)
         }
         TokenError::Other(m) => {
             tracing::error!("[google/{}] token failed: {}", surface.to_lowercase(), m);
@@ -584,5 +587,44 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert_eq!(body["message"], "Could not get a Google token for Docs.");
+    }
+
+    #[tokio::test]
+    async fn a_grant_whose_client_is_gone_answers_the_named_reconnect_on_every_path() {
+        let sentence = talaria_google_connections::client_gone_sentence("rotated-away");
+        // The agent routes' typed door.
+        let (status, body) = body_of(google_token_fail(
+            TokenError::ClientGone(sentence.clone()),
+            "Gmail",
+        ))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "reconnect_needed");
+        assert_eq!(body["message"], sentence.as_str());
+        // Home's routes carry the token failure as text (RequireError::Failed,
+        // CalendarError::Failed, a Debug-formatted RequireError): the 409 and
+        // the same sentence, never "Could not reach Google".
+        for carried in [
+            TokenError::ClientGone(sentence.clone()).to_string(),
+            format!("calendar: {sentence}"),
+            format!(
+                "{:?}",
+                talaria_google_connections::RequireError::Failed(sentence.clone())
+            ),
+        ] {
+            let (status, body) = body_of(google_fail_with(
+                GoogleError::Failed(carried),
+                "Calendar",
+                "calendar_error",
+            ))
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT);
+            assert_eq!(body["error"], "reconnect_needed");
+            assert_eq!(body["message"], sentence.as_str());
+        }
+        assert_eq!(
+            sentence,
+            "This Google connection was granted to OAuth client rotated-away, which is no longer configured on this server. Reconnect it, or an admin can add that client back under Admin → Google Workspace."
+        );
     }
 }

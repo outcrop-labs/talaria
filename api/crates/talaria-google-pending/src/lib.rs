@@ -1087,6 +1087,11 @@ async fn release_claim(pg: &PgPool, action_id: &str, why: &str) -> Result<(), St
 /// CLIENT is the admin's to fix, so it names that instead — reconnecting
 /// would not help.
 pub fn token_refusal_message(e: &TokenError, reconnect: &str) -> Option<String> {
+    // The grant's client is configured nowhere: nothing reached Google, and
+    // the named reconnect is the sentence.
+    if let TokenError::ClientGone(sentence) = e {
+        return Some(format!("{sentence} Nothing ran."));
+    }
     let reason = upstream_reason(&e.to_string())?;
     Some(match e {
         TokenError::ClientRejected(_) => format!(
@@ -1095,7 +1100,7 @@ pub fn token_refusal_message(e: &TokenError, reconnect: &str) -> Option<String> 
         TokenError::InvalidGrant(_) => {
             format!("Google refused the stored Google connection: «{reason}». {reconnect}")
         }
-        TokenError::Other(_) => {
+        TokenError::Other(_) | TokenError::ClientGone(_) => {
             format!(
                 "Google refused the token refresh: «{reason}». Nothing ran; approve again to retry."
             )
@@ -1104,12 +1109,13 @@ pub fn token_refusal_message(e: &TokenError, reconnect: &str) -> Option<String> 
 }
 
 /// The released status a refused token answers with (`RELEASED_STATUSES`):
-/// a refused grant is the connection's (`not_connected`, reconnect), a
-/// refused client the admin's (`client_rejected`), anything else Google
-/// said a refused refresh (`token_refused`).
+/// a refused grant is the connection's (`not_connected`, reconnect), and so
+/// is a grant whose client is configured nowhere; a refused client the
+/// admin's (`client_rejected`); anything else Google said a refused refresh
+/// (`token_refused`).
 pub fn token_refusal_status(e: &TokenError) -> &'static str {
     match e {
-        TokenError::InvalidGrant(_) => "not_connected",
+        TokenError::InvalidGrant(_) | TokenError::ClientGone(_) => "not_connected",
         TokenError::ClientRejected(_) => "client_rejected",
         TokenError::Other(_) => "token_refused",
     }
@@ -1451,6 +1457,13 @@ mod tests {
             ),
             None
         );
+        // The grant's client is configured nowhere: Google was never asked,
+        // and the named reconnect is the answer.
+        let gone = talaria_google_connections::client_gone_sentence("rotated-away");
+        assert_eq!(
+            token_refusal_message(&TokenError::ClientGone(gone.clone()), reconnect),
+            Some(format!("{gone} Nothing ran."))
+        );
     }
 
     #[test]
@@ -1495,6 +1508,13 @@ mod tests {
         assert_eq!(
             status(TokenError::Other("google token refresh failed: 503".into())),
             "token_refused"
+        );
+        assert_eq!(
+            status(TokenError::ClientGone(
+                talaria_google_connections::client_gone_sentence("rotated-away")
+            )),
+            "not_connected",
+            "a reconnect fixes a grant whose client is gone"
         );
         for done in ["executed", "failed", "rejected", "forbidden", "pending"] {
             let outcome = DecideOutcome {

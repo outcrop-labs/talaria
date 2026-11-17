@@ -55,6 +55,7 @@ use talaria_daily_brief_focus::{
 };
 use talaria_daily_brief_types::{BriefEntry, BriefLine, NewEntry, fold_entries};
 use talaria_google_calendar::list_upcoming_events;
+use talaria_google_connections::client_gone_in;
 use talaria_harness::run::{RunContext, run_harness};
 use talaria_harness_defs::defs::briefer::{daily_brief_lede_harness, daily_brief_note_harness};
 use talaria_notify::NotifyDeps;
@@ -424,6 +425,34 @@ fn comms_candidate(line: &CommsLine) -> NewEntry {
     }
 }
 
+/// The schedule line's body for a calendar read that failed, or None when the
+/// failure is the ordinary state — no connection, or an expired one — which
+/// the brief leaves out rather than reports.
+///
+/// A grant whose minting client is configured nowhere is not that ordinary
+/// state: it needs a named reconnect, and that sentence carries a client id
+/// whose digits the substring test could take for a status (`…409…`). So it
+/// is read first, and kept as the line in our own words — nothing was sent
+/// to Google.
+fn calendar_unreadable_body(message: &str) -> Option<String> {
+    const TAIL: &str =
+        "Nothing else in this brief is affected, but today's schedule is missing from it.";
+    if let Some(sentence) = client_gone_in(message) {
+        return Some(format!("{sentence} {TAIL}"));
+    }
+    // A missing/expired connection is the ordinary state, not an incident.
+    // The match is case-insensitive over the message text.
+    let lower = message.to_lowercase();
+    if ["not connected", "no google", "unauthor", "401", "409"]
+        .iter()
+        .any(|w| lower.contains(w))
+    {
+        return None;
+    }
+    let first_300 = message.chars().take(300).collect::<String>();
+    Some(format!("Google Calendar returned: {first_300}. {TAIL}"))
+}
+
 async fn calendar_entries(
     pg: &PgPool,
     sb: &talaria_secretbox::SecretBox,
@@ -435,15 +464,9 @@ async fn calendar_entries(
         Ok(events) => events,
         Err(e) => {
             let message = e.to_string();
-            // A missing/expired connection is the ordinary state, not an
-            // incident. The match is case-insensitive over the message text.
-            let lower = message.to_lowercase();
-            if ["not connected", "no google", "unauthor", "401", "409"]
-                .iter()
-                .any(|w| lower.contains(w))
-            {
+            let Some(body) = calendar_unreadable_body(&message) else {
                 return Ok(None);
-            }
+            };
             // A LINE, NOT A NARRATION, and the distinction cost a bug. Written
             // as an unkeyed note this landed in the day's timeline and NOWHERE
             // IN THE DOCUMENT — so the one reader who needed to know their
@@ -459,7 +482,6 @@ async fn calendar_entries(
             // read the calendar — because that sweep returns real events and
             // this key is no longer live.
             let first_120 = message.chars().take(120).collect::<String>();
-            let first_300 = message.chars().take(300).collect::<String>();
             return Ok(Some(vec![NewEntry {
                 kind: "item".into(),
                 section: "schedule".into(),
@@ -473,9 +495,7 @@ async fn calendar_entries(
                 status_label: Some("CALENDAR".into()),
                 badge: Some(json!({"label": "UNREADABLE", "tone": "warn"})),
                 title: "Your calendar could not be read this morning".into(),
-                body: format!(
-                    "Google Calendar returned: {first_300}. Nothing else in this brief is affected, but today's schedule is missing from it."
-                ),
+                body,
                 evidence: evidence_value(&[]),
             }]));
         }
@@ -2060,6 +2080,38 @@ mod tests {
 
     fn item(kind: &str, section: &str, title: &str, body: &str) -> NewEntry {
         NewEntry::narrative(kind, section, title, body)
+    }
+
+    #[test]
+    fn a_calendar_whose_client_is_gone_keeps_its_line_whatever_digits_the_id_holds() {
+        // A client id carrying "409" — the substring test alone would have
+        // read it as the ordinary not-connected state and dropped the line.
+        let sentence = talaria_google_connections::client_gone_sentence(
+            "123409-rotated.apps.googleusercontent.com",
+        );
+        // How the calendar carries the vend's failure: as text.
+        let message = format!("calendar: {sentence}");
+        assert_eq!(
+            calendar_unreadable_body(&message).as_deref(),
+            Some(
+                format!(
+                    "{sentence} Nothing else in this brief is affected, but today's schedule is missing from it."
+                )
+                .as_str()
+            )
+        );
+        // The ordinary states stay out of the brief; anything else is quoted.
+        assert_eq!(calendar_unreadable_body("not connected"), None);
+        assert_eq!(
+            calendar_unreadable_body("google calendar list failed: 409 Conflict"),
+            None
+        );
+        assert_eq!(
+            calendar_unreadable_body("calendar list request: timed out").as_deref(),
+            Some(
+                "Google Calendar returned: calendar list request: timed out. Nothing else in this brief is affected, but today's schedule is missing from it."
+            )
+        );
     }
 
     #[test]
