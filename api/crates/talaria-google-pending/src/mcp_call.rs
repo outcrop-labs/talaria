@@ -929,7 +929,7 @@ mod live {
             .expect("DATABASE_URL parses")
             .options([("search_path", schema.as_str())]);
         let pg = PgPoolOptions::new()
-            .max_connections(2)
+            .max_connections(4)
             .connect_with(opts)
             .await
             .expect("scratch pool");
@@ -1290,6 +1290,22 @@ mod live {
                 .expect("queued")
             }
         };
+        // Identical calls arriving together: one row, whoever wins the lock.
+        let (a, b, c) = tokio::join!(
+            queue("create_event", json!({ "summary": "Together" }), "pa-ops"),
+            queue("create_event", json!({ "summary": "Together" }), "pa-ops"),
+            queue("create_event", json!({ "summary": "Together" }), "pa-ops"),
+        );
+        assert_eq!(a.action.id, b.action.id);
+        assert_eq!(a.action.id, c.action.id);
+        assert_eq!(
+            [a.already_pending, b.already_pending, c.already_pending]
+                .iter()
+                .filter(|x| !**x)
+                .count(),
+            1,
+            "exactly one of them inserted"
+        );
         let first = queue("create_event", json!({ "summary": "Standup" }), "pa-ops").await;
         assert!(!first.already_pending);
         let again = queue("create_event", json!({ "summary": "Standup" }), "pa-ops").await;

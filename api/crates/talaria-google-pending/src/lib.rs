@@ -167,29 +167,43 @@ pub async fn queue_action(
     realtime: RealtimeDeps,
     input: &QueueAction<'_>,
 ) -> Result<QueuedAction, String> {
-    if let Some(action) = find_same_pending_draft(pg, input).await? {
-        return Ok(QueuedAction {
-            action,
-            already_pending: true,
-        });
-    }
-    let row: PendingRow = sqlx::query_as(concat!(
-        "insert into google_pending_actions \
-             (kind, summary, payload, agent_model, owner_user_id, is_org, principal_kind) \
-         values ($1, $2, $3, $4, $5::uuid, $6, $7) \
-         returning ",
-        pending_columns!()
-    ))
-    .bind(input.kind)
-    .bind(input.summary)
-    .bind(input.payload)
-    .bind(input.agent_model)
-    .bind(input.owner_user_id)
-    .bind(input.is_org)
-    .bind(input.principal_kind)
-    .fetch_one(pg)
-    .await
-    .map_err(|e| format!("google pending action insert: {e}"))?;
+    // A held Google Workspace MCP call is looked up and inserted under one
+    // lock on the call itself, so two identical calls arriving together
+    // cannot both find nothing and both insert — two cards whose approvals
+    // would run the same write twice.
+    let row = if input.kind == MCP_CALL {
+        let mut tx = pg
+            .begin()
+            .await
+            .map_err(|e| format!("google pending action begin: {e}"))?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(mcp_call_lock_key(input))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("google pending action lock: {e}"))?;
+        if let Some(row) = find_same_mcp_call(&mut *tx, input).await? {
+            tx.commit()
+                .await
+                .map_err(|e| format!("google pending action commit: {e}"))?;
+            return Ok(QueuedAction {
+                action: PendingAction::from(row),
+                already_pending: true,
+            });
+        }
+        let row = insert_pending(&mut *tx, input).await?;
+        tx.commit()
+            .await
+            .map_err(|e| format!("google pending action commit: {e}"))?;
+        row
+    } else {
+        if let Some(action) = find_same_pending_draft(pg, input).await? {
+            return Ok(QueuedAction {
+                action,
+                already_pending: true,
+            });
+        }
+        insert_pending(pg, input).await?
+    };
     let action = PendingAction::from(row);
     let id = action.id.clone();
 
@@ -217,38 +231,88 @@ pub async fn queue_action(
     })
 }
 
+/// One pending row, inserted as `input` asks.
+async fn insert_pending<'e, E: sqlx::PgExecutor<'e>>(
+    exec: E,
+    input: &QueueAction<'_>,
+) -> Result<PendingRow, String> {
+    sqlx::query_as(concat!(
+        "insert into google_pending_actions \
+             (kind, summary, payload, agent_model, owner_user_id, is_org, principal_kind) \
+         values ($1, $2, $3, $4, $5::uuid, $6, $7) \
+         returning ",
+        pending_columns!()
+    ))
+    .bind(input.kind)
+    .bind(input.summary)
+    .bind(input.payload)
+    .bind(input.agent_model)
+    .bind(input.owner_user_id)
+    .bind(input.is_org)
+    .bind(input.principal_kind)
+    .fetch_one(exec)
+    .await
+    .map_err(|e| format!("google pending action insert: {e}"))
+}
+
+/// What the advisory lock around a held call's lookup and insert is keyed
+/// on: the same fields the lookup matches. Two calls that differ only in the
+/// order of their argument keys take different locks — the lookup's jsonb
+/// equality still merges them when they do not arrive together.
+fn mcp_call_lock_key(input: &QueueAction<'_>) -> String {
+    let field = |k: &str| {
+        input
+            .payload
+            .get(k)
+            .map(Value::to_string)
+            .unwrap_or_default()
+    };
+    format!(
+        "mcp_call\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        input.agent_model,
+        input.owner_user_id.unwrap_or(""),
+        input.is_org,
+        field("serverId"),
+        field("tool"),
+        field("arguments"),
+    )
+}
+
+/// A held Google Workspace MCP call is the same ask when the same agent
+/// called the same tool on the same server with the same arguments, for the
+/// same approver: a retried call converges on the row still waiting — or on
+/// the one an approval is running right now (`executing`, up to the replay's
+/// two minutes), so a retry never becomes a second card whose approval would
+/// run the write twice.
+async fn find_same_mcp_call<'e, E: sqlx::PgExecutor<'e>>(
+    exec: E,
+    input: &QueueAction<'_>,
+) -> Result<Option<PendingRow>, String> {
+    sqlx::query_as(concat!(
+        "select ",
+        pending_columns!(),
+        " from google_pending_actions \
+          where kind = 'mcp_call' and status in ('pending', 'executing') \
+            and is_org = $1 and owner_user_id is not distinct from $2::uuid \
+            and agent_model = $3 \
+            and payload->'serverId' = $4->'serverId' \
+            and payload->'tool' = $4->'tool' \
+            and payload->'arguments' = $4->'arguments' \
+          order by created_at desc limit 1"
+    ))
+    .bind(input.is_org)
+    .bind(input.owner_user_id)
+    .bind(input.agent_model)
+    .bind(input.payload)
+    .fetch_optional(exec)
+    .await
+    .map_err(|e| format!("google pending action dedupe read: {e}"))
+}
+
 async fn find_same_pending_draft(
     pg: &PgPool,
     input: &QueueAction<'_>,
 ) -> Result<Option<PendingAction>, String> {
-    // A held Google Workspace MCP call is the same ask when the same agent
-    // called the same tool on the same server with the same arguments, for
-    // the same approver: a retried call converges on the row still waiting —
-    // or on the one an approval is running right now (`executing`, up to the
-    // replay's two minutes), so a retry asked while it runs never becomes a
-    // second card whose approval would run the write twice.
-    if input.kind == MCP_CALL {
-        let row: Option<PendingRow> = sqlx::query_as(concat!(
-            "select ",
-            pending_columns!(),
-            " from google_pending_actions \
-              where kind = 'mcp_call' and status in ('pending', 'executing') \
-                and is_org = $1 and owner_user_id is not distinct from $2::uuid \
-                and agent_model = $3 \
-                and payload->'serverId' = $4->'serverId' \
-                and payload->'tool' = $4->'tool' \
-                and payload->'arguments' = $4->'arguments' \
-              order by created_at desc limit 1"
-        ))
-        .bind(input.is_org)
-        .bind(input.owner_user_id)
-        .bind(input.agent_model)
-        .bind(input.payload)
-        .fetch_optional(pg)
-        .await
-        .map_err(|e| format!("google pending action dedupe read: {e}"))?;
-        return Ok(row.map(PendingAction::from));
-    }
     if input.kind != "gmail_send" {
         return Ok(None);
     }
