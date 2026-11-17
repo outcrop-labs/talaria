@@ -20,9 +20,18 @@
 // ONE OPEN REQUEST per (agent, host, permission), kept by the partial unique
 // index `workbench_permission_requests_one_open`: a second raise appends its
 // `why` and its evidence to the open row (and raises its level when it asks
-// for more), so an admin decides once. `repo` is where the need arose; an
-// approval merges the key into the agent's set on the HOST
-// (crate::permissions), so it applies to every repo the agent holds there.
+// for more), so an admin decides once. Nothing is refused for asking again:
+// `why` keeps its newest WHY_MAX characters and `evidence` its newest
+// EVIDENCE_MAX entries, so a long run of raises costs nothing but its oldest
+// words. The row keeps the ticket it was first asked from, and that ticket
+// gets the decision's line. `repo` is where the need arose; an approval
+// merges the key into the agent's set on the HOST (crate::permissions), so it
+// applies to every repo the agent holds there.
+//
+// AN APPROVAL IS OF WHAT THE ADMIN SAW. A raise can lift an open request's
+// level while an admin reads it, so the decide route posts the level the
+// admin saw, and a request whose level moved since is a conflict
+// ([`DecideError::Changed`]), never a wider grant than the one confirmed.
 //
 // THE STATES.
 //   pending          an admin has not decided
@@ -31,9 +40,11 @@
 //                    it yet: an org owner accepts it on GitHub. The holdings
 //                    refresh flips it to granted when it does (settle_awaiting)
 //   granted          the agent's set carries it and the installation holds it
-//   denied           an admin said no (or closed one waiting on GitHub)
-//   withdrawn        the agent lost its last grant on the host, or an admin
-//                    took the permission out of its set before GitHub held it
+//   denied           an admin said no
+//   withdrawn        the agent lost its last grant on the host, an admin
+//                    took the permission out of its set before GitHub held
+//                    it, or an admin closed one waiting on GitHub (its note
+//                    says the set still carries it)
 //
 // WHO WRITES WHAT. This module writes the rows and their audit rows. The
 // callers say it to people: the verb (talaria-workbench-mcp) writes the
@@ -62,8 +73,16 @@ use crate::{narrowing_of, resolve_grant};
 /// one per (agent, host, permission).
 pub const OPEN: [&str; 2] = ["pending", "awaiting_github"];
 
-/// How long `why` may grow across raises, in characters.
+/// How long `why` may grow across raises, in characters: past it, the
+/// oldest words go.
 const WHY_MAX: usize = 4000;
+
+/// How many raises' evidence a request keeps: past it, the oldest go.
+const EVIDENCE_MAX: usize = 20;
+
+/// The decision note of a request an admin closed while it waited on GitHub:
+/// what the agent reads in list_repos, since its set still carries it.
+pub const CLOSED_WAITING: &str = "closed while waiting on GitHub: the agent's permissions on this host still include it, and a git credential carries it once the installation accepts it";
 
 /// One raise's own `why`, in characters.
 const WHY_ONE_MAX: usize = 1000;
@@ -181,8 +200,9 @@ pub async fn open_requests(pg: &PgPool) -> Result<Vec<PermissionRequest>, String
     .map_err(read_failed)
 }
 
-/// `agent_id`'s requests of the last `days` days, newest first: what
-/// `list_repos` shows the agent.
+/// `agent_id`'s requests as `list_repos` shows the agent: every open one,
+/// however old (an owner can take weeks to accept one on GitHub), and every
+/// one decided in the last `days` days. Open first, then newest.
 pub async fn agent_requests(
     pg: &PgPool,
     agent_id: &str,
@@ -190,8 +210,9 @@ pub async fn agent_requests(
 ) -> Result<Vec<PermissionRequest>, String> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{SELECT} where r.agent_id = $1::uuid \
-           and r.created_at > now() - make_interval(days => $2) \
-         order by r.created_at desc limit 30"
+           and (r.status in ('pending', 'awaiting_github') \
+                or coalesce(r.decided_at, r.updated_at) > now() - make_interval(days => $2)) \
+         order by r.status in ('pending', 'awaiting_github') desc, r.updated_at desc limit 30"
     )))
     .bind(agent_id)
     .bind(days)
@@ -231,12 +252,31 @@ pub enum Raised {
     Carried,
 }
 
+/// The ticket a request is attached to: the one it was first asked from,
+/// where its decision's line lands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestTicket {
+    pub id: String,
+    /// `WEB-12`, when the ticket has a number.
+    pub ticket_ref: Option<String>,
+}
+
+impl RequestTicket {
+    /// The ticket's name in a sentence.
+    pub fn label(&self) -> &str {
+        self.ticket_ref.as_deref().unwrap_or("its ticket")
+    }
+}
+
 /// One permission of a filing, and what became of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RaisedPermission {
     pub permission: String,
     pub level: Level,
     pub raised: Raised,
+    /// The ticket the request is attached to (None: carried, or asked from
+    /// no ticket). A raise from another ticket leaves it where it was.
+    pub ticket: Option<RequestTicket>,
 }
 
 /// What a filing did, per permission, on the host the repo's grant names.
@@ -360,8 +400,8 @@ pub async fn file_git_permission_request(pg: &PgPool, ask: &Ask<'_>) -> Result<F
     let mut out = Vec::new();
     for (key, level) in asks.iter() {
         let carried = holds(&set, key, level);
-        let raised = match (&held, carried) {
-            (Some(held), true) if holds(held, key, level) => Raised::Carried,
+        let (raised, ticket) = match (&held, carried) {
+            (Some(held), true) if holds(held, key, level) => (Raised::Carried, None),
             (_, true) => {
                 upsert(
                     pg,
@@ -395,6 +435,7 @@ pub async fn file_git_permission_request(pg: &PgPool, ask: &Ask<'_>) -> Result<F
             permission: key.to_string(),
             level,
             raised,
+            ticket,
         });
     }
     Ok(Filing {
@@ -406,7 +447,11 @@ pub async fn file_git_permission_request(pg: &PgPool, ask: &Ask<'_>) -> Result<F
 }
 
 /// File one permission, or add this raise to the one open for it. One
-/// statement: two raises at once are one request.
+/// statement: two raises at once are one request. An open request's status
+/// follows the raise when it asks for more, and goes back to `pending` when
+/// it waited on GitHub and the agent's set no longer carries it (an admin
+/// took it out since): `awaiting_github` would tell the agent its set
+/// includes it. Answers the ticket the request is attached to as well.
 #[allow(clippy::too_many_arguments)]
 async fn upsert(
     pg: &PgPool,
@@ -418,26 +463,40 @@ async fn upsert(
     why: &str,
     evidence: &Value,
     status: &str,
-) -> Result<Raised, String> {
-    let (id, status, inserted): (String, String, bool) = sqlx::query_as(
+) -> Result<(Raised, Option<RequestTicket>), String> {
+    let (id, status, inserted, task_id, ticket_ref): (
+        String,
+        String,
+        bool,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
         "insert into workbench_permission_requests as r \
            (agent_id, agent_model, host_id, repo, permission, level, why, evidence, task_id, status) \
          values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::uuid, $10) \
          on conflict (agent_id, host_id, permission) where status in ('pending', 'awaiting_github') \
          do update set \
-           why = left(case when excluded.why = '' then r.why \
-                           when r.why = '' then excluded.why \
-                           else r.why || E'\\n\\n' || excluded.why end, $11), \
-           evidence = coalesce(r.evidence, '[]'::jsonb) || coalesce(excluded.evidence, '[]'::jsonb), \
+           why = right(case when excluded.why = '' then r.why \
+                            when r.why = '' then excluded.why \
+                            else r.why || E'\\n\\n' || excluded.why end, $11), \
+           evidence = jsonb_path_query_array( \
+             coalesce(r.evidence, '[]'::jsonb) || coalesce(excluded.evidence, '[]'::jsonb), \
+             $12::jsonpath), \
            task_id = coalesce(r.task_id, excluded.task_id), \
            status = case when array_position(array['read','write','admin'], excluded.level) \
                             > array_position(array['read','write','admin'], r.level) \
-                         then excluded.status else r.status end, \
+                         then excluded.status \
+                         when r.status = 'awaiting_github' and excluded.status = 'pending' \
+                         then 'pending' \
+                         else r.status end, \
            level = case when array_position(array['read','write','admin'], excluded.level) \
                            > array_position(array['read','write','admin'], r.level) \
                         then excluded.level else r.level end, \
            updated_at = now() \
-         returning id::text, status, (xmax = 0)",
+         returning id::text, status, (xmax = 0), task_id::text, \
+           (select coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no from tasks t \
+              left join boards b on b.id = t.board_id \
+             where t.id = r.task_id and t.ticket_no is not null)",
     )
     .bind(ask.agent_id)
     .bind(ask.agent_model)
@@ -450,14 +509,17 @@ async fn upsert(
     .bind(ask.task_id)
     .bind(status)
     .bind(WHY_MAX as i32)
+    .bind(format!("$[last-{} to last]", EVIDENCE_MAX - 1))
     .fetch_one(pg)
     .await
     .map_err(write_failed)?;
-    Ok(if inserted {
+    let ticket = task_id.map(|id| RequestTicket { id, ticket_ref });
+    let raised = if inserted {
         Raised::Filed { id, status }
     } else {
         Raised::AlreadyOpen { id, status }
-    })
+    };
+    Ok((raised, ticket))
 }
 
 // ── Deciding ─────────────────────────────────────────────────────────────────
@@ -470,6 +532,9 @@ pub enum DecideError {
     /// The agent holds no repo on the host any more: there is nothing for
     /// the permission to apply to.
     GrantGone,
+    /// The agent asked again since the admin read it, and the request now
+    /// stands at this level, not the one the admin saw.
+    Changed(String),
     /// The database failed.
     Failed(String),
 }
@@ -499,15 +564,18 @@ pub struct Decider<'a> {
 
 /// APPROVE, in one transaction: the agent's grants on the host are locked
 /// (a removal waits, or went first and this answers GrantGone), the request
-/// must still be pending, the key is merged into the agent's set on the host
-/// (from the default when it had none), the request becomes `granted` when
-/// the installation that mints the repo's token holds it and
-/// `awaiting_github` when it does not, and the audit row is written with it.
-/// The ticket line, the notice and the census are the caller's, after.
+/// must still be pending AT `seen`, the level the admin was shown (a raise
+/// since is [`DecideError::Changed`]), the key is merged into the agent's
+/// set on the host at that level (from the default when it had none), the
+/// request becomes `granted` when the installation that mints the repo's
+/// token holds it and `awaiting_github` when it does not, and the audit row
+/// is written with it. The ticket line, the notice and the census are the
+/// caller's, after.
 pub async fn approve(
     pg: &PgPool,
     id: &str,
     by: &Decider<'_>,
+    seen: Level,
     note: Option<&str>,
 ) -> Result<Decided, DecideError> {
     let Some(req) = get_request(pg, id).await? else {
@@ -516,21 +584,11 @@ pub async fn approve(
     if req.status != "pending" {
         return Err(DecideError::NotOpen);
     }
-    let level = Level::parse(&req.level)
-        .ok_or_else(|| DecideError::Failed(format!("request {id} has level {}", req.level)))?;
     let held = match get_host(pg, &req.host_id).await? {
         Some(row) => minting_installation(pg, &row, &req.repo)
             .await
             .and_then(|r| r.held),
         None => None,
-    };
-    let status = if held
-        .as_ref()
-        .is_some_and(|h| holds(h, &req.permission, level))
-    {
-        "granted"
-    } else {
-        "awaiting_github"
     };
     let mut tx = pg.begin().await.map_err(write_failed)?;
     // The grants first, then the request: a grant removal deletes the
@@ -548,16 +606,30 @@ pub async fn approve(
     if repos.is_empty() {
         return Err(DecideError::GrantGone);
     }
-    let still: Option<String> = sqlx::query_scalar(
-        "select status from workbench_permission_requests where id = $1::uuid for update",
+    // Under the row's lock, a raise waits for this transaction or went
+    // first, and the level merged is the one locked, never one read before.
+    let still: Option<(String, String)> = sqlx::query_as(
+        "select status, level from workbench_permission_requests where id = $1::uuid for update",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(read_failed)?;
-    if still.as_deref() != Some("pending") {
+    let Some((_, now)) = still.filter(|(s, _)| s == "pending") else {
         return Err(DecideError::NotOpen);
+    };
+    if now != seen.as_str() {
+        return Err(DecideError::Changed(now));
     }
+    let level = seen;
+    let status = if held
+        .as_ref()
+        .is_some_and(|h| holds(h, &req.permission, level))
+    {
+        "granted"
+    } else {
+        "awaiting_github"
+    };
     let after = permissions::merge_agent_host_permission(
         &mut tx,
         &req.agent_id,
@@ -593,7 +665,7 @@ pub async fn approve(
                 "host": req.host_id,
                 "repo": req.repo,
                 "permission": req.permission,
-                "level": req.level,
+                "level": level.as_str(),
                 "status": status,
                 "permissions": after.to_json(),
                 "appliesTo": repos,
@@ -612,34 +684,52 @@ pub async fn approve(
     })
 }
 
-/// DENY: a pending request, or one waiting on GitHub (closing it — what is
-/// already in the agent's set stays there; an admin takes it out in the
-/// agent's editor). The audit row is written with it.
+/// DENY a pending request: `denied`, with the admin's note. On a request
+/// waiting on GitHub it CLOSES it instead: `withdrawn`, and its note says
+/// the agent's set still carries the permission (what is in the set stays
+/// there; an admin takes it out in the agent's editor), since `denied` would
+/// tell the agent it does not. `seen`, when given, is the level the admin
+/// was shown, and a raise since is [`DecideError::Changed`]. The audit row
+/// is written with it.
 pub async fn deny(
     pg: &PgPool,
     id: &str,
     by: &Decider<'_>,
+    seen: Option<Level>,
     note: Option<&str>,
 ) -> Result<Decided, DecideError> {
     let mut tx = pg.begin().await.map_err(write_failed)?;
-    let was: Option<String> = sqlx::query_scalar(
-        "select status from workbench_permission_requests where id = $1::uuid for update",
+    let was: Option<(String, String)> = sqlx::query_as(
+        "select status, level from workbench_permission_requests where id = $1::uuid for update",
     )
     .bind(id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(read_failed)?;
-    let Some(was) = was.filter(|s| OPEN.contains(&s.as_str())) else {
+    let Some((was, now)) = was.filter(|(s, _)| OPEN.contains(&s.as_str())) else {
         return Err(DecideError::NotOpen);
     };
+    if seen.is_some_and(|l| l.as_str() != now) {
+        return Err(DecideError::Changed(now));
+    }
+    let (status, stored) = if was == "awaiting_github" {
+        let stored = match note {
+            Some(n) => format!("{CLOSED_WAITING}: {n}"),
+            None => CLOSED_WAITING.to_string(),
+        };
+        ("withdrawn", Some(stored))
+    } else {
+        ("denied", note.map(str::to_string))
+    };
     sqlx::query(
-        "update workbench_permission_requests set status = 'denied', decided_by = $2::uuid, \
-           decision_note = $3, decided_at = now(), updated_at = now() \
+        "update workbench_permission_requests set status = $2, decided_by = $3::uuid, \
+           decision_note = $4, decided_at = now(), updated_at = now() \
          where id = $1::uuid",
     )
     .bind(id)
+    .bind(status)
     .bind(by.user_id)
-    .bind(note)
+    .bind(stored)
     .execute(&mut *tx)
     .await
     .map_err(write_failed)?;
@@ -665,7 +755,7 @@ pub async fn deny(
                 "repo": req.repo,
                 "permission": req.permission,
                 "level": req.level,
-                "status": "denied",
+                "status": status,
                 "note": note,
             })),
         },

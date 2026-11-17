@@ -1,7 +1,10 @@
 // LIVE: an agent's GitHub permission requests against a real database — the
-// one filing and its refusals, a second raise appending to the open request,
-// an approval merging into the agent's set in one transaction (and a 409's
-// cause when its grants went first), a grant removal withdrawing what is
+// one filing and its refusals, a second raise appending to the open request
+// (bounded, and back to an admin when the set lost it), an approval merging
+// into the agent's set in one transaction at the level the admin saw (and a
+// 409's cause when the agent asked for more since, or its grants went
+// first), a request closed while it waits on GitHub, `list_repos`' window,
+// a grant removal withdrawing what is
 // left with no repo on the host, and a request approved ahead of GitHub
 // settling when a holdings refresh finds the installation holds it.
 // `#[ignore]`d; ci.yml's api job runs it with the ignored lib tests in its
@@ -262,6 +265,33 @@ async fn an_agent_asks_and_only_an_unknown_key_an_ungranted_repo_or_a_hostwide_h
     .unwrap();
     assert_eq!(open, 1);
 
+    // Asking again is never refused: the request keeps the newest words and
+    // the newest raises' evidence.
+    for i in 0..24 {
+        let why = format!("raise {i}: {}", "x".repeat(400));
+        ask(
+            &pg,
+            &a,
+            "acme/widgets",
+            Some(&h),
+            &[("secrets", "write")],
+            &why,
+        )
+        .await
+        .unwrap();
+    }
+    let req = requests::get_request(&pg, &id).await.unwrap().unwrap();
+    assert_eq!(req.evidence.as_array().map(Vec::len), Some(20));
+    assert_eq!(req.why.chars().count(), 4000);
+    assert!(
+        req.why.ends_with(&format!("raise 23: {}", "x".repeat(400))),
+        "the newest words are kept"
+    );
+    assert!(
+        !req.why.contains("list the deploy secrets"),
+        "the oldest go"
+    );
+
     // What the agent's set carries and the installation holds is carried:
     // nothing to ask. What it carries and GitHub lacks waits on GitHub.
     let carried = ask(
@@ -286,7 +316,7 @@ async fn an_agent_asks_and_only_an_unknown_key_an_ungranted_repo_or_a_hostwide_h
     permissions::set_agent_host_permissions_cas(&pg, &a, &h, &from, Some(&set), &change)
         .await
         .unwrap();
-    let (_, status, _) = only(
+    let (waiting, status, _) = only(
         &ask(
             &pg,
             &a,
@@ -300,14 +330,101 @@ async fn an_agent_asks_and_only_an_unknown_key_an_ungranted_repo_or_a_hostwide_h
     );
     assert_eq!(status, "awaiting_github");
 
-    // list_repos' read: newest first.
+    // Closing one that waits on GitHub withdraws it, and its note says the
+    // set still carries it: `denied` would tell the agent it does not. The
+    // level the admin saw is checked when sent.
+    let user = admin(&pg, &t).await;
+    let by = Decider {
+        actor: "admin@example.com",
+        user_id: &user,
+    };
+    assert_eq!(
+        requests::deny(&pg, &waiting, &by, Some(Level::Write), None)
+            .await
+            .unwrap_err(),
+        DecideError::Changed("read".into())
+    );
+    let closed = requests::deny(&pg, &waiting, &by, Some(Level::Read), None)
+        .await
+        .unwrap();
+    assert_eq!(closed.request.status, "withdrawn");
+    assert_eq!(
+        closed.request.decision_note.as_deref(),
+        Some(requests::CLOSED_WAITING)
+    );
+    let rows = audit_rows(&pg, "workbench.github_permission_deny", &a).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["status"], "withdrawn");
+
+    // Asked again, it waits on GitHub again, as a new request. An admin then
+    // takes it out of the set, and the agent asks at the same level: the
+    // open request goes back to an admin, never "your set includes it".
+    let (again, status, filed) = only(
+        &ask(
+            &pg,
+            &a,
+            "acme/widgets",
+            Some(&h),
+            &[("checks", "read")],
+            "read CI again",
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(filed);
+    assert_ne!(again, waiting);
+    assert_eq!(status, "awaiting_github");
+    let from = permissions::host_permissions(&pg, &a, &h).await.unwrap();
+    permissions::set_agent_host_permissions_cas(&pg, &a, &h, &from, None, &change)
+        .await
+        .unwrap();
+    let (same, status, filed) = only(
+        &ask(
+            &pg,
+            &a,
+            "acme/widgets",
+            Some(&h),
+            &[("checks", "read")],
+            "still need CI",
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(!filed);
+    assert_eq!(same, again);
+    assert_eq!(status, "pending");
+    assert_eq!(status_of(&pg, &again).await, "pending");
+
+    // list_repos' read: every open request however old, open first and then
+    // newest, and what was decided in the last 30 days.
+    sqlx::query(
+        "update workbench_permission_requests set created_at = created_at - interval '60 days' \
+         where agent_id = $1::uuid",
+    )
+    .bind(&a)
+    .execute(&pg)
+    .await
+    .unwrap();
     let mine = requests::agent_requests(&pg, &a, 30).await.unwrap();
-    assert_eq!(mine.len(), 4, "{mine:?}");
-    assert_eq!(mine[0].permission, "checks");
-    assert!(mine.iter().all(|r| OPEN.contains(&r.status.as_str())));
+    assert_eq!(mine.len(), 5, "{mine:?}");
+    assert_eq!(mine[0].id, again);
+    assert!(mine[..4].iter().all(|r| OPEN.contains(&r.status.as_str())));
+    assert_eq!(mine[4].id, waiting, "decided today");
+    sqlx::query(
+        "update workbench_permission_requests \
+            set decided_at = now() - interval '40 days', updated_at = now() - interval '40 days' \
+          where id = $1::uuid",
+    )
+    .bind(&waiting)
+    .execute(&pg)
+    .await
+    .unwrap();
+    let mine = requests::agent_requests(&pg, &a, 30).await.unwrap();
+    assert_eq!(mine.len(), 4, "a decision past the window goes: {mine:?}");
 
     // The agent goes first: its grant on the PAT host holds that host.
     cleanup(&pg, &[&a], &h).await;
+    drop_user(&pg, &user).await;
     sqlx::query("delete from git_hosts where id = $1")
         .bind(&pat_host)
         .execute(&pg)
@@ -357,7 +474,7 @@ async fn an_approval_merges_into_the_set_atomically_and_a_removed_grant_withdraw
 
     // Approved: the key joins the default (no row before), the request is
     // granted (the installation holds it), and it applies to both repos.
-    let decided = requests::approve(&pg, &id, &by, Some("for the deploy"))
+    let decided = requests::approve(&pg, &id, &by, Level::Write, Some("for the deploy"))
         .await
         .expect("approved");
     assert_eq!(decided.request.status, "granted");
@@ -381,11 +498,13 @@ async fn an_approval_merges_into_the_set_atomically_and_a_removed_grant_withdraw
     assert_eq!(rows[0]["appliesTo"], json!(["acme/site", "acme/widgets"]));
     // Decided once.
     assert_eq!(
-        requests::approve(&pg, &id, &by, None).await.unwrap_err(),
+        requests::approve(&pg, &id, &by, Level::Write, None)
+            .await
+            .unwrap_err(),
         DecideError::NotOpen
     );
     assert_eq!(
-        requests::deny(&pg, &id, &by, None).await.unwrap_err(),
+        requests::deny(&pg, &id, &by, None, None).await.unwrap_err(),
         DecideError::NotOpen
     );
 
@@ -397,11 +516,39 @@ async fn an_approval_merges_into_the_set_atomically_and_a_removed_grant_withdraw
             &a,
             "acme/site",
             None,
+            &[("secrets", "read")],
+            "list the deploy secrets",
+        )
+        .await
+        .unwrap(),
+    );
+    // The agent asks for more while an admin reads it: approving the level
+    // the admin saw is a conflict, and nothing is granted.
+    let (same, _, filed) = only(
+        &ask(
+            &pg,
+            &a,
+            "acme/site",
+            None,
             &[("secrets", "write")],
             "deploy key",
         )
         .await
         .unwrap(),
+    );
+    assert!(!filed);
+    assert_eq!(same, open);
+    assert_eq!(
+        requests::approve(&pg, &open, &by, Level::Read, None)
+            .await
+            .unwrap_err(),
+        DecideError::Changed("write".into())
+    );
+    assert_eq!(status_of(&pg, &open).await, "pending");
+    assert_eq!(
+        permissions::host_permissions(&pg, &a, &h).await.unwrap(),
+        decided.permissions.clone().unwrap(),
+        "the set is as the first approval left it"
     );
     let change = set_granted_repos(&pg, &a, &[r("acme/widgets")])
         .await
@@ -417,7 +564,9 @@ async fn an_approval_merges_into_the_set_atomically_and_a_removed_grant_withdraw
         .await
         .unwrap();
     assert_eq!(
-        requests::approve(&pg, &open, &by, None).await.unwrap_err(),
+        requests::approve(&pg, &open, &by, Level::Write, None)
+            .await
+            .unwrap_err(),
         DecideError::GrantGone
     );
     assert_eq!(status_of(&pg, &open).await, "pending", "nothing written");
@@ -436,7 +585,9 @@ async fn an_approval_merges_into_the_set_atomically_and_a_removed_grant_withdraw
     assert_eq!(change.withdrawn, [open.clone()]);
     assert_eq!(status_of(&pg, &open).await, "withdrawn");
     assert_eq!(
-        requests::approve(&pg, &open, &by, None).await.unwrap_err(),
+        requests::approve(&pg, &open, &by, Level::Write, None)
+            .await
+            .unwrap_err(),
         DecideError::NotOpen
     );
 
@@ -454,7 +605,7 @@ async fn an_approval_merges_into_the_set_atomically_and_a_removed_grant_withdraw
         .await
         .unwrap(),
     );
-    let decided = requests::deny(&pg, &denied, &by, Some("rerun it yourself in the UI"))
+    let decided = requests::deny(&pg, &denied, &by, None, Some("rerun it yourself in the UI"))
         .await
         .unwrap();
     assert_eq!(decided.request.status, "denied");
@@ -502,7 +653,9 @@ async fn an_approval_ahead_of_github_waits_and_a_refresh_that_finds_it_held_gran
         .await
         .unwrap(),
     );
-    let decided = requests::approve(&pg, &id, &by, None).await.unwrap();
+    let decided = requests::approve(&pg, &id, &by, Level::Write, None)
+        .await
+        .unwrap();
     assert_eq!(
         decided.request.status, "awaiting_github",
         "the installation does not hold it"
@@ -523,7 +676,9 @@ async fn an_approval_ahead_of_github_waits_and_a_refresh_that_finds_it_held_gran
         .await
         .unwrap(),
     );
-    requests::approve(&pg, &taken, &by, None).await.unwrap();
+    requests::approve(&pg, &taken, &by, Level::Write, None)
+        .await
+        .unwrap();
     let from = permissions::host_permissions(&pg, &other, &h)
         .await
         .unwrap();

@@ -330,7 +330,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "request_git_permission",
-            "description": "Ask an admin for a GitHub permission your git token lacks — when GitHub refused something you did on a granted repo for want of one (a 403 \"Resource not accessible by integration\", a push refused \"without workflows permission\", an X-Accepted-GitHub-Permissions header naming what it needed). Name the repo where it happened and each permission GitHub wanted, by GitHub's App permission name (contents, pull_requests, workflows, secrets, actions, administration, organization_secrets, …) at the level it wanted. Approval adds it to your permissions on that repo's git host, for every repo you hold there, and your next git credential for those repos carries it. Refused only for a name or level GitHub does not know, a repo you are not granted, or a host whose own token decides (no per-agent permissions there). Asking again while one is open adds your words to it. An admin decides in Admin → Git hosts; the outcome shows in list_repos (permissionRequests) and on the ticket. Do not retry the GitHub call or ask again until it is decided — continue other work. awaiting_github means approved in Talaria and waiting for an owner of the GitHub account to accept the permission for the App; no token carries it until they do.",
+            "description": "Ask an admin for a GitHub permission your git token lacks — when GitHub refused something you did on a granted repo for want of one (a 403 \"Resource not accessible by integration\", a push refused \"without workflows permission\", an X-Accepted-GitHub-Permissions header naming what it needed). Name the repo where it happened and each permission GitHub wanted, by GitHub's App permission name (contents, pull_requests, workflows, secrets, actions, administration, organization_secrets, …) at the level it wanted. Approval adds it to your permissions on that repo's git host, for every repo you hold there, and your next git credential for those repos carries it. Refused only for a name or level GitHub does not know, a repo you are not granted, or a host whose own token decides (no per-agent permissions there). Asking again while one is open adds your words to it. An admin decides in Admin → Git hosts; the outcome shows in list_repos (permissionRequests), and on the ticket the request was first asked from when you name one (taskId). Do not retry the GitHub call or ask again until it is decided — continue other work. awaiting_github means approved in Talaria and waiting for an owner of the GitHub account to accept the permission for the App; no token carries it until they do.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -942,7 +942,8 @@ async fn call_tool(
                 }
             }
             // The GitHub permissions it asked for, and what became of each:
-            // where request_git_permission tells the agent to look.
+            // where request_git_permission tells the agent to look. Every
+            // open one however old, and what was decided in 30 days.
             match hosts::requests::agent_requests(pg, &agent.id, 30).await {
                 Ok(rows) => {
                     out["permissionRequests"] =
@@ -1881,33 +1882,63 @@ async fn call_tool(
                 Ok(f) => f,
                 Err(why) => return CallOutcome::Fail(why),
             };
-            let filed: Vec<String> = filing
-                .permissions
-                .iter()
-                .filter_map(|p| match &p.raised {
-                    hosts::requests::Raised::Filed { id, .. } => {
+            // The ticket's lines: what was filed, worded by what it waits
+            // on, and a request already open from ANOTHER ticket, which
+            // keeps that ticket — its decision lands there, so this one says
+            // where. A repeat ask from the same ticket adds no line.
+            let mut pending = Vec::new();
+            let mut waiting = Vec::new();
+            let mut elsewhere = Vec::new();
+            for p in &filing.permissions {
+                let asked = format!("{} {}", p.permission, p.level);
+                match &p.raised {
+                    hosts::requests::Raised::Filed { id, status } => {
                         announce_raised(deps, hosts::requests::approval_key(id));
-                        Some(format!("{} {}", p.permission, p.level))
+                        if status == "awaiting_github" {
+                            waiting.push(asked);
+                        } else {
+                            pending.push(asked);
+                        }
                     }
-                    _ => None,
-                })
-                .collect();
-            if !filed.is_empty() {
+                    hosts::requests::Raised::AlreadyOpen { .. } => {
+                        if let (Some(here), Some(on)) = (task_id.as_deref(), &p.ticket)
+                            && on.id != here
+                        {
+                            elsewhere.push(format!("{asked} (asked from {})", on.label()));
+                        }
+                    }
+                    hosts::requests::Raised::Carried => {}
+                }
+            }
+            for (asked, outcome) in [
+                (pending, "awaiting an admin's decision in Admin → Git hosts"),
+                (
+                    waiting,
+                    "already in its permissions there, and waiting on GitHub: an owner of the account accepts it for the App's installation",
+                ),
+                (
+                    elsewhere,
+                    "already open, and its decision lands on the ticket it was first asked from",
+                ),
+            ] {
+                if asked.is_empty() {
+                    continue;
+                }
                 log_ticket(
                     pg,
                     task_id.as_deref(),
                     &WorkbenchActor::Agent(subject.clone()),
                     &format!(
-                        "asked for the GitHub permission{} {} on {} (where {} needed it) — awaiting an admin's decision in Admin → Git hosts",
-                        if filed.len() == 1 { "" } else { "s" },
-                        filed.join(", "),
+                        "asked for the GitHub permission{} {} on {} (where {} needed it) — {outcome}",
+                        if asked.len() == 1 { "" } else { "s" },
+                        asked.join(", "),
                         filing.host_name,
                         filing.repo,
                     ),
                 )
                 .await;
             }
-            CallOutcome::Ok(filing_wire(&filing))
+            CallOutcome::Ok(filing_wire(&filing, task_id.as_deref()))
         }
 
         "finish_job" => {
@@ -3148,12 +3179,17 @@ fn permission_args(v: Option<&Value>) -> Result<Vec<(String, String)>, String> {
 }
 
 /// The agent's answer to a filing: what became of each permission, and
-/// where the outcome will show.
-fn filing_wire(filing: &hosts::requests::Filing) -> Value {
+/// where the outcome will show — list_repos always, and the ticket the
+/// request is attached to only when there is one, which is the ticket it was
+/// first asked from, not necessarily `here`.
+fn filing_wire(filing: &hosts::requests::Filing, here: Option<&str>) -> Value {
     use hosts::requests::Raised;
     let mut open = false;
     let mut waiting = false;
     let mut carried = false;
+    let mut tickets: Vec<&str> = Vec::new();
+    let mut untracked = false;
+    let mut moved = false;
     let requests: Vec<Value> = filing
         .permissions
         .iter()
@@ -3168,24 +3204,54 @@ fn filing_wire(filing: &hosts::requests::Filing) -> Value {
                 "awaiting_github" => waiting = true,
                 _ => open = true,
             }
+            if id.is_some() {
+                match &p.ticket {
+                    Some(t) => {
+                        if !tickets.contains(&t.label()) {
+                            tickets.push(t.label());
+                        }
+                        moved |= here.is_some_and(|h| h != t.id);
+                    }
+                    None => untracked = true,
+                }
+            }
             json!({
                 "permission": p.permission,
                 "level": p.level.as_str(),
                 "requestId": id,
                 "status": status,
                 "alreadyPending": again,
+                "ticket": p.ticket.as_ref().map(|t| t.label()),
             })
         })
         .collect();
-    let mut note: Vec<&str> = Vec::new();
+    let mut note: Vec<String> = Vec::new();
     if open || waiting {
-        note.push("An admin decides in Admin → Git hosts. The outcome shows in list_repos (permissionRequests) and on the ticket. Do not retry the GitHub call or ask again until it is decided; continue other work.");
+        note.push("An admin decides in Admin → Git hosts.".into());
+        note.push(match (tickets.is_empty(), untracked) {
+            (true, _) => "The outcome shows only in list_repos (permissionRequests): no ticket was named.".into(),
+            (false, false) => format!(
+                "The outcome shows in list_repos (permissionRequests) and on {}.",
+                tickets.join(" and ")
+            ),
+            (false, true) => format!(
+                "The outcome shows in list_repos (permissionRequests), and on {} for the requests that name it (see each request's ticket).",
+                tickets.join(" and ")
+            ),
+        });
+        if moved {
+            note.push("A request already open from another ticket stays on that ticket: its decision lands there, not on this one.".into());
+        }
+        note.push(
+            "Do not retry the GitHub call or ask again until it is decided; continue other work."
+                .into(),
+        );
     }
     if waiting {
-        note.push("awaiting_github: your permissions on this host already include it, and GitHub has not accepted it for the App's installation — an owner of the GitHub account does. No token carries it until then.");
+        note.push("awaiting_github: your permissions on this host already include it, and GitHub has not accepted it for the App's installation — an owner of the GitHub account does. No token carries it until then.".into());
     }
     if carried {
-        note.push("granted: your permissions on this host include it and the installation holds it, so a fresh git credential for the repo carries it. If GitHub still refused, the cause is something else — say what GitHub answered in report_problem.");
+        note.push("granted: your permissions on this host include it and the installation holds it, so a fresh git credential for the repo carries it. If GitHub still refused, the cause is something else — say what GitHub answered in report_problem.".into());
     }
     json!({
         "host": filing.host_id,
@@ -3654,6 +3720,56 @@ async fn log_wtool_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_filing_says_where_its_outcome_shows_and_only_where_it_does() {
+        use hosts::requests::{Filing, Raised, RaisedPermission, RequestTicket};
+        let filing = |ticket: Option<&str>, raised: Raised| Filing {
+            host_id: "github".into(),
+            host_name: "GitHub".into(),
+            repo: "acme/site".into(),
+            permissions: vec![RaisedPermission {
+                permission: "workflows".into(),
+                level: hosts::Level::Write,
+                raised,
+                ticket: ticket.map(|id| RequestTicket {
+                    id: id.into(),
+                    ticket_ref: Some(format!("WEB-{id}")),
+                }),
+            }],
+        };
+        let filed = || Raised::Filed {
+            id: "r1".into(),
+            status: "pending".into(),
+        };
+        // No ticket named: list_repos alone, and the answer says so.
+        let none = filing_wire(&filing(None, filed()), None);
+        let note = none["note"].as_str().unwrap();
+        assert!(note.contains("only in list_repos"), "{note}");
+        assert_eq!(none["requests"][0]["ticket"], Value::Null);
+        // Its own ticket.
+        let here = filing_wire(&filing(Some("1"), filed()), Some("1"));
+        let note = here["note"].as_str().unwrap();
+        assert!(note.contains("and on WEB-1."), "{note}");
+        assert!(!note.contains("another ticket"), "{note}");
+        // Asked again from a second ticket: the request keeps the first,
+        // where its decision lands, and the answer says that.
+        let again = Raised::AlreadyOpen {
+            id: "r1".into(),
+            status: "pending".into(),
+        };
+        let moved = filing_wire(&filing(Some("1"), again), Some("2"));
+        let note = moved["note"].as_str().unwrap();
+        assert!(
+            note.contains("and on WEB-1.") && note.contains("stays on that ticket"),
+            "{note}"
+        );
+        assert_eq!(moved["requests"][0]["ticket"], "WEB-1");
+        // Carried: nothing to decide, so nothing about where.
+        let carried = filing_wire(&filing(None, Raised::Carried), Some("1"));
+        let note = carried["note"].as_str().unwrap();
+        assert!(!note.contains("list_repos"), "{note}");
+    }
 
     #[test]
     fn the_probe_shell_unsets_every_sealed_config_name() {

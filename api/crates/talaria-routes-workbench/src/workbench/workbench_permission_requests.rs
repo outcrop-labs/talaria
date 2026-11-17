@@ -3,11 +3,13 @@
 // open request (pending, or approved and waiting on GitHub), each with what
 // GitHub's side holds, every repo the agent holds on that host (an approval
 // applies to all of them) and its ticket's column; PUT {id, action:
-// approve|deny, note?} → approve merges the permission into the agent's set
-// on the host, `granted` when the installation holds it and
+// approve|deny, level, note?} → approve merges the permission into the
+// agent's set on the host, `granted` when the installation holds it and
 // `awaiting_github` when it does not (a holdings refresh flips it); deny
-// closes it. Either way the ticket gets a line and the agent's managers a
-// notice.
+// closes it. `level` is the level the decider was shown (required to
+// approve): the agent may have asked for more since, and that is a 409,
+// never a grant nobody confirmed. Either way the ticket gets a line and the
+// agent's managers a notice.
 //
 // ADMIN, by session only (an agent's or a personal key is a 401), and for a
 // request raised on a ticket, an admin who may read that board's work: the
@@ -33,7 +35,9 @@ use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_approvals::{
     git_permission_authority, may_decide_content, resolve_approval, resolve_disclosures,
 };
-use talaria_body::{enum_member, optional_max_string_member, parse, uuid_member};
+use talaria_body::{
+    enum_member, optional_enum_member, optional_max_string_member, parse, uuid_member,
+};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_git_hosts::requests::{
     self, DecideError, Decided, Decider, PermissionRequest, github_side,
@@ -61,7 +65,12 @@ pub(crate) enum By<'a> {
 /// The ticket line a decision writes. Pure, so its wording is pinned. The
 /// note is the decider's, and the ticket's readers are the board's, which is
 /// whom the note was written for.
-pub(crate) fn decision_line(req: &PermissionRequest, was: &str, note: Option<&str>) -> String {
+pub(crate) fn decision_line(
+    req: &PermissionRequest,
+    was: &str,
+    by_admin: bool,
+    note: Option<&str>,
+) -> String {
     let agent = req.agent_label();
     let host = req.host_label();
     let asked = req.asked();
@@ -75,8 +84,8 @@ pub(crate) fn decision_line(req: &PermissionRequest, was: &str, note: Option<&st
         ("awaiting_github", _) => format!(
             "approved the GitHub permission {asked} for {agent} on {host} — waiting on GitHub: the App's installation has not accepted it, and no token carries it until an owner of the account does"
         ),
-        ("denied", "awaiting_github") => format!(
-            "closed {agent}'s request for the GitHub permission {asked} on {host}, which was waiting on GitHub"
+        ("withdrawn", "awaiting_github") if by_admin => format!(
+            "closed {agent}'s request for the GitHub permission {asked} on {host}, which was waiting on GitHub — it stays in {agent}'s permissions there, and a git credential carries it once the installation accepts it"
         ),
         ("denied", _) => {
             format!("denied the GitHub permission {asked} that {agent} asked for on {host}")
@@ -94,7 +103,7 @@ pub(crate) fn decision_line(req: &PermissionRequest, was: &str, note: Option<&st
 /// The managers' notice: who, what, where and the outcome — never the
 /// agent's words or the decider's note, which quote the board's work and the
 /// managers may not be on that board.
-pub(crate) fn notice_title(req: &PermissionRequest) -> String {
+pub(crate) fn notice_title(req: &PermissionRequest, by_admin: bool) -> String {
     let agent = req.agent_label();
     let host = req.host_label();
     let asked = req.asked();
@@ -104,6 +113,9 @@ pub(crate) fn notice_title(req: &PermissionRequest) -> String {
             format!("{agent}'s {asked} on {host} was approved — waiting on GitHub")
         }
         "denied" => format!("{agent}'s request for {asked} on {host} was denied"),
+        "withdrawn" if by_admin => format!(
+            "{agent}'s request for {asked} on {host} was closed while waiting on GitHub — it stays in its permissions"
+        ),
         _ => format!("{agent}'s request for {asked} on {host} was withdrawn"),
     }
 }
@@ -128,13 +140,14 @@ pub(crate) async fn tell_decided(
         } => (*actor, *name, Some(*user_id)),
         By::Github => ("talaria", "GitHub", None),
     };
+    let by_admin = decider.is_some();
     if let Some(task_id) = &req.task_id
         && let Err(e) = talaria_tasks::log_activity(
             pg,
             task_id,
             actor,
             "workbench",
-            &decision_line(req, was, note),
+            &decision_line(req, was, by_admin, note),
         )
         .await
     {
@@ -157,7 +170,7 @@ pub(crate) async fn tell_decided(
             return;
         }
     };
-    let title = notice_title(req);
+    let title = notice_title(req, by_admin);
     let body = format!(
         "Asked for where it worked on {}. Decided by {name}.",
         req.repo
@@ -386,6 +399,12 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // The level the decider was shown, required to approve: a raise since is a
+    // 409, never a grant nobody confirmed. A denial checks it when sent.
+    let seen = match optional_enum_member(obj, "level", &["read", "write", "admin"]) {
+        Ok(v) => v.and_then(|l| talaria_git_hosts::Level::parse(&l)),
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
     // Why the decider decided: on the ticket, and in list_repos for the
     // agent.
     let note = match optional_max_string_member(obj, "note", 500) {
@@ -418,9 +437,17 @@ pub async fn put(
         actor: &actor,
         user_id: &user.id,
     };
-    let decided = match action.as_str() {
-        "approve" => requests::approve(&state.pg, &id, &by, note.as_deref()).await,
-        _ => requests::deny(&state.pg, &id, &by, note.as_deref()).await,
+    let decided = match (action.as_str(), seen) {
+        ("approve", Some(level)) => {
+            requests::approve(&state.pg, &id, &by, level, note.as_deref()).await
+        }
+        ("approve", None) => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "level is required to approve: the level you were shown",
+            ));
+        }
+        _ => requests::deny(&state.pg, &id, &by, seen, note.as_deref()).await,
     };
     let Decided {
         request,
@@ -432,6 +459,16 @@ pub async fn put(
             return Ok(house_error(
                 StatusCode::CONFLICT,
                 "this request is already decided — read the queue again",
+            ));
+        }
+        Err(DecideError::Changed(level)) => {
+            return Ok(house_error(
+                StatusCode::CONFLICT,
+                &format!(
+                    "{} has asked for {} {level} since you loaded it — read the queue again before deciding",
+                    req.agent_label(),
+                    req.permission
+                ),
             ));
         }
         Err(DecideError::GrantGone) => {
@@ -509,41 +546,50 @@ mod tests {
     #[test]
     fn a_decision_line_names_the_agent_the_permission_the_host_and_the_note() {
         assert_eq!(
-            decision_line(&req("granted"), "pending", Some("for the deploy")),
+            decision_line(&req("granted"), "pending", true, Some("for the deploy")),
             "approved the GitHub permission workflows write for Billy on GitHub — it applies to every repo Billy holds there, and the next git credential carries it: for the deploy"
         );
         assert!(
-            decision_line(&req("awaiting_github"), "pending", None).contains("waiting on GitHub")
+            decision_line(&req("awaiting_github"), "pending", true, None)
+                .contains("waiting on GitHub")
         );
         assert_eq!(
-            decision_line(&req("denied"), "pending", Some("  ")),
+            decision_line(&req("denied"), "pending", true, Some("  ")),
             "denied the GitHub permission workflows write that Billy asked for on GitHub"
         );
+        // An admin closing one that waits on GitHub: it stays in the set,
+        // and the line says so.
+        let closed = decision_line(&req("withdrawn"), "awaiting_github", true, None);
+        assert!(closed.starts_with("closed Billy's request"), "{closed}");
+        assert!(closed.contains("stays in Billy's permissions"), "{closed}");
         assert!(
-            decision_line(&req("denied"), "awaiting_github", None)
-                .starts_with("closed Billy's request")
-        );
-        assert!(
-            decision_line(&req("granted"), "awaiting_github", None)
+            decision_line(&req("granted"), "awaiting_github", false, None)
                 .starts_with("GitHub now holds the permission workflows write for Billy")
         );
-        assert!(decision_line(&req("withdrawn"), "awaiting_github", None).starts_with("withdrew"));
+        assert!(
+            decision_line(&req("withdrawn"), "awaiting_github", false, None)
+                .starts_with("withdrew")
+        );
     }
 
     #[test]
     fn the_managers_notice_never_carries_the_agents_words_or_the_note() {
         for status in ["granted", "awaiting_github", "denied", "withdrawn"] {
-            let title = notice_title(&req(status));
-            assert!(
-                title.contains("Billy") && title.contains("workflows write"),
-                "{title}"
-            );
-            assert!(!title.contains("CI must change"), "{title}");
+            for by_admin in [true, false] {
+                let title = notice_title(&req(status), by_admin);
+                assert!(
+                    title.contains("Billy") && title.contains("workflows write"),
+                    "{title}"
+                );
+                assert!(!title.contains("CI must change"), "{title}");
+            }
         }
         assert_eq!(
-            notice_title(&req("granted")),
+            notice_title(&req("granted"), true),
             "Billy now carries workflows write on GitHub"
         );
+        assert!(notice_title(&req("withdrawn"), true).contains("closed while waiting on GitHub"));
+        assert!(notice_title(&req("withdrawn"), false).ends_with("was withdrawn"));
     }
 
     #[test]
@@ -687,6 +733,11 @@ mod tests {
                 panic!("{filing:?}")
             };
             assert_eq!(status, "pending");
+            assert_eq!(
+                filing.permissions[0].ticket.as_ref().map(|t| t.id.as_str()),
+                Some(task.as_str()),
+                "the request is on the ticket it was asked from"
+            );
             let id = id.clone();
 
             // An agent's key is not a session: 401. A member: 403.
@@ -703,7 +754,7 @@ mod tests {
             let (status, _) = put_as(
                 &state,
                 &as_manager,
-                json!({ "id": id, "action": "approve" }),
+                json!({ "id": id, "action": "approve", "level": "write" }),
             )
             .await;
             assert_eq!(status, StatusCode::FORBIDDEN);
@@ -720,7 +771,7 @@ mod tests {
             let (status, body) = put_as(
                 &state,
                 &as_stranger,
-                json!({ "id": id, "action": "approve" }),
+                json!({ "id": id, "action": "approve", "level": "write" }),
             )
             .await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
@@ -741,12 +792,21 @@ mod tests {
             assert_eq!(full["ticket"]["blocked"], true);
             assert_eq!(full["ticket"]["restartStatus"], "in_progress");
 
+            // An approval names the level the decider was shown.
+            let (status, body) = put_as(
+                &state,
+                &as_decider,
+                json!({ "id": id, "action": "approve" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
             // Approve: the set gains it from the default, the request is
             // granted (the installation holds it), the ticket says so.
             let (status, body) = put_as(
                 &state,
                 &as_decider,
-                json!({ "id": id, "action": "approve", "note": "for the deploy" }),
+                json!({ "id": id, "action": "approve", "level": "write", "note": "for the deploy" }),
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{body}");
@@ -784,11 +844,50 @@ mod tests {
                 put_as(&state, &as_decider, json!({ "id": id, "action": "deny" })).await;
             assert_eq!(status, StatusCode::CONFLICT);
 
-            // Deny another: its note is the agent's to read.
-            let filing = ask(&state, &a, &model, &task, &[("secrets", "write")]).await;
+            // The agent asks for more while the decider reads it: an
+            // approval of the level shown is a 409, and nothing is granted.
+            let filing = ask(&state, &a, &model, &task, &[("secrets", "read")]).await;
             let requests::Raised::Filed { id: other, .. } = &filing.permissions[0].raised else {
                 panic!("{filing:?}")
             };
+            // From another ticket: the request keeps the first one, where
+            // its decision lands, and says so.
+            let second: String = sqlx::query_scalar(
+                "insert into tasks (board_id, title, status) values ($1::uuid, 'Rotate keys', 'blocked') \
+                 returning id::text",
+            )
+            .bind(&board)
+            .fetch_one(&state.pg)
+            .await
+            .unwrap();
+            let again = ask(&state, &a, &model, &second, &[("secrets", "write")]).await;
+            assert!(
+                matches!(&again.permissions[0].raised, requests::Raised::AlreadyOpen { id, .. } if id == other),
+                "{again:?}"
+            );
+            assert_eq!(
+                again.permissions[0].ticket.as_ref().map(|t| t.id.as_str()),
+                Some(task.as_str())
+            );
+            let (status, body) = put_as(
+                &state,
+                &as_decider,
+                json!({ "id": other, "action": "approve", "level": "read" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("has asked for secrets write since you loaded it")),
+                "{body}"
+            );
+            let set = talaria_git_hosts::permissions::host_permissions(&state.pg, &a, &h)
+                .await
+                .unwrap();
+            assert!(!set.contains("secrets"), "{set}");
+
+            // Deny it: its note is the agent's to read.
             let (status, body) = put_as(
                 &state,
                 &as_decider,
@@ -823,7 +922,7 @@ mod tests {
             let (status, body) = put_as(
                 &state,
                 &as_decider,
-                json!({ "id": late, "action": "approve" }),
+                json!({ "id": late, "action": "approve", "level": "write" }),
             )
             .await;
             assert_eq!(status, StatusCode::CONFLICT, "{body}");

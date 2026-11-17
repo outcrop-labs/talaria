@@ -32,7 +32,9 @@
    *  words quote that board's work, and the server never sends them. The
    *  thread post and Restart are this person's own moves from here, through
    *  the doors a person always uses: nothing here moves a ticket or starts
-   *  an agent turn by itself. */
+   *  an agent turn by itself. The post is checked by default: it is how the
+   *  agent hears the decision. A decision sends the level this page showed,
+   *  so an agent that asked for more since gets a 409, not a wider grant. */
   const qc = useQueryClient()
   const requestsQuery = createQuery(() => ({
     queryKey: ['permission-requests'],
@@ -43,7 +45,9 @@
   const requests = $derived(requestsQuery.data ?? [])
 
   let notes = $state<Record<string, string>>({})
+  /** Unticked boxes only: a request not in here posts its note. */
   let threadPost = $state<Record<string, boolean>>({})
+  const postsNote = (id: string) => threadPost[id] ?? true
   let busy = $state<string | null>(null)
   let error = $state<string | null>(null)
   let said = $state<string | null>(null)
@@ -69,6 +73,7 @@
       const res = await putJson<{ ok: true; status: string }>('/api/workbench/permission-requests', {
         id: r.id,
         action,
+        level: r.level,
         ...(note ? { note } : {}),
       })
       said =
@@ -77,7 +82,7 @@
           : res.status === 'awaiting_github'
             ? `Approved. ${r.agentName}'s ${askedLabel(r)} waits on GitHub: an owner of the account accepts it for the App.`
             : `${r.status === 'awaiting_github' ? 'Closed' : 'Denied'}.${r.ticket ? ' The ticket says so.' : ''}`
-      if (note && threadPost[r.id] && r.ticket) {
+      if (note && postsNote(r.id) && r.ticket) {
         try {
           await postNote(r, note)
         } catch (e) {
@@ -185,7 +190,7 @@
         <div class="flex flex-wrap items-center gap-2">
           {#if r.ticket}
             <Checkbox
-              checked={!!threadPost[r.id]}
+              checked={postsNote(r.id)}
               onChange={(on) => (threadPost[r.id] = on)}
               label="post my note in the ticket thread"
               title="Your note as your own message in the ticket's discussion. The agent working it may answer, as it would any message there."

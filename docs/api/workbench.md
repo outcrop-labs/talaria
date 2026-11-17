@@ -531,6 +531,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_permission
 | :--- | :--- | :--- |
 | `id` | `uuid` |  |
 | `action` | `enum(approve|deny)` |  |
+| `level` | `enum(read|write|admin)?` | The level the decider was shown, required to approve: a raise since is a 409, never a grant nobody confirmed. A denial checks it when sent. |
 | `note` | `string?(500)` | Why the decider decided: on the ticket, and in list_repos for the agent. |
 
 ## `/api/workbench/repo-requests`
