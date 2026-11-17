@@ -103,7 +103,7 @@ export function serverStatus(s: StatusInput): ServerStatus {
       'ready',
       'per agent · google',
       'success',
-      s.probe?.detail ?? "Each agent acts with its own Google account (its owner's, the org account, or its own); only read-only tools run.",
+      s.probe?.detail ?? "Each agent acts with its own Google account (its owner's, the org account, or its own); read-only tools run, and every other call waits for a person to approve it.",
     )
   }
   if (s.authMode === 'per-user') {

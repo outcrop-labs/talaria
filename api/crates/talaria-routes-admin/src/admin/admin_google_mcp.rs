@@ -7,20 +7,36 @@
 // the MCP page. Each agent acts with its own Google principal (its owner's
 // connection, the org account, or its own identity) through the one door, so
 // a refresh token never leaves the server and an owner never falls back to
-// the org account. Read-only: only the tools on the pinned read list that
-// Google also marks read-only are relayed; every other tool is refused, and
-// held for a person once that approval exists. Deliberately requireAdmin.
+// the org account. What runs is the pack's policy per tool: the tools on the
+// pinned read list that Google also marks read-only are relayed; trash, spam
+// and sensitive labels are denied; every other tool — every write, and any
+// tool Google adds later — is HELD: the exact call waits in the approval
+// queue for a person (`mcp_call`). An admin may override the default per
+// tool, except that the deny list stays denied, and an ALLOW reaches only the
+// org account and agents' own identities: a personal assistant's write into
+// its owner's Google account stays held for that owner. A call naming TRASH
+// or SPAM in a label argument is refused whatever the policy. Deliberately
+// requireAdmin.
 //   GET → every product: its endpoint and the two Google Cloud services to
 //   enable, whether it is enabled here, its registry row and last probe, and
-//   each cached tool with the pack's policy for it (allow, hold, deny — a
-//   hold is refused in this release) and the scopes Google accepts for it;
-//   plus Google's preview terms, and the last refusals Google's servers
-//   gave each Google grant (`refusals`).
+//   each cached tool with the pack's default policy for it (allow, hold,
+//   deny), the admin's override if any, the policy in effect — for the org
+//   account and agent identities (`effective`) and for a personal assistant
+//   (`effectivePersonal`, where an ALLOW does not reach) — and the scopes
+//   Google accepts for it; plus Google's preview terms, and the last
+//   refusals Google's servers gave each Google grant (`refusals`).
 //   POST /{product} {acknowledgePreview: true} → enable it: the registry
 //   row, assigned to no agent, and its catalog asked of Google. 409 when it
 //   is already enabled; 400 without the acknowledgement.
-//   DELETE /{product} → disable it: the row goes, with its assignments, and
-//   the agents that carried it drop it on their next reconcile.
+//   DELETE /{product} → disable it: the row goes, with its assignments, its
+//   tool overrides, and the agents that carried it drop it on their next
+//   reconcile.
+//   PUT /{product}/tools/{tool} {policy: "allow"|"hold"|"deny"|null} → set
+//   (or, with null, clear) the admin's override for one tool the server's
+//   catalog lists. 400 for a tool on the deny list set to anything but
+//   deny; 404 for a product not enabled or a tool the catalog does not
+//   list. Audited (`google.mcp_tool_policy`, before and after). The agents
+//   holding the server are told to list its tools again.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -28,8 +44,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 use talaria_api_facades::google::mcp::{PRODUCTS, Product, pack, policy};
-use talaria_api_facades::mcp::apply::{carriers_for_server, enqueue_applies};
-use talaria_api_facades::mcp::google::AUTH_MODE;
+use talaria_api_facades::mcp::apply::{bump_tool_lists, carriers_for_server, enqueue_applies};
+use talaria_api_facades::mcp::google::{AUTH_MODE, tool_overrides};
 use talaria_api_facades::mcp::registry::{
     McpServer, NewServer, create_mcp_server, delete_mcp_server, get_mcp_server, refresh_mcp_tools,
 };
@@ -48,30 +64,47 @@ async fn pack_row(state: &AppState, p: &Product) -> Result<Option<McpServer>, sq
         .filter(|s| s.auth_mode == AUTH_MODE))
 }
 
-/// One cached tool as the panel shows it.
-fn tool_view(p: &Product, t: &Value) -> Option<Value> {
+/// One cached tool as the panel shows it: the pack's default, the admin's
+/// override, and the policy in effect (the override, except that the deny
+/// list stays denied) — for the org account and agent identities, and for a
+/// personal assistant, where an admin's ALLOW does not reach.
+fn tool_view(p: &Product, t: &Value, overrides: &[(String, policy::Policy)]) -> Option<Value> {
     let name = t.get("name").and_then(Value::as_str)?;
     let default = policy::default_policy(p.id, name, Some(t));
-    let effective = policy::gateway_policy(p.id, name, &Value::Array(vec![t.clone()]));
+    let override_ = policy::override_of(overrides, name);
+    let effective = policy::policy_for(p.id, name, Some(t), override_);
+    let personal = policy::policy_for(
+        p.id,
+        name,
+        Some(t),
+        policy::override_of(&policy::overrides_for(overrides, true), name),
+    );
     Some(json!({
         "name": name,
         "title": t.get("title").cloned().or_else(|| t.pointer("/annotations/title").cloned()),
         "readOnlyHint": t.pointer("/annotations/readOnlyHint").cloned(),
         "destructiveHint": t.pointer("/annotations/destructiveHint").cloned(),
         "pinnedRead": policy::pinned_read(p.id, name),
+        "denyListed": policy::denied_by_name(name),
         "policy": default,
+        "override": override_,
         "effective": effective,
+        "effectivePersonal": personal,
         "requiredScopesAnyOf": t.get("requiredScopesAnyOf").cloned(),
     }))
 }
 
 /// One product as the panel shows it.
-fn product_view(p: &Product, row: Option<&McpServer>) -> Value {
+fn product_view(
+    p: &Product,
+    row: Option<&McpServer>,
+    overrides: &[(String, policy::Policy)],
+) -> Value {
     let tools: Vec<Value> = row
         .and_then(|s| s.tools.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|t| tool_view(p, t))
+        .filter_map(|t| tool_view(p, t, overrides))
         .collect();
     json!({
         "id": p.id,
@@ -138,7 +171,14 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             Ok(r) => r,
             Err(e) => return Ok(internal("[admin/google-mcp] registry read failed", e)),
         };
-        products.push(product_view(&p, row.as_ref()));
+        let overrides = match &row {
+            Some(r) => match tool_overrides(&state.pg, &r.id).await {
+                Ok(o) => o,
+                Err(e) => return Ok(internal("[admin/google-mcp] policy read failed", e)),
+            },
+            None => Vec::new(),
+        };
+        products.push(product_view(&p, row.as_ref(), &overrides));
     }
     let refusals = match refusals(&state).await {
         Ok(r) => r,
@@ -147,7 +187,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     Ok(Json(json!({
         "previewTerms": pack::PREVIEW_TERMS,
         "previewTermsUrl": pack::PREVIEW_TERMS_URL,
-        "holdsEnabled": policy::HOLDS_ENABLED,
         "products": products,
         "refusals": refusals,
     }))
@@ -200,7 +239,7 @@ pub async fn post(
     let name = pack::server_name(&p);
     let label = pack::server_label(&p);
     let description = format!(
-        "Google's {} MCP server (Developer Preview). Read-only tools only; each agent acts with its own Google account.",
+        "Google's {} MCP server (Developer Preview). Read-only tools run; every other call waits for a person to approve it. Each agent acts with its own Google account.",
         p.name
     );
     let endpoint = pack::endpoint(&p);
@@ -258,7 +297,7 @@ pub async fn post(
         Ok(r) => r,
         Err(e) => return Ok(internal("[admin/google-mcp] registry read failed", e)),
     };
-    Ok(Json(json!({ "ok": true, "product": product_view(&p, row.as_ref()) })).into_response())
+    Ok(Json(json!({ "ok": true, "product": product_view(&p, row.as_ref(), &[]) })).into_response())
 }
 
 pub async fn delete(
@@ -304,4 +343,184 @@ pub async fn delete(
     )
     .await;
     Ok(Json(json!({ "ok": true })).into_response())
+}
+
+/// What a PUT asks for: a policy, or null to clear the override. Pure.
+fn requested_policy(body: &Value) -> Result<Option<policy::Policy>, String> {
+    let Some(obj) = body.as_object() else {
+        return Err("body must be a JSON object".into());
+    };
+    match obj.get("policy") {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => policy::Policy::parse(s)
+            .map(Some)
+            .ok_or_else(|| "policy must be \"allow\", \"hold\", \"deny\" or null".into()),
+        _ => Err("policy must be \"allow\", \"hold\", \"deny\" or null".into()),
+    }
+}
+
+pub async fn put_tool(
+    State(state): State<AppState>,
+    Path((product, tool)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
+    let Some(p) = pack::product(&product) else {
+        return Ok(no_such_product());
+    };
+    let wanted = match requested_policy(&parse(&body)) {
+        Ok(w) => w,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    if let Some(want) = wanted
+        && let Some(why) = policy::override_refusal(&tool, want)
+    {
+        return Ok(house_error(StatusCode::BAD_REQUEST, why));
+    }
+    let row = match pack_row(&state, &p).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return Ok(house_error(
+                StatusCode::NOT_FOUND,
+                &format!("{} is not enabled", p.name),
+            ));
+        }
+        Err(e) => return Ok(internal("[admin/google-mcp] registry read failed", e)),
+    };
+    let Some(entry) = policy::catalog_entry(&row.tools, &tool) else {
+        return Ok(house_error(
+            StatusCode::NOT_FOUND,
+            &format!(
+                "Google's {} MCP server did not list a tool named \u{201c}{tool}\u{201d} when Talaria last asked it",
+                p.name
+            ),
+        ));
+    };
+    let before_overrides = match tool_overrides(&state.pg, &row.id).await {
+        Ok(o) => o,
+        Err(e) => return Ok(internal("[admin/google-mcp] policy read failed", e)),
+    };
+    let before = policy::override_of(&before_overrides, &tool);
+    let written = match wanted {
+        Some(want) => {
+            sqlx::query(
+                "insert into mcp_tool_policies (server_id, tool, policy, set_by, updated_at) \
+             values ($1::uuid, $2, $3, $4::uuid, now()) \
+             on conflict (server_id, tool) do update \
+               set policy = excluded.policy, set_by = excluded.set_by, updated_at = now()",
+            )
+            .bind(&row.id)
+            .bind(&tool)
+            .bind(want.as_str())
+            .bind(&user.id)
+            .execute(&state.pg)
+            .await
+        }
+        None => {
+            sqlx::query("delete from mcp_tool_policies where server_id = $1::uuid and tool = $2")
+                .bind(&row.id)
+                .bind(&tool)
+                .execute(&state.pg)
+                .await
+        }
+    };
+    if let Err(e) = written {
+        return Ok(internal("[admin/google-mcp] policy write failed", e));
+    }
+    log_audit(
+        &state.pg,
+        AuditEntry {
+            actor: &actor_of(&user),
+            action: "google.mcp_tool_policy",
+            target_type: "mcp-server",
+            target_id: Some(&row.id),
+            target_label: Some(&format!("{}/{tool}", row.name)),
+            before: Some(json!({
+                "override": before,
+                "effective": policy::policy_for(p.id, &tool, Some(entry), before),
+            })),
+            after: Some(json!({
+                "override": wanted,
+                "effective": policy::policy_for(p.id, &tool, Some(entry), wanted),
+            })),
+        },
+    )
+    .await;
+    // What an agent may list changed: those holding the server list again.
+    bump_tool_lists(&state.pg, std::slice::from_ref(&row.name)).await;
+    let overrides = match tool_overrides(&state.pg, &row.id).await {
+        Ok(o) => o,
+        Err(e) => return Ok(internal("[admin/google-mcp] policy read failed", e)),
+    };
+    Ok(Json(json!({ "ok": true, "tool": tool_view(&p, entry, &overrides) })).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_put_names_a_policy_or_clears_one() {
+        assert_eq!(
+            requested_policy(&json!({ "policy": "allow" })),
+            Ok(Some(policy::Policy::Allow))
+        );
+        assert_eq!(
+            requested_policy(&json!({ "policy": "hold" })),
+            Ok(Some(policy::Policy::Hold))
+        );
+        assert_eq!(
+            requested_policy(&json!({ "policy": "deny" })),
+            Ok(Some(policy::Policy::Deny))
+        );
+        assert_eq!(requested_policy(&json!({ "policy": null })), Ok(None));
+        for bad in [
+            json!({}),
+            json!({ "policy": "Allow" }),
+            json!({ "policy": 1 }),
+            json!("allow"),
+        ] {
+            assert!(requested_policy(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_panel_shows_default_override_and_effect() {
+        let p = pack::product("gmail").unwrap();
+        let draft = json!({ "name": "create_draft", "annotations": { "readOnlyHint": false } });
+        let trash = json!({ "name": "trash_thread", "annotations": { "destructiveHint": true } });
+        let overrides = vec![
+            ("create_draft".to_string(), policy::Policy::Allow),
+            ("trash_thread".to_string(), policy::Policy::Allow),
+        ];
+        let v = tool_view(&p, &draft, &overrides).unwrap();
+        assert_eq!(v["policy"], "hold");
+        assert_eq!(v["override"], "allow");
+        assert_eq!(v["effective"], "allow");
+        // A personal assistant's call stays held for its owner.
+        assert_eq!(v["effectivePersonal"], "hold");
+        assert_eq!(v["denyListed"], false);
+        // A HOLD reaches everyone.
+        let read = json!({ "name": "get_thread", "annotations": { "readOnlyHint": true } });
+        let held = vec![("get_thread".to_string(), policy::Policy::Hold)];
+        let v = tool_view(&p, &read, &held).unwrap();
+        assert_eq!(
+            (v["effective"].as_str(), v["effectivePersonal"].as_str()),
+            (Some("hold"), Some("hold"))
+        );
+        let v = tool_view(&p, &read, &[]).unwrap();
+        assert_eq!(
+            (v["effective"].as_str(), v["effectivePersonal"].as_str()),
+            (Some("allow"), Some("allow"))
+        );
+        // A row on a deny-listed tool (never written by this route) changes
+        // nothing: the effect stays deny.
+        let v = tool_view(&p, &trash, &overrides).unwrap();
+        assert_eq!(v["effective"], "deny");
+        assert_eq!(v["denyListed"], true);
+        let v = tool_view(&p, &draft, &[]).unwrap();
+        assert_eq!(v["override"], Value::Null);
+        assert_eq!(v["effective"], "hold");
+    }
 }

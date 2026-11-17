@@ -210,7 +210,7 @@
           <span class="truncate font-mono text-[11px] text-muted">{domain}</span>
         {/if}
         {#if s.authMode === 'google'}
-          <Chip class="shrink-0" tone="warn" title="Google Workspace MCP, Developer Preview (Admin → Org). Each agent acts with its own Google account; only read-only tools run.">google · preview</Chip>
+          <Chip class="shrink-0" tone="warn" title="Google Workspace MCP, Developer Preview (Admin → Org). Each agent acts with its own Google account; read-only tools run, and every other call waits for a person to approve it.">google · preview</Chip>
         {/if}
         {#if s.authMode === 'per-user' && !s.builtin}
           <Chip class="shrink-0" title="Each person connects their own account; until they do, their assistant is told where to connect.">per-user</Chip>

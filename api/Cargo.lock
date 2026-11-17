@@ -5478,6 +5478,7 @@ dependencies = [
  "talaria-google-errors",
  "talaria-mcp-jsonrpc",
  "talaria-safe-fetch",
+ "tokio",
  "url",
 ]
 
@@ -5526,6 +5527,7 @@ name = "talaria-google-pending"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
@@ -5537,12 +5539,16 @@ dependencies = [
  "talaria-google-drive",
  "talaria-google-errors",
  "talaria-google-gmail",
+ "talaria-google-mcp",
  "talaria-google-org",
  "talaria-google-sheets",
  "talaria-google-slides",
+ "talaria-mcp",
  "talaria-notify",
  "talaria-realtime",
+ "talaria-safe-fetch",
  "talaria-secretbox",
+ "talaria-workspace-secrets",
  "tokio",
  "tracing",
 ]

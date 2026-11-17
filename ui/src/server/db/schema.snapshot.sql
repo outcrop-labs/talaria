@@ -1125,6 +1125,14 @@ CREATE SEQUENCE public.mcp_tool_calls_id_seq
     NO MAXVALUE
     CACHE 1;
 ALTER SEQUENCE public.mcp_tool_calls_id_seq OWNED BY public.mcp_tool_calls.id;
+CREATE TABLE public.mcp_tool_policies (
+    server_id uuid NOT NULL,
+    tool text NOT NULL,
+    policy text NOT NULL,
+    set_by uuid,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT mcp_tool_policies_policy_check CHECK ((policy = ANY (ARRAY['allow'::text, 'hold'::text, 'deny'::text])))
+);
 CREATE TABLE public.mcp_user_access (
     server_id uuid NOT NULL,
     user_id uuid NOT NULL,
@@ -2085,6 +2093,8 @@ ALTER TABLE ONLY public.mcp_team_access
     ADD CONSTRAINT mcp_team_access_pkey PRIMARY KEY (server_id, team_id);
 ALTER TABLE ONLY public.mcp_tool_calls
     ADD CONSTRAINT mcp_tool_calls_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.mcp_tool_policies
+    ADD CONSTRAINT mcp_tool_policies_pkey PRIMARY KEY (server_id, tool);
 ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_pkey PRIMARY KEY (server_id, user_id);
 ALTER TABLE ONLY public.mcp_user_credentials
@@ -2604,6 +2614,10 @@ ALTER TABLE ONLY public.mcp_team_access
     ADD CONSTRAINT mcp_team_access_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_team_access
     ADD CONSTRAINT mcp_team_access_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.mcp_tool_policies
+    ADD CONSTRAINT mcp_tool_policies_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.mcp_tool_policies
+    ADD CONSTRAINT mcp_tool_policies_set_by_fkey FOREIGN KEY (set_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_user_access

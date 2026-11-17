@@ -16,8 +16,8 @@ use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::pending_actions::decide_action;
 use talaria_body::{enum_member, parse};
 use talaria_chips::{
-    is_google_action, load_approval, mark_approval, merge_unlocked, surface_for_agent,
-    tools_unlocked, unlock_chip,
+    is_google_action, load_approval, mark_approval, merge_mcp_unlock, merge_unlocked,
+    surface_for_agent, tools_unlocked, unlock_chip_for,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::secretbox_or_500;
@@ -73,14 +73,36 @@ pub async fn post(
     if let Err(e) = mark_approval(&state.pg, &row.id, "approved", &user.id).await {
         return Ok(internal("[chips] approve mark failed", e));
     }
-    let tools = tools_unlocked(&row.kind);
-    if let Some(conversation_id) = &row.conversation_id
-        && let Err(e) = merge_unlocked(&state.pg, conversation_id, tools).await
+    // What the approval unlocks for the rest of the conversation. A held
+    // Google Workspace MCP call (`mcp_call`) earns a grant keyed by its own
+    // server and tool, and only when it ran for a personal principal (D7:
+    // an org-account or agent-identity call needs an admin every time).
+    // Every other kind unlocks its static tools.
+    let tools: Vec<String> = if row.kind == "mcp_call" {
+        match (&row.conversation_id, row.external_id.as_deref()) {
+            (Some(conversation_id), Some(external)) => {
+                match merge_mcp_unlock(&state.pg, conversation_id, external).await {
+                    Ok(key) => key.into_iter().collect(),
+                    Err(e) => return Ok(internal("[chips] unlock failed", e)),
+                }
+            }
+            _ => Vec::new(),
+        }
+    } else {
+        let tools = tools_unlocked(&row.kind);
+        if let Some(conversation_id) = &row.conversation_id
+            && let Err(e) = merge_unlocked(&state.pg, conversation_id, tools).await
+        {
+            return Ok(internal("[chips] unlock failed", e));
+        }
+        tools.iter().map(|t| t.to_string()).collect()
+    };
+    // An `mcp_call` that earned no grant (an org or agent principal) shows
+    // no unlock at all; every other kind keeps its chip as before.
+    if let Some(agent) = &row.agent_model
+        && (row.kind != "mcp_call" || !tools.is_empty())
     {
-        return Ok(internal("[chips] unlock failed", e));
-    }
-    if let Some(agent) = &row.agent_model {
-        let chip = unlock_chip(&row.id, &row.kind);
+        let chip = unlock_chip_for(&row.id, &row.kind, &tools);
         let redis = state.redis().await.ok();
         if let Err(e) = surface_for_agent(&state.pg, redis, agent, vec![chip]).await {
             return Ok(internal("[chips] unlock chip failed", e));

@@ -29,6 +29,7 @@ pub(crate) fn oauth_callback_url(base: &str) -> String {
     format!("{}/api/mcp/oauth/callback", base.trim_end_matches('/'))
 }
 pub mod mcp_calls;
+mod mcp_gw_google_hold;
 pub mod mcp_gw_server;
 pub mod mcp_health;
 pub mod mcp_icon;

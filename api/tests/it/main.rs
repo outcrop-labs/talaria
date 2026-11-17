@@ -45,6 +45,7 @@ mod fitness_transcripts_live;
 mod gateway_hot_caches;
 mod github_jwt;
 mod github_pem_repair;
+mod google_mcp_holds_live;
 mod group_dm_live;
 mod hermes_channel_live;
 mod internal_routes;
