@@ -4911,8 +4911,12 @@ alter table tasks drop column if exists conversation_id`,
   // client (invalid_client, unauthorized_client) — the grant is kept, never
   // cleared, and a successful refresh forgets it; `reconnect_flagged_at` is
   // when that refusal was first seen. Nullable columns, so roll-safe: the
-  // previous release neither reads nor writes them (a reconnect it stores
-  // keeps the old stamp until the next refresh corrects it).
+  // previous release neither reads nor writes them. Its limit: a reconnect
+  // the previous release stores (after a roll-back) keeps whatever stamp the
+  // row had, and a stamped grant is only ever sent to its stamped client — so
+  // if the slots were swapped meanwhile, that grant's stamp names the wrong
+  // client and its next refresh is refused (cleared on invalid_grant, flagged
+  // otherwise) until the person reconnects on this release.
   `alter table google_connections
      add column if not exists oauth_client_id text,
      add column if not exists reconnect_reason text,
@@ -4930,6 +4934,13 @@ alter table tasks drop column if exists conversation_id`,
   // client is the one they refresh with today. An install configured in
   // ui/.env has no record to read here; its grants are stamped on their next
   // refresh, by asking Google which configured client accepts them.
+  // "Complete" here is non-empty clientId and clientSecretEnc; the runtime
+  // also needs the secret to open. A record sealed under a lost key (which
+  // the resolver skips for the env pair) therefore stamps every grant with
+  // the record's client, configured nowhere, although the env pair may be
+  // what refreshed them: each answers the named reconnect instead of
+  // refreshing, until the person reconnects (or an admin re-saves that
+  // client, when it is the one that minted them).
   `update google_connections set oauth_client_id = s.value->>'clientId'
      from app_settings s
     where s.key = 'google_oauth_client'

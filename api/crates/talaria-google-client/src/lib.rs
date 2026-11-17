@@ -23,9 +23,10 @@
 // A slot names the client NEW grants are minted with. A stored grant
 // remembers the client that minted it (`oauth_client_id` on each token row)
 // and refreshes with that client wherever it now sits — either slot, or an
-// env pair an Admin record shadows (`configured_google_clients`,
-// `resolve_google_client_by_id`). Moving a client from one slot to the other
-// therefore strands no grant; removing it everywhere does, by name.
+// env pair an Admin record shadows (`configured_google_clients`, read by
+// talaria-google-connections' `plan_refresh`). Moving a client from one slot
+// to the other therefore strands no grant; removing it everywhere does, by
+// name.
 //
 // Each client also carries what is known about its agentic mark, keyed by
 // client id in `google_client_evidence` (env pins for headless installs).
@@ -259,22 +260,6 @@ pub async fn configured_google_clients(pg: &PgPool, sb: &SecretBox) -> Vec<Googl
     let conn = stored_record(pg, ClientRole::Connections).await;
     let signin = stored_record(pg, ClientRole::SignIn).await;
     configured_with(&conn, &signin, &|enc| sb.open(enc).ok(), &process_env)
-}
-
-/// The configured client with this id, in whichever slot or env twin it sits,
-/// or None when no slot holds it any more. A stored grant refreshes with the
-/// client that minted it, so moving that client to the other slot (or
-/// replacing the slot's record while the old env pair stays set) keeps the
-/// grant alive.
-pub async fn resolve_google_client_by_id(
-    pg: &PgPool,
-    sb: &SecretBox,
-    client_id: &str,
-) -> Option<GoogleClient> {
-    configured_google_clients(pg, sb)
-        .await
-        .into_iter()
-        .find(|c| c.client_id == client_id)
 }
 
 /// The client login runs on: the sign-in slot's own client when it has one

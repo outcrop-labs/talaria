@@ -22,7 +22,7 @@ use talaria_gateway::provider::http;
 /// only the connect; a Google that accepts the socket and then stalls must
 /// not hold an approval, a brief tick or a disconnect open forever.
 pub const GOOGLE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-use talaria_google_client::{GoogleClient, configured_google_clients, resolve_google_client};
+use talaria_google_client::{GoogleClient, configured_google_clients};
 use talaria_secretbox::SecretBox;
 
 /// Refresh a little early so a token doesn't expire mid-request.
@@ -107,7 +107,9 @@ pub async fn get_connection_status(
 /// The sentence a card shows for a stored grant that needs a person, or None
 /// when it needs nothing: the grant's minting client is configured nowhere
 /// (`client_gone_sentence` — no refresh will be tried), else Google's words
-/// from the last refusal of that client. `configured` is
+/// from the last refusal — addressed to an admin when the grant's own client
+/// was refused, to the person first when no client is recorded yet (a trial
+/// no configured client passed). `configured` is
 /// `talaria_google_client::configured_google_clients`. Computed on read, so
 /// adding the client back clears the first case at once.
 pub fn reconnect_reason(
@@ -115,15 +117,24 @@ pub fn reconnect_reason(
     flagged: Option<&str>,
     configured: &[GoogleClient],
 ) -> Option<String> {
-    if let Some(id) = client_id.filter(|s| !s.is_empty())
+    let client_id = client_id.filter(|s| !s.is_empty());
+    if let Some(id) = client_id
         && !configured.iter().any(|c| c.client_id == id)
     {
         return Some(client_gone_sentence(id));
     }
-    flagged.filter(|s| !s.is_empty()).map(|words| {
-        format!(
+    let words = flagged.filter(|s| !s.is_empty())?;
+    Some(match client_id {
+        // Its own client was refused: the server's configuration.
+        Some(_) => format!(
             "Google refused the OAuth client this connection refreshes with: «{words}». The connection was kept; an admin needs to check that client under Admin → Google Workspace."
-        )
+        ),
+        // No client recorded yet, and none accepted it (a trial): the grant
+        // may simply belong to none of them, so the person's reconnect comes
+        // first and the admin's check second.
+        None => format!(
+            "Google refused this connection with every OAuth client configured here: «{words}». The connection was kept. Reconnect it; if Google refuses again, an admin needs to check those clients under Admin → Google Workspace."
+        ),
     })
 }
 
@@ -204,40 +215,13 @@ pub fn classify_token_refusal(body: &str, err: String) -> TokenError {
     }
 }
 
-/// Exchange a refresh token for a fresh access token with the CONNECTIONS
-/// client — the one refresh path before grants recorded their client. Kept
-/// for a caller that holds no stored row; a stored grant refreshes through
-/// `vend_grant`, with the client that minted it.
-pub async fn request_refresh(
-    pg: &PgPool,
-    sb: &SecretBox,
-    refresh_token: &str,
-) -> Result<(String, Option<i64>), TokenError> {
-    let Some(cfg) = resolve_google_client(pg, sb).await else {
-        return Err(TokenError::Other("no google client configured".into()));
-    };
-    request_refresh_with(&cfg, refresh_token).await
-}
-
-/// Exchange a refresh token for a fresh access token with one named client.
-/// Errors carry the status and body verbatim, so the answer a person or
-/// agent reads can quote what Google said
+/// Exchange a refresh token for a fresh access token with one client, at any
+/// token endpoint — Google's (`TOKEN_ENDPOINT`) in production, a loopback
+/// stub in the live test. A stored grant reaches it only through
+/// `vend_grant`, which picks the client (`plan_refresh` over
+/// `configured_google_clients`). Errors carry the status and body verbatim,
+/// so the answer a person or agent reads can quote what Google said
 /// (`talaria_google_errors::upstream_reason`).
-pub async fn request_refresh_with(
-    client: &GoogleClient,
-    refresh_token: &str,
-) -> Result<(String, Option<i64>), TokenError> {
-    request_refresh_at(
-        TOKEN_ENDPOINT,
-        &client.client_id,
-        &client.client_secret,
-        refresh_token,
-    )
-    .await
-}
-
-/// `request_refresh_with` against any token endpoint — Google's in
-/// production, a loopback stub in the live test.
 async fn request_refresh_at(
     endpoint: &str,
     client_id: &str,
@@ -385,23 +369,27 @@ where
     decide_refusal(refusals)
 }
 
-/// Every client asked refused. The grant is cleared only when EVERY one
-/// refused the grant itself — a trial's other client answering
-/// `invalid_grant` for a grant it never minted must not erase a grant whose
-/// own client merely has a bad secret. A transport fault anywhere means not
-/// every client was really asked: nothing is written. Otherwise a client was
-/// refused: the row keeps its grant and carries Google's words — each
+/// Every client asked refused. The grant is cleared only when every client
+/// asked either refused the grant itself (`invalid_grant`) or, in a trial,
+/// disowned it (`refusal_disowns`), and at least one refused it — a trial's
+/// other client answering for a grant it never minted must not erase a grant
+/// whose own client merely has a bad secret. A transport fault anywhere means
+/// not every client was really asked: nothing is written. Otherwise a client
+/// was refused: the row keeps its grant and carries Google's words — each
 /// client's, by id, when more than one was asked.
 fn decide_refusal(refusals: Vec<(String, TokenError)>) -> RefreshOutcome {
     let unknown = |e: &TokenError| matches!(e, TokenError::Other(_) | TokenError::ClientGone(_));
-    if refusals
-        .iter()
-        .all(|(_, e)| matches!(e, TokenError::InvalidGrant(_)))
+    let dead = |e: &TokenError| matches!(e, TokenError::InvalidGrant(_));
+    let trial = refusals.len() > 1;
+    if refusals.iter().any(|(_, e)| dead(e))
+        && refusals
+            .iter()
+            .all(|(_, e)| dead(e) || (trial && refusal_disowns(e)))
     {
         let (_, error) = refusals
             .into_iter()
-            .next()
-            .expect("at least one client was asked");
+            .find(|(_, e)| dead(e))
+            .expect("one client refused the grant");
         return RefreshOutcome::Refused {
             error,
             then: AfterRefusal::ClearGrant,
@@ -432,6 +420,24 @@ fn decide_refusal(refusals: Vec<(String, TokenError)>) -> RefreshOutcome {
         error,
         then: AfterRefusal::Flag(words),
     }
+}
+
+/// A client that authenticated but may not use this grant: Google's
+/// `unauthorized_client` (RFC 6749 §5.2: "The authenticated client is not
+/// authorized to use this authorization grant type."). Read by its `error`
+/// code, never its sentence. Asked of one client among several in a trial,
+/// that is the client saying the grant is not its own — so it neither keeps
+/// a dead grant alive nor reads as the client's fault. Asked of a grant's
+/// own recorded client, it stays a refused client (flagged, never cleared).
+/// Google's body for a refresh token presented with a client that did not
+/// mint it has NOT been captured; whether it is this or `invalid_grant`, a
+/// trial over a dead grant clears it and a trial over a live one moves on.
+fn refusal_disowns(e: &TokenError) -> bool {
+    matches!(e, TokenError::ClientRejected(_))
+        && google_error_body(&e.to_string())
+            .and_then(|body| body.get("error")?.as_str().map(String::from))
+            .as_deref()
+            == Some("unauthorized_client")
 }
 
 /// Google's words from a refused refresh: the OAuth body's `code: sentence`
@@ -1793,6 +1799,15 @@ mod tests {
     fn unknown_client() -> Result<(String, Option<i64>), TokenError> {
         Err(refused(NOT_FOUND_CLIENT))
     }
+    /// NOT a capture: RFC 6749 §5.2's `unauthorized_client` code alone, no
+    /// sentence, so no wording is put in Google's mouth. It stands in for
+    /// what Google may answer a refresh token presented with a client that
+    /// did not mint it — that answer has not been captured, and every rule
+    /// below must hold whether it is this or `invalid_grant`.
+    const RFC_UNAUTHORIZED_CLIENT: &str = "{\"error\": \"unauthorized_client\"}";
+    fn disowned() -> Result<(String, Option<i64>), TokenError> {
+        Err(refused(RFC_UNAUTHORIZED_CLIENT))
+    }
     fn unreachable_google() -> Result<(String, Option<i64>), TokenError> {
         Err(TokenError::Other(
             "google token refresh request: error sending request".into(),
@@ -1846,8 +1861,9 @@ mod tests {
     async fn an_unrecorded_grant_tries_each_client_in_order_and_records_the_first_google_accepts() {
         // Google's answer to a refresh token presented with a client that did
         // not mint it has not been captured; the trial moves on whatever it is
-        // — here each captured refusal plays that part.
-        for wrong_client in [dead_grant as Answer, unknown_client, bad_secret] {
+        // — here each captured refusal, and the RFC's `unauthorized_client`,
+        // plays that part.
+        for wrong_client in [dead_grant as Answer, disowned, unknown_client, bad_secret] {
             let plan = plan_refresh(None, configured());
             assert!(matches!(&plan, RefreshPlan::Trial(list) if list.len() == 3));
             let (outcome, asked) = run_stub(
@@ -1942,34 +1958,135 @@ mod tests {
 
     #[tokio::test]
     async fn a_transport_fault_writes_nothing() {
-        for plan in [
-            plan_refresh(Some("conn-a"), configured()),
-            plan_refresh(None, configured()),
-        ] {
+        let answers: &[(&str, Answer)] = &[
+            ("conn-a", dead_grant),
+            ("conn-env", unreachable_google),
+            ("signin-b", bad_secret),
+        ];
+        // Stamped conn-a answered invalid_grant itself: cleared.
+        let (error, then) = refusal(
+            run_stub(plan_refresh(Some("conn-a"), configured()), answers)
+                .await
+                .0,
+        );
+        assert_eq!(then, AfterRefusal::ClearGrant);
+        assert!(matches!(error, TokenError::InvalidGrant(_)));
+        // The trial could not ask conn-env: it concludes nothing.
+        let (error, then) = refusal(run_stub(plan_refresh(None, configured()), answers).await.0);
+        assert_eq!(then, AfterRefusal::Keep);
+        assert!(matches!(error, TokenError::Other(_)));
+        // The case the rule exists for, with no client refused to hide it: one
+        // client says invalid_grant while the grant's own client may be the
+        // one Google could not be reached for. Not cleared — nor when the
+        // client reached disowns it.
+        let two = || {
+            vec![
+                client("conn-a", ClientRole::Connections, "admin"),
+                client("conn-env", ClientRole::Connections, "env"),
+            ]
+        };
+        for reached in [dead_grant as Answer, disowned] {
             let (error, then) = refusal(
                 run_stub(
-                    plan,
-                    &[
-                        ("conn-a", dead_grant),
-                        ("conn-env", unreachable_google),
-                        ("signin-b", bad_secret),
-                    ],
+                    plan_refresh(None, two()),
+                    &[("conn-a", reached), ("conn-env", unreachable_google)],
                 )
                 .await
                 .0,
             );
-            // Stamped conn-a answered invalid_grant: cleared. The trial could
-            // not ask conn-env, so it concludes nothing.
-            match then {
-                AfterRefusal::ClearGrant => assert!(matches!(error, TokenError::InvalidGrant(_))),
-                AfterRefusal::Keep => assert!(matches!(error, TokenError::Other(_))),
-                AfterRefusal::Flag(w) => panic!("flagged on a transport fault: {w}"),
-            }
+            assert_eq!(then, AfterRefusal::Keep);
+            assert!(matches!(error, TokenError::Other(_)));
         }
         // No client configured at all: today's sentence, nothing written.
         let (error, then) = refusal(run_stub(plan_refresh(None, vec![]), &[]).await.0);
         assert_eq!(then, AfterRefusal::Keep);
         assert_eq!(error.to_string(), "no google client configured");
+    }
+
+    #[tokio::test]
+    async fn a_trial_reads_the_same_whichever_answer_google_gives_a_client_that_did_not_mint_the_grant()
+     {
+        for cross in [dead_grant as Answer, disowned] {
+            // The grant is dead at its own client (conn-env); the others
+            // answer for a grant they never minted. Cleared, with the dead
+            // grant's own refusal.
+            let (error, then) = refusal(
+                run_stub(
+                    plan_refresh(None, configured()),
+                    &[
+                        ("conn-a", cross),
+                        ("conn-env", dead_grant),
+                        ("signin-b", cross),
+                    ],
+                )
+                .await
+                .0,
+            );
+            assert_eq!(then, AfterRefusal::ClearGrant);
+            assert!(matches!(error, TokenError::InvalidGrant(_)));
+            // Its own client's secret is wrong: kept and flagged, never
+            // cleared — an admin's fix.
+            let (error, then) = refusal(
+                run_stub(
+                    plan_refresh(None, configured()),
+                    &[
+                        ("conn-a", cross),
+                        ("conn-env", bad_secret),
+                        ("signin-b", cross),
+                    ],
+                )
+                .await
+                .0,
+            );
+            assert!(matches!(error, TokenError::ClientRejected(_)));
+            assert!(matches!(then, AfterRefusal::Flag(_)), "{then:?}");
+        }
+        // Every client disowns it: no client here minted it. Nothing says it
+        // is dead, so it is kept, flagged with each client's words, and the
+        // card asks the person to reconnect first.
+        let (error, then) = refusal(
+            run_stub(
+                plan_refresh(None, configured()),
+                &[
+                    ("conn-a", disowned),
+                    ("conn-env", disowned),
+                    ("signin-b", disowned),
+                ],
+            )
+            .await
+            .0,
+        );
+        assert!(matches!(error, TokenError::ClientRejected(_)));
+        let AfterRefusal::Flag(words) = then else {
+            panic!("flagged: {then:?}");
+        };
+        assert_eq!(
+            words,
+            "conn-a: unauthorized_client; conn-env: unauthorized_client; signin-b: unauthorized_client"
+        );
+        assert_eq!(
+            reconnect_reason(None, Some(&words), &configured()),
+            Some(format!(
+                "Google refused this connection with every OAuth client configured here: «{words}». The connection was kept. Reconnect it; if Google refuses again, an admin needs to check those clients under Admin → Google Workspace."
+            ))
+        );
+        // The grant's own recorded client answering it: that client is
+        // refused — flagged in Google's words, never cleared, never disowned.
+        let (error, then) = refusal(
+            run_stub(
+                plan_refresh(Some("conn-a"), configured()),
+                &[("conn-a", disowned)],
+            )
+            .await
+            .0,
+        );
+        assert!(matches!(error, TokenError::ClientRejected(_)));
+        assert_eq!(then, AfterRefusal::Flag("unauthorized_client".into()));
+        // Disowning is read from the code, never from a sentence.
+        assert!(refusal_disowns(&refused(RFC_UNAUTHORIZED_CLIENT)));
+        assert!(!refusal_disowns(&refused(BAD_SECRET)));
+        assert!(!refusal_disowns(&refused(NOT_FOUND_CLIENT)));
+        assert!(!refusal_disowns(&refused(BAD_REFRESH)));
     }
 
     #[test]
@@ -2079,6 +2196,10 @@ mod stamp_live {
     const BAD_SECRET: &str = "{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The provided client secret is invalid.\"\n}";
     const BAD_REFRESH: &str =
         "{\n  \"error\": \"invalid_grant\",\n  \"error_description\": \"Bad Request\"\n}";
+    /// NOT a capture: RFC 6749 §5.2's code alone, standing in for Google's
+    /// uncaptured answer to a token presented with a client that did not
+    /// mint it (the unit tests hold the rules for `invalid_grant` there too).
+    const RFC_UNAUTHORIZED_CLIENT: &str = "{\"error\": \"unauthorized_client\"}";
 
     const GOOGLE_ENV: [&str; 5] = [
         "AUTH_GOOGLE_CLIENT_ID",
@@ -2097,11 +2218,12 @@ mod stamp_live {
     /// The token endpoint stand-in. A refresh token `rt-for-<client>` was
     /// minted by `<client>`: that client with its own secret (`secret-<client>`)
     /// gets a token, with another secret Google's captured `invalid_client`.
-    /// `rt-dead` is Google's captured `invalid_grant` for everyone. A token
-    /// presented with a client that did not mint it also gets the captured
-    /// `invalid_grant` body: what Google really answers there has NOT been
-    /// captured, and the trial does not depend on it. Answers (url, the
-    /// client ids asked, in order).
+    /// `rt-dead-for-<client>` was minted by `<client>` and revoked: that
+    /// client gets Google's captured `invalid_grant`. `rt-dead` is the
+    /// captured `invalid_grant` for everyone. A token presented with a client
+    /// that did not mint it gets `RFC_UNAUTHORIZED_CLIENT`: what Google really
+    /// answers there has NOT been captured. Answers (url, the client ids
+    /// asked, in order).
     fn token_stub() -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub");
         let url = format!(
@@ -2147,13 +2269,21 @@ mod stamp_live {
                     field("refresh_token"),
                 );
                 log.lock().unwrap().push(client.clone());
-                let (status, answer) = match rt.strip_prefix("rt-for-") {
-                    Some(owner) if owner == client && secret == format!("secret-{client}") => (
+                let (live, dead) = (rt.strip_prefix("rt-for-"), rt.strip_prefix("rt-dead-for-"));
+                let (status, answer) = match (live, dead) {
+                    (Some(owner), _) if owner == client && secret == format!("secret-{client}") => (
                         "200 OK",
                         json!({ "access_token": format!("ya29.stub-{client}"), "expires_in": 3599, "token_type": "Bearer" })
                             .to_string(),
                     ),
-                    Some(owner) if owner == client => ("401 Unauthorized", BAD_SECRET.to_string()),
+                    (Some(owner), _) if owner == client => {
+                        ("401 Unauthorized", BAD_SECRET.to_string())
+                    }
+                    (_, Some(owner)) if owner == client => ("400 Bad Request", BAD_REFRESH.to_string()),
+                    // Another client's token, live or dead.
+                    (Some(_), _) | (_, Some(_)) => {
+                        ("400 Bad Request", RFC_UNAUTHORIZED_CLIENT.to_string())
+                    }
                     _ => ("400 Bad Request", BAD_REFRESH.to_string()),
                 };
                 let _ = write!(
@@ -2348,6 +2478,17 @@ mod stamp_live {
         ));
         assert_eq!(take(&seen), ["conn-c", "conn-a"]);
         assert_eq!(user_row(&pg, &u4).await, (None, None, false));
+
+        // A dead grant minted by A, with no client recorded: C disowns it
+        // (unauthorized_client), A refuses it (invalid_grant) — cleared, not
+        // left flagged forever as an admin's problem.
+        let u5 = seed_user(&pg, &sb, 5, "rt-dead-for-conn-a", None).await;
+        assert!(matches!(
+            vend(GrantRow::User(u5.clone())).await,
+            Err(TokenError::InvalidGrant(_))
+        ));
+        assert_eq!(take(&seen), ["conn-c", "conn-a"]);
+        assert_eq!(user_row(&pg, &u5).await, (None, None, false));
 
         // The org account, minted by C, whose secret is then pasted wrong:
         // Google's invalid_client flags the row in Google's words and keeps

@@ -58,12 +58,15 @@
     redirectUris: Array<{ uri: string; what: string; role: Role }>
     /** Every stored grant, counted per OAuth client that minted it. `role` is
      *  the slot that client sits in now (null: configured nowhere, so those
-     *  grants need a reconnect); a null clientId is grants not yet recorded,
-     *  which record their client on their next refresh. */
+     *  grants need a reconnect); `shadowed` marks the ui/.env pair behind that
+     *  slot's Admin record, which refreshes the grants it minted and mints
+     *  none; a null clientId is grants not yet recorded, which record their
+     *  client on their next refresh. */
     census: Array<{
       clientId: string | null
       role: Role | null
       source: 'admin' | 'env' | null
+      shadowed: boolean
       personal: number
       org: number
       agent: number
@@ -81,13 +84,15 @@
       .filter(Boolean)
       .join(' · ')
   const censusSlot = (c: Payload['census'][number]) =>
-    c.role === 'connections'
-      ? `connections client${c.source === 'env' ? ' · ui/.env' : ''}`
-      : c.role === 'signin'
-        ? `sign-in client${c.source === 'env' ? ' · ui/.env' : ''}`
-        : c.clientId
-          ? 'configured nowhere: these need a reconnect'
-          : 'recorded on their next refresh'
+    c.shadowed
+      ? `${c.role === 'signin' ? 'sign-in' : 'connections'} slot's ui/.env pair, behind its Admin record · refreshes only`
+      : c.role === 'connections'
+        ? `connections client${c.source === 'env' ? ' · ui/.env' : ''}`
+        : c.role === 'signin'
+          ? `sign-in client${c.source === 'env' ? ' · ui/.env' : ''}`
+          : c.clientId
+            ? 'configured nowhere: these need a reconnect'
+            : 'recorded on their next refresh'
 
   type AgenticChoice = 'ticked' | 'unticked' | 'unsure'
   const AGENTIC: ReadonlyArray<SegmentedOption<AgenticChoice>> = [

@@ -243,11 +243,14 @@ decides only which client *new* connects use.
   configured is never sent to Google. Agents, Home and the cards read *"This
   Google connection was granted to OAuth client `<id>`, which is no longer
   configured on this server. Reconnect it, or an admin can add that client
-  back under Admin → Google Workspace."* Agent routes and Home answer it as a
-  409 `reconnect_needed`, and an approval releases back to `pending` with it.
-- **Google refuses the client.** For `invalid_client` or
-  `unauthorized_client` (a wrong secret pasted, a deleted client), the
-  connection is kept and `reconnect_reason` stores Google's words, such as
+  back under Admin → Google Workspace."* Agent routes, Home and a person's
+  artifact export to Drive answer it as a 409 `reconnect_needed`, the daily
+  brief keeps it as its schedule line, and an approval releases back to
+  `pending` with it.
+- **Google refuses the client.** For `invalid_client` (a wrong secret
+  pasted, a deleted client), or `unauthorized_client` from the client the
+  connection names, the connection is kept and `reconnect_reason` stores
+  Google's words, such as
   `invalid_client: The provided client secret is invalid.`.
   `reconnect_flagged_at` stores when that refusal was first seen. Clearing
   the connection would disconnect everyone on one bad paste, and would open
@@ -256,22 +259,40 @@ decides only which client *new* connects use.
   for that client.
 - **Google refuses the grant.** `invalid_grant` still clears the
   connection. For a connection with no recorded client, it is cleared only
-  when every configured client answered `invalid_grant`. When one client
-  refused itself and another refused the grant, the connection is kept and
-  flagged with each client's answer.
+  when at least one configured client answered `invalid_grant` and every
+  other one answered `invalid_grant` or `unauthorized_client`. RFC 6749
+  §5.2 defines `unauthorized_client` as *"The authenticated client is not
+  authorized to use this authorization grant type."*: the client
+  authenticated, but the grant is not its own. That is read from the
+  `error` code, never the sentence. When a client refused itself
+  (`invalid_client`) or Google could not be reached, the connection is kept,
+  and in the first case flagged with each client's answer, by id. A flagged
+  connection with no recorded client reads *"Google refused this connection
+  with every OAuth client configured here: «…». The connection was kept.
+  Reconnect it; if Google refuses again, an admin needs to check those
+  clients under Admin → Google Workspace."*
+- **A roll-back's limit.** A connection is only ever sent to the client it
+  names. If the previous release stores a reconnect after a roll-back, the
+  row keeps its old client id. If the slots were swapped in between, that
+  connection names the wrong client, and its next refresh is refused
+  (cleared on `invalid_grant`, flagged otherwise) until the person
+  reconnects on this release.
 - **Where it shows.** `GET /api/integrations/google`, `GET
   /api/integrations/google/org` and `GET /api/fleet/defs/{id}/google` carry
   `clientId` and `reconnectReason`. The personal, assistant, org and agent
   cards show the reason with a Reconnect. `GET /api/admin/google-client`
   carries `census`: every live connection counted per client, with the slot
-  that client sits in now, how many are flagged, and the connections not yet
-  recorded.
+  that client sits in now (`shadowed` when it is only the `ui/.env` pair
+  behind that slot's Admin record, which refreshes what it minted and mints
+  nothing new), how many are flagged, and the connections not yet recorded.
 
 **Not yet captured:** Google's answer to a refresh token presented with a
-client that did not mint it. Nothing here depends on its wording: a
-connection with no recorded client moves on to the next client whatever
-Google says, and one that names its client is only ever sent with that
-client.
+client that did not mint it. The trial's outcome is the same whether that
+answer is `invalid_grant` or `unauthorized_client`: a live connection moves
+on to the next client, and a dead one is cleared. Only an `invalid_client`
+there would differ: the dead connection would be kept and flagged, which is
+the safe side. A connection that names its client is only ever sent with
+that client.
 
 ### Credentials and redirect URIs
 
