@@ -59,6 +59,9 @@
     warnings: Array<{ code: string; message: string }>
     /** The signed-in admin's OWN Google connection (Settings → Connections). */
     personalConnected: boolean
+    /** The client that made that connection: "Check with Google" calls with
+     *  it, so only that client's card can run the check. */
+    personalClientId: string | null
     /** Each role's list is what that client must have registered. */
     redirectUris: Array<{ uri: string; what: string; role: Role }>
     /** Every stored grant, counted per OAuth client that minted it. `role` is
@@ -250,7 +253,17 @@
 
   // "Check with Google": one call to Gmail's MCP server with the admin's own
   // connection made by this client; Google's answer is stored on the client.
+  // Only the card whose client made that connection can run it; the others
+  // say why, in the server's terms.
   let checking = $state<Role | null>(null)
+  const checkUnavailable = (role: Role): string => {
+    const lead = 'Check with Google calls with your own Google connection made with this client.'
+    const signinNote =
+      role === 'signin' ? ' A sign-in client that has only ever run login made none, and needs no check: signing in is not an agent.' : ''
+    if (!data?.personalConnected) return `${lead} Connect your account first.${signinNote}`
+    if (!data.personalClientId) return `${lead} Yours records its client on its next refresh, within the hour.`
+    return `${lead} Yours was made with ${data.personalClientId}.${signinNote}`
+  }
   const checkWithGoogle = async (role: Role) => {
     if (busy) return
     const fail = (m: string | null) => (role === 'signin' ? (signinError = m) : (error = m))
@@ -303,9 +316,13 @@
     <!-- Google's own answer, the only provider-side evidence of the mark:
          shown as Google sent it, never summarised. -->
     <div class="flex flex-wrap items-start gap-2 text-xs">
-      <Button size="xs" variant="outline" onclick={() => void checkWithGoogle(role)} disabled={busy}>
-        {checking === role ? 'Checking…' : 'Check with Google'}
-      </Button>
+      {#if data?.personalClientId && data.personalClientId === client.clientId}
+        <Button size="xs" variant="outline" onclick={() => void checkWithGoogle(role)} disabled={busy}>
+          {checking === role ? 'Checking…' : 'Check with Google'}
+        </Button>
+      {:else}
+        <span class="font-sans text-[10px] text-muted">{checkUnavailable(role)}</span>
+      {/if}
       <InfoTip text={CHECK_INFO} />
       {#if client.lastCheck}
         <div class="flex min-w-0 flex-1 items-start gap-2">

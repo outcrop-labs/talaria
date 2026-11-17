@@ -222,14 +222,21 @@ and no domain for login to take.
 **Checking the mark with Google.** The only provider-side evidence of the mark
 is Google's MCP servers accepting a call: Google's notice says they "will
 reject requests from any app or integration whose OAuth client is not marked
-as agentic". Each configured card has **Check with Google**
+as agentic". **Check with Google**
 (`POST /api/admin/google-client/check?role=connections|signin`, admin only,
-audited as `google.client_check`). It makes one `tools/call list_labels` to
+audited as `google.client_check`) makes one `tools/call list_labels` to
 `https://gmailmcp.googleapis.com/mcp/v1`, one unit of the Gmail MCP server's
 query-cost quota, with **your own** Google connection. That connection must
-have been made with the client being checked. If it was made with another
-client, or you have none, the check refuses with a 409 that names the client
-and sends nothing. Google's answer is stored under the client's id as
+have been made with the client being checked, so the button sits on that
+client's card alone (`GET /api/admin/google-client` carries the client as
+`personalClientId`), and the other card says why. If your connection was made
+with another client, or you have none, the route refuses with a 409 that names
+the client and sends nothing. A sign-in client that has only ever run login
+made no stored connection, so it cannot be checked this way, and it needs no
+check: signing in is not an agent. A client that was the connections client
+before it moved to the sign-in slot (the "not marked by November 12" shape
+above) can be checked through a connection it made then, because a connection
+keeps the client that made it. Google's answer is stored under the client's id as
 `lastCheck` (`{ok, status, text, at}`) beside the declaration, and the card
 shows it:
 

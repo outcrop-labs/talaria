@@ -9,7 +9,9 @@
 //   and Google's answer to the last check, `lastCheck`), which client login
 //   runs on, the
 //   panel's warnings, the redirect URIs each client needs in Google Cloud
-//   Console, and the census: every stored grant counted per OAuth client
+//   Console, the client that made the admin's own connection
+//   (`personalClientId`: Check with Google runs on that client alone), and
+//   the census: every stored grant counted per OAuth client
 //   that minted it (personal, org, agent; how many carry a refusal), with
 //   the slot that client sits in now — `shadowed` when it is only the env
 //   pair behind that slot's Admin record (it refreshes what it minted and
@@ -228,6 +230,9 @@ pub async fn get(
         "loginPinnedByEnv": google_login_pinned_by_env(),
         "warnings": client_warnings(&clients.connections, &clients.signin, clients.login_enabled),
         "personalConnected": conn.connected,
+        // The client that made the admin's own connection: the one card
+        // whose "Check with Google" can run (it calls with this connection).
+        "personalClientId": conn.client_id,
         "redirectUris": redirect_uris(&origin, clients.signin.configured),
         "census": census,
     }))
@@ -445,7 +450,11 @@ pub async fn put_agentic(
 // accepted call verifies the mark; a refusal proves nothing about it (the
 // same call fails, in Google's words, for a project not enrolled in the
 // Developer Preview or without the Gmail MCP service enabled). `?role=`
-// names the slot whose own client is checked. A token that cannot be had
+// names the slot whose own client is checked. A sign-in client that has only
+// ever run login made no stored connection and cannot be checked this way —
+// nor needs to be: login is not an agent. One that was the connections client
+// before it moved to the sign-in slot can, through a connection it made then
+// (the grant keeps its minting client). A token that cannot be had
 // answers as the agent routes do (`google_token_fail`); a call that never
 // got Google's answer records nothing.
 
