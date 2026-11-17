@@ -1430,11 +1430,33 @@ mod live {
         .map(|(_, fate)| fate)
         .collect();
         assert_eq!(fates, [Fate::Superseded, Fate::Superseded]);
+        // `checked_at_ms` is the row's age on the database's clock set back
+        // from this process's, so two reads of one row differ by however
+        // far apart the two clocks were read: the rows match without it, and
+        // it stays well inside the minute a superseded write would set it
+        // back by.
+        let after = installation_rows(&pg, &id).await.expect("read");
+        let unstamped = |rows: &[InstallationRow]| {
+            rows.iter()
+                .map(|r| InstallationRow {
+                    checked_at_ms: None,
+                    ..r.clone()
+                })
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            installation_rows(&pg, &id).await.expect("read"),
-            rows,
+            unstamped(&after[..]),
+            unstamped(&rows[..]),
             "the newer read stands, and no row is made for 93003"
         );
+        let stamps = |rows: &[InstallationRow]| {
+            rows.iter()
+                .map(|r| r.checked_at_ms.is_some())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(stamps(&after[..]), stamps(&rows[..]));
+        let drift = after[0].checked_at_ms.expect("read") - acme.checked_at_ms.expect("read");
+        assert!(drift.abs() < 5_000, "the read is not set back: {drift} ms");
 
         // The card's wire: the App's ask live, each installation from the
         // record, in the config's order.
