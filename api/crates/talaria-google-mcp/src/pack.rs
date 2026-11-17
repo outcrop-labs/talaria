@@ -133,15 +133,15 @@ fn parse_test_origins(spec: &str) -> Vec<(String, String)> {
 }
 
 /// The domains Google answers its Workspace MCP servers under. Each server
-/// has more than one hostname: probed with no credential on 2026-11-17, a
-/// `tools/list` POST to `/mcp/v1` returned the same catalog at
-/// `gmailmcp.googleapis.com`, `gmailmcp.mtls.googleapis.com`,
-/// `gmailmcp.clients6.google.com`, `gmailmcp.mtls.clients6.google.com`,
-/// `content-gmailmcp.googleapis.com` and `content-gmailmcp.mtls.googleapis.com`
-/// (all byte-identical to `fixtures/tools-list/gmailmcp.json`), at
-/// `calendarmcp`, `drivemcp`, `chatmcp`, `workspacemcp` and `classroommcp` under
-/// `clients6.google.com`, at `sheetsmcp.mtls.googleapis.com`, and People's at
-/// `people.mtls.googleapis.com/mcp/v1` and `content-people.googleapis.com/mcp/v1`.
+/// has several hostnames: probed with no credential on 2026-11-17
+/// (`fixtures/alias-hosts.json`), a `tools/list` POST to `/mcp/v1` was
+/// answered by 49 hostnames, each with its server's committed catalog byte
+/// for byte: `<server>.googleapis.com`, `<server>.clients6.google.com` and
+/// `<server>.mtls.clients6.google.com` for every `*mcp` server,
+/// `<server>.mtls.googleapis.com` for all but Chat, and
+/// `content-<server>[.mtls].googleapis.com` for Gmail, Calendar, Chat,
+/// Universal Search and Classroom; People's `/mcp` at `people`, `people.mtls`,
+/// `content-people` and `content-people.mtls` under `googleapis.com`.
 const GOOGLE_DOMAINS: [&str; 2] = ["googleapis.com", "google.com"];
 
 /// Is `raw` one of Google's Workspace MCP servers, under any of its names?
@@ -346,6 +346,35 @@ mod tests {
             "talaria-pkg://gmailmcp",
         ] {
             assert!(!is_google_workspace_mcp_url(passed), "{passed}");
+        }
+    }
+
+    /// Every hostname Google answered a credential-less `tools/list` on, in
+    /// the alias probe of 2026-11-17 (`fixtures/alias-hosts.json`: 49 of the
+    /// 65 names probed, across the plain, `mtls`, `clients6`, `mtls.clients6`
+    /// and `content-` shapes), is refused by the custom-URL guard. A body the
+    /// probe matched to a committed catalog names one that exists.
+    #[test]
+    fn every_name_google_was_seen_to_serve_a_workspace_server_by_is_refused() {
+        let probe: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/alias-hosts.json")).unwrap();
+        let answers = probe["answers"].as_array().unwrap();
+        let served: Vec<&str> = answers
+            .iter()
+            .filter(|a| a["status"] == 200)
+            .map(|a| a["url"].as_str().unwrap())
+            .collect();
+        assert_eq!(served.len(), 49, "the probe's answering hosts");
+        for url in &served {
+            assert!(is_google_workspace_mcp_url(url), "{url}");
+        }
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+        for same in answers.iter().filter_map(|a| a["sameAs"].as_str()) {
+            assert!(fixtures.join(same).is_file(), "{same}");
+        }
+        // Every product's own host is among them.
+        for p in PRODUCTS {
+            assert!(served.contains(&p.endpoint), "{}", p.endpoint);
         }
     }
 

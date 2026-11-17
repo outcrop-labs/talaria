@@ -330,9 +330,11 @@ those servers under several names, and every one is refused: any host under
 (`gmailmcp.googleapis.com`, `gmailmcp.mtls.googleapis.com`,
 `gmailmcp.clients6.google.com`, `content-gmailmcp.googleapis.com`, …), and
 People's `/mcp` path on any of its names (`people.googleapis.com`,
-`people.mtls.googleapis.com`, `content-people.googleapis.com`). Each of those
-aliases answered a credential-less `tools/list` with the same catalog when
-probed on 2026-11-17. Registered by URL they would take no Google grant, or an
+`people.mtls.googleapis.com`, `content-people.googleapis.com`). Probed with
+no credential on 2026-11-17, 49 such names answered `tools/list` with their
+server's catalog byte for byte
+(`api/crates/talaria-google-mcp/fixtures/alias-hosts.json`), and the guard's
+test refuses every one of them. Registered by URL they would take no Google grant, or an
 attached one with none of the pack's policy. A row that already names one (it
 was registered before this guard) is relayed nothing by the gateway, and
 `call_mcp_tool` refuses it too.
