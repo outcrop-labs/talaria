@@ -31,6 +31,19 @@ access rules. Four kinds of rows:
   passes. App tools are never picked as an org supplier (web search and the like): the platform's
   own caller cannot reach them.
 - **Per-user servers** — servers where each person connects their own account (below).
+- **Google Workspace MCP servers** (badged **google · preview**, `auth_mode = 'google'`) — Google's
+  own MCP servers for Gmail, Drive, Calendar, Docs, Sheets, Slides, Chat, People and Universal
+  Search, in Google's Developer Preview. Off by default: an admin enables a product under
+  Admin → Org → Google Workspace MCP, which creates the row `google-<product>`, assigned to no
+  agent. Each call speaks as the calling agent's own Google principal (its owner's connection,
+  the org account, or its own identity) through Talaria's one Google token door, never the org
+  account in an owner's place; only the read-only subset runs. The row's address, credentials
+  and auth mode are the pack's, and the custom-URL form refuses Google's Workspace MCP hosts
+  under every name Google serves them by (`*mcp.googleapis.com`, `*mcp.mtls.googleapis.com`,
+  `*mcp.clients6.google.com`, `content-*`, and People's `/mcp` on its names); the gateway relays
+  nothing to an older row that names one.
+  The whole story: [GOOGLE-WORKSPACE.md](./GOOGLE-WORKSPACE.md), "Google's Workspace MCP
+  servers".
 
 ## Enforcement: the gateway
 
@@ -147,6 +160,25 @@ Per server:
   (OAuth or credential form driven by the server's declared headers). An assistant carries the
   server either way; until its owner connects, every call answers with the sentence that says
   where to connect (see the gateway above).
+- **Google Workspace MCP servers** — no credential of their own and no OAuth flow (the start
+  route refuses them). The gateway asks Talaria's Google token door for the calling agent's
+  principal (`Purpose::HostedMcp`) and injects that bearer; a legacy shared-key caller is
+  refused, and a principal with no grant, or a grant minted by a client declared not marked for
+  AI agents, gets the not-connected sentence for its kind (the owner's Settings → Connections,
+  Admin → Org, or the agent's page) and nothing is sent to Google. Only `initialize`, `ping`,
+  `tools/list`, `tools/call` and `notifications/*` are relayed (anything else is answered with
+  `-32601`, or a 400 for a batch or a response), as the JSON the gate read. The gateway then
+  relays only the tools on the pinned read list that Google also marks `readOnlyHint: true`,
+  refuses every
+  other tool and any argument naming a workspace secret, says which scope a tool needs (from
+  Google's per-tool protected-resource document) before asking Google, and answers Google's HTTP
+  errors in Google's words — a 401 or 403 recorded on the grant as `last_mcp_refusal`, a 401
+  retried once on a fresh token and, if it persists, flagged there for a reconnect (never in the
+  grant's `reconnect_reason`, which is the OAuth client's) until Google accepts that grant again.
+  Settings → Connections lists each enabled Google server as "via your Google connection", or asks
+  for a reconnect. The health pass and **Discover
+  tools** ask Google for the catalog the pack's own way: the org account's bearer when the door
+  vends one, else no credential, keeping each tool's annotations and scopes.
 
 The instance's verified **hosting domain** (Admin → Org) is the canonical base for OAuth callbacks —
 see [ONBOARDING.md](./ONBOARDING.md).

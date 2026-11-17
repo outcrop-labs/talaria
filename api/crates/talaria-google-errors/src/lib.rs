@@ -228,51 +228,53 @@ pub fn refused_sentence(surface: &str, reason: Option<&str>) -> String {
 ///   is configured nowhere here, so nothing was sent; the sentence names it.
 /// - `Other` → 502 `google_error`, quoting Google when it answered.
 pub fn google_token_fail(e: TokenError, surface: &str) -> Response {
-    let reason = upstream_reason(&e.to_string());
+    let sentence = token_failure_sentence(&e, surface);
     match e {
         TokenError::InvalidGrant(m) => {
             tracing::warn!("[google/{}] token refused: {}", surface.to_lowercase(), m);
-            house_error_msg(
-                StatusCode::CONFLICT,
-                "reconnect_needed",
-                &match reason {
-                    Some(r) => format!(
-                        "Google refused the stored Google connection, so it was cleared: «{r}». Reconnect it to restore {surface} access."
-                    ),
-                    None => format!(
-                        "Google refused the stored Google connection, so it was cleared. Reconnect it to restore {surface} access."
-                    ),
-                },
-            )
+            house_error_msg(StatusCode::CONFLICT, "reconnect_needed", &sentence)
         }
         TokenError::ClientRejected(m) => {
             tracing::error!("[google/{}] client rejected: {}", surface.to_lowercase(), m);
-            house_error_msg(
-                StatusCode::BAD_GATEWAY,
-                "client_rejected",
-                &match reason {
-                    Some(r) => format!(
-                        "Google refused this server's OAuth client: «{r}». The connection was kept; an admin needs to check the client under Admin → Google Workspace."
-                    ),
-                    None => "Google refused this server's OAuth client. The connection was kept; an admin needs to check the client under Admin → Google Workspace.".to_string(),
-                },
-            )
+            house_error_msg(StatusCode::BAD_GATEWAY, "client_rejected", &sentence)
         }
-        TokenError::ClientGone(sentence) => {
+        TokenError::ClientGone(_) => {
             tracing::warn!("[google/{}] {}", surface.to_lowercase(), sentence);
             house_error_msg(StatusCode::CONFLICT, "reconnect_needed", &sentence)
         }
         TokenError::Other(m) => {
             tracing::error!("[google/{}] token failed: {}", surface.to_lowercase(), m);
-            house_error_msg(
-                StatusCode::BAD_GATEWAY,
-                "google_error",
-                &match reason {
-                    Some(r) => format!("Google refused the token refresh: «{r}»"),
-                    None => format!("Could not get a Google token for {surface}."),
-                },
-            )
+            house_error_msg(StatusCode::BAD_GATEWAY, "google_error", &sentence)
         }
+    }
+}
+
+/// `google_token_fail`'s sentence alone: what a token that could not be had
+/// reads as, Google's words quoted when it answered. The MCP gateway answers
+/// an agent with it on Google's Workspace MCP servers, where the reply is a
+/// JSON-RPC message rather than an HTTP error.
+pub fn token_failure_sentence(e: &TokenError, surface: &str) -> String {
+    let reason = upstream_reason(&e.to_string());
+    match e {
+        TokenError::InvalidGrant(_) => match reason {
+            Some(r) => format!(
+                "Google refused the stored Google connection, so it was cleared: «{r}». Reconnect it to restore {surface} access."
+            ),
+            None => format!(
+                "Google refused the stored Google connection, so it was cleared. Reconnect it to restore {surface} access."
+            ),
+        },
+        TokenError::ClientRejected(_) => match reason {
+            Some(r) => format!(
+                "Google refused this server's OAuth client: «{r}». The connection was kept; an admin needs to check the client under Admin → Google Workspace."
+            ),
+            None => "Google refused this server's OAuth client. The connection was kept; an admin needs to check the client under Admin → Google Workspace.".to_string(),
+        },
+        TokenError::ClientGone(sentence) => sentence.clone(),
+        TokenError::Other(_) => match reason {
+            Some(r) => format!("Google refused the token refresh: «{r}»"),
+            None => format!("Could not get a Google token for {surface}."),
+        },
     }
 }
 

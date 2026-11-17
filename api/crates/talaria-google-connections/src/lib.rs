@@ -816,6 +816,8 @@ pub async fn save_connection(
                  then google_connections.reconnect_reason end, \
              reconnect_flagged_at = case when excluded.refresh_token_enc is null \
                  then google_connections.reconnect_flagged_at end, \
+             last_mcp_refusal = case when excluded.refresh_token_enc is null \
+                 then google_connections.last_mcp_refusal end, \
              access_token_enc = excluded.access_token_enc, \
              access_expires_at = excluded.access_expires_at, \
              updated_at = now()",
@@ -1243,6 +1245,187 @@ pub async fn require_token(
     }
 }
 
+// ── What Google's Workspace MCP servers say about a grant ────────────────────
+//
+// The MCP gateway relays an agent's call to Google's Workspace MCP servers
+// with the token of the principal's own grant. What it learns comes back
+// here: the grant's stored scope (to say which scope a tool needs before
+// asking Google), a cached token to drop (a 401 is retried once, after a
+// refresh), and Google's refusal — recorded as `last_mcp_refusal`
+// `{status, text, tool, at, flagged}`. `flagged` is a 401 that a fresh token
+// did not cure: the connection needs its person. It lives on the refusal and
+// never in `reconnect_reason`, which is the token endpoint's word about the
+// OAuth CLIENT (the refresh that minted the fresh token succeeded) and which
+// the cards, the census and `clear_client_flags` all read that way. The flag
+// stands until Google accepts a call made with the grant
+// (`clear_mcp_flag`), a later refusal does not repeat it, or a reconnect
+// brings a new grant (the three upserts forget `last_mcp_refusal`). A 403
+// never flags: it may be one file, one calendar, one quota.
+
+/// One store's statements for the MCP relay, each keyed by `$1`.
+struct McpSql {
+    /// → (scope, last_mcp_refusal) of a live grant.
+    facts: &'static str,
+    /// Drop the cached access token.
+    forget: &'static str,
+    /// $2 the refusal (jsonb).
+    refusal: &'static str,
+    /// Forget a flagged refusal's flag (the refusal itself stays on record).
+    unflag: &'static str,
+}
+
+macro_rules! mcp_sql {
+    ($table:literal, $key:literal) => {
+        McpSql {
+            facts: concat!(
+                "select scope, last_mcp_refusal from ",
+                $table,
+                " where ",
+                $key,
+                " and coalesce(refresh_token_enc, '') <> ''"
+            ),
+            forget: concat!(
+                "update ",
+                $table,
+                " set access_token_enc = null, access_expires_at = null where ",
+                $key
+            ),
+            refusal: concat!("update ", $table, " set last_mcp_refusal = $2 where ", $key),
+            unflag: concat!(
+                "update ",
+                $table,
+                " set last_mcp_refusal = last_mcp_refusal || '{\"flagged\": false}'::jsonb ",
+                "where ",
+                $key,
+                " and last_mcp_refusal->>'flagged' = 'true'"
+            ),
+        }
+    };
+}
+
+impl GrantRow {
+    fn mcp_sql(&self) -> McpSql {
+        match self {
+            GrantRow::User(_) => mcp_sql!("google_connections", "user_id = $1::uuid"),
+            GrantRow::Org => mcp_sql!("google_org_connection", "id = $1::int4"),
+            GrantRow::Agent(_) => mcp_sql!("agent_google_connections", "agent_model = $1"),
+        }
+    }
+}
+
+/// What the MCP relay reads of a live grant.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpGrantFacts {
+    /// The scopes Google gave it (space-joined, as Google's token answer
+    /// listed them); None when not recorded.
+    pub scope: Option<String>,
+    /// Google's words for a 401 a fresh token did not cure, when the last
+    /// refusal flagged the grant (`flagged_words`); None otherwise.
+    pub flagged: Option<String>,
+}
+
+/// The facts of a live grant; the default (nothing known) when there is no
+/// grant or no refresh token.
+pub async fn grant_mcp_facts(pg: &PgPool, row: &GrantRow) -> Result<McpGrantFacts, sqlx::Error> {
+    let read: Option<(Option<String>, Option<serde_json::Value>)> =
+        sqlx::query_as(row.mcp_sql().facts)
+            .bind(row.bind_key())
+            .fetch_optional(pg)
+            .await?;
+    let Some((scope, refusal)) = read else {
+        return Ok(McpGrantFacts::default());
+    };
+    Ok(McpGrantFacts {
+        scope: scope.filter(|s| !s.trim().is_empty()),
+        flagged: refusal.as_ref().and_then(flagged_words),
+    })
+}
+
+/// A `last_mcp_refusal` document's words when it flags the grant (`flagged:
+/// true`): Google's text, or the status when Google sent none. Pure.
+pub fn flagged_words(doc: &serde_json::Value) -> Option<String> {
+    if doc.get("flagged").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some(
+        match doc
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .filter(|t| !t.is_empty())
+        {
+            Some(t) => t.to_string(),
+            None => format!(
+                "HTTP {}",
+                doc.get("status")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(401)
+            ),
+        },
+    )
+}
+
+/// Drop a grant's cached access token, so the next vend refreshes it.
+pub async fn forget_access_token(pg: &PgPool, row: &GrantRow) -> Result<(), sqlx::Error> {
+    sqlx::query(row.mcp_sql().forget)
+        .bind(row.bind_key())
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// Google's Workspace MCP servers refused a call made with a grant's token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpRefusal {
+    /// The HTTP status Google answered.
+    pub status: u16,
+    /// Google's own words, quoted; None when it sent none.
+    pub text: Option<String>,
+    /// The tool called, when it was a `tools/call`.
+    pub tool: Option<String>,
+}
+
+impl McpRefusal {
+    /// The `last_mcp_refusal` document: `{status, text, tool, at, flagged}`.
+    pub fn document(&self, now_ms: i64, flagged: bool) -> serde_json::Value {
+        serde_json::json!({
+            "status": self.status,
+            "text": self.text,
+            "tool": self.tool,
+            "at": epoch_ms_to_iso(now_ms),
+            "flagged": flagged,
+        })
+    }
+}
+
+/// Record Google's refusal on the grant behind the token, as
+/// `last_mcp_refusal`; `flag` marks it as a 401 a fresh token did not cure.
+/// A refusal that does not flag replaces a flagged one: Google has since
+/// answered that token with something else.
+pub async fn record_mcp_refusal(
+    pg: &PgPool,
+    row: &GrantRow,
+    refusal: &McpRefusal,
+    flag: bool,
+    now_ms: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(row.mcp_sql().refusal)
+        .bind(row.bind_key())
+        .bind(refusal.document(now_ms, flag))
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// Google accepted a call made with this grant's token: a flag a persisting
+/// 401 left on it no longer stands. The refusal stays on record, unflagged.
+pub async fn clear_mcp_flag(pg: &PgPool, row: &GrantRow) -> Result<(), sqlx::Error> {
+    sqlx::query(row.mcp_sql().unflag)
+        .bind(row.bind_key())
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1253,6 +1436,40 @@ mod tests {
             row,
             live: true,
             label: None,
+        }
+    }
+
+    /// A refusal's document carries whether it flags the grant, and only a
+    /// flagged one reads as words for the person: Google's text, or the
+    /// status when Google sent none.
+    #[test]
+    fn only_a_flagged_refusal_asks_for_a_reconnect() {
+        let r = McpRefusal {
+            status: 401,
+            text: Some("Request had invalid authentication credentials.".into()),
+            tool: Some("search_threads".into()),
+        };
+        let flagged = r.document(0, true);
+        assert_eq!(flagged["flagged"], true);
+        assert_eq!(flagged["status"], 401);
+        assert_eq!(flagged["tool"], "search_threads");
+        assert_eq!(
+            flagged_words(&flagged).as_deref(),
+            Some("Request had invalid authentication credentials.")
+        );
+        assert_eq!(flagged_words(&r.document(0, false)), None);
+        let silent = McpRefusal { text: None, ..r };
+        assert_eq!(
+            flagged_words(&silent.document(0, true)).as_deref(),
+            Some("HTTP 401")
+        );
+        // A document written before the bit existed, or by hand, flags nothing.
+        for doc in [
+            serde_json::json!({ "status": 401, "text": "x" }),
+            serde_json::json!({ "status": 401, "text": "x", "flagged": "true" }),
+            serde_json::json!(null),
+        ] {
+            assert_eq!(flagged_words(&doc), None, "{doc}");
         }
     }
 
@@ -2301,10 +2518,16 @@ mod stamp_live {
     }
 
     async fn scratch() -> (PgPool, PgPool, String) {
+        scratch_as("google_stamp_live").await
+    }
+
+    /// A scratch schema of its own per test (`<tag>_<pid>`): tests in one
+    /// binary share the pid and run at once.
+    async fn scratch_as(tag: &str) -> (PgPool, PgPool, String) {
         let url = std::env::var("DATABASE_URL")
             .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
         let admin = PgPool::connect(&url).await.expect("connect");
-        let schema = format!("google_stamp_live_{}", std::process::id());
+        let schema = format!("{tag}_{}", std::process::id());
         let mut ddl = vec![
             format!("drop schema if exists {schema} cascade"),
             format!("create schema {schema}"),
@@ -2629,6 +2852,191 @@ mod stamp_live {
             user_row(&pg, &u1).await,
             (Some("conn-c".into()), None, true)
         );
+
+        pg.close().await;
+        let sql = format!("drop schema if exists {schema} cascade");
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&admin)
+            .await
+            .expect("drop the scratch schema");
+    }
+
+    /// A personal grant's `last_mcp_refusal`, as stored.
+    async fn mcp_doc(pg: &PgPool, user: &str) -> Option<serde_json::Value> {
+        let (d,): (Option<serde_json::Value>,) = sqlx::query_as(
+            "select last_mcp_refusal from google_connections where user_id = $1::uuid",
+        )
+        .bind(user)
+        .fetch_one(pg)
+        .await
+        .expect("personal row");
+        d
+    }
+
+    /// A 401 from Google's Workspace MCP servers that a freshly refreshed
+    /// token did not cure is recorded on the grant's `last_mcp_refusal` as
+    /// flagged — never as `reconnect_reason`, which the personal, org and
+    /// agent cards render as Google refusing the OAuth client, the census
+    /// counts that way, and the next refresh would clear. Google accepting the
+    /// grant again, a later refusal that does not repeat it, and a reconnect
+    /// that brings a new grant each forget the flag.
+    #[tokio::test]
+    #[ignore = "live DB: set DATABASE_URL"]
+    async fn mcp_live_a_persisting_401_flags_the_refusal_never_the_client() {
+        let (pg, admin, schema) = scratch_as("google_mcp_flag_live").await;
+        let sb = test_box();
+        let now = talaria_agent_auth::now_ms();
+        let u = seed_user(&pg, &sb, 7, "rt-for-conn-a", Some("conn-a")).await;
+        let row = GrantRow::User(u.clone());
+        // Google's words on a credential-less call, captured 2026-11-17
+        // (talaria-google-mcp's fixtures/list-events-401-nocred.json).
+        let words = "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.";
+        let unauthorized = McpRefusal {
+            status: 401,
+            text: Some(words.into()),
+            tool: Some("search_threads".into()),
+        };
+
+        assert_eq!(
+            grant_mcp_facts(&pg, &row).await.unwrap(),
+            McpGrantFacts::default(),
+            "nothing recorded, no scope stored"
+        );
+
+        // The first 401 (answered after the retry found no fresh token):
+        // on record, unflagged.
+        record_mcp_refusal(&pg, &row, &unauthorized, false, now)
+            .await
+            .unwrap();
+        assert_eq!(grant_mcp_facts(&pg, &row).await.unwrap().flagged, None);
+
+        // The 401 a fresh token did not cure: flagged, in Google's words...
+        record_mcp_refusal(&pg, &row, &unauthorized, true, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            grant_mcp_facts(&pg, &row).await.unwrap().flagged.as_deref(),
+            Some(words)
+        );
+        // ...and nowhere the OAuth client's refusal is read: not the row's
+        // `reconnect_reason`, not the card, not the census.
+        assert_eq!(user_row(&pg, &u).await, (Some("conn-a".into()), None, true));
+        let status = get_connection_status(&pg, &u).await.unwrap();
+        assert!(status.connected);
+        assert_eq!(status.flagged, None);
+        assert_eq!(
+            reconnect_reason(
+                status.client_id.as_deref(),
+                status.flagged.as_deref(),
+                &[GoogleClient {
+                    client_id: "conn-a".into(),
+                    client_secret: "secret-conn-a".into(),
+                    hd: None,
+                    source: "admin",
+                    role: talaria_google_client::ClientRole::Connections,
+                }]
+            ),
+            None
+        );
+        let census = grant_census(&pg).await.unwrap();
+        assert!(census.iter().all(|c| c.flagged == 0), "{census:?}");
+
+        // Google accepts a call made with the grant: the flag goes, and the
+        // refusal stays on record.
+        clear_mcp_flag(&pg, &row).await.unwrap();
+        assert_eq!(grant_mcp_facts(&pg, &row).await.unwrap().flagged, None);
+        let kept = mcp_doc(&pg, &u).await.expect("the refusal is kept");
+        assert_eq!(kept["status"], 401);
+        assert_eq!(kept["flagged"], false);
+        assert_eq!(kept["tool"], "search_threads");
+
+        // Flagged again, then answered with a 403: that token got past
+        // authentication, so the flag no longer stands.
+        record_mcp_refusal(&pg, &row, &unauthorized, true, now)
+            .await
+            .unwrap();
+        assert!(grant_mcp_facts(&pg, &row).await.unwrap().flagged.is_some());
+        let forbidden = McpRefusal {
+            status: 403,
+            text: Some("STUB: not a capture".into()),
+            tool: Some("get_thread".into()),
+        };
+        record_mcp_refusal(&pg, &row, &forbidden, false, now)
+            .await
+            .unwrap();
+        assert_eq!(grant_mcp_facts(&pg, &row).await.unwrap().flagged, None);
+
+        // Flagged again: a reconnect that brings no new refresh token keeps
+        // the grant and its flag; one that brings a new grant forgets the
+        // refusal.
+        record_mcp_refusal(&pg, &row, &unauthorized, true, now)
+            .await
+            .unwrap();
+        let save = |refresh_token: Option<&'static str>| SaveConnection {
+            google_sub: "sub-7",
+            email: Some("person7@radhires.com"),
+            scope: "",
+            refresh_token,
+            access_token: Some("ya29.from-the-exchange"),
+            expires_in_seconds: Some(3599),
+            oauth_client_id: "conn-a",
+            now_ms: now,
+        };
+        save_connection(&pg, &sb, &u, &save(None)).await.unwrap();
+        assert!(grant_mcp_facts(&pg, &row).await.unwrap().flagged.is_some());
+        save_connection(&pg, &sb, &u, &save(Some("rt-new-grant")))
+            .await
+            .unwrap();
+        assert_eq!(grant_mcp_facts(&pg, &row).await.unwrap().flagged, None);
+        assert_eq!(mcp_doc(&pg, &u).await, None);
+
+        // The org account and an agent identity take the same statements.
+        sqlx::query(
+            "insert into google_org_connection (id, google_sub, email, scope, refresh_token_enc) \
+             values (1, 'org-sub', 'org@radhires.com', 'openid email', $1)",
+        )
+        .bind(sb.seal("rt-for-conn-a").unwrap())
+        .execute(&pg)
+        .await
+        .expect("org grant");
+        sqlx::query(
+            "insert into agent_google_connections (agent_model, google_sub, scope, refresh_token_enc) \
+             values ('mcp-flag-agent', 'agent-sub', '', $1)",
+        )
+        .bind(sb.seal("rt-for-conn-a").unwrap())
+        .execute(&pg)
+        .await
+        .expect("agent grant");
+        for other in [GrantRow::Org, GrantRow::Agent("mcp-flag-agent".into())] {
+            record_mcp_refusal(&pg, &other, &unauthorized, true, now)
+                .await
+                .unwrap();
+            assert_eq!(
+                grant_mcp_facts(&pg, &other)
+                    .await
+                    .unwrap()
+                    .flagged
+                    .as_deref(),
+                Some(words),
+                "{other:?}"
+            );
+            clear_mcp_flag(&pg, &other).await.unwrap();
+            assert_eq!(
+                grant_mcp_facts(&pg, &other).await.unwrap().flagged,
+                None,
+                "{other:?}"
+            );
+        }
+        assert_eq!(
+            grant_mcp_facts(&pg, &GrantRow::Org)
+                .await
+                .unwrap()
+                .scope
+                .as_deref(),
+            Some("openid email")
+        );
+        let census = grant_census(&pg).await.unwrap();
+        assert!(census.iter().all(|c| c.flagged == 0), "{census:?}");
 
         pg.close().await;
         let sql = format!("drop schema if exists {schema} cascade");

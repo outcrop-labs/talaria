@@ -1,5 +1,6 @@
 // The MCP engine family — registry, gateway jsonrpc, oauth, library, icons, probe, service, packages.
 pub use talaria_mcp::calls;
+pub use talaria_mcp::google;
 pub use talaria_mcp::health;
 pub use talaria_mcp::not_connected;
 pub use talaria_mcp::org_headers;

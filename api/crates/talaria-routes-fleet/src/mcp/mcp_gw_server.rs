@@ -36,6 +36,25 @@
 //     or a tools/list where the upstream did not answer ping) is answered
 //     with `notifications/tools/list_changed` ahead of its result, and the
 //     agent lists again (the tool-list notice, below)
+//   · on a GOOGLE WORKSPACE MCP server (`auth_mode = 'google'`, the pack):
+//     relays only initialize, ping, tools/list, tools/call and notifications
+//     (anything else is answered here, a batch and a JSON-RPC response
+//     included), sends Google exactly the message the gate read, relays
+//     only the read-only subset (pinned read list AND Google's
+//     `readOnlyHint`), refuses every other tool with the sentence that says
+//     why (held: no person can approve one yet; denied: trash, spam,
+//     sensitive labels), refuses a call naming a workspace secret, says
+//     which scope a tool needs before asking Google when the grant has none
+//     Google accepts for it, and turns Google's 401/403 into Google's own
+//     words for the agent — recorded on the grant (`last_mcp_refusal`), a 401
+//     retried once on a fresh token and, if it persists, flagged there for a
+//     reconnect until Google accepts that grant again (mcp::google,
+//     talaria-google-mcp)
+//   · REFUSES any other row whose address is one of Google's Workspace MCP
+//     servers, under any of Google's names for it (`pack::
+//     is_google_workspace_mcp_url`): registered before the custom-URL guard
+//     knew that name, it would carry a credential to Google with none of the
+//     pack's policy
 // so a hand-edited agent config can never exceed what the registry granted.
 
 use axum::Json;
@@ -46,11 +65,13 @@ use axum::response::{IntoResponse, Response};
 use redis::AsyncCommands;
 use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, presented, require_agent, subject_model};
+use talaria_api_facades::google::mcp::{Product, catalog, pack, policy, refusal_text};
 use talaria_api_facades::mcp::apply::tool_list_count;
 use talaria_api_facades::mcp::calls::{
     ACCESS_FAILED, BATCH_REFUSED, CallLog, Outcome, TappedStream, batch_needs_refusal,
     classify_answer, recorded_members, upstream_text,
 };
+use talaria_api_facades::mcp::google::GoogleCall;
 use talaria_api_facades::mcp::jsonrpc::rpc_error;
 use talaria_api_facades::mcp::not_connected::{NotConnected, browser_base, house_answer};
 use talaria_api_facades::mcp::registry::{
@@ -131,6 +152,166 @@ fn method_closed_by_subset(method: &str) -> bool {
 
 fn method_refusal(method: &str) -> String {
     format!("method \"{method}\" is not available to this agent here (it holds a tool subset)")
+}
+
+/// A registry row that names one of Google's Workspace MCP servers without
+/// being the pack's (`pack::UNPACKED_ROW_REFUSAL`): the gateway relays
+/// nothing to it. A pack row's address is the pack's own and passes.
+fn unpacked_google_row(server: &McpServer) -> bool {
+    !talaria_api_facades::mcp::google::is_google(server)
+        && pack::is_google_workspace_mcp_url(&server.url)
+}
+
+/// The JSON-RPC methods a Google Workspace MCP server's row relays to
+/// Google: the handshake, ping, the tool surface and notifications. The
+/// pack's gate reads `tools/call` (`google_refusal`) and the list filter reads
+/// `tools/list`; nothing else is policed, so nothing else carries the
+/// principal's bearer — a method Google adds later included.
+fn google_relays(method: &str) -> bool {
+    matches!(method, "initialize" | "ping" | "tools/list" | "tools/call")
+        || method.starts_with("notifications/")
+}
+
+/// The pack's method gate: None relays the body; otherwise the answer, the
+/// refused method (for the record, when the body names one) and the
+/// sentence. A request naming a method the pack does not relay gets -32601
+/// over HTTP 200. Anything that cannot take a reply — a batch, a JSON-RPC
+/// response, a notification of such a method, a body that is no message —
+/// gets HTTP 400 with a -32600 that has a null id (Streamable HTTP's answer
+/// to input a server does not accept). Pure.
+fn google_method_gate(
+    rpc: Option<&Value>,
+    p: &Product,
+) -> Option<(Response, Option<String>, String)> {
+    let rpc = rpc?;
+    let method = rpc.get("method").and_then(Value::as_str);
+    if method.is_some_and(google_relays) {
+        return None;
+    }
+    let sentence = match (rpc.is_array(), method) {
+        (true, _) => format!(
+            "a JSON-RPC batch is not relayed to Google's {} MCP server; send each request on its own. Nothing was sent to Google's Workspace MCP servers.",
+            p.name
+        ),
+        (false, Some(m)) => format!(
+            "method \"{m}\" is not relayed to Google's {} MCP server: only initialize, ping, tools/list, tools/call and notifications are. Nothing was sent to Google's Workspace MCP servers.",
+            p.name
+        ),
+        (false, None) => format!(
+            "a message with no method is not relayed to Google's {} MCP server. Nothing was sent to Google's Workspace MCP servers.",
+            p.name
+        ),
+    };
+    let id = rpc.get("id").filter(|_| method.is_some());
+    let resp = match id {
+        Some(id) => (StatusCode::OK, Json(rpc_error(id, -32601, &sentence))).into_response(),
+        None => (
+            StatusCode::BAD_REQUEST,
+            Json(rpc_error(&Value::Null, -32600, &sentence)),
+        )
+            .into_response(),
+    };
+    Some((resp, method.map(str::to_string), sentence))
+}
+
+/// Why the pack will not relay this `tools/call` to Google, or None: the
+/// tool's policy (held or denied — a hold is refused until holds ship), a
+/// workspace secret handle in its arguments, or a grant holding none of the
+/// scopes Google accepts for the tool. `(code, outcome, sentence)`; every
+/// sentence says nothing was sent. Pure: reads the cached catalog and the
+/// grant's stored scope only.
+fn google_refusal(
+    rpc: Option<&Value>,
+    server: &McpServer,
+    g: &GoogleCall,
+) -> Option<(i64, Outcome, String)> {
+    let rpc = rpc?;
+    if rpc.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return None;
+    }
+    let tool = called_tool(Some(rpc));
+    let p = &g.product;
+    if policy::gateway_policy(p.id, &tool, &server.tools) != policy::Policy::Allow {
+        let held = policy::default_policy(p.id, &tool, policy::catalog_entry(&server.tools, &tool))
+            == policy::Policy::Hold;
+        return Some((
+            -32602,
+            Outcome::Denied,
+            pack::refusal_sentence(p, &tool, held),
+        ));
+    }
+    if rpc
+        .pointer("/params/arguments")
+        .is_some_and(|a| talaria_workspace_secrets::mentions_handle(&a.to_string()))
+    {
+        return Some((
+            -32602,
+            Outcome::Denied,
+            pack::SECRET_HANDLE_REFUSAL.to_string(),
+        ));
+    }
+    let entry = policy::catalog_entry(&server.tools, &tool);
+    let missing = catalog::missing_scope(g.scope.as_deref(), &tool, entry)?;
+    let (requestable, fix): (&[&str], &str) = match g.principal {
+        talaria_api_facades::google::agent::PrincipalKind::Owner => (
+            talaria_api_facades::google::oauth::WORKSPACE_SCOPES,
+            "its owner reconnects Google in Settings → Connections.",
+        ),
+        talaria_api_facades::google::agent::PrincipalKind::Org => (
+            talaria_api_facades::google::oauth::ORG_CONNECT_SCOPES,
+            "an admin reconnects the org Google account under Admin → Org.",
+        ),
+        talaria_api_facades::google::agent::PrincipalKind::Agent => (
+            talaria_api_facades::google::oauth::WORKSPACE_SCOPES,
+            "an admin reconnects this agent's own Google account on its page (Manage → Agents).",
+        ),
+    };
+    Some((
+        talaria_api_facades::mcp::not_connected::NOT_CONNECTED_CODE,
+        Outcome::NotConnected,
+        catalog::missing_scope_sentence(p, &missing, requestable, fix),
+    ))
+}
+
+/// What the agent reads when Google refused a relayed call: Google's words,
+/// quoted, with the status. A `tools/call` gets a tool result with
+/// `isError` (the model reads it, and an HTTP 401 would send the agent's own
+/// MCP client looking for an OAuth flow Talaria owns); anything else a
+/// JSON-RPC error.
+fn google_refused_reply(
+    rpc: Option<&Value>,
+    p: &Product,
+    status: u16,
+    words: Option<&str>,
+    flagged: bool,
+) -> (Value, String) {
+    let quoted = words
+        .map(|w| format!(": \u{ab}{w}\u{bb}"))
+        .unwrap_or_default();
+    let tail = if flagged {
+        " A fresh token was refused the same way, so the Google connection is flagged for a reconnect."
+    } else {
+        ""
+    };
+    let sentence = format!(
+        "Google's {} MCP server refused this (HTTP {status}){quoted}.{tail}",
+        p.name
+    );
+    let id = rpc
+        .and_then(|r| r.get("id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let is_call = rpc.and_then(|r| r.get("method")).and_then(Value::as_str) == Some("tools/call");
+    let reply = if is_call {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": { "content": [{ "type": "text", "text": sentence }], "isError": true },
+        })
+    } else {
+        rpc_error(&id, -32000, &sentence)
+    };
+    (reply, sentence)
 }
 
 /// Where a spent credential is about to go, as a secret's `allowed_hosts`
@@ -838,6 +1019,23 @@ pub async fn post(
         .map(|c| c.with_server(&eff.server.id))
         .collect();
 
+    // A row that is not the pack's but names one of Google's Workspace MCP
+    // servers (registered before the custom-URL guard knew that name) is
+    // never relayed to: whatever credential it carries would reach Google
+    // with none of the pack's policy.
+    if unpacked_google_row(&eff.server) {
+        tracing::warn!(
+            "[mcp/gw:{server_name}] {name}: this row names a Google Workspace MCP server outside the pack; refused"
+        );
+        for c in &logs {
+            c.finish(Outcome::Denied, Some(403), Some(pack::UNPACKED_ROW_REFUSAL));
+        }
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            pack::UNPACKED_ROW_REFUSAL,
+        ));
+    }
+
     // A session the in-house not-connected answer issued, presented now that
     // the server answers for real: over (see "The in-house session").
     if presented_in_house_session(&headers).is_some() {
@@ -903,6 +1101,51 @@ pub async fn post(
         );
         note(&call, Outcome::Denied, 200, Some(SESSION_FOREIGN));
         return Ok(foreign_session_response(rpc.as_ref()));
+    }
+
+    // A Google Workspace MCP server relays an allowlist of methods only;
+    // anything else is answered here, recorded under its own method like the
+    // subset's method gate below, and never carries the bearer.
+    if let Some(g) = eff.google.as_ref()
+        && let Some((resp, method, sentence)) = google_method_gate(rpc.as_ref(), &g.product)
+    {
+        tracing::info!(
+            "[mcp/gw:{server_name}] {name}: {} not relayed to Google",
+            method.as_deref().unwrap_or("a message with no method")
+        );
+        if let Some(r) = rpc.as_ref()
+            && method.is_some()
+            && let Some(c) =
+                CallLog::begin_refused_method(&state.pg, &subject, &server_name, r, started)
+        {
+            c.with_server(&eff.server.id).finish(
+                Outcome::Denied,
+                Some(resp.status().as_u16()),
+                Some(&sentence),
+            );
+        }
+        return Ok(resp);
+    }
+
+    // A Google Workspace MCP server's own gate, ahead of the agent's subset
+    // (whose sentence would hide why) and of the spend boundary: a tool the
+    // pack does not run, a secret handle, a scope the grant lacks. Nothing
+    // is forwarded for any of them.
+    if let Some(g) = eff.google.as_ref()
+        && let Some((code, outcome, sentence)) = google_refusal(rpc.as_ref(), &eff.server, g)
+    {
+        tracing::info!(
+            "[mcp/gw:{server_name}] {name}: {} refused ({})",
+            called_tool(rpc.as_ref()),
+            outcome.as_str()
+        );
+        note(&call, outcome, 200, Some(&sentence));
+        let id = rpc
+            .as_ref()
+            .and_then(|r| r.get("id"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        return Ok((StatusCode::OK, Json(rpc_error(&id, code, &sentence))).into_response());
     }
 
     // The call gate: reject disallowed tools before the upstream ever
@@ -984,8 +1227,13 @@ pub async fn post(
                 u.reason
             );
         }
-        if spend.changed {
+        // A Google Workspace MCP server is sent exactly the message its gate
+        // read, never the agent's raw bytes: two parsers that disagree (on a
+        // duplicate key, say) can never let Google read another tool.
+        if spend.changed || eff.google.is_some() {
             body_text = serde_json::to_string(rpc_mut).unwrap_or_else(|_| body_text.clone());
+        }
+        if spend.changed {
             // The arguments now hold a real credential, and an upstream that
             // rejects one may quote it back: no reply text is kept for it.
             if let Some(c) = call.as_mut() {
@@ -1131,46 +1379,16 @@ pub async fn post(
         return Ok(house_error(StatusCode::BAD_GATEWAY, REFUSED));
     }
 
-    // Header assembly order: content-type, accept,
-    // [mcp-session-id], [mcp-protocol-version], ...upstreamHeaders, and for
-    // the builtin toolkit the caller's OWN credential — the toolkit calls
-    // back into this API as the same agent, so substituting a server-held key
-    // here would make that hop the forgeable one.
-    let hdr = |name: &'static str| {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-    };
-    let mut req =
-        relay_http(&eff.server)
-            .post(&eff.server.url)
-            .timeout(std::time::Duration::from_millis(
-                (eff.server.timeout_secs.unwrap_or(120) as u64) * 1000,
-            ));
-    req = req.header(
-        "content-type",
-        hdr("content-type").unwrap_or_else(|| "application/json".into()),
-    );
-    req = req.header(
-        "accept",
-        hdr("accept").unwrap_or_else(|| "application/json, text/event-stream".into()),
-    );
-    if let Some(session) = hdr("mcp-session-id") {
-        req = req.header("mcp-session-id", session);
-    }
-    for (name, value) in transport_headers(&headers) {
-        req = req.header(name, value);
-    }
-    for (k, v) in &eff.upstream_headers {
-        req = req.header(k.as_str(), v.as_str());
-    }
-    if eff.server.builtin {
-        req = req.header("X-Agent-Name", &name);
-        req = req.header("X-Api-Key", presented(&headers).unwrap_or_default());
-    }
-
-    let upstream = match req.body(body_text).send().await {
+    let upstream = match relay_request(
+        &eff.server,
+        &headers,
+        &eff.upstream_headers,
+        &name,
+        body_text.clone(),
+    )
+    .send()
+    .await
+    {
         Ok(r) => r,
         Err(e) => {
             // The fetch error can name the upstream host (ECONNREFUSED
@@ -1190,6 +1408,56 @@ pub async fn post(
             return Ok(house_error(StatusCode::BAD_GATEWAY, "upstream unreachable"));
         }
     };
+    // Google refused a Google Workspace MCP call: Google's words for the
+    // agent (a 429's quota sentence too), a 401 or 403 recorded on the grant,
+    // a 401 retried once on a fresh token. A redirect is left to the relay,
+    // which refuses it.
+    let upstream = match eff.google.as_ref() {
+        Some(g) if upstream.status().as_u16() >= 400 => {
+            let resend = |bearer: String| {
+                relay_request(
+                    &eff.server,
+                    &headers,
+                    &[("authorization".to_string(), format!("Bearer {bearer}"))],
+                    &name,
+                    body_text.clone(),
+                )
+            };
+            match google_refused(
+                &state,
+                &sb,
+                &subject,
+                g,
+                upstream,
+                rpc.as_ref(),
+                &call,
+                resend,
+            )
+            .await
+            {
+                Ok(retried) => retried,
+                Err(answer) => return Ok(answer),
+            }
+        }
+        _ => upstream,
+    };
+    // Google accepted a call made with a flagged grant's token: the flag a
+    // persisting 401 left on it no longer stands. Off the hot path, and only
+    // for a grant the resolution read as flagged.
+    if let Some(g) = eff.google.as_ref()
+        && g.flagged
+        && upstream.status().is_success()
+    {
+        let pg = state.pg.clone();
+        let grant = g.grant.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                talaria_api_facades::google::connections::clear_mcp_flag(&pg, &grant).await
+            {
+                tracing::warn!("[mcp/google] forgetting the grant's flag failed: {e}");
+            }
+        });
+    }
     // The session an initialize answer minted is this caller's from here on.
     if is_initialize(rpc.as_ref())
         && upstream.status().is_success()
@@ -1223,6 +1491,217 @@ pub async fn post(
         relist,
     )
     .await)
+}
+
+/// The relay hop for one POST. Header assembly order: content-type,
+/// accept, [mcp-session-id], [mcp-protocol-version], ...upstreamHeaders, and
+/// for the builtin toolkit the caller's OWN credential — the toolkit calls
+/// back into this API as the same agent, so substituting a server-held key
+/// here would make that hop the forgeable one.
+fn relay_request(
+    server: &McpServer,
+    headers: &HeaderMap,
+    upstream_headers: &[(String, String)],
+    name: &str,
+    body: String,
+) -> reqwest::RequestBuilder {
+    let hdr = |n: &'static str| {
+        headers
+            .get(n)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let mut req = relay_http(server)
+        .post(&server.url)
+        .timeout(std::time::Duration::from_millis(
+            (server.timeout_secs.unwrap_or(120) as u64) * 1000,
+        ));
+    req = req.header(
+        "content-type",
+        hdr("content-type").unwrap_or_else(|| "application/json".into()),
+    );
+    req = req.header(
+        "accept",
+        hdr("accept").unwrap_or_else(|| "application/json, text/event-stream".into()),
+    );
+    if let Some(session) = hdr("mcp-session-id") {
+        req = req.header("mcp-session-id", session);
+    }
+    for (n, value) in transport_headers(headers) {
+        req = req.header(n, value);
+    }
+    for (k, v) in upstream_headers {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    if server.builtin {
+        req = req.header("X-Agent-Name", name);
+        req = req.header("X-Api-Key", presented(headers).unwrap_or_default());
+    }
+    req.body(body)
+}
+
+/// Google answered a relayed Google Workspace MCP call with an HTTP error.
+/// The agent reads Google's own words, never the relay's stock sentence. A
+/// 401 or 403 is also recorded on the grant the bearer came from
+/// (`last_mcp_refusal`). A 403 is answered at once and flags nothing: it may
+/// be one file or one quota. A 401 drops the cached token and asks the door
+/// again: a fresh token's answer is relayed like any other unless it is a
+/// refusal too, and a 401 that persists is recorded as flagging the grant
+/// for a reconnect (`last_mcp_refusal.flagged` — never `reconnect_reason`,
+/// which is the token endpoint's word about the OAuth client, and that
+/// refresh just succeeded). `Ok` is the answer to relay; `Err` the reply,
+/// already recorded. The bearer is never logged or quoted.
+#[allow(clippy::too_many_arguments)]
+async fn google_refused(
+    state: &AppState,
+    sb: &talaria_secretbox::SecretBox,
+    subject: &AgentSubject,
+    g: &GoogleCall,
+    first: reqwest::Response,
+    rpc: Option<&Value>,
+    call: &Option<CallLog>,
+    resend: impl FnOnce(String) -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, Response> {
+    use talaria_api_facades::google::agent::{Purpose, Vend, vend_for_caller};
+    use talaria_api_facades::google::connections::{
+        McpRefusal, forget_access_token, record_mcp_refusal,
+    };
+    let tool = (rpc.and_then(|r| r.get("method")).and_then(Value::as_str) == Some("tools/call"))
+        .then(|| called_tool(rpc));
+    let read = |status: u16, body: &str| McpRefusal {
+        status,
+        text: refusal_text(status, body),
+        tool: tool.clone(),
+    };
+    let answer = |refusal: &McpRefusal, flagged: bool| -> Response {
+        let (reply, sentence) = google_refused_reply(
+            rpc,
+            &g.product,
+            refusal.status,
+            refusal.text.as_deref(),
+            flagged,
+        );
+        note(
+            call,
+            Outcome::UpstreamError,
+            refusal.status,
+            Some(&sentence),
+        );
+        (StatusCode::OK, Json(reply)).into_response()
+    };
+    let record = |refusal: McpRefusal, flag: bool| async move {
+        let now = talaria_agent_auth::now_ms();
+        if let Err(e) = record_mcp_refusal(&state.pg, &g.grant, &refusal, flag, now).await {
+            tracing::warn!("[mcp/google] recording Google's refusal failed: {e}");
+        }
+        refusal
+    };
+    let status = first.status().as_u16();
+    let body = first.text().await.unwrap_or_default();
+    talaria_error::log_upstream_error(&format!("mcp-gw:google-{}", g.product.id), status, &body);
+    let refusal = read(status, &body);
+    // Google's first refusal of the stored token: answered now, unless it
+    // is a 401 — the token's own — which earns one retry on a fresh token.
+    if let GoogleErrorStep::Answer { record: keep, flag } = first_google_error(status) {
+        let refusal = if keep {
+            record(refusal, flag).await
+        } else {
+            refusal
+        };
+        return Err(answer(&refusal, flag));
+    }
+    if let Err(e) = forget_access_token(&state.pg, &g.grant).await {
+        tracing::warn!("[mcp/google] dropping the cached token failed: {e}");
+    }
+    let now = talaria_agent_auth::now_ms();
+    let fresh = match vend_for_caller(&state.pg, sb, subject, Purpose::HostedMcp, now).await {
+        Ok(Vend::Token(t)) => Some(t.token),
+        // The door has nothing for this principal now — the refresh itself
+        // was refused (and recorded where it belongs, in Google's words) or
+        // the grant went.
+        _ => None,
+    };
+    let second = match fresh {
+        Some(token) => match resend(token).send().await {
+            Ok(r) => Some(r),
+            Err(e) => {
+                talaria_error::log_upstream_error(
+                    &format!("mcp-gw:google-{}", g.product.id),
+                    "unreachable",
+                    &e.to_string(),
+                );
+                None
+            }
+        },
+        None => None,
+    };
+    let Some(second) = second else {
+        let (keep, flag) = NO_FRESH_TOKEN;
+        let refusal = if keep {
+            record(refusal, flag).await
+        } else {
+            refusal
+        };
+        return Err(answer(&refusal, flag));
+    };
+    let status = second.status().as_u16();
+    let Some((keep, flag)) = retried_google_error(status) else {
+        return Ok(second);
+    };
+    let body = second.text().await.unwrap_or_default();
+    talaria_error::log_upstream_error(&format!("mcp-gw:google-{}", g.product.id), status, &body);
+    let refusal = read(status, &body);
+    let refusal = if keep {
+        record(refusal, flag).await
+    } else {
+        refusal
+    };
+    Err(answer(&refusal, flag))
+}
+
+/// What the relay does with Google's first HTTP error on a Google Workspace
+/// MCP call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoogleErrorStep {
+    /// Drop the cached token, vend a fresh one and send once more.
+    Retry,
+    /// Answer the agent in Google's words; `record` keeps the refusal on the
+    /// grant, `flag` marks it as flagging the grant for a reconnect.
+    Answer { record: bool, flag: bool },
+}
+
+/// Google's first refusal: a 401 is the token's, and earns one retry on a
+/// fresh token; a 403 is recorded and never flags (one file, one quota);
+/// anything else (429, 4xx, 5xx) is only quoted.
+fn first_google_error(status: u16) -> GoogleErrorStep {
+    match status {
+        401 => GoogleErrorStep::Retry,
+        403 => GoogleErrorStep::Answer {
+            record: true,
+            flag: false,
+        },
+        _ => GoogleErrorStep::Answer {
+            record: false,
+            flag: false,
+        },
+    }
+}
+
+/// A 401 with no fresh token to retry on (the door refused, or the resend
+/// never got an answer): the first refusal is recorded, unflagged — the
+/// door's own refusal already recorded what it learned.
+const NO_FRESH_TOKEN: (bool, bool) = (true, false);
+
+/// The retried call's answer: None relays it (no refusal); otherwise
+/// `(record, flag)` — a 401 a fresh token did not cure flags the grant for a
+/// reconnect; a 403 is recorded only; anything else is only quoted.
+fn retried_google_error(status: u16) -> Option<(bool, bool)> {
+    match status {
+        s if s < 400 => None,
+        401 => Some((true, true)),
+        403 => Some((true, false)),
+        _ => Some((false, false)),
+    }
 }
 
 /// GET — the streamable-HTTP notification stream (server → client): plain
@@ -1259,6 +1738,18 @@ pub async fn get(
     // connected: over, like the POST side.
     if presented_in_house_session(&headers).is_some() {
         return Ok((StatusCode::NOT_FOUND, Body::empty()).into_response());
+    }
+    // Google's Workspace MCP servers are stateless and offer no stream
+    // (their GET answers 405): declined here, with no token sent. A row
+    // naming one outside the pack is refused, as on POST.
+    if eff.google.is_some() {
+        return Ok((StatusCode::METHOD_NOT_ALLOWED, Body::empty()).into_response());
+    }
+    if unpacked_google_row(&eff.server) {
+        return Ok(house_error(
+            StatusCode::FORBIDDEN,
+            pack::UNPACKED_ROW_REFUSAL,
+        ));
     }
     // App servers have no notification stream — decline politely.
     if eff.server.app_slug.is_some() {
@@ -1716,6 +2207,314 @@ mod tests {
         v
     }
 
+    /// A Google Workspace MCP pack row whose cached catalog is Google's
+    /// Calendar `tools/list`, as captured with no credential on 2026-11-17
+    /// (talaria-google-mcp's fixtures), with each tool's scopes from its
+    /// protected-resource document.
+    fn calendar_pack() -> (McpServer, GoogleCall) {
+        let listed = talaria_api_facades::google::mcp::catalog::read_tools_list(
+            200,
+            include_str!("../../../talaria-google-mcp/fixtures/tools-list/calendarmcp.json"),
+        )
+        .unwrap();
+        let docs: Value = serde_json::from_str(include_str!(
+            "../../../talaria-google-mcp/fixtures/protected-resource.json"
+        ))
+        .unwrap();
+        let tools: Vec<Value> = listed
+            .into_iter()
+            .map(|mut t| {
+                let name = t["name"].as_str().unwrap().to_string();
+                let doc = &docs["documents"][format!(
+                    "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/{name}"
+                )];
+                t["requiredScopesAnyOf"] = doc["scopes_supported"].clone();
+                t
+            })
+            .collect();
+        let mut server =
+            not_connected(talaria_api_facades::mcp::not_connected::ConnectScope::GoogleOwner)
+                .server;
+        server.name = "google-calendar".into();
+        server.auth_mode = "google".into();
+        server.oauth_enabled = false;
+        server.tools = Value::Array(tools);
+        let g = GoogleCall {
+            product: pack::product("calendar").unwrap(),
+            grant: talaria_api_facades::google::connections::GrantRow::User("u1".into()),
+            principal: talaria_api_facades::google::agent::PrincipalKind::Owner,
+            // The personal connect's grant (WORKSPACE_SCOPES).
+            scope: Some(talaria_api_facades::google::oauth::WORKSPACE_SCOPES.join(" ")),
+            flagged: false,
+        };
+        (server, g)
+    }
+
+    fn call(tool: &str, args: Value) -> Value {
+        json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": tool, "arguments": args } })
+    }
+
+    /// The pack's gate on Google's live Calendar catalog: reads run, every
+    /// write is refused with the sentence (held until holds ship), a secret
+    /// handle is refused, a missing scope is named before Google is asked,
+    /// and every other method passes to the relay.
+    #[test]
+    fn the_google_gate_runs_reads_and_refuses_everything_else_before_google_hears() {
+        let (server, g) = calendar_pack();
+        for read in ["list_events", "get_event", "search_events", "suggest_time"] {
+            assert!(
+                google_refusal(Some(&call(read, json!({}))), &server, &g).is_none(),
+                "{read}"
+            );
+        }
+        for write in [
+            "create_event",
+            "update_event",
+            "delete_event",
+            "respond_to_event",
+        ] {
+            let (code, outcome, sentence) =
+                google_refusal(Some(&call(write, json!({}))), &server, &g).expect(write);
+            assert_eq!((code, outcome), (-32602, Outcome::Denied), "{write}");
+            assert!(
+                sentence.contains("not one of the read-only tools"),
+                "{sentence}"
+            );
+            assert!(
+                sentence.contains("Nothing was sent to Google's Workspace MCP servers."),
+                "{sentence}"
+            );
+        }
+        // A tool Google adds tomorrow is refused, read-only mark or not.
+        let (_, outcome, _) =
+            google_refusal(Some(&call("brand_new_tool", json!({}))), &server, &g).unwrap();
+        assert_eq!(outcome, Outcome::Denied);
+        // A secret handle never goes to Google, even in a read.
+        let (code, outcome, sentence) = google_refusal(
+            Some(&call(
+                "search_events",
+                json!({ "query": "«secret:deploy.token»" }),
+            )),
+            &server,
+            &g,
+        )
+        .unwrap();
+        assert_eq!((code, outcome), (-32602, Outcome::Denied));
+        assert_eq!(sentence, pack::SECRET_HANDLE_REFUSAL);
+        // calendar.events does not cover list_calendars (Google's document),
+        // and the personal connect does not ask for a scope that does.
+        let (code, outcome, sentence) =
+            google_refusal(Some(&call("list_calendars", json!({}))), &server, &g).unwrap();
+        assert_eq!(
+            (code, outcome),
+            (
+                talaria_api_facades::mcp::not_connected::NOT_CONNECTED_CODE,
+                Outcome::NotConnected
+            )
+        );
+        assert!(
+            sentence.contains("reconnecting would not help"),
+            "{sentence}"
+        );
+        // The org account's grant (full calendar) runs it.
+        let org = GoogleCall {
+            grant: talaria_api_facades::google::connections::GrantRow::Org,
+            principal: talaria_api_facades::google::agent::PrincipalKind::Org,
+            scope: Some(talaria_api_facades::google::oauth::ORG_CONNECT_SCOPES.join(" ")),
+            ..g.clone()
+        };
+        assert!(google_refusal(Some(&call("list_calendars", json!({}))), &server, &org).is_none());
+        // Protocol and listing pass to the relay.
+        for method in ["initialize", "tools/list", "ping"] {
+            let rpc = json!({ "jsonrpc": "2.0", "id": 1, "method": method });
+            assert!(
+                google_refusal(Some(&rpc), &server, &g).is_none(),
+                "{method}"
+            );
+        }
+        assert!(google_refusal(None, &server, &g).is_none());
+    }
+
+    /// A pack row relays an allowlist of methods; everything else — a
+    /// method Google adds later, resources, prompts, completion, logging, a
+    /// batch, a JSON-RPC response — is answered here, saying nothing was
+    /// sent, before the bearer is attached.
+    #[tokio::test]
+    async fn a_pack_row_relays_only_the_methods_the_pack_polices() {
+        let gmail = pack::product("gmail").unwrap();
+        for method in [
+            "initialize",
+            "ping",
+            "tools/list",
+            "tools/call",
+            "notifications/initialized",
+            "notifications/cancelled",
+        ] {
+            let rpc = json!({ "jsonrpc": "2.0", "id": 1, "method": method });
+            assert!(google_method_gate(Some(&rpc), &gmail).is_none(), "{method}");
+        }
+        assert!(google_method_gate(None, &gmail).is_none());
+        // A request: -32601 over 200, recorded under its method.
+        for method in [
+            "tasks/list",
+            "resources/list",
+            "resources/read",
+            "prompts/get",
+            "completion/complete",
+            "logging/setLevel",
+            "sampling/createMessage",
+            "Tools/list",
+            "tools/list ",
+            "tools.list",
+            "notifications",
+        ] {
+            let rpc = json!({ "jsonrpc": "2.0", "id": 9, "method": method });
+            let (resp, recorded, sentence) = google_method_gate(Some(&rpc), &gmail).expect(method);
+            assert_eq!(resp.status(), StatusCode::OK, "{method}");
+            assert_eq!(recorded.as_deref(), Some(method));
+            assert!(
+                sentence.contains("Nothing was sent to Google's Workspace MCP servers."),
+                "{sentence}"
+            );
+            let body = body_of(resp).await;
+            assert_eq!(body["id"], 9, "{method}");
+            assert_eq!(body["error"]["code"], -32601, "{method}");
+        }
+        // What cannot take a reply: 400 with a null-id -32600, and no
+        // method to record unless the message names one.
+        for (rpc, names_method) in [
+            (json!({ "jsonrpc": "2.0", "method": "tasks/list" }), true),
+            (json!({ "jsonrpc": "2.0", "id": 3, "result": {} }), false),
+            (
+                json!({ "jsonrpc": "2.0", "id": 3, "error": { "code": -1, "message": "x" } }),
+                false,
+            ),
+            (
+                json!([{ "jsonrpc": "2.0", "id": 1, "method": "resources/list" }]),
+                false,
+            ),
+            (json!([]), false),
+            (json!("tools/list"), false),
+            (json!({ "jsonrpc": "2.0", "id": 4, "method": 7 }), false),
+        ] {
+            let (resp, recorded, sentence) =
+                google_method_gate(Some(&rpc), &gmail).expect("refused");
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{rpc}");
+            assert_eq!(recorded.is_some(), names_method, "{rpc}");
+            assert!(
+                sentence.contains("Nothing was sent to Google's Workspace MCP servers."),
+                "{sentence}"
+            );
+            let body = body_of(resp).await;
+            assert_eq!(body["id"], Value::Null, "{rpc}");
+            assert_eq!(body["error"]["code"], -32600, "{rpc}");
+        }
+    }
+
+    /// A row that is not the pack's but names one of Google's Workspace MCP
+    /// servers, under any of Google's names, is relayed nothing; the pack's
+    /// own rows and every other server pass.
+    #[test]
+    fn a_row_naming_googles_workspace_servers_outside_the_pack_is_refused() {
+        let (pack_row, _) = calendar_pack();
+        assert!(!unpacked_google_row(&McpServer {
+            url: pack::endpoint(&pack::product("calendar").unwrap()),
+            ..pack_row.clone()
+        }));
+        for url in [
+            "https://gmailmcp.googleapis.com/mcp/v1",
+            "https://gmailmcp.mtls.googleapis.com/mcp/v1",
+            "https://gmailmcp.clients6.google.com/mcp/v1",
+            "https://content-people.googleapis.com/mcp/v1",
+        ] {
+            for mode in ["org", "per-user"] {
+                let row = McpServer {
+                    name: "my-gmail".into(),
+                    auth_mode: mode.into(),
+                    url: url.into(),
+                    ..pack_row.clone()
+                };
+                assert!(unpacked_google_row(&row), "{mode} {url}");
+            }
+        }
+        for url in [
+            "https://bigquery.googleapis.com/mcp",
+            "https://mcp.notion.com/mcp",
+        ] {
+            let row = McpServer {
+                name: "other".into(),
+                auth_mode: "org".into(),
+                url: url.into(),
+                ..pack_row.clone()
+            };
+            assert!(!unpacked_google_row(&row), "{url}");
+        }
+    }
+
+    /// Every HTTP error Google can answer a relayed call with, first and
+    /// after the retry: only a 401 retries; only a 401 that a fresh token
+    /// did not cure flags the grant; 401 and 403 are recorded; the rest are
+    /// only quoted; a retried success is relayed.
+    #[test]
+    fn what_each_google_error_does_to_the_grant() {
+        assert_eq!(first_google_error(401), GoogleErrorStep::Retry);
+        assert_eq!(
+            first_google_error(403),
+            GoogleErrorStep::Answer {
+                record: true,
+                flag: false
+            }
+        );
+        for other in [400, 404, 429, 500, 502, 503] {
+            assert_eq!(
+                first_google_error(other),
+                GoogleErrorStep::Answer {
+                    record: false,
+                    flag: false
+                },
+                "{other}"
+            );
+        }
+        assert_eq!(NO_FRESH_TOKEN, (true, false));
+        for ok in [200, 202, 204, 302] {
+            assert_eq!(retried_google_error(ok), None, "{ok}");
+        }
+        assert_eq!(retried_google_error(401), Some((true, true)));
+        assert_eq!(retried_google_error(403), Some((true, false)));
+        for other in [400, 404, 429, 500] {
+            assert_eq!(retried_google_error(other), Some((false, false)), "{other}");
+        }
+    }
+
+    #[test]
+    fn googles_refusal_reaches_the_agent_in_googles_words() {
+        let p = pack::product("gmail").unwrap();
+        let words = "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.";
+        let (reply, sentence) = google_refused_reply(
+            Some(&call("list_labels", json!({}))),
+            &p,
+            401,
+            Some(words),
+            true,
+        );
+        assert_eq!(reply["id"], 7);
+        assert_eq!(reply["result"]["isError"], true);
+        assert_eq!(reply["result"]["content"][0]["text"], json!(sentence));
+        assert!(
+            sentence.contains(&format!("\u{ab}{words}\u{bb}")),
+            "{sentence}"
+        );
+        assert!(sentence.contains("flagged for a reconnect"), "{sentence}");
+        // Not a call: a JSON-RPC error, no flag sentence.
+        let list = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" });
+        let (reply, sentence) = google_refused_reply(Some(&list), &p, 403, None, false);
+        assert_eq!(reply["error"]["code"], -32000);
+        assert_eq!(
+            sentence,
+            "Google's Gmail MCP server refused this (HTTP 403)."
+        );
+    }
+
     fn not_connected(scope: talaria_api_facades::mcp::not_connected::ConnectScope) -> NotConnected {
         NotConnected {
             scope,
@@ -1745,6 +2544,7 @@ mod tests {
                 app_off: None,
             },
             tools: None,
+            detail: None,
         }
     }
 

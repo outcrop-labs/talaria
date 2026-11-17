@@ -1,7 +1,9 @@
 // Google's Workspace MCP servers, as Talaria knows them: the product catalog
 // (each server's endpoint, and the two services a Google Cloud project enables
-// for it) and the one call Talaria makes to them today, "Check with Google"
-// (`check_agentic`).
+// for it), "Check with Google" (`check_agentic`), and the pack — the servers
+// as registry rows behind the MCP gateway (`pack`), what an agent may run on
+// them (`policy`), and their catalogs with Google's per-tool scopes
+// (`catalog`).
 //
 // Google's notice (Workspace developer release notes, October 12, 2026):
 // "Starting November 11, 2026, Google Workspace MCP servers will reject
@@ -23,12 +25,15 @@
 // 2026-07-28, which has no `initialize` handshake and no `Mcp-Session-Id`, so
 // a `tools/call` goes alone. A refused call comes back as a JSON-RPC
 // *result* with `isError: true`, the HTTP status carrying the auth failure —
-// the bodies under fixtures/ were captured from gmailmcp.googleapis.com on
+// the bodies under fixtures/ were captured from Google's servers on
 // 2026-11-17 with no credential and with a bogus bearer.
 //
 // Nothing here holds a credential or reads the database: the caller vends
-// the token (talaria-google-connections' `vend_grant`) and stores the answer
-// (talaria-google-client's `record_check`).
+// the token (talaria-google-agent's one door) and stores what it learns.
+
+pub mod catalog;
+pub mod pack;
+pub mod policy;
 
 use reqwest::header::ACCEPT;
 use serde_json::{Value, json};
@@ -206,6 +211,15 @@ pub fn read_check_answer(status: u16, body: &str) -> CheckAnswer {
         },
         _ => refused(page_words(body)),
     }
+}
+
+/// Google's words in a refused answer — a relayed 401 or 403, a failed
+/// listing — read the way the check reads them (`read_check_answer`): the
+/// result's text content, else a JSON-RPC or REST error's message, else an
+/// HTML page's title, else the body folded and capped. None for an empty
+/// body.
+pub fn refusal_text(status: u16, body: &str) -> Option<String> {
+    read_check_answer(status, body).text
 }
 
 /// A tool result's text content, joined and quoted.

@@ -4990,6 +4990,17 @@ alter table tasks drop column if exists conversation_id`,
   `create unique index if not exists workbench_permission_requests_one_open
      on workbench_permission_requests (agent_id, host_id, permission)
      where status in ('pending', 'awaiting_github')`,
+  // GOOGLE'S WORKSPACE MCP SERVERS' LAST WORD ON A GRANT (docs/
+  // GOOGLE-WORKSPACE.md "Google's Workspace MCP servers"). The MCP gateway
+  // relays an agent's call to Google's Workspace MCP servers with the token
+  // of its principal's own grant; when Google answers 401 or 403, Google's
+  // words land on that grant as `last_mcp_refusal` {status, text, tool, at},
+  // and the admin pack panel lists them. (A 401 that a fresh token does not
+  // cure also sets the grant's `reconnect_reason`; a 403 never does.)
+  // Nullable, so roll-safe: the previous release neither reads nor writes it.
+  `alter table google_connections add column if not exists last_mcp_refusal jsonb`,
+  `alter table google_org_connection add column if not exists last_mcp_refusal jsonb`,
+  `alter table agent_google_connections add column if not exists last_mcp_refusal jsonb`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

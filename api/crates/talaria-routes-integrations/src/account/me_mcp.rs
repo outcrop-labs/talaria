@@ -4,7 +4,15 @@
 // token>" }); headers null disconnects. Your assistant only carries a
 // per-user server once you've connected, and it acts as YOU there.
 // `needsReconnect` marks an OAuth account the provider refused to refresh
-// (found by the MCP health pass) — connected once, now gone.
+// (found by the MCP health pass) — connected once, now gone. A Google
+// Workspace MCP server (the pack, Developer Preview) is listed too, as
+// `authKind: "google"`: it takes no account of its own here — your assistant
+// uses it through your Google connection (Settings → Connections → Google),
+// `connected` says whether that connection is in place, and `needsReconnect`
+// whether it needs you first (Google refused its OAuth client last time,
+// Google's MCP servers refused a freshly refreshed token from it, or it was
+// made with an OAuth client declared not marked for AI agents). PUT refuses
+// it.
 
 use axum::Json;
 use axum::extract::State;
@@ -32,6 +40,65 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     // the row says Reconnect, not a first-time Connect.
     let reconnect = talaria_api_facades::mcp::health::reconnect_servers(&state.pg, &user.id).await;
     let mut out = Vec::new();
+    // Your Google connection, read once for every Google Workspace MCP row.
+    let google_rows: Vec<_> = servers
+        .iter()
+        .filter(|s| s.enabled && s.auth_mode == talaria_api_facades::mcp::google::AUTH_MODE)
+        .collect();
+    // Connected, and whether that connection needs the person: Google's
+    // token endpoint refused its client last time (`flagged`), Google's MCP
+    // servers refused a token freshly refreshed from it (`last_mcp_refusal`
+    // flagged), or it was made with a client declared not marked for AI
+    // agents with no acceptance from Google on record — the one door would
+    // keep it from these servers.
+    let (google_connected, google_attention) = if google_rows.is_empty() {
+        (false, false)
+    } else {
+        match talaria_api_facades::google::connections::get_connection_status(&state.pg, &user.id)
+            .await
+        {
+            Ok(status) => {
+                let unmarked = match status.client_id.as_deref() {
+                    Some(client) if status.connected => {
+                        let evidence =
+                            talaria_api_facades::google::client::client_evidence(&state.pg).await;
+                        talaria_api_facades::google::client::agentic_standing(&evidence, client)
+                            == talaria_api_facades::google::client::AgenticStanding::DeclaredNotAgentic
+                    }
+                    _ => false,
+                };
+                let mcp_flagged = status.connected
+                    && match talaria_api_facades::google::connections::grant_mcp_facts(
+                        &state.pg,
+                        &talaria_api_facades::google::connections::GrantRow::User(user.id.clone()),
+                    )
+                    .await
+                    {
+                        Ok(facts) => facts.flagged.is_some(),
+                        Err(e) => {
+                            return Ok(internal("[me/mcp] google connection read failed", e));
+                        }
+                    };
+                (
+                    status.connected,
+                    status.connected && (status.flagged.is_some() || unmarked || mcp_flagged),
+                )
+            }
+            Err(e) => return Ok(internal("[me/mcp] google connection read failed", e)),
+        }
+    };
+    for s in google_rows {
+        out.push(json!({
+            "id": s.id,
+            "name": s.name,
+            "label": s.label,
+            "description": s.description,
+            "requiredHeaders": [],
+            "authKind": "google",
+            "connected": google_connected,
+            "needsReconnect": google_attention,
+        }));
+    }
     for s in servers
         .iter()
         .filter(|s| s.enabled && s.auth_mode == "per-user")

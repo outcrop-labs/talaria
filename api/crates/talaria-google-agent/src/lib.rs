@@ -393,6 +393,30 @@ pub async fn outbound_write_refusal(
     Ok(write_refusal(&principal, connected))
 }
 
+/// Would the door have a token for this agent to take to Google's Workspace
+/// MCP servers? Its principal's grant holds a refresh token, and that grant's
+/// minting client is not declared unticked for AI agents with no acceptance
+/// from Google on record (an unrecorded client counts, as the door counts
+/// it). Reads the grant's face and the evidence only: no token, no refresh.
+/// An owner with no user names no grant (false), never the org account's.
+/// The MCP render's "needs a connection" mark for a Google Workspace MCP
+/// server.
+pub async fn hosted_mcp_ready(pg: &PgPool, agent_model: &str) -> Result<bool, sqlx::Error> {
+    let principal = load_principal(pg, agent_model).await?;
+    let Some(row) = principal_grant(&principal, agent_model) else {
+        return Ok(false);
+    };
+    let face = grant_face(pg, &row).await?;
+    if !face.connected {
+        return Ok(false);
+    }
+    let Some(client) = face.client_id.as_deref().filter(|c| !c.is_empty()) else {
+        return Ok(true);
+    };
+    let evidence = client_evidence(pg).await;
+    Ok(agentic_standing(&evidence, client) != AgenticStanding::DeclaredNotAgentic)
+}
+
 async fn load_principal(pg: &PgPool, agent_model: &str) -> Result<AgentPrincipal, sqlx::Error> {
     let row: Option<(String, Option<String>)> = sqlx::query_as(
         "select principal_kind, principal_user_id::text \
@@ -617,6 +641,8 @@ pub async fn save_agent_connection(
                  then agent_google_connections.reconnect_reason end, \
              reconnect_flagged_at = case when excluded.refresh_token_enc is null \
                  then agent_google_connections.reconnect_flagged_at end, \
+             last_mcp_refusal = case when excluded.refresh_token_enc is null \
+                 then agent_google_connections.last_mcp_refusal end, \
              access_token_enc = excluded.access_token_enc, \
              access_expires_at = excluded.access_expires_at, \
              connected_by = excluded.connected_by, \
