@@ -306,8 +306,8 @@ not an admin reads them as null.
 
 Google runs its own MCP servers for Gmail, Drive, Calendar, Docs, Sheets,
 Slides, Chat, People and Universal Search. Talaria can put them behind its MCP
-gateway, **off by default and per instance**, read-only in this release. They
-are in Google's **Developer Preview**, whose terms say: "features in Developer
+gateway, **off by default and per instance**: reads run, and every write
+waits for a person to approve it. They are in Google's **Developer Preview**, whose terms say: "features in Developer
 Preview may not be included in public applications prior to the General
 Availability announcement." (<https://developers.google.com/workspace/preview>).
 Talaria's own Google tools (the `talaria` toolkit's `read_email`,
@@ -321,8 +321,9 @@ audited as `google.mcp_enable`). It creates one registry row,
 `google-<product>` with `auth_mode = 'google'`, **assigned to no agent**, and
 asks Google for its catalog. Assign it to agents on the MCP page like any
 other server; the owner-access and team rules apply unchanged. Disabling
-(`DELETE …/{product}`, `google.mcp_disable`) removes the row and its
-assignments. The row's address, credentials and auth mode belong to the pack:
+(`DELETE …/{product}`, `google.mcp_disable`) removes the row, its
+assignments and its tool overrides; a held call still waiting fails when
+approved (its server is gone). The row's address, credentials and auth mode belong to the pack:
 the MCP page refuses to change them, and the custom-URL form refuses Google's
 Workspace MCP hosts with a sentence naming the pack. Google serves each of
 those servers under several names, and every one is refused: any host under
@@ -364,23 +365,94 @@ by the gateway with `-32601`, and a batch or a JSON-RPC response gets HTTP 400.
 None of them is sent to Google. Google receives the JSON the gateway's gate
 read, re-serialized, never the agent's raw bytes.
 
-**What runs.** A tool runs only when it is on the pinned read list
+**What runs.** Each tool has a policy: **allow** relays it, **hold** waits for
+a person, **deny** never runs. The default, per tool:
+
+| Default | Tools | What happens |
+|---|---|---|
+| **allow** | the pinned reads, e.g. Gmail `search_threads`, `get_thread`, `list_labels`; Calendar `list_events`, `suggest_time`; Drive `search_files`, `read_file_content`; Docs `read_doc` | relayed to Google |
+| **hold** | every write (Gmail `create_draft` and the label tools, Calendar `create_event`/`update_event`/`delete_event`/`respond_to_event`, Drive `create_file`/`copy_file`, Docs/Sheets/Slides updates, Chat `send_message`), and **any tool Google adds later** | queued for a person (below); Google hears nothing until they approve |
+| **deny** | trash and untrash, mark and unmark spam, `apply_sensitive_*` | refused, always |
+
+A tool is **allowed** only when it is on the pinned read list
 (`talaria-google-mcp`'s `policy::READ_LIST`: every tool Google's live catalogs
 marked `readOnlyHint: true` on 2026-11-17) **and** the server's cached catalog
 marks it `readOnlyHint: true`. Google calls tool annotations untrusted hints,
-so neither fact is enough alone. Everything else is refused before anything
-reaches Google's MCP servers, with a sentence that says so (the token is
-vended first, so its refresh may already have reached Google's token
-endpoint):
+so neither fact is enough alone. A tool Google's catalog (as last listed) does
+not have is refused, not held. A call whose arguments name a workspace secret
+(`«secret:…»`) is refused too, held or not: secrets are never sent to Google's
+Workspace MCP servers, and never sit in the approval queue. Every refusal says
+nothing was sent (the token is vended first, so its refresh may already have
+reached Google's token endpoint).
 
-| Default | Tools | In this release |
+**Per-tool overrides.** Admin → Org → Google Workspace MCP lists every tool
+with its default and a selector (`PUT
+/api/admin/google/mcp/{product}/tools/{tool}` with `{policy: "allow" | "hold"
+| "deny" | null}`, audited as `google.mcp_tool_policy` with before and after;
+stored in `mcp_tool_policies`). An admin can let a write run without a person,
+hold a read, or deny anything. **The deny list is a floor:** the route refuses
+any override on a trash, spam or sensitive-label tool but deny, and the
+gateway ignores one that got there anyway. An override names one tool on one
+server, so a tool Google adds later never inherits one: it starts held. A
+change tells the agents holding the server to list its tools again.
+
+**Holds: the `mcp_call` approval.** When an agent calls a held tool, the gateway does not relay it. It queues the
+exact call — server, tool, the arguments as sent, and what Google's catalog
+said of the tool — in the same confirm-sends queue Talaria's own Google drafts
+use (`google_pending_actions`, kind `mcp_call`), and answers the agent with an
+ordinary tool result: `Queued for approval as <id>. Not done yet: …`. The
+call's record in `mcp_tool_calls` reads `held`. A held tool is listed to the
+agent with that said ahead of Google's description, and without Google's
+`outputSchema` (its call answers with an approval id, not that shape). The
+hold runs after the pack's own refusals and the agent's tool subset, and
+before the credential spend boundary; a retried identical call converges on
+the row still waiting, so one approval never runs it twice.
+
+Who approves is the principal's, as for every Google action:
+
+| Principal | Approves | Runs as |
 |---|---|---|
-| **allow** | the pinned reads, e.g. Gmail `search_threads`, `get_thread`, `list_labels`; Calendar `list_events`, `suggest_time`; Drive `search_files`, `read_file_content`; Docs `read_doc` | relayed |
-| **hold** | every write (Gmail `create_draft` and the label tools, Calendar `create_event`/`update_event`/`delete_event`/`respond_to_event`, Drive `create_file`/`copy_file`, Docs/Sheets/Slides updates, Chat `send_message`), and any tool Google adds later | **refused**: a person approves each held call once that approval ships; until then none runs |
-| **deny** | trash and untrash, mark and unmark spam, `apply_sensitive_*` | refused, always |
+| `owner` (a personal assistant) | its owner, alone | the owner's own grant |
+| `org` | any admin | the org account's grant |
+| `agent` (its own identity) | any admin | the agent's own grant |
 
-A call whose arguments name a workspace secret (`«secret:…»`) is refused too:
-secrets are never sent to Google's Workspace MCP servers.
+The row reaches the approver everywhere a drafted email does: a **Google tool
+call** card in the conversation the agent is speaking in, the Inbox focus and
+the brief (`APPROVAL · GOOGLE TOOL`, with the server, the tool and the
+arguments as evidence), the approvals census and its nudges, and the agent's
+own `list_pending_sends` / `read_pending_send`.
+
+**Approving replays the call once**, through `decide_action`'s `mcp_call`
+arm, after re-checking: the arguments still name no secret; the registry row
+still exists, is still the pack's and is turned on; Google's catalog still
+lists the tool; and the policy (an override, else the default) is not deny now.
+Only then does it vend a token for `Purpose::HostedMcp` through the one door
+— a grant minted by a client declared unticked never reaches Google — and send
+one stateless `tools/call` to the product's endpoint as the code names it.
+
+| What Google answers | The row |
+|---|---|
+| a completed tool result | `executed`; the result is kept (capped at 32 KiB) |
+| a refusal, a JSON-RPC error, or a tool result with `isError` | `failed`, with Google's words quoted |
+| HTTP 401 | back to `pending` (nothing ran), Google's words as `lastError`; the cached token is dropped so the next approval refreshes |
+| an elicitation (`elicitation/create` or any request from the server) or a multi-round-trip request | `failed`, quoting what Google asked. Talaria answers none until one has been captured live (owner decision D6) |
+| no answer, or an answer that is not a completed tool result | `failed`, saying it may or may not have run: approving again could run a write twice |
+| no token, or a grant whose client is declared unticked | back to `pending`, with the reconnect or the door's sentence; nothing sent |
+
+A 401 or 403 is also recorded on the grant as `last_mcp_refusal`, as the
+gateway records one; an accepted replay forgets a flag.
+
+**One more call without a new card (personal assistants only).** Approving a
+held call in a conversation leaves a grant there keyed `<server>/<tool>`
+(`google-calendar/create_event`): for thirty minutes, the agent's next call of
+that same tool on that same server runs at once in the owner's name, and the
+agent reads Google's result. One use, then it is spent; another tool, or the
+same tool on another server, is held as usual. An org-account or
+agent-identity call never rides an unlock: an admin approves each one.
+
+**What a held call keeps.** The arguments sit in the queue as sent, readable
+only through the approver's routes and the agent's own queue reads, as a
+drafted email's body does today. They never enter a log or the call record.
 
 **Scopes come from Google.** Each tool's protected-resource document
 (`https://<server>/.well-known/oauth-protected-resource/<tool>`, RFC 9728)
@@ -427,8 +499,10 @@ catalogs, the per-tool protected-resource documents, the `initialize` answer
 and the 401 bodies were captured from Google without a credential on
 2026-11-17 (`api/crates/talaria-google-mcp/fixtures/`). An accepted
 `tools/call`, a 403, an authenticated `tools/list` (it may differ from the
-unauthenticated one), elicitation or MRTR on a read, and Google's refusal of an
-unmarked client are all still unobserved.
+unauthenticated one), elicitation or MRTR on a read or on an approved replay,
+and Google's refusal of an unmarked client are all still unobserved. The
+replay's accepted, elicitation and MRTR shapes are the MCP specification's,
+and its tests say so.
 
 **Testing against a stand-in.**
 `TALARIA_TEST_GOOGLE_MCP_ORIGINS=gmail=http://127.0.0.1:7811,calendar=…` sends

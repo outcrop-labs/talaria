@@ -147,9 +147,13 @@ export function entityLabel(entity: ChipEntity): string {
 }
 
 /** Tools a protected-action approval unlocks. Kept in lockstep with
- *  `tools_unlocked` in api/crates/talaria-chips. */
+ *  `tools_unlocked` in api/crates/talaria-chips. A held Google Workspace MCP
+ *  call (`mcp_call`) has no static list: its unlock chip names the one
+ *  `<server>/<tool>` its approval granted, for a personal assistant only. */
 export function toolsUnlockedBy(kind: string): string[] {
   switch (kind) {
+    case 'mcp_call':
+      return []
     case 'gmail_send':
       return ['draft_email']
     case 'calendar_create':

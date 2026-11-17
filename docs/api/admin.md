@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-36 routes.
+37 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -48,6 +48,7 @@
 | [`/api/admin/google/mcp`](#apiadmingooglemcp) | GET | `admin` |
 | [`/api/admin/google/mcp/{product}`](#apiadmingooglemcpproduct) | POST | `admin` |
 | [`/api/admin/google/mcp/{product}`](#apiadmingooglemcpproduct) | DELETE | `admin` |
+| [`/api/admin/google/mcp/{product}/tools/{tool}`](#apiadmingooglemcpproducttoolstool) | PUT | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | GET | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | PUT | `admin` |
 | [`/api/admin/instance`](#apiadmininstance) | GET | `admin` |
@@ -509,7 +510,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs`](../../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{previewTerms, previewTermsUrl, holdsEnabled, products, refusals}` | 200 | — |
+| GET | `admin` | — | `{previewTerms, previewTermsUrl, products, refusals}` | 200 | — |
 
 ## `/api/admin/google/mcp/{product}`
 
@@ -531,6 +532,20 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs`](../../
 Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
 through the `crate::body` member vocabulary — the field set lives in the route
 source.
+
+## `/api/admin/google/mcp/{product}/tools/{tool}`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs)
+
+> /api/admin/google/mcp. The Google Workspace MCP pack (Developer Preview):
+> Google's own MCP servers for Gmail, Drive, Calendar, Docs, Sheets, Slides,
+> Chat, People and Universal Search, behind the MCP gateway. Off by default
+> and per instance: no product reaches any agent until an admin enables it
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `admin` | — | `{ok, tool}` | 200, 400, 404 | audit |
 
 ## `/api/admin/guardrails`
 

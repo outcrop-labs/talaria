@@ -17,10 +17,13 @@ container.
 
 - **Google's own MCP servers (preview)** — your workspace may also give you
   servers named `google-gmail`, `google-calendar`, `google-drive` and so on.
-  They act as the same Google account as the tools above and run **read-only**
-  tools only; a tool that would change something answers that it is refused.
-  Draft mail and events with the `talaria` tools above. When one of them says
-  an account is not connected or a scope is missing, repeat that sentence to
+  They act as the same Google account as the tools above. Their read tools
+  answer at once. A tool that would change something is **held**: the call
+  answers `Queued for approval as <id>. Not done yet` — it waits for a person
+  exactly like a draft, so say it awaits approval and confirm the id with
+  `list_pending_sends`. Trash, spam and sensitive labels are refused. Draft
+  mail and events with the `talaria` tools above. When one of them says an
+  account is not connected or a scope is missing, repeat that sentence to
   your person as written.
 
 Never say something was sent or a meeting was created; say it awaits approval.

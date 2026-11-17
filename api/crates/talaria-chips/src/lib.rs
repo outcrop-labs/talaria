@@ -49,10 +49,12 @@ pub fn tools_unlocked(kind: &str) -> &'static [&'static str] {
 /// through the confirm-send plane (`decide_action`). The chip approve route
 /// asks this rather than re-listing the kinds: a kind that queues a Google
 /// write but is missing here would be marked approved and never sent.
+/// `mcp_call` is a held call to one of Google's Workspace MCP servers.
 pub fn is_google_action(kind: &str) -> bool {
     matches!(
         kind,
-        "gmail_send"
+        "mcp_call"
+            | "gmail_send"
             | "calendar_create"
             | "calendar_update"
             | "calendar_cancel"
@@ -267,6 +269,15 @@ pub fn document_chip(id: &str, title: Option<&str>, changes: Option<&Value>) -> 
     chip
 }
 
+/// The approval chip for a held Google Workspace MCP call (`mcp_call`): the
+/// one generic "Google tool call" card, whose summary names the product, the
+/// tool and the start of the arguments. The gateway lands it when it queues
+/// the call — an MCP tool's name reaches the tool-events door prefixed by the
+/// agent's MCP client, so `chips_from_tool` would never recognize it.
+pub fn mcp_call_chip(action_id: &str, summary: &str) -> Value {
+    approval_chip(action_id, "mcp_call", summary)
+}
+
 fn approval_chip(action_id: &str, kind: &str, summary: &str) -> Value {
     json!({
         "id": format!("approval:{action_id}"),
@@ -279,12 +290,18 @@ fn approval_chip(action_id: &str, kind: &str, summary: &str) -> Value {
 }
 
 pub fn unlock_chip(approval_id: &str, kind: &str) -> Value {
+    unlock_chip_for(approval_id, kind, tools_unlocked(kind))
+}
+
+/// `unlock_chip` naming the tools the approval actually unlocked — for an
+/// `mcp_call`, the `<server>/<tool>` key its grant was written under.
+pub fn unlock_chip_for<S: AsRef<str>>(approval_id: &str, kind: &str, tools: &[S]) -> Value {
     json!({
         "id": format!("unlock:{approval_id}"),
         "kind": "unlock",
         "approvalId": approval_id,
         "actionKind": kind,
-        "tools": tools_unlocked(kind),
+        "tools": tools.iter().map(AsRef::as_ref).collect::<Vec<&str>>(),
         "status": "approved",
     })
 }
@@ -1636,8 +1653,87 @@ pub fn approval_recipients(kind: &str, payload: &Value) -> Option<Vec<String>> {
                 .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>())
                 .unwrap_or_default(),
         )),
+        // A held Google Workspace MCP call names no recipients Talaria reads:
+        // its grant is keyed `<server>/<tool>` and bound to nobody (D7).
+        "mcp_call" => None,
         _ => None,
     }
+}
+
+/// The key an `mcp_call` approval's unlock is written and spent under: the
+/// server's registry name and the tool, `google-calendar/create_event`. A
+/// grant for one tool never covers another, on that server or any other.
+pub fn mcp_unlock_key(server: &str, tool: &str) -> String {
+    format!("{server}/{tool}")
+}
+
+/// Leave the bounded grant an approved `mcp_call` earns on the conversation:
+/// one more call of the same tool on the same server, within
+/// `UNLOCK_TTL_MS`, runs without a new card (owner decision D7). ONLY for a
+/// personal principal's row — an org-account or agent-identity call needs an
+/// admin every time, and never rides a conversation unlock — and only once
+/// the row really executed. Returns the key granted, or None when nothing
+/// was.
+pub async fn merge_mcp_unlock(
+    pg: &PgPool,
+    conversation_id: &str,
+    google_action_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String, Value, String, String)> = sqlx::query_as(
+        "select kind, payload, principal_kind, status from google_pending_actions \
+         where id::text = $1",
+    )
+    .bind(google_action_id)
+    .fetch_optional(pg)
+    .await?;
+    let Some(key) = row.and_then(|(kind, payload, principal, status)| {
+        mcp_unlock_for(&kind, &payload, &principal, &status)
+    }) else {
+        return Ok(None);
+    };
+    let now_ms = talaria_now_ms();
+    let mut tx = pg.begin().await?;
+    let stored: Option<Value> = sqlx::query_scalar(
+        "select unlocked_tools from conversations where id = $1::uuid for update",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    sqlx::query("update conversations set unlocked_tools = $2 where id = $1::uuid")
+        .bind(conversation_id)
+        .bind(merge_grants(
+            &stored,
+            &[unlock_grant(&key, None, now_ms)],
+            now_ms,
+        ))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Some(key))
+}
+
+/// The unlock key an approved `mcp_call` row earns, or None: another kind, a
+/// principal that is not the owner's own, a row that did not execute, or a
+/// payload naming no server or tool. Pure.
+pub fn mcp_unlock_for(
+    kind: &str,
+    payload: &Value,
+    principal: &str,
+    status: &str,
+) -> Option<String> {
+    if kind != "mcp_call" || principal != "owner" || status != "executed" {
+        return None;
+    }
+    let s = |k: &str| {
+        payload
+            .get(k)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+    };
+    Some(mcp_unlock_key(s("server")?, s("tool")?))
 }
 
 /// One grant, as stored.
@@ -2404,6 +2500,81 @@ mod tests {
         ];
         let merged = merge_chips(&existing, &incoming);
         assert_eq!(merged.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_mcp_call_is_a_google_action_and_its_unlock_is_keyed_by_server_and_tool() {
+        assert!(is_google_action("mcp_call"));
+        assert_eq!(
+            tools_unlocked("mcp_call"),
+            [] as [&str; 0],
+            "no static tool list"
+        );
+        let payload = json!({ "server": "google-calendar", "tool": "create_event" });
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "owner", "executed").as_deref(),
+            Some("google-calendar/create_event")
+        );
+        // D7: personal principals only, and only an executed row.
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "org", "executed"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "agent", "executed"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "owner", "failed"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "owner", "pending"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for("gmail_send", &payload, "owner", "executed"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for(
+                "mcp_call",
+                &json!({ "server": "google-calendar" }),
+                "owner",
+                "executed"
+            ),
+            None
+        );
+        // The grant covers ONE later call of THAT tool on THAT server, for
+        // half an hour.
+        let now = 1_000;
+        let stored = json!([unlock_grant("google-calendar/create_event", None, now)]);
+        assert!(consume_grant(&stored, "google-calendar/delete_event", &[], now + 1).is_none());
+        assert!(consume_grant(&stored, "google-gmail/create_event", &[], now + 1).is_none());
+        assert!(consume_grant(&stored, "create_event", &[], now + 1).is_none());
+        let spent = consume_grant(&stored, "google-calendar/create_event", &[], now + 1)
+            .expect("the grant covers the same tool");
+        assert!(consume_grant(&spent, "google-calendar/create_event", &[], now + 2).is_none());
+        assert!(
+            consume_grant(
+                &stored,
+                "google-calendar/create_event",
+                &[],
+                now + UNLOCK_TTL_MS
+            )
+            .is_none(),
+            "expired after thirty minutes"
+        );
+        let chip = unlock_chip_for(
+            "a-1",
+            "mcp_call",
+            &["google-calendar/create_event".to_string()],
+        );
+        assert_eq!(chip["tools"][0], "google-calendar/create_event");
+        assert_eq!(
+            mcp_call_chip("p-1", "Google Calendar · create_event {}")["actionKind"],
+            "mcp_call"
+        );
     }
 
     #[test]

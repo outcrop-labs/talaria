@@ -7,6 +7,17 @@
 //   org action (a general agent, on the shared org account)     → an ADMIN approves
 //   agent action (the agent's own Google account)               → an ADMIN approves,
 //     and the agent's token executes — never the org account's
+//
+// One kind is not a REST call: `mcp_call`, a call to one of Google's
+// Workspace MCP servers that the MCP gateway held for a person (`mcp_call`).
+// Approving it replays that exact call once, as the same principal, after
+// re-checking the registry row and the pack's policy.
+
+pub mod mcp_call;
+
+pub use mcp_call::{
+    HeldCall, MCP_CALL, McpReplay, executed_result, held_payload, held_summary, read_held,
+};
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -210,6 +221,32 @@ async fn find_same_pending_draft(
     pg: &PgPool,
     input: &QueueAction<'_>,
 ) -> Result<Option<PendingAction>, String> {
+    // A held Google Workspace MCP call is the same ask when the same agent
+    // called the same tool on the same server with the same arguments, for
+    // the same approver: a retried call converges on the waiting row, so one
+    // approval never runs it twice.
+    if input.kind == MCP_CALL {
+        let row: Option<PendingRow> = sqlx::query_as(concat!(
+            "select ",
+            pending_columns!(),
+            " from google_pending_actions \
+              where kind = 'mcp_call' and status = 'pending' \
+                and is_org = $1 and owner_user_id is not distinct from $2::uuid \
+                and agent_model = $3 \
+                and payload->'serverId' = $4->'serverId' \
+                and payload->'tool' = $4->'tool' \
+                and payload->'arguments' = $4->'arguments' \
+              order by created_at desc limit 1"
+        ))
+        .bind(input.is_org)
+        .bind(input.owner_user_id)
+        .bind(input.agent_model)
+        .bind(input.payload)
+        .fetch_optional(pg)
+        .await
+        .map_err(|e| format!("google pending action dedupe read: {e}"))?;
+        return Ok(row.map(PendingAction::from));
+    }
     if input.kind != "gmail_send" {
         return Ok(None);
     }
@@ -461,6 +498,32 @@ pub async fn decide_action(
     decision: &str,
     now_ms: i64,
 ) -> Result<Option<DecideOutcome>, String> {
+    decide_action_with(
+        pg,
+        sb,
+        action_id,
+        actor_id,
+        actor_is_admin,
+        decision,
+        now_ms,
+        &McpReplay::google(),
+    )
+    .await
+}
+
+/// `decide_action`, with where an approved `mcp_call` replays to (`replay`):
+/// Google's own endpoints in production, a stand-in in a test.
+#[allow(clippy::too_many_arguments)]
+pub async fn decide_action_with(
+    pg: &PgPool,
+    sb: &SecretBox,
+    action_id: &str,
+    actor_id: &str,
+    actor_is_admin: bool,
+    decision: &str,
+    now_ms: i64,
+    replay: &McpReplay,
+) -> Result<Option<DecideOutcome>, String> {
     #[allow(clippy::type_complexity)] // the decided row's own columns, one each
     let action: Option<(
         String,
@@ -564,6 +627,29 @@ pub async fn decide_action(
             status: "rejected".into(),
             message: None,
         }));
+    }
+
+    // A held Google Workspace MCP call replays through its own arm: it
+    // re-checks the registry row and the pack's policy, vends for Google's
+    // MCP servers, and settles in Google's words (`mcp_call`).
+    if kind == MCP_CALL {
+        let outcome = mcp_call::decide(
+            pg,
+            sb,
+            action_id,
+            actor_id,
+            &payload,
+            agent_model.as_deref(),
+            owner_user_id.clone(),
+            &principal_kind,
+            now_ms,
+            replay,
+        )
+        .await?;
+        if !outcome.released() {
+            nudge_brief(stale_ids);
+        }
+        return Ok(Some(outcome));
     }
 
     // Approve → the token of the identity that was queued, not whichever

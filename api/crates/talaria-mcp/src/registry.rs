@@ -1462,12 +1462,17 @@ pub async fn effective_mcp_for(
     }
     let tools = intersect(agent_tools, user_tools);
 
-    // A Google Workspace MCP server: the read-only subset of the allowance,
-    // spoken as the caller's own Google principal through the one door, at
-    // the product's endpoint as the code names it (see `google`).
+    // A Google Workspace MCP server: the allowance narrowed to the tools the
+    // pack runs or holds (never one it denies, never one Google's catalog
+    // does not list), spoken as the caller's own Google principal through the
+    // one door, at the product's endpoint as the code names it (see `google`).
     if let Some(product) = google_product {
-        let reads = talaria_google_mcp::policy::allowed_tools(product.id, &server.tools);
-        let tools = Some(intersect(tools, Some(reads)).unwrap_or_default());
+        let overrides = crate::google::tool_overrides(pg, &server.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let listed =
+            talaria_google_mcp::policy::listed_tools(product.id, &server.tools, &overrides);
+        let tools = Some(intersect(tools, Some(listed)).unwrap_or_default());
         let now = talaria_agent_auth::now_ms();
         return Ok(match crate::google::speak_as(pg, sb, subject, now).await {
             crate::google::Speak::Refuse => McpAccess::Denied,
@@ -1505,6 +1510,7 @@ pub async fn effective_mcp_for(
                         principal,
                         scope: facts.scope,
                         flagged: facts.flagged.is_some(),
+                        overrides,
                     }),
                 })
             }

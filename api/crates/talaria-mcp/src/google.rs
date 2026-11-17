@@ -11,10 +11,14 @@
 //               the org account is never used instead. A grant whose minting
 //               client is declared not marked for AI agents never reaches
 //               Google: the door's own sentence answers.
-//   WHAT RUNS   the read-only subset only (`policy::allowed_tools`: the
-//               pinned read list AND the cached `readOnlyHint`). Every other
-//               tool is held or denied, and until holds ship every one of
-//               them is refused at the gateway.
+//   WHAT RUNS   the pack's policy per tool (`policy::gateway_policy`): the
+//               pinned read list AND the cached `readOnlyHint` run; the
+//               owner's deny list never runs; every other tool — a write, a
+//               tool Google adds later — is HELD: the gateway queues the
+//               exact call for a person (the `mcp_call` approval) and Google
+//               hears nothing until they approve. An admin's per-tool
+//               override (`mcp_tool_policies`, `tool_overrides`) wins over
+//               the default, except that no override lifts the deny list.
 //   WHERE       the product's endpoint as the code names it
 //               (`pack::endpoint`), never the row's stored URL.
 //
@@ -31,6 +35,7 @@ use talaria_google_agent::{
 use talaria_google_connections::{GrantRow, McpGrantFacts, TokenError, grant_mcp_facts};
 use talaria_google_errors::token_failure_sentence;
 use talaria_google_mcp::catalog::{CatalogError, fetch_catalog};
+use talaria_google_mcp::policy::Policy;
 use talaria_google_mcp::{Product, pack, policy};
 use talaria_secretbox::SecretBox;
 
@@ -70,6 +75,27 @@ pub struct GoogleCall {
     /// The grant carries a flag from a 401 a fresh token did not cure
     /// (`last_mcp_refusal.flagged`): an accepted call forgets it.
     pub flagged: bool,
+    /// The admin's per-tool overrides on this server (`tool_overrides`).
+    pub overrides: Vec<(String, Policy)>,
+}
+
+/// An admin's per-tool overrides on a pack server (`mcp_tool_policies`). A
+/// stored policy this build does not know is skipped, never guessed: the tool
+/// keeps the pack's default.
+pub async fn tool_overrides(
+    pg: &PgPool,
+    server_id: &str,
+) -> Result<Vec<(String, Policy)>, sqlx::Error> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select tool, policy from mcp_tool_policies where server_id = $1::uuid order by tool",
+    )
+    .bind(server_id)
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(tool, policy)| Policy::parse(&policy).map(|p| (tool, p)))
+        .collect())
 }
 
 /// The connect scope for a principal kind.
@@ -215,12 +241,14 @@ pub async fn google_catalog(
     fetch_catalog(product, None).await.map(|t| (t, false))
 }
 
-/// The probe sentence for a fresh catalog.
+/// The probe sentence for a fresh catalog: the tools, how many run without
+/// a person and how many are held for one, by the pack's defaults.
 pub fn catalog_detail(product: &Product, tools: &[Value], authenticated: bool) -> String {
     let catalog = Value::Array(tools.to_vec());
     let reads = policy::allowed_tools(product.id, &catalog).len();
+    let held = policy::held_tools(product.id, &catalog, &[]).len();
     format!(
-        "{} tool(s), {reads} read-only allowed{}",
+        "{} tool(s), {reads} read-only allowed, {held} held for a person{}",
         tools.len(),
         if authenticated {
             ""

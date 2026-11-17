@@ -2,8 +2,8 @@
 // (each server's endpoint, and the two services a Google Cloud project enables
 // for it), "Check with Google" (`check_agentic`), and the pack — the servers
 // as registry rows behind the MCP gateway (`pack`), what an agent may run on
-// them (`policy`), and their catalogs with Google's per-tool scopes
-// (`catalog`).
+// them (`policy`), their catalogs with Google's per-tool scopes (`catalog`),
+// and the approved replay of a call a person was asked about (`replay`).
 //
 // Google's notice (Workspace developer release notes, October 12, 2026):
 // "Starting November 11, 2026, Google Workspace MCP servers will reject
@@ -34,6 +34,7 @@
 pub mod catalog;
 pub mod pack;
 pub mod policy;
+pub mod replay;
 
 use reqwest::header::ACCEPT;
 use serde_json::{Value, json};

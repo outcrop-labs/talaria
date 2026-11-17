@@ -40,10 +40,13 @@
 //     relays only initialize, ping, tools/list, tools/call and notifications
 //     (anything else is answered here, a batch and a JSON-RPC response
 //     included), sends Google exactly the message the gate read, relays
-//     only the read-only subset (pinned read list AND Google's
-//     `readOnlyHint`), refuses every other tool with the sentence that says
-//     why (held: no person can approve one yet; denied: trash, spam,
-//     sensitive labels), refuses a call naming a workspace secret, says
+//     only the tools the pack ALLOWS (pinned read list AND Google's
+//     `readOnlyHint`, or an admin's override), HOLDS every other listed
+//     tool for a person — the exact call queued as an `mcp_call` approval,
+//     the agent answered with its id, Google told nothing until a person
+//     approves (mcp_gw_google_hold) — refuses a DENIED tool (trash, spam,
+//     sensitive labels, an admin's deny) and a tool Google's catalog does
+//     not list, refuses a call naming a workspace secret, says
 //     which scope a tool needs before asking Google when the grant has none
 //     Google accepts for it, and turns Google's 401/403 into Google's own
 //     words for the agent — recorded on the grant (`last_mcp_refusal`), a 401
@@ -214,12 +217,14 @@ fn google_method_gate(
     Some((resp, method.map(str::to_string), sentence))
 }
 
-/// Why the pack will not relay this `tools/call` to Google, or None: the
-/// tool's policy (held or denied — a hold is refused until holds ship), a
-/// workspace secret handle in its arguments, or a grant holding none of the
-/// scopes Google accepts for the tool. `(code, outcome, sentence)`; every
-/// sentence says nothing was sent. Pure: reads the cached catalog and the
-/// grant's stored scope only.
+/// Why the pack will not relay or hold this `tools/call`, or None: a tool
+/// Google's catalog (as last listed) does not have, a DENIED tool (the
+/// owner's deny list, or an admin's deny), a workspace secret handle in its
+/// arguments, or a grant holding none of the scopes Google accepts for the
+/// tool. `(code, outcome, sentence)`; every sentence says nothing was sent.
+/// None leaves an ALLOWED tool to the relay and a HELD one to the hold
+/// branch, after the agent's own subset gate. Pure: reads the cached
+/// catalog, the admin's overrides and the grant's stored scope only.
 fn google_refusal(
     rpc: Option<&Value>,
     server: &McpServer,
@@ -231,13 +236,14 @@ fn google_refusal(
     }
     let tool = called_tool(Some(rpc));
     let p = &g.product;
-    if policy::gateway_policy(p.id, &tool, &server.tools) != policy::Policy::Allow {
-        let held = policy::default_policy(p.id, &tool, policy::catalog_entry(&server.tools, &tool))
-            == policy::Policy::Hold;
+    let Some(entry) = policy::catalog_entry(&server.tools, &tool) else {
+        return Some((-32602, Outcome::Denied, pack::absent_sentence(p, &tool)));
+    };
+    if policy::gateway_policy(p.id, &tool, &server.tools, &g.overrides) == policy::Policy::Deny {
         return Some((
             -32602,
             Outcome::Denied,
-            pack::refusal_sentence(p, &tool, held),
+            pack::denied_sentence(p, &tool, !policy::denied_by_name(&tool)),
         ));
     }
     if rpc
@@ -250,7 +256,7 @@ fn google_refusal(
             pack::SECRET_HANDLE_REFUSAL.to_string(),
         ));
     }
-    let entry = policy::catalog_entry(&server.tools, &tool);
+    let entry = Some(entry);
     let missing = catalog::missing_scope(g.scope.as_deref(), &tool, entry)?;
     let (requestable, fix): (&[&str], &str) = match g.principal {
         talaria_api_facades::google::agent::PrincipalKind::Owner => (
@@ -1180,6 +1186,20 @@ pub async fn post(
         return Ok(resp);
     }
 
+    // A Google Workspace MCP server's HOLD: a tool the pack holds for a
+    // person is queued as an `mcp_call` approval and answered with its id —
+    // after the pack's gate and the agent's own gates above, before anything
+    // is spent or relayed (mcp_gw_google_hold).
+    if let Some(g) = eff.google.as_ref()
+        && let Some(r) = rpc.as_ref()
+        && let Some(tool) = super::mcp_gw_google_hold::held_tool(Some(r), &eff.server, g)
+    {
+        let held =
+            super::mcp_gw_google_hold::hold(&state, &sb, &subject, &eff.server, g, r, &tool).await;
+        note(&call, held.outcome, held.status, held.sentence.as_deref());
+        return Ok(held.response);
+    }
+
     // THE BOUNDARY THAT SPENDS A CREDENTIAL. An agent holds
     // `«secret:deploy.github_pat»` and passes it wherever the value would go;
     // this is where the value actually appears, on its way OUT. It has to be
@@ -1482,10 +1502,18 @@ pub async fn post(
         upstream.status().is_success(),
     )
     .await;
+    // A held tool is listed with the hold said up front and without Google's
+    // `outputSchema`: its call answers with an approval id, not that shape.
+    let held: Vec<String> = eff
+        .google
+        .as_ref()
+        .map(|g| policy::held_tools(g.product.id, &eff.server.tools, &g.overrides))
+        .unwrap_or_default();
     Ok(relay(
         upstream,
         rpc.as_ref(),
         eff.tools.as_deref(),
+        &held,
         &server_name,
         call,
         relist,
@@ -1944,6 +1972,7 @@ async fn relay(
     upstream: reqwest::Response,
     rpc: Option<&Value>,
     tools: Option<&[String]>,
+    held: &[String],
     server_name: &str,
     call: Option<CallLog>,
     relist: bool,
@@ -2004,7 +2033,7 @@ async fn relay(
     if is_list && relist {
         let text = upstream.text().await.unwrap_or_default();
         let text = match tools {
-            Some(allowed) => filter_bodies(&text, allowed, &content_type),
+            Some(allowed) => filter_bodies(&text, allowed, held, &content_type),
             None => text,
         };
         if let Some(out) = with_list_changed_first(&text, &content_type) {
@@ -2029,7 +2058,7 @@ async fn relay(
     // bodies. Everything else streams back verbatim.
     if is_list && let Some(allowed) = tools {
         let text = upstream.text().await.unwrap_or_default();
-        let out = filter_bodies(&text, allowed, &content_type);
+        let out = filter_bodies(&text, allowed, held, &content_type);
         return builder
             .body(Body::from(out))
             .unwrap_or_else(|e| internal("[fleet] response build failed", e));
@@ -2069,9 +2098,11 @@ fn with_list_changed_first(text: &str, content_type: &str) -> Option<String> {
 /// one `data: ${JSON.stringify(...)}` line in place of the originals, the
 /// event's other lines kept; an event whose data does not parse passes
 /// through untouched. A non-SSE body is parsed whole — or passed verbatim
-/// when it isn't parseable either.
-fn filter_bodies(text: &str, allowed: &[String], content_type: &str) -> String {
-    fn filter_msg(msg: &mut Value, allowed: &[String]) {
+/// when it isn't parseable either. A tool named in `held` (a Google
+/// Workspace MCP tool the pack holds for a person) keeps its place with
+/// the hold said ahead of its description and no `outputSchema`.
+fn filter_bodies(text: &str, allowed: &[String], held: &[String], content_type: &str) -> String {
+    let filter_msg = |msg: &mut Value| {
         if let Some(tools) = msg
             .pointer_mut("/result/tools")
             .and_then(Value::as_array_mut)
@@ -2081,18 +2112,40 @@ fn filter_bodies(text: &str, allowed: &[String], content_type: &str) -> String {
                     .and_then(Value::as_str)
                     .is_some_and(|n| allowed.iter().any(|a| a == n))
             });
+            for t in tools.iter_mut() {
+                let is_held = t
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|n| held.iter().any(|h| h == n));
+                if is_held && let Some(obj) = t.as_object_mut() {
+                    obj.remove("outputSchema");
+                    let theirs = obj
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    obj.insert(
+                        "description".into(),
+                        Value::String(
+                            format!("{} {theirs}", pack::HELD_TOOL_NOTE)
+                                .trim()
+                                .to_string(),
+                        ),
+                    );
+                }
+            }
         }
-    }
+    };
     if content_type.contains("text/event-stream") {
         return text
             .split("\n\n")
-            .map(|event| filter_sse_event(event, allowed, filter_msg))
+            .map(|event| filter_sse_event(event, &filter_msg))
             .collect::<Vec<_>>()
             .join("\n\n");
     }
     match parse_mcp_response(text) {
         Some(mut msg) => {
-            filter_msg(&mut msg, allowed);
+            filter_msg(&mut msg);
             serde_json::to_string(&msg).unwrap_or_else(|_| text.to_string())
         }
         None => text.to_string(),
@@ -2101,11 +2154,7 @@ fn filter_bodies(text: &str, allowed: &[String], content_type: &str) -> String {
 
 /// One SSE event's lines with its `data:` lines joined, parsed and filtered;
 /// the event verbatim when they do not parse as one JSON message.
-fn filter_sse_event(
-    event: &str,
-    allowed: &[String],
-    filter_msg: fn(&mut Value, &[String]),
-) -> String {
+fn filter_sse_event(event: &str, filter_msg: &dyn Fn(&mut Value)) -> String {
     let lines: Vec<&str> = event.split('\n').collect();
     let data: Vec<&str> = lines
         .iter()
@@ -2118,7 +2167,7 @@ fn filter_sse_event(
     let Ok(mut msg) = serde_json::from_str::<Value>(data.join("\n").trim()) else {
         return event.to_string();
     };
-    filter_msg(&mut msg, allowed);
+    filter_msg(&mut msg);
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut written = false;
     for line in lines {
@@ -2246,6 +2295,7 @@ mod tests {
             // The personal connect's grant (WORKSPACE_SCOPES).
             scope: Some(talaria_api_facades::google::oauth::WORKSPACE_SCOPES.join(" ")),
             flagged: false,
+            overrides: Vec::new(),
         };
         (server, g)
     }
@@ -2255,17 +2305,18 @@ mod tests {
     }
 
     /// The pack's gate on Google's live Calendar catalog: reads run, every
-    /// write is refused with the sentence (held until holds ship), a secret
-    /// handle is refused, a missing scope is named before Google is asked,
-    /// and every other method passes to the relay.
+    /// write passes the gate to the HOLD branch (never to the relay), a tool
+    /// the catalog does not list is refused, a secret handle is refused even
+    /// in a held call, a missing scope is named before Google is asked, and
+    /// every other method passes to the relay.
     #[test]
-    fn the_google_gate_runs_reads_and_refuses_everything_else_before_google_hears() {
+    fn the_google_gate_runs_reads_holds_writes_and_refuses_the_rest() {
+        use super::super::mcp_gw_google_hold::held_tool;
         let (server, g) = calendar_pack();
         for read in ["list_events", "get_event", "search_events", "suggest_time"] {
-            assert!(
-                google_refusal(Some(&call(read, json!({}))), &server, &g).is_none(),
-                "{read}"
-            );
+            let rpc = call(read, json!({}));
+            assert!(google_refusal(Some(&rpc), &server, &g).is_none(), "{read}");
+            assert_eq!(held_tool(Some(&rpc), &server, &g), None, "{read} runs");
         }
         for write in [
             "create_event",
@@ -2273,22 +2324,60 @@ mod tests {
             "delete_event",
             "respond_to_event",
         ] {
-            let (code, outcome, sentence) =
-                google_refusal(Some(&call(write, json!({}))), &server, &g).expect(write);
-            assert_eq!((code, outcome), (-32602, Outcome::Denied), "{write}");
-            assert!(
-                sentence.contains("not one of the read-only tools"),
-                "{sentence}"
-            );
-            assert!(
-                sentence.contains("Nothing was sent to Google's Workspace MCP servers."),
-                "{sentence}"
+            let rpc = call(write, json!({ "summary": "x" }));
+            assert!(google_refusal(Some(&rpc), &server, &g).is_none(), "{write}");
+            assert_eq!(
+                held_tool(Some(&rpc), &server, &g).as_deref(),
+                Some(write),
+                "{write} is held, never relayed"
             );
         }
-        // A tool Google adds tomorrow is refused, read-only mark or not.
-        let (_, outcome, _) =
+        // A tool Google's catalog does not list is refused, never held.
+        let (code, outcome, sentence) =
             google_refusal(Some(&call("brand_new_tool", json!({}))), &server, &g).unwrap();
+        assert_eq!((code, outcome), (-32602, Outcome::Denied));
+        assert!(sentence.contains("did not list"), "{sentence}");
+        assert!(
+            sentence.contains("Nothing was sent to Google's Workspace MCP servers."),
+            "{sentence}"
+        );
+        // A secret handle in a held call is refused, never queued.
+        let (_, outcome, sentence) = google_refusal(
+            Some(&call(
+                "create_event",
+                json!({ "description": "«secret:deploy.token»" }),
+            )),
+            &server,
+            &g,
+        )
+        .unwrap();
         assert_eq!(outcome, Outcome::Denied);
+        assert_eq!(sentence, pack::SECRET_HANDLE_REFUSAL);
+        // An admin's DENY refuses with its own sentence; an admin's ALLOW
+        // takes a write out of the hold and to the relay.
+        let ruled = GoogleCall {
+            overrides: vec![
+                ("delete_event".into(), policy::Policy::Deny),
+                ("create_event".into(), policy::Policy::Allow),
+                ("list_events".into(), policy::Policy::Hold),
+            ],
+            ..g.clone()
+        };
+        let (_, outcome, sentence) =
+            google_refusal(Some(&call("delete_event", json!({}))), &server, &ruled).unwrap();
+        assert_eq!(outcome, Outcome::Denied);
+        assert!(
+            sentence.contains("turned off for agents here by an admin"),
+            "{sentence}"
+        );
+        let create = call("create_event", json!({}));
+        assert!(google_refusal(Some(&create), &server, &ruled).is_none());
+        assert_eq!(held_tool(Some(&create), &server, &ruled), None);
+        let list = call("list_events", json!({}));
+        assert_eq!(
+            held_tool(Some(&list), &server, &ruled).as_deref(),
+            Some("list_events")
+        );
         // A secret handle never goes to Google, even in a read.
         let (code, outcome, sentence) = google_refusal(
             Some(&call(
@@ -2333,6 +2422,53 @@ mod tests {
             );
         }
         assert!(google_refusal(None, &server, &g).is_none());
+    }
+
+    /// The agent's listing of Google's live Calendar catalog: the reads as
+    /// Google wrote them, every held write with the hold said first and no
+    /// `outputSchema` (its call answers with an approval id), and a denied
+    /// tool gone — JSON and SSE-framed alike.
+    #[test]
+    fn a_held_tool_is_listed_with_the_hold_said_and_no_output_schema() {
+        let (server, g) = calendar_pack();
+        let ruled = GoogleCall {
+            overrides: vec![("delete_event".into(), policy::Policy::Deny)],
+            ..g
+        };
+        let listed = policy::listed_tools("calendar", &server.tools, &ruled.overrides);
+        let held = policy::held_tools("calendar", &server.tools, &ruled.overrides);
+        assert!(!listed.contains(&"delete_event".to_string()));
+        let google =
+            include_str!("../../../talaria-google-mcp/fixtures/tools-list/calendarmcp.json");
+        for (body, ctype) in [
+            (google.to_string(), "application/json"),
+            (
+                format!("event: message\ndata: {}\n\n", google.trim()),
+                "text/event-stream",
+            ),
+        ] {
+            let out = filter_bodies(&body, &listed, &held, ctype);
+            let msg = parse_mcp_response(&out).expect("a JSON-RPC answer");
+            let tools = msg["result"]["tools"].as_array().unwrap();
+            let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+            assert!(!names.contains(&"delete_event"), "{ctype}");
+            for t in tools {
+                let name = t["name"].as_str().unwrap();
+                let description = t["description"].as_str().unwrap_or("");
+                if held.iter().any(|h| h == name) {
+                    assert!(description.starts_with(pack::HELD_TOOL_NOTE), "{name}");
+                    assert!(t.get("outputSchema").is_none(), "{name}");
+                    assert!(t.get("inputSchema").is_some(), "{name}");
+                } else {
+                    assert!(!description.contains("Talaria holds"), "{name}");
+                    assert!(
+                        t.get("outputSchema").is_some(),
+                        "{name}: a read keeps Google's"
+                    );
+                }
+            }
+            assert!(names.contains(&"create_event") && names.contains(&"list_events"));
+        }
     }
 
     /// A pack row relays an allowlist of methods; everything else — a
@@ -3038,7 +3174,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let body = format!("event: message\nid: 7\n{framed}\n\n");
-        let out = filter_bodies(&body, &allowed, "text/event-stream");
+        let out = filter_bodies(&body, &allowed, &[], "text/event-stream");
         assert!(out.starts_with("event: message\nid: 7\ndata: "), "{out}");
         assert!(!out.contains("delete_everything"), "{out}");
         assert!(out.contains("\"search\""), "{out}");
@@ -3053,11 +3189,11 @@ mod tests {
         );
         // A single-line frame and an unparseable event behave as before.
         let single = format!("data: {reply}\n\ndata: not json\n\n");
-        let out = filter_bodies(&single, &allowed, "text/event-stream");
+        let out = filter_bodies(&single, &allowed, &[], "text/event-stream");
         assert!(!out.contains("delete_everything"));
         assert!(out.contains("data: not json"));
         // A plain JSON body is filtered whole.
-        let out = filter_bodies(&reply.to_string(), &allowed, "application/json");
+        let out = filter_bodies(&reply.to_string(), &allowed, &[], "application/json");
         assert!(!out.contains("delete_everything"));
     }
 

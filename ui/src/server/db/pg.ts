@@ -5001,6 +5001,21 @@ alter table tasks drop column if exists conversation_id`,
   `alter table google_connections add column if not exists last_mcp_refusal jsonb`,
   `alter table google_org_connection add column if not exists last_mcp_refusal jsonb`,
   `alter table agent_google_connections add column if not exists last_mcp_refusal jsonb`,
+  // AN ADMIN'S WORD ON ONE GOOGLE WORKSPACE MCP TOOL (docs/GOOGLE-WORKSPACE.md
+  // "Holds"). The pack's default per tool is allow (a pinned read Google marks
+  // read-only), deny (the owner's trash/spam/sensitive-label list) or hold (every
+  // other tool: a person approves each call). A row here overrides that default
+  // for one tool on one pack server, by name — so a tool Google adds later never
+  // inherits a row — and the deny list is a floor no row lifts (the admin route
+  // refuses to write one; the gateway ignores one). The row goes with its server.
+  `create table if not exists mcp_tool_policies (
+     server_id uuid not null references mcp_servers(id) on delete cascade,
+     tool text not null,
+     policy text not null check (policy in ('allow', 'hold', 'deny')),
+     set_by uuid references users(id) on delete set null,
+     updated_at timestamptz not null default now(),
+     primary key (server_id, tool)
+   )`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

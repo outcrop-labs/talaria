@@ -1,12 +1,11 @@
 // What the pack lets an agent run on Google's Workspace MCP servers, per tool.
 //
-// Three answers. ALLOW relays the call. HOLD is a change a person approves
-// first. DENY is never run for an agent. Before holds are built (the
-// `mcp_call` approval, a later change), a HOLD is refused like a DENY:
-// no Google write runs without a person, and in this release no person can
-// approve one, so none runs.
+// Three answers. ALLOW relays the call. HOLD queues it for a person, who
+// approves or rejects that exact call (the `mcp_call` approval in
+// talaria-google-pending); nothing reaches Google's MCP servers until they
+// approve. DENY is never run for an agent.
 //
-// ALLOW needs BOTH of two facts, and neither is enough alone:
+// THE DEFAULT. ALLOW needs BOTH of two facts, and neither is enough alone:
 //   · the tool is on the pinned read list below, which names the tools
 //     Google's live catalogs marked read-only on 2026-11-17 (fixtures/
 //     tools-list/); and
@@ -20,6 +19,13 @@
 // DENY is the owner's list (decision D4, 2026-11-16): moving mail to or out
 // of the trash, marking or unmarking spam, and applying a sensitive label.
 // Talaria's own REST tools refuse TRASH and SPAM too.
+//
+// AN ADMIN'S OVERRIDE (`mcp_tool_policies`, one row per server and tool)
+// wins over the default — with one floor: a tool on the deny list stays
+// denied whatever the row says (`override_refusal` refuses to write one, and
+// `policy_for` ignores one that got there anyway). An override names one
+// tool by name on one server, so a tool Google adds later never inherits
+// one: it starts at the default, held.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -30,16 +36,41 @@ use serde_json::Value;
 pub enum Policy {
     /// Relayed to Google.
     Allow,
-    /// A change a person approves first. Refused until holds ship
-    /// (`HOLDS_ENABLED`).
+    /// Queued for a person, who approves that exact call before it runs.
     Hold,
     /// Never run for an agent.
     Deny,
 }
 
-/// Whether a held call can be queued for a person. It cannot yet: until the
-/// `mcp_call` approval ships, the gateway refuses every held call.
-pub const HOLDS_ENABLED: bool = false;
+impl Policy {
+    /// The stored and wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Policy::Allow => "allow",
+            Policy::Hold => "hold",
+            Policy::Deny => "deny",
+        }
+    }
+
+    /// `allow` | `hold` | `deny`, exactly; anything else is None.
+    pub fn parse(raw: &str) -> Option<Policy> {
+        match raw {
+            "allow" => Some(Policy::Allow),
+            "hold" => Some(Policy::Hold),
+            "deny" => Some(Policy::Deny),
+            _ => None,
+        }
+    }
+}
+
+/// An admin's per-tool overrides for one server: (tool, policy) pairs, as
+/// `mcp_tool_policies` stores them.
+pub type Overrides = [(String, Policy)];
+
+/// The override an admin set for `tool`, if any.
+pub fn override_of(overrides: &Overrides, tool: &str) -> Option<Policy> {
+    overrides.iter().find(|(t, _)| t == tool).map(|(_, p)| *p)
+}
 
 /// The tools each product may run without a person: every tool Google's
 /// unauthenticated `tools/list` marked `readOnlyHint: true` on 2026-11-17
@@ -151,27 +182,81 @@ pub fn catalog_entry<'a>(catalog: &'a Value, tool: &str) -> Option<&'a Value> {
         .find(|t| t.get("name").and_then(Value::as_str) == Some(tool))
 }
 
-/// What the gateway does with a call to `tool`: the default, with a hold
-/// refused while holds are not built.
-pub fn gateway_policy(product: &str, tool: &str, catalog: &Value) -> Policy {
-    match default_policy(product, tool, catalog_entry(catalog, tool)) {
-        Policy::Hold if !HOLDS_ENABLED => Policy::Deny,
-        p => p,
+/// The pack's policy for `tool`: an admin's override when there is one,
+/// else the default — and DENY for any tool on the owner's deny list, whatever
+/// the override says (the floor no row lifts).
+pub fn policy_for(
+    product: &str,
+    tool: &str,
+    entry: Option<&Value>,
+    override_: Option<Policy>,
+) -> Policy {
+    if denied_by_name(tool) {
+        return Policy::Deny;
     }
+    override_.unwrap_or_else(|| default_policy(product, tool, entry))
 }
 
-/// The tools of a cached catalog an agent may call: those whose default is
-/// ALLOW. The read-only subset the gateway lists and relays.
-pub fn allowed_tools(product: &str, catalog: &Value) -> Vec<String> {
+/// Why an admin may not set `policy` on `tool`, or None when they may: a
+/// tool on the owner's deny list takes no override but DENY.
+pub fn override_refusal(tool: &str, policy: Policy) -> Option<&'static str> {
+    (denied_by_name(tool) && policy != Policy::Deny).then_some(
+        "This tool is on the owner's deny list (trash, untrash, spam, unspam and sensitive labels): it is never run for an agent, and no override changes that.",
+    )
+}
+
+/// What the gateway does with a call to `tool` on a server whose cached
+/// catalog is `catalog`, under the admin's `overrides`.
+pub fn gateway_policy(product: &str, tool: &str, catalog: &Value, overrides: &Overrides) -> Policy {
+    policy_for(
+        product,
+        tool,
+        catalog_entry(catalog, tool),
+        override_of(overrides, tool),
+    )
+}
+
+/// The cached catalog's tools with `want` as their policy, in catalog order.
+fn tools_with(
+    product: &str,
+    catalog: &Value,
+    overrides: &Overrides,
+    want: impl Fn(Policy) -> bool,
+) -> Vec<String> {
     catalog
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|t| {
             let name = t.get("name").and_then(Value::as_str)?;
-            (default_policy(product, name, Some(t)) == Policy::Allow).then(|| name.to_string())
+            want(policy_for(
+                product,
+                name,
+                Some(t),
+                override_of(overrides, name),
+            ))
+            .then(|| name.to_string())
         })
         .collect()
+}
+
+/// The tools of a cached catalog an agent may call without a person: those
+/// whose DEFAULT is ALLOW (no override read). The pinned reads Google marks
+/// read-only.
+pub fn allowed_tools(product: &str, catalog: &Value) -> Vec<String> {
+    tools_with(product, catalog, &[], |p| p == Policy::Allow)
+}
+
+/// The tools an agent is shown and may call: every cached tool that is not
+/// denied — the allowed ones run, the held ones queue for a person. A tool
+/// the catalog does not list is in neither.
+pub fn listed_tools(product: &str, catalog: &Value, overrides: &Overrides) -> Vec<String> {
+    tools_with(product, catalog, overrides, |p| p != Policy::Deny)
+}
+
+/// The listed tools whose calls are held for a person.
+pub fn held_tools(product: &str, catalog: &Value, overrides: &Overrides) -> Vec<String> {
+    tools_with(product, catalog, overrides, |p| p == Policy::Hold)
 }
 
 #[cfg(test)]
@@ -321,11 +406,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn before_holds_ship_the_gateway_refuses_every_held_call() {
-        const { assert!(!HOLDS_ENABLED) };
+    fn a_held_call_is_held_and_a_denied_one_stays_denied() {
         let catalog = live_catalog("calendar");
         assert_eq!(
-            gateway_policy("calendar", "list_events", &catalog),
+            gateway_policy("calendar", "list_events", &catalog, &[]),
             Policy::Allow
         );
         for write in [
@@ -335,18 +419,158 @@ pub(crate) mod tests {
             "respond_to_event",
         ] {
             assert_eq!(
-                gateway_policy("calendar", write, &catalog),
-                Policy::Deny,
+                gateway_policy("calendar", write, &catalog, &[]),
+                Policy::Hold,
                 "{write}"
             );
         }
+        // A pinned read the catalog does not list (an empty catalog) is not
+        // allowed; the gateway refuses a tool absent from the catalog before
+        // it asks the policy.
         assert_eq!(
-            gateway_policy("calendar", "not_listed", &catalog),
+            gateway_policy("calendar", "list_events", &json!([]), &[]),
+            Policy::Hold
+        );
+        let gmail = live_catalog("gmail");
+        for denied in [
+            "trash_thread",
+            "mark_message_spam",
+            "apply_sensitive_thread_label",
+        ] {
+            assert_eq!(gateway_policy("gmail", denied, &gmail, &[]), Policy::Deny);
+        }
+    }
+
+    /// Every tool of every live catalog lands where the owner's decisions
+    /// put it: reads allowed, the deny list denied, every other tool held —
+    /// every case, not a sample.
+    #[test]
+    fn every_live_tool_is_allowed_held_or_denied_as_decided() {
+        for p in PRODUCTS {
+            let catalog = live_catalog(p.id);
+            let listed = listed_tools(p.id, &catalog, &[]);
+            let held = held_tools(p.id, &catalog, &[]);
+            for name in names(&catalog) {
+                let policy = gateway_policy(p.id, &name, &catalog, &[]);
+                let expect = if denied_by_name(&name) {
+                    Policy::Deny
+                } else if pinned_read(p.id, &name)
+                    && marked_read_only(catalog_entry(&catalog, &name))
+                {
+                    Policy::Allow
+                } else {
+                    Policy::Hold
+                };
+                assert_eq!(policy, expect, "{}/{name}", p.id);
+                assert_eq!(
+                    listed.contains(&name),
+                    policy != Policy::Deny,
+                    "{}/{name}",
+                    p.id
+                );
+                assert_eq!(
+                    held.contains(&name),
+                    policy == Policy::Hold,
+                    "{}/{name}",
+                    p.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_override_wins_except_over_the_deny_list() {
+        let gmail = live_catalog("gmail");
+        let overrides = vec![
+            ("create_draft".to_string(), Policy::Allow),
+            ("search_threads".to_string(), Policy::Hold),
+            ("list_labels".to_string(), Policy::Deny),
+            // A row that should never have been written: the floor holds.
+            ("trash_thread".to_string(), Policy::Allow),
+            ("untrash_message".to_string(), Policy::Hold),
+        ];
+        assert_eq!(
+            gateway_policy("gmail", "create_draft", &gmail, &overrides),
+            Policy::Allow
+        );
+        assert_eq!(
+            gateway_policy("gmail", "search_threads", &gmail, &overrides),
+            Policy::Hold
+        );
+        assert_eq!(
+            gateway_policy("gmail", "list_labels", &gmail, &overrides),
             Policy::Deny
         );
         assert_eq!(
-            gateway_policy("calendar", "list_events", &json!([])),
+            gateway_policy("gmail", "trash_thread", &gmail, &overrides),
             Policy::Deny
         );
+        assert_eq!(
+            gateway_policy("gmail", "untrash_message", &gmail, &overrides),
+            Policy::Deny
+        );
+        // A tool with no row keeps its default.
+        assert_eq!(
+            gateway_policy("gmail", "label_thread", &gmail, &overrides),
+            Policy::Hold
+        );
+        let listed = listed_tools("gmail", &gmail, &overrides);
+        assert!(listed.contains(&"create_draft".to_string()));
+        assert!(!listed.contains(&"list_labels".to_string()));
+        assert!(!listed.contains(&"trash_thread".to_string()));
+        // The default-only reading ignores the rows.
+        assert!(allowed_tools("gmail", &gmail).contains(&"list_labels".to_string()));
+        assert!(!allowed_tools("gmail", &gmail).contains(&"create_draft".to_string()));
+    }
+
+    #[test]
+    fn an_admin_may_not_lift_the_deny_list() {
+        for tool in [
+            "trash_thread",
+            "untrash_message",
+            "mark_thread_spam",
+            "unmark_message_spam",
+            "apply_sensitive_message_label",
+            "trash_file",
+        ] {
+            assert!(override_refusal(tool, Policy::Allow).is_some(), "{tool}");
+            assert!(override_refusal(tool, Policy::Hold).is_some(), "{tool}");
+            assert!(override_refusal(tool, Policy::Deny).is_none(), "{tool}");
+        }
+        for p in [Policy::Allow, Policy::Hold, Policy::Deny] {
+            assert!(override_refusal("create_event", p).is_none());
+        }
+    }
+
+    #[test]
+    fn a_tool_google_adds_later_starts_held_and_inherits_no_override() {
+        // A catalog refresh brought a tool nobody pinned, marked read-only.
+        let mut tools = live_catalog("calendar").as_array().unwrap().clone();
+        tools.push(json!({ "name": "brand_new_tool", "annotations": { "readOnlyHint": true } }));
+        let catalog = Value::Array(tools);
+        // Every other tool on the server carries an ALLOW override: the new
+        // one has its own name, so none of them reach it.
+        let overrides: Vec<(String, Policy)> = names(&catalog)
+            .into_iter()
+            .filter(|n| n != "brand_new_tool")
+            .map(|n| (n, Policy::Allow))
+            .collect();
+        assert_eq!(
+            gateway_policy("calendar", "brand_new_tool", &catalog, &overrides),
+            Policy::Hold
+        );
+        assert!(
+            held_tools("calendar", &catalog, &overrides).contains(&"brand_new_tool".to_string())
+        );
+    }
+
+    #[test]
+    fn the_stored_spelling_round_trips() {
+        for p in [Policy::Allow, Policy::Hold, Policy::Deny] {
+            assert_eq!(Policy::parse(p.as_str()), Some(p));
+            assert_eq!(serde_json::to_value(p).unwrap(), json!(p.as_str()));
+        }
+        assert_eq!(Policy::parse("Allow"), None);
+        assert_eq!(Policy::parse(""), None);
     }
 }

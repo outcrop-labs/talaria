@@ -192,15 +192,15 @@ pub const UNPACKED_ROW_REFUSAL: &str = "This server's address is one of Google's
 /// The custom-URL form's refusal for a Google Workspace MCP URL.
 pub const CUSTOM_URL_REFUSAL: &str = "Google's Workspace MCP servers are added through the Google Workspace MCP pack (Admin → Org → Google Workspace MCP, Developer Preview), which acts with each agent's own Google connection. Registered here they would take no Google grant, and every call would come back as Google's refusal.";
 
-/// The gateway's sentence for a tool it will not relay. `held` is a tool
-/// whose default is HOLD (refused while holds are not built); otherwise the
-/// tool is denied outright. Says nothing was sent to Google's Workspace MCP
-/// servers — not "to Google": the token was vended first, and its refresh
-/// may already have reached Google's token endpoint.
-pub fn refusal_sentence(p: &Product, tool: &str, held: bool) -> String {
-    if held {
+/// The gateway's sentence for a tool it never runs for an agent: one on the
+/// owner's deny list, or one an admin set to deny (`by_admin`). Says nothing
+/// was sent to Google's Workspace MCP servers — not "to Google": the token
+/// was vended first, and its refresh may already have reached Google's token
+/// endpoint.
+pub fn denied_sentence(p: &Product, tool: &str, by_admin: bool) -> String {
+    if by_admin {
         format!(
-            "\u{201c}{tool}\u{201d} on Google's {} MCP server is not one of the read-only tools this workspace runs through Google's MCP servers. A tool that changes something needs a person to approve each call, and that approval is not available for Google's MCP servers yet. Nothing was sent to Google's Workspace MCP servers. To change something in Google Workspace, use the talaria toolkit's own Google tools (draft_email, draft_calendar_event, update_google_doc and the rest), which follow this workspace's approval rules.",
+            "\u{201c}{tool}\u{201d} on Google's {} MCP server is turned off for agents here by an admin (Admin \u{2192} Org \u{2192} Google Workspace MCP). Nothing was sent to Google's Workspace MCP servers.",
             p.name
         )
     } else {
@@ -209,6 +209,50 @@ pub fn refusal_sentence(p: &Product, tool: &str, held: bool) -> String {
             p.name
         )
     }
+}
+
+/// The gateway's sentence for a tool the server's cached catalog does not
+/// list: Google did not offer it when Talaria last asked, so the pack has no
+/// policy for it and runs nothing — not even a hold.
+pub fn absent_sentence(p: &Product, tool: &str) -> String {
+    format!(
+        "Google's {} MCP server did not list a tool named \u{201c}{tool}\u{201d} when Talaria last asked it for its catalog, so it is not run here. Nothing was sent to Google's Workspace MCP servers.",
+        p.name
+    )
+}
+
+/// What a held tool's description says in the agent's `tools/list`, ahead
+/// of Google's own: the call answers with an approval id, not Google's
+/// result. (The tool's `outputSchema` is dropped from that listing too: the
+/// held answer is not the shape Google declares for a result.)
+pub const HELD_TOOL_NOTE: &str = "[Talaria holds each call of this tool for a person to approve before it runs. The call answers with an approval id, not Google's result: say it is waiting for approval, never that it is done.]";
+
+/// What the agent reads when its call was held: queued, not done, who
+/// approves it, and how to check. `already` is a call identical to one still
+/// waiting: nothing new was queued, and the id is that one's.
+pub fn held_sentence(
+    p: &Product,
+    tool: &str,
+    id: &str,
+    admin_approves: bool,
+    already: bool,
+) -> String {
+    let who = if admin_approves {
+        "an admin approves it"
+    } else {
+        "your owner approves it"
+    };
+    let lead = if already {
+        format!(
+            "An identical call is already waiting for approval as {id}; nothing new was queued."
+        )
+    } else {
+        format!("Queued for approval as {id}.")
+    };
+    format!(
+        "{lead} Not done yet: \u{201c}{tool}\u{201d} on Google's {} MCP server runs only after {who} in Talaria, exactly as you called it. Confirm with list_pending_sends before telling anyone it is waiting, and never say it is done.",
+        p.name
+    )
 }
 
 /// The gateway's sentence for a tool call carrying a workspace secret
@@ -380,12 +424,36 @@ mod tests {
 
     #[test]
     fn every_refusal_says_nothing_was_sent() {
-        for held in [true, false] {
+        for by_admin in [true, false] {
             assert!(
-                refusal_sentence(&GMAIL, "trash_thread", held)
+                denied_sentence(&GMAIL, "trash_thread", by_admin)
                     .contains("Nothing was sent to Google's Workspace MCP servers.")
             );
         }
+        assert!(
+            absent_sentence(&GMAIL, "x")
+                .contains("Nothing was sent to Google's Workspace MCP servers.")
+        );
         assert!(SECRET_HANDLE_REFUSAL.contains("nothing was sent to them"));
+    }
+
+    #[test]
+    fn a_held_answer_names_the_id_the_approver_and_says_not_done() {
+        let owner = held_sentence(&GMAIL, "create_draft", "p-1", false, false);
+        assert!(
+            owner.starts_with("Queued for approval as p-1. Not done yet"),
+            "{owner}"
+        );
+        assert!(owner.contains("your owner approves it"));
+        assert!(owner.contains("list_pending_sends"));
+        let admin = held_sentence(&GMAIL, "create_draft", "p-2", true, false);
+        assert!(admin.contains("an admin approves it"));
+        let again = held_sentence(&GMAIL, "create_draft", "p-1", false, true);
+        assert!(
+            again.starts_with(
+                "An identical call is already waiting for approval as p-1; nothing new was queued."
+            ),
+            "{again}"
+        );
     }
 }
