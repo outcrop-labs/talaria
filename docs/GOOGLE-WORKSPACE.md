@@ -374,6 +374,18 @@ a person, **deny** never runs. The default, per tool:
 | **hold** | every write (Gmail `create_draft` and the label tools, Calendar `create_event`/`update_event`/`delete_event`/`respond_to_event`, Drive `create_file`/`copy_file`, Docs/Sheets/Slides updates, Chat `send_message`), and **any tool Google adds later** | queued for a person (below); Google hears nothing until they approve |
 | **deny** | trash and untrash, mark and unmark spam, `apply_sensitive_*` | refused, always |
 
+**The same floor, by argument.** Gmail's label tools reach the trash and spam
+without those words in their names: Google's own catalog says `unlabel_thread`
+and `unlabel_message` take "a system label ID (e.g., `INBOX`, `TRASH`, …)",
+and `label_*` and `update_message_labels` take system label IDs too. So a call
+of **any** tool that names `TRASH`, `SPAM` or `BIN` (any case) in a label
+argument (`labelIds`, `addLabelIds`, `removeLabelIds`, …) is refused at the
+gateway, before a hold, an admin's allow or an unlock is read, and again when
+an approved call is replayed: nothing is queued and nothing reaches Google.
+No override, unlock or approval lifts it. The set is Talaria's REST organize
+path's own (`FORBIDDEN_LABELS`). No read tool Google lists takes a label
+argument.
+
 A tool is **allowed** only when it is on the pinned read list
 (`talaria-google-mcp`'s `policy::READ_LIST`: every tool Google's live catalogs
 marked `readOnlyHint: true` on 2026-11-17) **and** the server's cached catalog
@@ -390,7 +402,15 @@ with its default and a selector (`PUT
 /api/admin/google/mcp/{product}/tools/{tool}` with `{policy: "allow" | "hold"
 | "deny" | null}`, audited as `google.mcp_tool_policy` with before and after;
 stored in `mcp_tool_policies`). An admin can let a write run without a person,
-hold a read, or deny anything. **The deny list is a floor:** the route refuses
+hold a read, or deny anything. **An allow never reaches a personal
+assistant:** a call into one member's own Google account stays held for that
+member, because the approval model gives the owner alone — never an admin —
+the say over an owner's row, and an allow would be an admin's standing
+approval of every such call. An allow applies to the org account and to
+agents' own identities, whose calls an admin approves anyway; hold and deny
+apply to every caller. The panel shows both (`effective`, and
+`effectivePersonal` where an allow does not reach). **The deny list is a
+floor:** the route refuses
 any override on a trash, spam or sensitive-label tool but deny, and the
 gateway ignores one that got there anyway. An override names one tool on one
 server, so a tool Google adds later never inherits one: it starts held. A
@@ -406,7 +426,10 @@ agent with that said ahead of Google's description, and without Google's
 `outputSchema` (its call answers with an approval id, not that shape). The
 hold runs after the pack's own refusals and the agent's tool subset, and
 before the credential spend boundary; a retried identical call converges on
-the row still waiting, so one approval never runs it twice.
+the row still waiting, or on one whose approval is running it, so one write
+never runs twice. A retry of a call whose approval was claimed more than five
+minutes ago and never settled (a process stopped mid-replay) is told its
+outcome is unknown and to check in Google; nothing new is queued.
 
 Who approves is the principal's, as for every Google action:
 
@@ -425,7 +448,12 @@ own `list_pending_sends` / `read_pending_send`.
 **Approving replays the call once**, through `decide_action`'s `mcp_call`
 arm, after re-checking: the arguments still name no secret; the registry row
 still exists, is still the pack's and is turned on; Google's catalog still
-lists the tool; and the policy (an override, else the default) is not deny now.
+lists the tool; the policy (an override, else the default) is not deny now,
+and the arguments name no `TRASH` or `SPAM` label; and the agent may still use
+the server and the tool — its assignment or team grant, and for a personal
+assistant its owner's user and team access, read as the gateway reads them
+(`talaria-mcp`'s `mcp_allowance`). Access an admin revoked after the call was
+queued fails it, with nothing sent.
 Only then does it vend a token for `Purpose::HostedMcp` through the one door
 — a grant minted by a client declared unticked never reaches Google — and send
 one stateless `tools/call` to the product's endpoint as the code names it.
@@ -444,11 +472,18 @@ gateway records one; an accepted replay forgets a flag.
 
 **One more call without a new card (personal assistants only).** Approving a
 held call in a conversation leaves a grant there keyed `<server>/<tool>`
-(`google-calendar/create_event`): for thirty minutes, the agent's next call of
-that same tool on that same server runs at once in the owner's name, and the
-agent reads Google's result. One use, then it is spent; another tool, or the
-same tool on another server, is held as usual. An org-account or
-agent-identity call never rides an unlock: an admin approves each one.
+(`google-calendar/create_event`), bound to whoever the approved call addressed
+— its Calendar attendees (`attendees`, `addedAttendees`, `attendeeEmails`,
+`addedAttendeeEmails`, `removedAttendeeEmails`), its Gmail `to`/`cc`/`bcc`, or
+its Chat space (`conversationId`, and the space a `threadId` names) — as
+`draft_email`'s grant is bound to its recipients. For thirty minutes, the
+agent's next call of that same tool on that same server, addressing no one
+the approved call did not, runs at once in the owner's name, and the agent
+reads Google's result. A call adding an attendee, a recipient or another
+space is held as usual and does not spend the grant; a call naming nobody is
+covered. One use, then it is spent; another tool, or the same tool on another
+server, is held as usual. An org-account or agent-identity call never rides an
+unlock: an admin approves each one.
 
 **What a held call keeps.** The arguments sit in the queue as sent, readable
 only through the approver's routes and the agent's own queue reads, as a

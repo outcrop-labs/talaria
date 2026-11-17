@@ -40,8 +40,9 @@ access rules. Four kinds of rows:
   account in an owner's place. Reads run; every write, and any tool Google adds later, is
   **held**: the exact call waits in the approval queue for a person (the owner for a personal
   assistant, an admin for the org account or an agent's own identity) and runs once they approve;
-  trash, spam and sensitive labels never run; an admin can override a tool's default, but never
-  lift that deny list. The row's address, credentials
+  trash, spam and sensitive labels never run — nor does any call naming the TRASH or SPAM label
+  in a label argument; an admin can override a tool's default, but never lift that deny list, and
+  an admin's allow never reaches a personal assistant's call. The row's address, credentials
   and auth mode are the pack's, and the custom-URL form refuses Google's Workspace MCP hosts
   under every name Google serves them by (`*mcp.googleapis.com`, `*mcp.mtls.googleapis.com`,
   `*mcp.clients6.google.com`, `content-*`, and People's `/mcp` on its names); the gateway relays
@@ -173,11 +174,13 @@ Per server:
   `tools/list`, `tools/call` and `notifications/*` are relayed (anything else is answered with
   `-32601`, or a 400 for a batch or a response), as the JSON the gate read. The gateway then
   relays the tools the pack allows (the pinned read list that Google also marks
-  `readOnlyHint: true`, or an admin's override), **holds** every other listed tool — queued as an
+  `readOnlyHint: true`, or an admin's override — never an allow for a personal assistant),
+  **holds** every other listed tool — queued as an
   `mcp_call` approval and answered with its id, recorded as `held`, listed to the agent with the
   hold said and without Google's `outputSchema` — and refuses a denied tool, a tool Google's
-  catalog does not list, and any argument naming a workspace secret. Approving a held call
-  replays it once as the queued principal, after re-checking the row and the policy; an
+  catalog does not list, any argument naming a workspace secret, and a TRASH or SPAM label in a
+  label argument. Approving a held call replays it once as the queued principal, after
+  re-checking the row, the policy, the labels and the agent's access to the server; an
   elicitation or a multi-round-trip request fails it, quoting Google. It says which scope a tool needs (from
   Google's per-tool protected-resource document) before asking Google, and answers Google's HTTP
   errors in Google's words — a 401 or 403 recorded on the grant as `last_mcp_refusal`, a 401
