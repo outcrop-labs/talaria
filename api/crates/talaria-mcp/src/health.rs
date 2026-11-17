@@ -453,6 +453,58 @@ async fn reopen_flapping(pg: &PgPool, admin: &str, server_id: &str) {
     }
 }
 
+/// A Google Workspace MCP server's pass: its catalog, asked of Google the
+/// way discovery asks it (`google::google_catalog` — the org account's bearer
+/// when the door vends one, else no credential), and always stored: the
+/// policy reads the annotations, and a changed annotation with unchanged
+/// names is still a changed catalog. Google's refusal is quoted.
+async fn check_google(
+    pg: &PgPool,
+    sb: &SecretBox,
+    s: &McpServer,
+    product: &talaria_google_mcp::Product,
+) -> Verdict {
+    let now = talaria_agent_auth::now_ms();
+    let answer = tokio::time::timeout(
+        CHECK_DEADLINE,
+        crate::google::google_catalog(pg, sb, product, now),
+    )
+    .await;
+    let Ok(answer) = answer else {
+        return Verdict::of(ProbeState::Unreachable, deadline_sentence());
+    };
+    match answer {
+        Ok((tools, authenticated)) => {
+            let before = tool_names(&s.tools);
+            let catalog = Value::Array(tools.clone());
+            let after = tool_names(&catalog);
+            let drift = (before != after)
+                .then(|| drift_detail(&before, &after))
+                .flatten();
+            let mut catalog_changed = false;
+            if let Err(e) = store_catalog(pg, &s.id, &catalog).await {
+                tracing::warn!("{LOG} catalog write failed for {}: {e}", s.name);
+            } else {
+                catalog_changed = before != after && !before.is_empty();
+            }
+            let count = crate::google::catalog_detail(product, &tools, authenticated);
+            Verdict {
+                state: ProbeState::Ok,
+                detail: match drift.filter(|_| catalog_changed) {
+                    Some(d) => format!("{count}; {d}"),
+                    None => count,
+                },
+                extra: Map::new(),
+                catalog_changed,
+            }
+        }
+        Err(e @ talaria_google_mcp::catalog::CatalogError::Unreachable(_)) => {
+            Verdict::of(ProbeState::Unreachable, e.to_string())
+        }
+        Err(e) => Verdict::of(ProbeState::Error, e.to_string()),
+    }
+}
+
 async fn check_server(pg: &PgPool, sb: &SecretBox, s: &McpServer) -> Verdict {
     // An oci-http package is asked at its container, exactly as the gateway
     // and discovery ask it (`refresh_mcp_tools` shadows the row the same way).
@@ -485,6 +537,9 @@ async fn check_server(pg: &PgPool, sb: &SecretBox, s: &McpServer) -> Verdict {
     };
     if s.auth_mode == "per-user" {
         return check_per_user(pg, sb, s, &org_headers).await;
+    }
+    if let Some(product) = crate::google::product_of(s) {
+        return check_google(pg, sb, s, &product).await;
     }
     let bearer = if s.oauth_enabled {
         match org_bearer(pg, sb, &s.id).await {

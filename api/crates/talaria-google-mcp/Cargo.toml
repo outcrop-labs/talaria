@@ -9,8 +9,12 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+futures-util = { workspace = true }
 reqwest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-google-errors = { workspace = true }
 talaria-mcp-jsonrpc = { workspace = true }
+talaria-safe-fetch = { workspace = true }
+url = { workspace = true }

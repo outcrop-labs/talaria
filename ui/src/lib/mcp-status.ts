@@ -29,7 +29,7 @@ export interface StatusInput {
   appOff?: string | null
   package: unknown | null
   pkgStatus: string | null
-  authMode: 'org' | 'per-user'
+  authMode: 'org' | 'per-user' | 'google'
   oauthEnabled: boolean
   orgConnected: boolean | null
   oauthMeta: { dcr: boolean; clientSet: boolean; dcrRejected: string | null } | null
@@ -92,6 +92,19 @@ export function serverStatus(s: StatusInput): ServerStatus {
     return manual
       ? chip('needs-oauth-app', 'needs OAuth app', 'warning', 'Register an OAuth app with the provider, then connect.', 'setup-oauth-app')
       : chip('needs-connect', 'connect org account', 'warning', 'This server uses OAuth. Connect the org account so agents can use it.', 'connect')
+  }
+  // A Google Workspace MCP server (the pack): no account of its own — each
+  // agent acts with its own Google principal — so the probe alone says how
+  // it is doing.
+  if (s.authMode === 'google') {
+    if (s.probe?.state === 'unreachable') return chip('unreachable', 'unreachable', 'danger', s.probe.detail)
+    if (s.probe?.state === 'error') return chip('error', 'error', 'danger', s.probe.detail)
+    return chip(
+      'ready',
+      'per agent · google',
+      'success',
+      s.probe?.detail ?? "Each agent acts with its own Google account (its owner's, the org account, or its own); only read-only tools run.",
+    )
   }
   if (s.authMode === 'per-user') {
     // The health pass proves a per-user host answers (a 401 counts); when it

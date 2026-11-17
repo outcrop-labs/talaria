@@ -37,6 +37,7 @@
   import AdminRepoCreationSection from './AdminRepoCreationSection.svelte'
   import AdminRepoFlowSection from './AdminRepoFlowSection.svelte'
   import AdminGoogleClientPanel from './AdminGoogleClientPanel.svelte'
+  import AdminGoogleMcpPanel from './AdminGoogleMcpPanel.svelte'
   import AdminGuardrailsPanel from './AdminGuardrailsPanel.svelte'
   import AdminInstanceDomainPanel from './AdminInstanceDomainPanel.svelte'
   import AdminInvitesPanel from './AdminInvitesPanel.svelte'
@@ -130,6 +131,7 @@
         <AdminEmailPanel />
         <AdminGoogleClientPanel />
         <AdminOrgGooglePanel />
+        <AdminGoogleMcpPanel />
       {/if}
       {#if tab === 'agents'}
         <!-- The decision-model port leads the tab because the panels under it

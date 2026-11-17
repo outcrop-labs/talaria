@@ -1243,6 +1243,144 @@ pub async fn require_token(
     }
 }
 
+// ── What Google's Workspace MCP servers say about a grant ────────────────────
+//
+// The MCP gateway relays an agent's call to Google's Workspace MCP servers
+// with the token of the principal's own grant. What it learns comes back
+// here: the grant's stored scope (to say which scope a tool needs before
+// asking Google), a cached token to drop (a 401 is retried once, after a
+// refresh), and Google's refusal — always recorded as `last_mcp_refusal`
+// `{status, text, tool, at}`, and, for a 401 that a fresh token did not
+// cure, as the grant's `reconnect_reason` too. A 403 never flags the grant:
+// it may be one file, one calendar, one quota.
+
+/// One store's statements for the MCP relay, each keyed by `$1`.
+struct McpSql {
+    /// → (scope,) of a live grant.
+    scope: &'static str,
+    /// Drop the cached access token.
+    forget: &'static str,
+    /// $2 the refusal (jsonb).
+    refusal: &'static str,
+    /// $2 the refusal (jsonb), $3 Google's words.
+    flag: &'static str,
+}
+
+macro_rules! mcp_sql {
+    ($table:literal, $key:literal) => {
+        McpSql {
+            scope: concat!(
+                "select scope from ", $table, " where ", $key,
+                " and coalesce(refresh_token_enc, '') <> ''"
+            ),
+            forget: concat!(
+                "update ", $table, " set access_token_enc = null, access_expires_at = null where ", $key
+            ),
+            refusal: concat!(
+                "update ", $table, " set last_mcp_refusal = $2 where ", $key
+            ),
+            flag: concat!(
+                "update ", $table, " set last_mcp_refusal = $2, reconnect_flagged_at = case ",
+                "when reconnect_reason is not distinct from $3 then coalesce(reconnect_flagged_at, now()) ",
+                "else now() end, reconnect_reason = $3 where ", $key,
+                " and coalesce(refresh_token_enc, '') <> ''"
+            ),
+        }
+    };
+}
+
+impl GrantRow {
+    fn mcp_sql(&self) -> McpSql {
+        match self {
+            GrantRow::User(_) => mcp_sql!("google_connections", "user_id = $1::uuid"),
+            GrantRow::Org => mcp_sql!("google_org_connection", "id = $1::int4"),
+            GrantRow::Agent(_) => mcp_sql!("agent_google_connections", "agent_model = $1"),
+        }
+    }
+}
+
+/// The scopes a live grant was given (space-joined, as Google's token answer
+/// listed them), or None: no grant, no refresh token, no scope recorded.
+pub async fn grant_scope(pg: &PgPool, row: &GrantRow) -> Result<Option<String>, sqlx::Error> {
+    let scope: Option<(Option<String>,)> = sqlx::query_as(row.mcp_sql().scope)
+        .bind(row.bind_key())
+        .fetch_optional(pg)
+        .await?;
+    Ok(scope.and_then(|(s,)| s).filter(|s| !s.trim().is_empty()))
+}
+
+/// Drop a grant's cached access token, so the next vend refreshes it.
+pub async fn forget_access_token(pg: &PgPool, row: &GrantRow) -> Result<(), sqlx::Error> {
+    sqlx::query(row.mcp_sql().forget)
+        .bind(row.bind_key())
+        .execute(pg)
+        .await?;
+    Ok(())
+}
+
+/// Google's Workspace MCP servers refused a call made with a grant's token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpRefusal {
+    /// The HTTP status Google answered.
+    pub status: u16,
+    /// Google's own words, quoted; None when it sent none.
+    pub text: Option<String>,
+    /// The tool called, when it was a `tools/call`.
+    pub tool: Option<String>,
+}
+
+impl McpRefusal {
+    /// The `last_mcp_refusal` document: `{status, text, tool, at}`.
+    pub fn document(&self, now_ms: i64) -> serde_json::Value {
+        serde_json::json!({
+            "status": self.status,
+            "text": self.text,
+            "tool": self.tool,
+            "at": epoch_ms_to_iso(now_ms),
+        })
+    }
+
+    /// What the grant's `reconnect_reason` reads when the refusal flags it.
+    pub fn flag_words(&self) -> String {
+        match &self.text {
+            Some(t) => t.clone(),
+            None => format!(
+                "Google's Workspace MCP servers refused this connection (HTTP {}).",
+                self.status
+            ),
+        }
+    }
+}
+
+/// Record Google's refusal on the grant behind the token — `flag` also sets
+/// its `reconnect_reason` (a 401 a fresh token did not cure). A successful
+/// refresh forgets the flag, as it forgets a refused client's.
+pub async fn record_mcp_refusal(
+    pg: &PgPool,
+    row: &GrantRow,
+    refusal: &McpRefusal,
+    flag: bool,
+    now_ms: i64,
+) -> Result<(), sqlx::Error> {
+    let sql = row.mcp_sql();
+    let doc = refusal.document(now_ms);
+    if flag {
+        sqlx::query(sql.flag)
+            .bind(row.bind_key())
+            .bind(&doc)
+            .bind(refusal.flag_words())
+            .execute(pg)
+            .await?;
+    } else {
+        sqlx::query(sql.refusal)
+            .bind(row.bind_key())
+            .bind(&doc)
+            .execute(pg)
+            .await?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

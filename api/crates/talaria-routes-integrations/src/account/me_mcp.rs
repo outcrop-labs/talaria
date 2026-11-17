@@ -4,7 +4,11 @@
 // token>" }); headers null disconnects. Your assistant only carries a
 // per-user server once you've connected, and it acts as YOU there.
 // `needsReconnect` marks an OAuth account the provider refused to refresh
-// (found by the MCP health pass) — connected once, now gone.
+// (found by the MCP health pass) — connected once, now gone. A Google
+// Workspace MCP server (the pack, Developer Preview) is listed too, as
+// `authKind: "google"`: it takes no account of its own here — your assistant
+// uses it through your Google connection (Settings → Connections → Google),
+// and `connected` says whether that connection is in place. PUT refuses it.
 
 use axum::Json;
 use axum::extract::State;
@@ -32,6 +36,33 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     // the row says Reconnect, not a first-time Connect.
     let reconnect = talaria_api_facades::mcp::health::reconnect_servers(&state.pg, &user.id).await;
     let mut out = Vec::new();
+    // Your Google connection, read once for every Google Workspace MCP row.
+    let google_rows: Vec<_> = servers
+        .iter()
+        .filter(|s| s.enabled && s.auth_mode == talaria_api_facades::mcp::google::AUTH_MODE)
+        .collect();
+    let google_connected = if google_rows.is_empty() {
+        false
+    } else {
+        match talaria_api_facades::google::connections::get_connection_status(&state.pg, &user.id)
+            .await
+        {
+            Ok(status) => status.connected,
+            Err(e) => return Ok(internal("[me/mcp] google connection read failed", e)),
+        }
+    };
+    for s in google_rows {
+        out.push(json!({
+            "id": s.id,
+            "name": s.name,
+            "label": s.label,
+            "description": s.description,
+            "requiredHeaders": [],
+            "authKind": "google",
+            "connected": google_connected,
+            "needsReconnect": false,
+        }));
+    }
     for s in servers
         .iter()
         .filter(|s| s.enabled && s.auth_mode == "per-user")

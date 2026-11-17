@@ -1037,6 +1037,17 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/admin/google/mcp",
+            get(talaria_routes_admin::admin::admin_google_mcp::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/admin/google/mcp/{product}",
+            post(talaria_routes_admin::admin::admin_google_mcp::post)
+                .delete(talaria_routes_admin::admin::admin_google_mcp::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
             "/api/admin/instance",
             get(talaria_routes_admin::admin::admin_instance::get)
                 .put(talaria_routes_admin::admin::admin_instance::put)

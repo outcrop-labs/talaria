@@ -393,6 +393,19 @@ pub async fn outbound_write_refusal(
     Ok(write_refusal(&principal, connected))
 }
 
+/// Does the grant an agent's principal names hold a refresh token — would
+/// the door have something to vend? Reads the grant's face only: no token,
+/// no refresh. An owner with no user names no grant (false), never the org
+/// account's. The MCP render's "needs a connection" mark for a Google
+/// Workspace MCP server.
+pub async fn principal_connected(pg: &PgPool, agent_model: &str) -> Result<bool, sqlx::Error> {
+    let principal = load_principal(pg, agent_model).await?;
+    match principal_grant(&principal, agent_model) {
+        None => Ok(false),
+        Some(row) => Ok(grant_face(pg, &row).await?.connected),
+    }
+}
+
 async fn load_principal(pg: &PgPool, agent_model: &str) -> Result<AgentPrincipal, sqlx::Error> {
     let row: Option<(String, Option<String>)> = sqlx::query_as(
         "select principal_kind, principal_user_id::text \

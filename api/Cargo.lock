@@ -5470,11 +5470,15 @@ dependencies = [
 name = "talaria-google-mcp"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "reqwest",
+ "serde",
  "serde_json",
  "talaria-gateway",
  "talaria-google-errors",
  "talaria-mcp-jsonrpc",
+ "talaria-safe-fetch",
+ "url",
 ]
 
 [[package]]
@@ -6073,6 +6077,10 @@ dependencies = [
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-gateway",
+ "talaria-google-agent",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-google-mcp",
  "talaria-mcp-jsonrpc",
  "talaria-mcp-oauth",
  "talaria-mcp-service",
