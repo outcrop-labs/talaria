@@ -229,11 +229,13 @@ audited as `google.client_check`) makes one `tools/call list_labels` to
 query-cost quota, with **your own** Google connection. That connection must
 have been made with the client being checked, so the button sits on that
 client's card alone (`GET /api/admin/google-client` carries the client as
-`personalClientId`), and the other card says why. If your connection was made
-with another client, or you have none, the route refuses with a 409 that names
-the client and sends nothing. A sign-in client that has only ever run login
-made no stored connection, so it cannot be checked this way, and it needs no
-check: signing in is not an agent. A client that was the connections client
+`personalClientId`), and the other card says why. If you have no connection,
+or yours is recorded as made with another client, the route refuses with a
+409 that names the client and sends nothing to Google, not even a token
+refresh. A connection that has not recorded its client yet is refreshed
+first, because the refresh is what records it. A sign-in client that has
+only ever run login made no stored connection, so it cannot be checked this
+way, and it needs no check: signing in is not an agent. A client that was the connections client
 before it moved to the sign-in slot (the "not marked by November 12" shape
 above) can be checked through a connection it made then, because a connection
 keeps the client that made it. Google's answer is stored under the client's id as
@@ -249,10 +251,12 @@ shows it:
   marked". Google's body for an unmarked client has not been captured, and
   the same call also fails, in Google's words, when the project is not in the
   Workspace Developer Preview, has not enabled `gmailmcp.googleapis.com`, or
-  the token lacks a Gmail scope. For example, a token Google does not accept
-  answers HTTP 401 `Request had invalid authentication credentials. Expected
-  OAuth 2 access token, login cookie or other valid authentication
-  credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.`
+  the token lacks a Gmail scope. It is still the last answer: only the last
+  check is kept, so a refusal after an acceptance ends the confirmation, and
+  the client's standing falls back to its declaration. For example, a token
+  Google does not accept answers HTTP 401 `Request had invalid
+  authentication credentials. Expected OAuth 2 access token, login cookie or
+  other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.`
   (captured 2026-11-17).
 - A call that never got Google's answer (a timeout, no network) is a 502
   `google_unreachable`, and nothing is recorded.
@@ -275,10 +279,12 @@ refusal and the agent record all read through it:
 3. **The purpose decides whether that client qualifies.** A REST call takes
    any grant, which is today's behaviour for every agent tool. A call bound
    for Google's Workspace MCP servers takes a grant unless its minting client
-   is declared *Unticked* and Google has not accepted a check from it. Then
-   nothing is sent, and the answer names the client and the fix: a reconnect
-   when the connections slot now holds a client that is not declared
-   unticked, else an admin's. A client nobody has declared, or a grant that
+   is declared *Unticked* and Google's last answer to a check did not accept
+   it. Then the token is not handed out for those servers, and the answer
+   says that nothing was sent to them and names the client and the fix (the
+   refresh in step 2 may already have reached Google's token endpoint): a
+   reconnect when the connections slot now holds a client that is not
+   declared unticked, else an admin's. A client nobody has declared, or a grant that
    has not recorded its client yet, goes to Google, and Google's answer is
    relayed. Eligibility follows the **minting client**, never the table the
    grant sits in. So when the connections client was flipped to agentic,
@@ -289,9 +295,12 @@ is a later change, and so is a separate agent client (full separation). The
 agent record shows what such a call would do today: `GET
 /api/fleet/defs/{id}/google` carries `agentic` (`verified`,
 `declared_agentic`, `declared_not_agentic`, `unknown`, or null with no
-recorded client) and `mcpRefusal`, the sentence above or null. Its
-`connected`, `email` and `clientId` now describe the org account's grant
-for an `org` agent too, as they already did for the other two kinds.
+recorded client) and `mcpRefusal`: why such a call would be refused and the
+fix, or null. Its `connected`, `email` and `clientId` now describe the org
+account's grant for an `org` agent too, as they already did for the other
+two kinds. The org account's address and its `reconnectReason` stay
+admin-only, as on the org connection's own routes: an agent manager who is
+not an admin reads them as null.
 
 ### Which client a connection refreshes with
 

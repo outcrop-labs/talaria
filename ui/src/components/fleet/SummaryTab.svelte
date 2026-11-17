@@ -48,6 +48,8 @@
     principalKind: 'owner' | 'org' | 'agent'
     principalUserId: string | null
     connected: boolean
+    /** For an org agent the org account's address and `reconnectReason` reach
+     *  admins only; other managers read null. */
     email: string | null
     legacyOwnerUserId: string | null
     /** The OAuth client that minted the connection this kind uses. */
@@ -57,7 +59,7 @@
     /** What is known of that client's AI-agent mark (null: no client recorded). */
     agentic: 'verified' | 'declared_agentic' | 'declared_not_agentic' | 'unknown' | null
     /** The server's sentence for why Google's Workspace MCP servers would not
-     *  be called with this connection, else null. */
+     *  be called with this connection, and the fix, else null. */
     mcpRefusal: string | null
   }
   const AGENTIC_LABEL: Record<NonNullable<GoogleIdentity['agentic']>, string> = {
@@ -235,7 +237,9 @@
         {#if kind === 'agent'}
           <div class="mt-2 flex items-center gap-2">
             <a href={`/api/fleet/defs/${def.id}/google/connect`} class="rounded-md border border-line bg-surface px-2.5 py-1 text-xs text-fg hover:bg-raised">Connect Google</a>
-            {#if googleQuery.data?.connected}
+            <!-- The saved principal's grant, not the unsaved pick: `connected`
+                 describes the org or owner grant for those kinds. -->
+            {#if googleQuery.data?.principalKind === 'agent' && googleQuery.data.connected}
               <Button size="sm" variant="ghost" disabled={googleBusy} onclick={() => void disconnectGoogle()}>Disconnect</Button>
             {/if}
           </div>

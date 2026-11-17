@@ -232,7 +232,8 @@
   }
 
   // A declaration saves on change, like any picker: it records a fact about
-  // the client and changes no flow.
+  // the client and changes no REST flow (one declared unticked keeps its
+  // grants off Google's MCP servers until Google accepts a check).
   const declare = async (role: Role, id: string, choice: AgenticChoice) => {
     if (busy) return
     // The refusal lands on the card that was clicked.
@@ -271,7 +272,8 @@
     checking = role
     fail(null)
     try {
-      await postJson<{ ok: true }>(`/api/admin/google-client/check?role=${role}`)
+      // The answer (the panel's shape plus `check`) is read back through the query.
+      await postJson<unknown>(`/api/admin/google-client/check?role=${role}`)
     } catch (e) {
       fail(errorMessage(e))
     }

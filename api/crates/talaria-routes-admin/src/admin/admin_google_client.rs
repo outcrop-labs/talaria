@@ -88,6 +88,9 @@ fn login_role(clients: &Clients) -> Option<&'static str> {
 }
 
 /// Every write's answer: the clients as they now stand.
+/// Every write's answer. Check with Google answers the same keys plus its
+/// `check`, spelled out there: the generated reference reads a route's
+/// shape from its `Json(json!({…}))` literal.
 fn answer(clients: &Clients) -> Response {
     Json(json!({
         "status": clients.connections,
@@ -369,7 +372,10 @@ pub async fn delete(
 // between roles keeps its fact. Only a client configured here, in either
 // role, takes a declaration; one pinned by AUTH_GOOGLE_CLIENT_AGENTIC /
 // AUTH_GOOGLE_SIGNIN_CLIENT_AGENTIC is changed in env, not here. A
-// declaration refuses nothing: the panel warns on it.
+// declaration refuses no REST call: the panel warns on it. A client declared
+// unticked keeps its grants off Google's Workspace MCP servers (the
+// agent-token door) unless Google's last answer to Check with Google
+// accepted a call.
 
 pub async fn put_agentic(
     State(state): State<AppState>,
@@ -447,9 +453,15 @@ pub async fn put_agentic(
 // connection — which must have been made with the client being checked — and
 // stores Google's answer under that client's id (`lastCheck`): the HTTP
 // status and Google's words verbatim, never a class read from them. An
-// accepted call verifies the mark; a refusal proves nothing about it (the
-// same call fails, in Google's words, for a project not enrolled in the
-// Developer Preview or without the Gmail MCP service enabled). `?role=`
+// accepted call verifies the mark. A refusal is not read as "not marked"
+// (the same call fails, in Google's words, for a project not enrolled in the
+// Developer Preview or without the Gmail MCP service enabled), but it is the
+// last answer: it replaces an earlier acceptance, and the client's standing
+// falls back to its declaration. The connection's recorded client is read
+// before its token: no connection, or one recorded as made with another
+// client, answers 409 with nothing sent to Google, not even a refresh. One
+// that has not recorded its client is vended, since its refresh records it.
+// `?role=`
 // names the slot whose own client is checked. A sign-in client that has only
 // ever run login made no stored connection and cannot be checked this way —
 // nor needs to be: login is not an agent. One that was the connections client
@@ -487,38 +499,46 @@ pub async fn post_check(
         ));
     }
     let client_id = slot.client_id.clone();
+    let not_connected = || {
+        house_error_msg(
+            StatusCode::CONFLICT,
+            "not_connected",
+            &format!(
+                "Check with Google calls Gmail's MCP server with your own Google connection, made with client {client_id}, and you have no Google connection. Connect your account in Settings \u{2192} Connections, then check again."
+            ),
+        )
+    };
+    // The stored connection first: none, or one recorded as made with
+    // another client, is refused before its token is vended, so nothing
+    // reaches Google. One that has not recorded its client is vended: the
+    // refresh is what records it.
+    let stored = match get_connection_status(&state.pg, &user.id).await {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(internal(
+                "[admin/google-client/check] connection read failed",
+                e,
+            ));
+        }
+    };
+    if !stored.connected {
+        return Ok(not_connected());
+    }
+    if stored.client_id.as_deref().is_some_and(|s| !s.is_empty())
+        && let Some(refusal) = speaks_for(stored.client_id.as_deref(), &client_id)
+    {
+        return Ok(refusal);
+    }
     let vended = match vend_grant(&state.pg, &sb, &GrantRow::User(user.id.clone()), now_ms()).await
     {
         Ok(Some(v)) => v,
-        Ok(None) => {
-            return Ok(house_error_msg(
-                StatusCode::CONFLICT,
-                "not_connected",
-                &format!(
-                    "Check with Google calls Gmail's MCP server with your own Google connection, made with client {client_id}, and you have no Google connection. Connect your account in Settings \u{2192} Connections, then check again."
-                ),
-            ));
-        }
+        Ok(None) => return Ok(not_connected()),
         Err(e) => return Ok(google_token_fail(e, "Gmail")),
     };
-    match vended.client_id.as_deref() {
-        Some(id) if id == client_id => {}
-        Some(other) => {
-            return Ok(house_error_msg(
-                StatusCode::CONFLICT,
-                "other_client",
-                &format!(
-                    "Your own Google connection was made with client {other}, not {client_id}, so it cannot speak for {client_id}. Check with Google uses a connection made with the client being checked: check {other} instead, or reconnect your account while {client_id} is the connections client."
-                ),
-            ));
-        }
-        None => {
-            return Ok(house_error_msg(
-                StatusCode::CONFLICT,
-                "client_unrecorded",
-                "Your own Google connection has not recorded which client made it yet. It does on its next refresh, within the hour; check again then.",
-            ));
-        }
+    // The vend's client: the one a refresh just recorded, or a reconnect's
+    // between the two reads.
+    if let Some(refusal) = speaks_for(vended.client_id.as_deref(), &client_id) {
+        return Ok(refusal);
     }
     let answer = match check_agentic(&vended.token).await {
         Ok(a) => a,
@@ -558,6 +578,7 @@ pub async fn post_check(
         },
     )
     .await;
+    // `answer`'s keys plus the check (see `answer` for why it is a literal).
     let clients = read_clients(&state, &sb).await;
     Ok(Json(json!({
         "status": clients.connections,
@@ -569,6 +590,27 @@ pub async fn post_check(
         "check": check,
     }))
     .into_response())
+}
+
+/// None when a connection minted by `minted_by` can speak for `client_id`;
+/// else the 409 that says why — another client made it, or it has not
+/// recorded its client yet.
+fn speaks_for(minted_by: Option<&str>, client_id: &str) -> Option<Response> {
+    match minted_by.filter(|s| !s.is_empty()) {
+        Some(id) if id == client_id => None,
+        Some(other) => Some(house_error_msg(
+            StatusCode::CONFLICT,
+            "other_client",
+            &format!(
+                "Your own Google connection was made with client {other}, not {client_id}, so it cannot speak for {client_id}. Check with Google uses a connection made with the client being checked: check {other} instead, or reconnect your account while {client_id} is the connections client."
+            ),
+        )),
+        None => Some(house_error_msg(
+            StatusCode::CONFLICT,
+            "client_unrecorded",
+            "Your own Google connection has not recorded which client made it yet. It does on its next refresh, within the hour; check again then.",
+        )),
+    }
 }
 
 // /api/admin/google-client/login. The Google LOGIN switch — the policy half

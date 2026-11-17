@@ -15,8 +15,8 @@
 // PURPOSE decides whether that client qualifies. A REST call takes any grant.
 // A call to Google's Workspace MCP servers (`Purpose::HostedMcp`) takes one
 // unless its minting client is declared NOT marked "Use this client for an
-// AI-powered agent" with no acceptance from Google on record — then nothing
-// is sent, and the answer names the fix. Unknown goes to Google, whose answer
+// AI-powered agent" with no acceptance from Google on record — then the
+// token goes nowhere near those servers, and the answer names the fix. Unknown goes to Google, whose answer
 // is relayed. Eligibility follows the minting CLIENT, never the table the row
 // sits in: under a flipped client every stored grant already qualifies, with
 // no reconnect. The agent routes (`resolve_agent_google`), the approval
@@ -173,8 +173,10 @@ pub enum Vend {
     /// unproven caller, or a registry read that failed.
     NotConnected,
     /// `HostedMcp` only: the grant's minting client is declared not marked
-    /// for AI agents, so nothing was sent. The sentence names the client and
-    /// the fix.
+    /// for AI agents, so the token is not handed out for Google's Workspace
+    /// MCP servers. The sentence names the client and the fix. (The grant
+    /// may already have been refreshed at Google's token endpoint: the door
+    /// learns the minting client from the vend.)
     NotAgentic(String),
 }
 
@@ -207,26 +209,43 @@ pub fn principal_grant(principal: &AgentPrincipal, agent_model: &str) -> Option<
     }
 }
 
+/// What the door says when it withholds a token from Google's Workspace MCP
+/// servers — the call it would have made was not made. It speaks only of
+/// those servers: the vend may already have refreshed the grant at Google's
+/// token endpoint.
+pub const MCP_NOT_SENT: &str = "Nothing was sent to Google's Workspace MCP servers.";
+
 /// Why a grant minted by `minted_by` must not go to Google's Workspace MCP
-/// servers, or None when it may. Only a client declared NOT marked for AI
-/// agents, with no acceptance from Google on record, is refused here (Google
-/// rejects such a client after November 11, 2026); an unknown or unrecorded
-/// client goes to Google, and Google's answer is relayed. The fix is a
-/// reconnect when the connections slot now holds a client that is not
-/// declared unmarked (it mints the new grant), else an admin's.
+/// servers, or None when it may — as the agent record shows it, where no
+/// call was attempted. Only a client declared NOT marked for AI agents, with
+/// no acceptance from Google on record, is refused here (Google rejects such
+/// a client after November 11, 2026); an unknown or unrecorded client goes
+/// to Google, and Google's answer is relayed. The fix is a reconnect when
+/// the connections slot now holds a client that is not declared unmarked
+/// (it mints the new grant), else an admin's. The door's own refusal
+/// (`Vend::NotAgentic`) adds `MCP_NOT_SENT` between the two.
 pub fn hosted_mcp_refusal(
     kind: PrincipalKind,
     minted_by: Option<&str>,
     facts: &ClientFacts,
 ) -> Option<String> {
+    refusal_parts(kind, minted_by, facts).map(|(why, fix)| format!("{why} {fix}"))
+}
+
+/// `hosted_mcp_refusal`'s two halves: why Google would refuse, and the fix.
+fn refusal_parts(
+    kind: PrincipalKind,
+    minted_by: Option<&str>,
+    facts: &ClientFacts,
+) -> Option<(String, String)> {
     let minted_by = minted_by.filter(|s| !s.is_empty())?;
     let unmarked =
         |id: &str| agentic_standing(&facts.evidence, id) == AgenticStanding::DeclaredNotAgentic;
     if !unmarked(minted_by) {
         return None;
     }
-    let lead = format!(
-        "This Google connection was made with OAuth client {minted_by}, which is declared as not having \u{201c}Use this client for an AI-powered agent\u{201d} ticked, so Google's Workspace MCP servers would refuse it. Nothing was sent to Google."
+    let why = format!(
+        "This Google connection was made with OAuth client {minted_by}, which is declared as not having \u{201c}Use this client for an AI-powered agent\u{201d} ticked, so Google's Workspace MCP servers would refuse it."
     );
     let fix = match facts.connections_client.as_deref() {
         Some(conn) if conn != minted_by && !unmarked(conn) => match kind {
@@ -242,7 +261,7 @@ pub fn hosted_mcp_refusal(
         },
         _ => "Reconnecting would not help: an admin needs a client marked for AI agents in the connections slot under Admin \u{2192} Google Workspace.".to_string(),
     };
-    Some(format!("{lead} {fix}"))
+    Some((why, fix))
 }
 
 /// The door, with its two reads as parameters: `vend` is the stored grant's
@@ -271,10 +290,10 @@ where
     // An unrecorded client is unknown: it goes to Google, no read needed.
     if purpose == Purpose::HostedMcp
         && vended.client_id.is_some()
-        && let Some(why) =
-            hosted_mcp_refusal(principal.kind, vended.client_id.as_deref(), &facts().await)
+        && let Some((why, fix)) =
+            refusal_parts(principal.kind, vended.client_id.as_deref(), &facts().await)
     {
-        return Ok(Vend::NotAgentic(why));
+        return Ok(Vend::NotAgentic(format!("{why} {MCP_NOT_SENT} {fix}")));
     }
     Ok(Vend::Token(AgentGoogle {
         token: vended.token,
@@ -404,8 +423,9 @@ async fn legacy_owner(pg: &PgPool, agent_model: &str) -> Result<Option<String>, 
 /// org account's. `client_id` and `flagged` describe that grant: the OAuth
 /// client that minted it, and Google's words from the last refusal of that
 /// client. `agentic` is what is known of that client's AI-agent mark, and
-/// `mcp_refusal` the sentence a Workspace MCP call would answer with instead
-/// of reaching Google (None: it would go to Google).
+/// `mcp_refusal` why the door would withhold this grant from Google's
+/// Workspace MCP servers, and the fix (`hosted_mcp_refusal`; None: it would
+/// go to Google).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentGoogleIdentity {
     pub kind: PrincipalKind,
@@ -913,6 +933,11 @@ mod door {
                                 PrincipalKind::Agent => "on its record",
                             };
                             assert!(why.contains(fix), "{at}: {why}");
+                            // The door says what it withheld, and only that:
+                            // the vend may have refreshed at Google's token
+                            // endpoint, so never "nothing was sent to Google".
+                            assert!(why.contains(MCP_NOT_SENT), "{at}: {why}");
+                            assert!(!why.contains("sent to Google."), "{at}: {why}");
                         }
                         Ok(Vend::Token(google)) => {
                             assert!(!refused, "{at}");
@@ -1001,6 +1026,9 @@ mod door {
                     why.contains("Reconnecting would not help"),
                     "{connections:?} {kind:?}: {why}"
                 );
+                // The record's sentence: no call was attempted, so it claims
+                // nothing about what was sent.
+                assert!(!why.contains("sent"), "{why}");
                 assert!(why.contains("Admin \u{2192} Google Workspace"), "{why}");
             }
         }
