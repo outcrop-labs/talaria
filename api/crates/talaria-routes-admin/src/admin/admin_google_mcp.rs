@@ -505,9 +505,15 @@ mod tests {
         let read = json!({ "name": "get_thread", "annotations": { "readOnlyHint": true } });
         let held = vec![("get_thread".to_string(), policy::Policy::Hold)];
         let v = tool_view(&p, &read, &held).unwrap();
-        assert_eq!((v["effective"].as_str(), v["effectivePersonal"].as_str()), (Some("hold"), Some("hold")));
+        assert_eq!(
+            (v["effective"].as_str(), v["effectivePersonal"].as_str()),
+            (Some("hold"), Some("hold"))
+        );
         let v = tool_view(&p, &read, &[]).unwrap();
-        assert_eq!((v["effective"].as_str(), v["effectivePersonal"].as_str()), (Some("allow"), Some("allow")));
+        assert_eq!(
+            (v["effective"].as_str(), v["effectivePersonal"].as_str()),
+            (Some("allow"), Some("allow"))
+        );
         // A row on a deny-listed tool (never written by this route) changes
         // nothing: the effect stays deny.
         let v = tool_view(&p, &trash, &overrides).unwrap();
