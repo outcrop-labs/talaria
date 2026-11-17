@@ -44,6 +44,10 @@ impl From<talaria_google_connections::RequireError> for GoogleError {
 
 /// The longest quote an answer carries — the provisioning precedent.
 pub const REASON_MAX_CHARS: usize = 300;
+// The OAuth arm quotes through `talaria_google_connections::oauth_reason`,
+// capped by its own constant: the two caps are one rule, so a drift fails the
+// build instead of quoting the two shapes at different lengths.
+const _: () = assert!(REASON_MAX_CHARS == talaria_google_connections::OAUTH_REASON_MAX_CHARS);
 
 /// Google's error body inside a failure message: the first `{` from which a
 /// JSON object with an `error` member parses. Every engine formats its
@@ -68,7 +72,8 @@ fn google_error_body(message: &str) -> Option<Value> {
 ///   reason (`SERVICE_DISABLED`), else `status` (`PERMISSION_DENIED`), else
 ///   the first legacy `errors[].reason` (Drive v3 sends only that).
 /// - OAuth (`{"error": "invalid_grant", "error_description": …}`): the code,
-///   then the description.
+///   then the description — `talaria_google_connections::oauth_reason`, the
+///   one parser of that shape.
 ///
 /// Whitespace is folded and the whole is capped at `REASON_MAX_CHARS`, with
 /// an ellipsis when cut — the code leads, so a cut never loses it.
@@ -105,7 +110,9 @@ pub fn upstream_reason(message: &str) -> Option<String> {
                 .or(legacy_reason);
             (code, text(rest.get("message")))
         }
-        Value::String(_) => (text(Some(error)), text(body.get("error_description"))),
+        // The OAuth shape has one parser, shared with the disconnect's revoke
+        // note, so a refused refresh and a refused revoke read alike.
+        Value::String(_) => return talaria_google_connections::oauth_reason(&body),
         _ => return None,
     };
     let joined = match (code, said) {

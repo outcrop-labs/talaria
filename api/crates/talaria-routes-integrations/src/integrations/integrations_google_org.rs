@@ -10,6 +10,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
+use talaria_api_facades::google::connections::revoke_note;
 use talaria_api_facades::google::oauth::google_integration_enabled;
 use talaria_api_facades::google::org::{
     OrgTargetsPatch, disconnect_org, get_org_connection_status, set_org_targets,
@@ -98,13 +99,21 @@ fn read_target(
     nullish_member(obj, key, |o, k| nullish_max_string_member(o, k, max))
 }
 
-// DELETE → disconnect the org connection
+// DELETE → disconnect the org connection: forget it, and revoke its grant
+// at Google unless another stored connection (a person's own, an agent
+// identity) uses the same Google account. `revoked` and `revokeNote` as on
+// DELETE /api/integrations/google.
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, Response> {
-    require_admin(&state, &headers).await?;
+    let admin = require_admin(&state, &headers).await?;
     let sb = state.secretbox().await.unwrap_or_default();
-    disconnect_org(&state.pg, &sb).await;
-    Ok(Json(json!({ "ok": true })).into_response())
+    let outcome = disconnect_org(&state.pg, &sb).await;
+    Ok(Json(json!({
+        "ok": true,
+        "revoked": outcome.revoked(),
+        "revokeNote": revoke_note(&outcome, Some(admin.id.as_str())),
+    }))
+    .into_response())
 }

@@ -58,6 +58,10 @@
   let kind = $state<'owner' | 'org' | 'agent'>('org')
   let principalUserId = $state('')
   let googleError = $state('')
+  // Set when a disconnect forgot the connection but did not revoke the grant
+  // at Google (another stored connection shares it, or Google refused) —
+  // the server's own sentence.
+  let googleNote = $state('')
   let googleBusy = $state(false)
   let googleSeeded = $state(false)
   $effect(() => {
@@ -86,9 +90,11 @@
   }
   const disconnectGoogle = async () => {
     googleError = ''
+    googleNote = ''
     googleBusy = true
     try {
-      const saved = await delJson<GoogleIdentity>(`/api/fleet/defs/${def.id}/google`)
+      const saved = await delJson<GoogleIdentity & { revoked: boolean; revokeNote: string | null }>(`/api/fleet/defs/${def.id}/google`)
+      googleNote = saved.revokeNote ?? ''
       kind = saved.principalKind
       principalUserId = saved.principalUserId ?? ''
       await qc.invalidateQueries({ queryKey: ['agent-google', def.id] })
@@ -203,6 +209,7 @@
             {/if}
           </div>
         {/if}
+        {#if googleNote}<div class="mt-1 text-xs text-muted">{googleNote}</div>{/if}
         {#if googleError}<div class="mt-1 text-xs text-danger">{googleError}</div>{/if}
       {/if}
     </div>

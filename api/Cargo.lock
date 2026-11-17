@@ -5382,6 +5382,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-google-client",
  "talaria-secretbox",
+ "tokio",
  "tracing",
  "url",
 ]
@@ -5488,7 +5489,6 @@ dependencies = [
 name = "talaria-google-org"
 version = "0.1.0"
 dependencies = [
- "axum",
  "base64 0.23.1",
  "reqwest",
  "serde",
@@ -5499,7 +5499,6 @@ dependencies = [
  "talaria-google-connections",
  "talaria-secretbox",
  "tracing",
- "url",
 ]
 
 [[package]]
