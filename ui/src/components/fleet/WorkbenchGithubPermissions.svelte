@@ -64,9 +64,12 @@
       }
     } catch (e) {
       toastError('Could not save GitHub permissions', e)
+    } finally {
+      // Busy until the re-read lands: an edit made against the set from
+      // before this write would send a stale `from` and come back a 409.
+      await qc.invalidateQueries({ queryKey })
+      saving = null
     }
-    saving = null
-    await qc.invalidateQueries({ queryKey })
   }
 
   const SCOPES: Array<[PermissionScope, string]> = [

@@ -70,6 +70,12 @@ describe('mintingInstallations', () => {
   it('is every installation the host uses while the agent holds no repo there', () => {
     expect(mintingInstallations(block({ repos: [] })).map((i) => i.id)).toEqual(['91', '92'])
   })
+
+  it('is none when the agent holds repos no installation on record mints, as the server measures', () => {
+    const unminted = block({ repos: [{ repo: 'gamma/c', installation: null }] })
+    expect(mintingInstallations(unminted)).toEqual([])
+    expect(heldState(unminted, 'workflows', 'write')).toEqual({ kind: 'unknown' })
+  })
 })
 
 describe('heldState', () => {

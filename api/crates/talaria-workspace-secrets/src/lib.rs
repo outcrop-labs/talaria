@@ -1651,7 +1651,11 @@ async fn host_secret(
 /// The name of the workspace secret [`credential_for_host`] would answer
 /// git's ask at `host` from, read without opening or spending it: what the
 /// agent's own diagnosis says its credential there is (talaria-git-hosts'
-/// `token_view`). None when the host's own login answers instead.
+/// `token_view`). None when the host's own login answers instead, which
+/// includes the chosen secret having no sealed password or token entry: the
+/// door passes over that one to the host's login, and so does this. What it
+/// cannot see without opening (a seal that fails, a spend refused) it does
+/// not guess at.
 pub async fn secret_answering_git_at(
     pg: &PgPool,
     agent_model: &str,
@@ -1662,9 +1666,14 @@ pub async fn secret_answering_git_at(
     if lower.is_empty() {
         return Ok(None);
     }
-    Ok(host_secret(pg, agent_model, &lower, withheld)
-        .await?
-        .map(|(_, name)| name))
+    let Some((doc_id, doc_name)) = host_secret(pg, agent_model, &lower, withheld).await? else {
+        return Ok(None);
+    };
+    let entries = cipher_entries(pg, &doc_id).await?;
+    let (_, pass_entry) = login_entries(&entries);
+    Ok(pass_entry
+        .filter(|e| !e.cipher.is_empty())
+        .map(|_| doc_name))
 }
 
 pub async fn credential_for_host(

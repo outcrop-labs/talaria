@@ -84,11 +84,14 @@ export const scopeOf = (catalog: CatalogEntry[], key: string): PermissionScope =
 
 /** The installations that mint the agent's tokens on this host: the ones its
  *  granted repos are minted on, or every one the host uses while it holds no
- *  repo there — the server's `held` measures against the same. */
+ *  repo there — the server's `held` measures against the same. Repos that
+ *  no installation on record mints are none: what holds them is unknown,
+ *  not some other account's installation. */
 export function mintingInstallations(block: HostPermissions): PermissionsInstallation[] {
   const all = block.installations ?? []
+  if (block.repos.length === 0) return all
   const ids = new Set(block.repos.map((r) => r.installation).filter((id): id is string => !!id))
-  return ids.size === 0 ? all : all.filter((i) => ids.has(i.id))
+  return all.filter((i) => ids.has(i.id))
 }
 
 /** Why a key is, or is not, on the agent's tokens. */

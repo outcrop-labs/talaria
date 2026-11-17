@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use talaria_git_host_types::{HostKind, Level, Narrowing, PermissionSet};
-use talaria_github::api_origin_for;
+use talaria_github::{api_origin_for, is_organization_key};
 
 use crate::grants::RepoRef;
 use crate::holdings::{InstallationRow, all_installation_rows, tracked_installations};
@@ -72,8 +72,9 @@ pub struct GrantCredential {
 impl GrantCredential {
     /// What the token carries, when that is known: the set met with what
     /// the installation holds, plus `metadata: read`, which GitHub puts on
-    /// every token. Nothing at all when the installation holds none of the
-    /// set: an ask that comes to nothing is never minted. None for a secret,
+    /// every token. Nothing at all when that comes to nothing, or to no more
+    /// than metadata for a set that names more: the mint (talaria-github's
+    /// `issue`) refuses both, so git gets no credential. None for a secret,
     /// a host-wide token, or an installation the record has not read.
     pub fn carries(&self) -> Option<PermissionSet> {
         let Credential::AppToken {
@@ -85,10 +86,22 @@ impl GrantCredential {
             return None;
         };
         let mut carries = set.meet(held);
-        if !carries.is_empty() && held.contains("metadata") {
+        let beyond_metadata = |s: &PermissionSet| !s.without(|k| k == "metadata").is_empty();
+        if carries.is_empty() || (beyond_metadata(set) && !beyond_metadata(&carries)) {
+            return Some(PermissionSet::new());
+        }
+        if held.contains("metadata") {
             carries.raise("metadata", Level::Read);
         }
         Some(carries)
+    }
+
+    /// The organization keys of what the token carries: GitHub may refuse
+    /// them on a token for one repository, and the mint then goes without
+    /// them rather than fail (talaria-github's `plan`). Only GitHub knows
+    /// which, so the agent is told they ride only where GitHub takes them.
+    fn organization_keys(carries: &PermissionSet) -> PermissionSet {
+        carries.without(|k| !is_organization_key(k))
     }
 
     /// What the set names that the installation does not hold (the token
@@ -161,9 +174,10 @@ impl GrantCredential {
                 } else {
                     "the set an admin gave you"
                 };
-                match (self.carries(), self.shortfall()) {
-                    (Some(carries), _) if carries.is_empty() => format!(
-                        "{head}: carries nothing — the GitHub App's installation holds none of {whose} ({set}), so git gets no credential there"
+                let line = match (self.carries(), self.shortfall()) {
+                    (Some(carries), short) if carries.is_empty() => format!(
+                        "{head}: carries nothing — the GitHub App's installation holds nothing of {whose} ({set}) beyond metadata, so no token is minted and git gets no credential there until an owner accepts {} on GitHub",
+                        short.unwrap_or_default()
                     ),
                     (Some(carries), Some(short)) if !short.is_empty() => format!(
                         "{head}: carries {carries} ({whose}); short of {short}, which the GitHub App's installation does not hold yet, so no token carries it until an owner accepts it on GitHub"
@@ -172,6 +186,17 @@ impl GrantCredential {
                     (None, _) => format!(
                         "{head}: asks for {set} ({whose}); what the GitHub App's installation holds is not on record yet, so it carries as much of that as the installation holds"
                     ),
+                };
+                // An organization key rides only where GitHub takes it on a
+                // token for one repository; a 403 on one the set names is
+                // GitHub's limit, not a permission to ask for again.
+                let org = Self::organization_keys(&self.carries().unwrap_or_else(|| set.clone()));
+                if org.is_empty() {
+                    line
+                } else {
+                    format!(
+                        "{line}. Its organization keys ({org}) ride only where GitHub takes them on a token for one repository: a 403 on one of those is GitHub's limit, not a permission to ask for again"
+                    )
                 }
             }
         }
@@ -403,6 +428,102 @@ mod tests {
             "{}",
             c.doctor_line()
         );
+    }
+
+    #[test]
+    fn metadata_alone_is_nothing_for_a_set_that_names_more_as_the_mint_refuses_it() {
+        // Every holdings record carries metadata, and so does the default:
+        // an installation that holds neither contents nor pull_requests
+        // meets the default in metadata alone, and the mint refuses that
+        // ask (NothingHeld), so git gets no credential at all.
+        let held = set(&[("issues", Level::Write), ("metadata", Level::Read)]);
+        let selected = ["91".to_string()];
+        let c = credential_of(
+            &app(),
+            "acme/widgets",
+            None,
+            &selected,
+            &installation(Some(held.clone())),
+            None,
+        );
+        assert_eq!(c.carries(), Some(PermissionSet::new()));
+        assert_eq!(
+            c.shortfall(),
+            Some(set(&[
+                ("contents", Level::Write),
+                ("pull_requests", Level::Write)
+            ]))
+        );
+        assert_eq!(c.github_wire()["carries"], json!({}));
+        assert_eq!(
+            c.doctor_line(),
+            "git token for acme/widgets on GitHub: carries nothing — the GitHub App's installation holds nothing of your default set (contents:write, metadata:read, pull_requests:write) beyond metadata, so no token is minted and git gets no credential there until an owner accepts contents:write, pull_requests:write on GitHub"
+        );
+
+        // An admin's set whose one key beyond metadata is not accepted yet:
+        // the same.
+        let given = set(&[("metadata", Level::Read), ("actions", Level::Write)]);
+        let c = credential_of(
+            &app(),
+            "acme/widgets",
+            Some(&given),
+            &selected,
+            &installation(Some(held.clone())),
+            None,
+        );
+        assert_eq!(c.carries(), Some(PermissionSet::new()));
+        assert!(
+            c.doctor_line().contains("no credential"),
+            "{}",
+            c.doctor_line()
+        );
+
+        // A set of metadata alone is minted: it asked for no more.
+        let only = set(&[("metadata", Level::Read)]);
+        let c = credential_of(
+            &app(),
+            "acme/widgets",
+            Some(&only),
+            &selected,
+            &installation(Some(held)),
+            None,
+        );
+        assert_eq!(c.carries(), Some(only));
+    }
+
+    #[test]
+    fn organization_keys_are_said_to_ride_only_where_github_takes_them() {
+        let held = set(&[
+            ("contents", Level::Write),
+            ("metadata", Level::Read),
+            ("organization_secrets", Level::Read),
+        ]);
+        let given = set(&[
+            ("contents", Level::Write),
+            ("organization_secrets", Level::Read),
+        ]);
+        let c = credential_of(
+            &app(),
+            "acme/widgets",
+            Some(&given),
+            &["91".to_string()],
+            &installation(Some(held)),
+            None,
+        );
+        assert_eq!(
+            c.carries(),
+            Some(set(&[
+                ("contents", Level::Write),
+                ("metadata", Level::Read),
+                ("organization_secrets", Level::Read)
+            ]))
+        );
+        let line = c.doctor_line();
+        assert!(
+            line.contains("Its organization keys (organization_secrets:read) ride only where GitHub takes them on a token for one repository"),
+            "{line}"
+        );
+        assert!(line.contains("not a permission to ask for again"), "{line}");
     }
 
     #[test]

@@ -1115,17 +1115,34 @@ const GITCONFIG: &str = "[credential]\n\thelper = /usr/local/bin/git-credential-
 /// credential fill` asks the same helper, for the repo `path` names, and the
 /// token lives in one shell variable for one command. Never printed, never
 /// exported, never written down. `GIT_TERMINAL_PROMPT=0`: a decline must end
-/// the command, not wait on a username prompt nobody will answer. The skills
-/// teach this line verbatim (talaria-toolkit), and a test runs it through git
-/// and the helper above.
+/// the command, not wait on a username prompt nobody will answer. It opens
+/// the call the skills teach verbatim ([`api_call_example`], talaria-toolkit),
+/// and a test runs it through git and the helper above.
 const API_TOKEN_LINE: &str = "TOKEN=$(printf 'protocol=https\\nhost=github.com\\npath=OWNER/REPO.git\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill | sed -n 's/^password=//p')";
+
+/// What stands between the read and the call: `TOKEN=$(…)` succeeds with an
+/// empty token when the helper declines (the pipeline's status is sed's), and
+/// a call sent with `Bearer ` and nothing after it is a 401 that explains
+/// nothing. The guard ends the subshell there, under the helper's own reason.
+const API_TOKEN_GUARD: &str =
+    "[ -n \"$TOKEN\" ] || { echo 'no GitHub token for OWNER/REPO' >&2; exit 1; }";
+
+/// The whole call, as the agents are taught it: one command, in a subshell,
+/// so the token is gone when it ends. Split over two tool calls, the second
+/// would find `$TOKEN` empty.
+fn api_call_example() -> String {
+    format!(
+        "( {API_TOKEN_LINE}; {API_TOKEN_GUARD}; curl -sS -H \"Authorization: Bearer $TOKEN\" https://api.github.com/repos/OWNER/REPO/pulls )"
+    )
+}
 
 /// The workspace pointer every harness reads in its working directory
 /// (AGENTS.md, and CLAUDE.md for a harness that reads that name): where the
 /// skills live, and how git and the GitHub API authenticate.
 fn workspace_pointer() -> String {
     format!(
-        "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never put a token in a remote URL.\n\nOn GitHub that credential is also your API token for the one repository, carrying what `list_repos` shows for it (`github.carries`). Read it for one command and spend it in that same command; never print, echo, export or store it:\n\n```sh\n{API_TOKEN_LINE}\ncurl -sS -H \"Authorization: Bearer $TOKEN\" https://api.github.com/repos/OWNER/REPO/pulls\n```\n\n`host=` is the host in the repo's clone URL. `GH_TOKEN=\"$TOKEN\" gh api repos/OWNER/REPO/pulls` works the same where `gh` is installed. A permission your token lacks is an admin's to give: ask with `request_git_permission`.\n"
+        "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never put a token in a remote URL.\n\nOn GitHub that credential is also your API token for the one repository, carrying what `list_repos` shows for it (`github.carries`). Read it and spend it in ONE command, in a subshell, so it is gone when the command ends; never print, echo, export or store it, and never run that command with `-v`, `--trace` or `set -x`, which print it:\n\n```sh\n{call}\n```\n\nRun it as one tool call: a `TOKEN` set in one is gone in the next. An empty token (the repo is not granted, or its token would carry nothing; `doctor` says which) stops at the guard under the helper's reason, rather than calling the API as nobody. `host=` is the host in the repo's clone URL. `GH_TOKEN=\"$TOKEN\" gh api repos/OWNER/REPO/pulls` in place of curl works the same where `gh` is installed. A permission your token lacks is an admin's to give: ask with `request_git_permission`.\n",
+        call = api_call_example()
     )
 }
 
@@ -7005,10 +7022,9 @@ empty_list: []
         let curl_path = dir.join("stub/curl");
         std::fs::write(&curl_path, curl).unwrap();
         std::fs::set_permissions(&curl_path, exec).unwrap();
-        let script = format!(
-            "{}\nprintf %s \"$TOKEN\"\n",
-            API_TOKEN_LINE.replace("OWNER/REPO", "acme/widgets")
-        );
+        // The taught call, with printf where the API call goes.
+        let script = format!("( {API_TOKEN_LINE}; {API_TOKEN_GUARD}; printf %s \"$TOKEN\" )\n")
+            .replace("OWNER/REPO", "acme/widgets");
         let out = std::process::Command::new("sh")
             .arg("-c")
             .arg(&script)
@@ -7060,12 +7076,18 @@ empty_list: []
         assert_eq!(body["protocol"], "https", "{body}");
         assert!(!stderr.contains("ghs_sekret"), "{stderr}");
 
-        // Declined: the command ends with an empty $TOKEN, rather than
-        // waiting on a username prompt nobody will answer.
-        let (_, stdout, stderr, _) = run_api_token_line(None);
+        // Declined: the read ends with an empty $TOKEN, rather than waiting
+        // on a username prompt nobody will answer, and the guard stops the
+        // call there, under the helper's reason.
+        let (code, stdout, stderr, _) = run_api_token_line(None);
+        assert_eq!(code, 1, "{stderr}");
         assert_eq!(stdout, "", "{stderr}");
         assert!(
             stderr.contains("no credential for github.com/acme/widgets.git"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("no GitHub token for acme/widgets"),
             "{stderr}"
         );
     }
@@ -7073,16 +7095,17 @@ empty_list: []
     #[test]
     fn the_workspace_pointer_and_the_skill_teach_the_same_api_token_line() {
         let pointer = workspace_pointer();
-        assert!(pointer.contains(API_TOKEN_LINE), "{pointer}");
+        assert!(pointer.contains(&api_call_example()), "{pointer}");
         assert!(pointer.contains("list_repos"), "{pointer}");
         assert!(pointer.contains("request_git_permission"), "{pointer}");
         assert!(!pointer.contains("Never `gh`"), "{pointer}");
         // The skill ships to every agent container; the line it teaches is
         // the one the test above runs.
         let skill = include_str!("../../../../scripts/skills/talaria-toolkit/SKILL.md");
+        let call = api_call_example();
         assert!(
-            skill.contains(API_TOKEN_LINE),
-            "scripts/skills/talaria-toolkit/SKILL.md must teach the API token line verbatim:\n{API_TOKEN_LINE}"
+            skill.contains(&call),
+            "scripts/skills/talaria-toolkit/SKILL.md must teach the API call verbatim:\n{call}"
         );
     }
 

@@ -2901,10 +2901,11 @@ fn repos_line(grants: &[hosts::RepoRef]) -> String {
 }
 
 /// How the agent reads its GitHub token for one API call: list_repos'
-/// `githubApi`. The line is the one the talaria-toolkit skill's "The GitHub
+/// `githubApi`. The call is the one the talaria-toolkit skill's "The GitHub
 /// API" and the workspace AGENTS.md teach (talaria-fleet-render's
-/// `API_TOKEN_LINE`, whose test runs it through git and the rendered helper).
-pub const GITHUB_API_NOTE: &str = "The credential git gets for a GitHub repo is also your GitHub API token for that one repository, carrying what its grant's `github.carries` says. Read it for one command and spend it in that same command; never print, echo, export or store it: TOKEN=$(printf 'protocol=https\\nhost=github.com\\npath=OWNER/REPO.git\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill | sed -n 's/^password=//p') && curl -sS -H \"Authorization: Bearer $TOKEN\" <github.api>/repos/OWNER/REPO/pulls (host= is the host in the repo's clone URL; `GH_TOKEN=\"$TOKEN\" gh api repos/OWNER/REPO/...` works the same where gh is installed). A permission your set does not name is an admin's to give: ask for it with request_git_permission.";
+/// `api_call_example`, whose test runs it through git and the rendered
+/// helper); a test here holds the skill to it.
+pub const GITHUB_API_NOTE: &str = "The credential git gets for a GitHub repo is also your GitHub API token for that one repository, carrying what its grant's `github.carries` says. Read it and spend it in ONE command, in a subshell, so it is gone when the command ends; never print, echo, export or store it, and never run the call with -v, --trace or set -x, which print it: ( TOKEN=$(printf 'protocol=https\\nhost=github.com\\npath=OWNER/REPO.git\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill | sed -n 's/^password=//p'); [ -n \"$TOKEN\" ] || { echo 'no GitHub token for OWNER/REPO' >&2; exit 1; }; curl -sS -H \"Authorization: Bearer $TOKEN\" https://api.github.com/repos/OWNER/REPO/pulls ). Run it as one tool call: a TOKEN set in one is gone in the next. host= is the host in the repo's clone URL, and the API answers at the grant's `github.api` (https://api.github.com for github.com). `GH_TOKEN=\"$TOKEN\" gh api repos/OWNER/REPO/...` in place of curl works the same where gh is installed. An empty token stops at the guard: the repo is not granted, or its token would carry nothing (doctor says which). A 403 or 404 for a permission your set does not name is an admin's to give: ask for it with request_git_permission. An organization key in `github.carries` rides only where GitHub takes it on a token for one repository, so a 403 on one of those is GitHub's limit, not a permission to ask for again.";
 
 /// list_repos' `grants`: each `{host, repo}`, with `github` (talaria-git-hosts'
 /// token_view: null on a host that is not GitHub) when what its credential
@@ -3536,6 +3537,23 @@ mod tests {
             .output()
             .expect("bash runs");
         assert_eq!(String::from_utf8_lossy(&none.stdout).trim(), "ok");
+    }
+
+    #[test]
+    fn the_github_api_note_teaches_the_skills_call_verbatim() {
+        // The call between "( TOKEN=" and its closing " )": the one the
+        // skill teaches, and fleet-render's test runs.
+        let from = GITHUB_API_NOTE
+            .find("( TOKEN=")
+            .expect("the note teaches the call");
+        let to = from + GITHUB_API_NOTE[from..].find(" )").expect("closed") + 2;
+        let call = &GITHUB_API_NOTE[from..to];
+        assert!(call.contains("[ -n \"$TOKEN\" ] || {"), "{call}");
+        let skill = include_str!("../../../../scripts/skills/talaria-toolkit/SKILL.md");
+        assert!(
+            skill.contains(call),
+            "scripts/skills/talaria-toolkit/SKILL.md must teach list_repos' githubApi call verbatim:\n{call}"
+        );
     }
 
     #[test]
@@ -4623,8 +4641,9 @@ mod tests {
                 assert_eq!(github["shortfall"], json!({ "workflows": "write" }));
 
                 // A workspace secret granted to the agent and spendable at
-                // github.com answers git first: the token is that secret,
-                // and nothing is claimed about what it carries.
+                // github.com, with nothing sealed in it: the door passes
+                // over it to the App's token, and so does what the agent
+                // is told.
                 let secret: String = sqlx::query_scalar(
                     "insert into workspace_secrets (name, title, allowed_hosts) \
                      values ('wbrevise-github', 'WB Revise GitHub', '{github.com}') returning id::text",
@@ -4637,6 +4656,23 @@ mod tests {
                 )
                 .bind(&secret)
                 .bind(MODEL)
+                .execute(&pg)
+                .await
+                .unwrap();
+                let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
+                let github = &listed["grants"][0]["github"];
+                assert_eq!(github["narrowing"], "perRepo", "{github}");
+                assert_eq!(github["carries"], json!({ "contents": "write", "metadata": "read" }));
+
+                // With a sealed token in it, it answers git first: the
+                // token is that secret, and nothing is claimed about what
+                // it carries. Read by name, never opened: the cipher here
+                // would not open.
+                sqlx::query(
+                    "insert into workspace_secret_entries (secret_id, key, label, value_cipher) \
+                     values ($1::uuid, 'token', 'Token', 'sealed')",
+                )
+                .bind(&secret)
                 .execute(&pg)
                 .await
                 .unwrap();
