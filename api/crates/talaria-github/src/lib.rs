@@ -3066,7 +3066,9 @@ mod tests {
             ("members", Level::Write),
             ("repository_projects", Level::Admin),
         ] {
-            known(key, level).unwrap_or_else(|e| panic!("{key}: {e}"));
+            if let Err(e) = known(key, level) {
+                panic!("{key}: {e}");
+            }
         }
         let why = known("workflows", Level::Read).expect_err("write only");
         assert!(why.contains("write only"), "{why}");

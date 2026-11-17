@@ -930,7 +930,7 @@ pub fn dormant_permissions_alert(
         })
         .collect();
     Some(Alert {
-        severity: AlertSeverity::Warning,
+        severity: AlertSeverity::Info,
         title: if n == 1 {
             "1 agent holds GitHub permissions the installation has not accepted".into()
         } else {
@@ -1270,7 +1270,11 @@ mod tests {
             repos: repos.iter().map(|r| r.to_string()).collect(),
         };
         let one = dormant_permissions_alert(&[dormant("a1", "Billy", &["acme/site"])]).unwrap();
-        assert_eq!(one.severity, AlertSeverity::Warning);
+        assert_eq!(
+            one.severity,
+            AlertSeverity::Info,
+            "informational: nothing waits on it"
+        );
         assert_eq!(
             one.title,
             "1 agent holds GitHub permissions the installation has not accepted"

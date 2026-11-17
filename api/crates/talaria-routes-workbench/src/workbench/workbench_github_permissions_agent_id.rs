@@ -639,9 +639,13 @@ mod tests {
                 .unwrap()
                 .expect("a credential");
             assert_ne!(token.login.password, other.login.password);
+            // Repo-scoped mints only: another live test's grants editor lists
+            // every registered host's repositories, this one's included, with
+            // an installation-wide token, which posts no body.
             let posted: Vec<Value> = bodies(&log, "POST", "/app/installations/95001/access_tokens")
                 .into_iter()
-                .map(|b| serde_json::from_str::<Value>(&b).unwrap()["permissions"].clone())
+                .filter_map(|b| serde_json::from_str::<Value>(&b).ok())
+                .map(|b| b["permissions"].clone())
                 .collect();
             assert_eq!(
                 posted,
