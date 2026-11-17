@@ -670,13 +670,22 @@ mod tests {
                 "the token was revoked on GitHub"
             );
             assert!(!deleted.contains(&format!("Bearer {}", other.login.password)));
-            let message = tokio::time::timeout(std::time::Duration::from_secs(10), heard.recv())
-                .await
-                .expect("the broadcast arrives")
-                .expect("a message");
-            let message = talaria_git_hosts::revoke::read_broadcast(&message).expect("readable");
-            assert_eq!(message.agent, a);
+            // The topic is every process's, and other live tests revoke on it
+            // too: this agent's message is the one looked for.
+            let message = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let payload = heard.recv().await.expect("a message");
+                    if let Some(b) = talaria_git_hosts::revoke::read_broadcast(&payload)
+                        && b.agent == a
+                    {
+                        return b;
+                    }
+                }
+            })
+            .await
+            .expect("the broadcast arrives");
             assert_eq!(message.host.as_deref(), Some(h.as_str()));
+            assert_eq!(message.repo, None, "every repo of the agent on the host");
 
             cleanup(&state, &[&a, &b], &[&admin, &manager], &[&h]).await;
         }
