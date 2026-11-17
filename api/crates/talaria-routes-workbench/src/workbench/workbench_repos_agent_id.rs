@@ -173,6 +173,11 @@ pub async fn put(
         Ok(c) => c,
         Err(e) => return Ok(internal("[workbench/repos] grant write failed", e)),
     };
+    // The grant write has landed: it is audited, and a removed grant's tokens
+    // taken back, before anything else can fail and answer early.
+    if !change.is_empty() {
+        record_grant_change(&state, &user, &agent_id, &agent_label, &change, &held).await;
+    }
     // Only rules for STILL-GRANTED repos are honored — a rule for a repo the
     // same request revoked is a UI race, and the quiet drop is the honest
     // resolution.
@@ -187,9 +192,6 @@ pub async fn put(
         if let Err(e) = hosts::set_repo_rule(&state.pg, &agent_id, rule).await {
             return Ok(internal("[workbench/repos] rule write failed", e));
         }
-    }
-    if !change.is_empty() {
-        record_grant_change(&state, &user, &agent_id, &agent_label, &change, &held).await;
     }
     Ok(Json(json!({ "granted": repos })).into_response())
 }
