@@ -97,25 +97,6 @@ pub(super) fn arguments_refusal(rpc: &Value) -> Option<&'static str> {
     )
 }
 
-/// The person in the agent's live conversation, when one is streaming (the
-/// REST draft routes' twin: integrations_google_agent_queue's
-/// `streaming_conversation_user`). None when the agent is not mid-turn.
-async fn streaming_conversation_user(
-    pg: &sqlx::PgPool,
-    agent_model: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "select c.user_id::text \
-         from messages m join conversations c on c.id = m.conversation_id \
-         where c.agent_model = $1 and m.role = 'assistant' and m.status = 'streaming' \
-           and m.streamed_at > now() - interval '15 minutes' \
-         order by m.streamed_at desc limit 1",
-    )
-    .bind(agent_model)
-    .fetch_optional(pg)
-    .await
-}
-
 /// Why a personal hold must not be queued in this conversation, or None:
 /// the person talking is not the assistant's owner, whose queue the row
 /// would land in. An org-approved row is not a mismatch; no live
@@ -240,7 +221,7 @@ pub(super) async fn hold(
     // And the REST draft routes' other one: a personal hold for one person,
     // asked for in a conversation with another, would wait where the person
     // asking never sees it.
-    match streaming_conversation_user(pg, agent_model).await {
+    match talaria_chips::streaming_conversation_user(pg, agent_model).await {
         Ok(talking_to) => {
             if let Some(why) = owner_conflict(
                 principal.is_org,

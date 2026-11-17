@@ -1955,6 +1955,27 @@ fn talaria_now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// The person in the agent's live conversation, when one is streaming (an
+/// assistant reply mid-turn in the last fifteen minutes). None when the agent
+/// is not mid-turn — a cron, a finished turn — which is not a mismatch. The
+/// confirm-send doors (the REST drafts, the MCP gateway's hold) refuse a
+/// personal action queued while someone other than its owner is talking.
+pub async fn streaming_conversation_user(
+    pg: &PgPool,
+    agent_model: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select c.user_id::text \
+         from messages m join conversations c on c.id = m.conversation_id \
+         where c.agent_model = $1 and m.role = 'assistant' and m.status = 'streaming' \
+           and m.streamed_at > now() - interval '15 minutes' \
+         order by m.streamed_at desc limit 1",
+    )
+    .bind(agent_model)
+    .fetch_optional(pg)
+    .await
+}
+
 /// The conversation an agent is speaking in, for callers with no id of
 /// their own: served only while exactly one turn could be meant (the
 /// `landing_target` rule); an ambiguity is None, never a guess.
