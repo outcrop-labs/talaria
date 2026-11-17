@@ -34,6 +34,9 @@
 //              admin only, or the default; minted into the agent's token
 //   revoke     taking an agent's tokens back when what it may do narrows, in
 //              this api process and, by a Redis broadcast, in every other
+//   requests   an agent asking for a GitHub permission it lacks
+//              (`workbench_permission_requests`), and an admin's decision:
+//              approved into the agent's set, or denied
 //
 // The interface every adapter implements, and every type it answers in, is
 // talaria-git-host-types'. `Host` is the dispatch over the registered kinds.
@@ -44,6 +47,9 @@ pub mod permissions;
 #[cfg(test)]
 mod permissions_live;
 pub mod registry;
+pub mod requests;
+#[cfg(test)]
+mod requests_live;
 pub mod revoke;
 
 use std::collections::HashMap;

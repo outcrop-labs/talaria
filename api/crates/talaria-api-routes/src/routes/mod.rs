@@ -1619,6 +1619,12 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
+            "/api/workbench/permission-requests",
+            get(talaria_routes_workbench::workbench::workbench_permission_requests::get)
+                .put(talaria_routes_workbench::workbench::workbench_permission_requests::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
             "/api/workbench/repo-requests",
             get(talaria_routes_workbench::workbench::workbench_repo_requests::get)
                 .put(talaria_routes_workbench::workbench::workbench_repo_requests::put)

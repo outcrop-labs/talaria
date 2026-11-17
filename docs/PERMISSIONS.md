@@ -116,6 +116,9 @@ same manage surface read-only.
   An agent's managers see what it carries there, read-only, and still grant and remove its repos
   and set their branch rules; every grant change is audited. See
   [WORKBENCH.md → Git hosts](./WORKBENCH.md#git-hosts-the-operators-choice).
+  An agent's own request for a permission (`request_git_permission`) is decided by an admin
+  too (`/api/workbench/permission-requests`), and only by an admin who may read the board the
+  request was raised on; the agent's managers are told the outcome, never what it said.
 
 The rows live in `agent_managers` (agent × user). Where this is asked in code:
 `talaria_agent_managers::manages_agent` and the route guard

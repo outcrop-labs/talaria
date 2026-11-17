@@ -97,6 +97,14 @@ async fn serve() {
         tokio::spawn(talaria_git_hosts::revoke::listen(pg, subscribe));
     }
 
+    // A GitHub permission an admin approved ahead of GitHub is settled by the
+    // holdings refresh (talaria-git-hosts' requests) when the installation
+    // comes to hold it: the ticket line, the managers' notice and the
+    // approval's read are the routes', wired here once at boot (the
+    // scheduler's first refresh waits ninety seconds). Unwired, the request
+    // still settles and is audited; nobody is told.
+    talaria_routes_workbench::workbench::workbench_permission_requests::wire_settled(&state);
+
     // The builtin MCP rows (the toolkit, the Workbench) are this api's to
     // guarantee: every reader — the gateway, agents' rendered configs, the
     // SPA harness's capability reach — treats them as present, so boot seeds

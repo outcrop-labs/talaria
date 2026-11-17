@@ -329,6 +329,32 @@ pub fn workbench_tools() -> Vec<Value> {
             },
         }),
         json!({
+            "name": "request_git_permission",
+            "description": "Ask an admin for a GitHub permission your git token lacks — when GitHub refused something you did on a granted repo for want of one (a 403 \"Resource not accessible by integration\", a push refused \"without workflows permission\", an X-Accepted-GitHub-Permissions header naming what it needed). Name the repo where it happened and each permission GitHub wanted, by GitHub's App permission name (contents, pull_requests, workflows, secrets, actions, administration, organization_secrets, …) at the level it wanted. Approval adds it to your permissions on that repo's git host, for every repo you hold there, and your next git credential for those repos carries it. Refused only for a name or level GitHub does not know, a repo you are not granted, or a host whose own token decides (no per-agent permissions there). Asking again while one is open adds your words to it. An admin decides in Admin → Git hosts; the outcome shows in list_repos (permissionRequests) and on the ticket. Do not retry the GitHub call or ask again until it is decided — continue other work. awaiting_github means approved in Talaria and waiting for an owner of the GitHub account to accept the permission for the App; no token carries it until they do.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": { "type": "string", "description": "owner/name — the granted repo (list_repos) where GitHub refused" },
+                    "host": { "type": "string", "description": "The git host the repo is on (list_repos' grants[].host). Needed only when the same owner/name is granted to you on more than one host." },
+                    "permissions": {
+                        "type": "array",
+                        "description": "Each permission GitHub wanted, at the level it wanted",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "GitHub's App permission name, like workflows or pull_requests" },
+                                "level": { "type": "string", "enum": ["read", "write", "admin"] },
+                            },
+                            "required": ["name", "level"],
+                        },
+                    },
+                    "why": { "type": "string", "description": "What you were doing, and what GitHub answered, verbatim — the admin decides on it" },
+                    "taskId": { "type": "string", "description": "The ticket you were working — same rule as start_job: a ticket you may not work (board not yours, closed, archived, archived board, a workchain step still waiting its turn) is refused, so omit it rather than guessing." },
+                },
+                "required": ["repo", "permissions", "why"],
+            },
+        }),
+        json!({
             "name": "finish_job",
             "description": "Finish a job: Talaria verifies the job branch has commits in its workdir and opens the pull request with the ticket-linked body. When the branch already has an open PR (a revise round), that PR is kept, never duplicated: your pushes already updated it, and the summary is posted on it as a comment. A no-commits refusal names that workdir, branch, and refs/heads/… — push there, or abandon:true. Returns the PR URL — put it in your outcome report. Either way the job closes out; the ticket only gets an audit line if it is still open to you (a ticket closed or archived while you worked takes no further agent writes), so report the PR URL yourself.",
             "inputSchema": {
@@ -622,8 +648,9 @@ async fn ticket_still_ours(pg: &PgPool, subject: &AgentSubject, task_id: &str) -
 
 /// THE ONLY way this file tells anybody an approval was raised. Not one of
 /// the three ticket doors at the top of the file — a door onto somebody's
-/// inbox — but it is one for exactly the same reason: three verbs here park
-/// work on a human (`workbench_plan`, `repo_request`, `app_install`), each declared in
+/// inbox — but it is one for exactly the same reason: four verbs here park
+/// work on a human (`workbench_plan`, `repo_request`, `app_install`,
+/// `git_permission`), each declared in
 /// approvals.rs with the AUTHORITY their decision route enforces, and that
 /// declaration is what decides who may be told and how much of it.
 ///
@@ -912,6 +939,18 @@ async fn call_tool(
                 // "no requests" about requests that exist.
                 Err(e) => {
                     out["repoRequestsError"] = json!(format!("repo requests unreadable: {e}"))
+                }
+            }
+            // The GitHub permissions it asked for, and what became of each:
+            // where request_git_permission tells the agent to look.
+            match hosts::requests::agent_requests(pg, &agent.id, 30).await {
+                Ok(rows) => {
+                    out["permissionRequests"] =
+                        Value::Array(rows.iter().map(permission_request_wire).collect());
+                }
+                Err(e) => {
+                    out["permissionRequestsError"] =
+                        json!(format!("permission requests unreadable: {e}"))
                 }
             }
             CallOutcome::Ok(out)
@@ -1805,6 +1844,70 @@ async fn call_tool(
                 "appSlug": app_slug,
                 "note": "Request filed — a human decides. Continue other work; the repo appears in list_repos if approved, and list_repos shows the decision (a rejection's reason also lands on the ticket).",
             }))
+        }
+
+        "request_git_permission" => {
+            let repo = arg_str(args, "repo").trim().to_string();
+            if repo.is_empty() {
+                return CallOutcome::Fail(
+                    "repo is required: the granted repo (list_repos) where GitHub refused".into(),
+                );
+            }
+            let asked = match permission_args(args.get("permissions")) {
+                Ok(p) => p,
+                Err(why) => return CallOutcome::Fail(why),
+            };
+            // The same ticket door as start_job: the taskId is stored on the
+            // request and gets a line, so it is authorised, not believed.
+            let task_id = match ticket_arg(pg, subject, args).await {
+                Ok(id) => id,
+                Err(error) => return CallOutcome::Fail(error),
+            };
+            let why = arg_str(args, "why");
+            let filing = match hosts::requests::file_git_permission_request(
+                pg,
+                &hosts::requests::Ask {
+                    agent_id: &agent.id,
+                    agent_model: &agent.model,
+                    repo: &repo,
+                    host: args.get("host").and_then(Value::as_str),
+                    permissions: &asked,
+                    why: &why,
+                    task_id: task_id.as_deref(),
+                },
+            )
+            .await
+            {
+                Ok(f) => f,
+                Err(why) => return CallOutcome::Fail(why),
+            };
+            let filed: Vec<String> = filing
+                .permissions
+                .iter()
+                .filter_map(|p| match &p.raised {
+                    hosts::requests::Raised::Filed { id, .. } => {
+                        announce_raised(deps, hosts::requests::approval_key(id));
+                        Some(format!("{} {}", p.permission, p.level))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !filed.is_empty() {
+                log_ticket(
+                    pg,
+                    task_id.as_deref(),
+                    &WorkbenchActor::Agent(subject.clone()),
+                    &format!(
+                        "asked for the GitHub permission{} {} on {} (where {} needed it) — awaiting an admin's decision in Admin → Git hosts",
+                        if filed.len() == 1 { "" } else { "s" },
+                        filed.join(", "),
+                        filing.host_name,
+                        filing.repo,
+                    ),
+                )
+                .await;
+            }
+            CallOutcome::Ok(filing_wire(&filing))
         }
 
         "finish_job" => {
@@ -3021,6 +3124,95 @@ fn repo_request_wire(r: &RepoRequestRow) -> Value {
     out
 }
 
+/// request_git_permission's `permissions`: each `{name, level}`, as the
+/// agent spelled it (the filing checks them against GitHub's catalog).
+fn permission_args(v: Option<&Value>) -> Result<Vec<(String, String)>, String> {
+    let shape = "permissions must be a list of {name, level}, like [{\"name\": \"workflows\", \"level\": \"write\"}]";
+    let Some(items) = v.and_then(Value::as_array) else {
+        return Err(shape.into());
+    };
+    if items.is_empty() || items.len() > 20 {
+        return Err(format!("{shape} — between 1 and 20 of them"));
+    }
+    items
+        .iter()
+        .map(|item| {
+            let name = item.get("name").and_then(Value::as_str);
+            let level = item.get("level").and_then(Value::as_str);
+            match (name, level) {
+                (Some(n), Some(l)) if !n.trim().is_empty() => Ok((n.to_string(), l.to_string())),
+                _ => Err(shape.to_string()),
+            }
+        })
+        .collect()
+}
+
+/// The agent's answer to a filing: what became of each permission, and
+/// where the outcome will show.
+fn filing_wire(filing: &hosts::requests::Filing) -> Value {
+    use hosts::requests::Raised;
+    let mut open = false;
+    let mut waiting = false;
+    let mut carried = false;
+    let requests: Vec<Value> = filing
+        .permissions
+        .iter()
+        .map(|p| {
+            let (id, status, again) = match &p.raised {
+                Raised::Filed { id, status } => (Some(id.as_str()), status.as_str(), false),
+                Raised::AlreadyOpen { id, status } => (Some(id.as_str()), status.as_str(), true),
+                Raised::Carried => (None, "granted", false),
+            };
+            match status {
+                "granted" => carried = true,
+                "awaiting_github" => waiting = true,
+                _ => open = true,
+            }
+            json!({
+                "permission": p.permission,
+                "level": p.level.as_str(),
+                "requestId": id,
+                "status": status,
+                "alreadyPending": again,
+            })
+        })
+        .collect();
+    let mut note: Vec<&str> = Vec::new();
+    if open || waiting {
+        note.push("An admin decides in Admin → Git hosts. The outcome shows in list_repos (permissionRequests) and on the ticket. Do not retry the GitHub call or ask again until it is decided; continue other work.");
+    }
+    if waiting {
+        note.push("awaiting_github: your permissions on this host already include it, and GitHub has not accepted it for the App's installation — an owner of the GitHub account does. No token carries it until then.");
+    }
+    if carried {
+        note.push("granted: your permissions on this host include it and the installation holds it, so a fresh git credential for the repo carries it. If GitHub still refused, the cause is something else — say what GitHub answered in report_problem.");
+    }
+    json!({
+        "host": filing.host_id,
+        "repo": filing.repo,
+        "requests": requests,
+        "note": note.join(" "),
+    })
+}
+
+/// One of the agent's permission requests, as list_repos shows it.
+fn permission_request_wire(r: &hosts::requests::PermissionRequest) -> Value {
+    let mut out = json!({
+        "id": r.id,
+        "host": r.host_id,
+        "repo": r.repo,
+        "permission": r.permission,
+        "level": r.level,
+        "status": r.status,
+        "requestedAt": epoch_ms_to_iso(r.created_ms),
+    });
+    if !r.is_open() {
+        out["decidedAt"] = json!(epoch_ms_to_iso(r.decided_ms.unwrap_or(r.updated_ms)));
+        out["note"] = json!(r.decision_note);
+    }
+    out
+}
+
 /// finish_job's note: what happened to the PR, in the words the agent
 /// repeats in its report.
 fn finish_note(pr: &hosts::OpenedPullRequest) -> String {
@@ -3744,6 +3936,7 @@ mod tests {
                 "start_job",
                 "job_status",
                 "request_repo",
+                "request_git_permission",
                 "finish_job",
                 "prepare_env",
                 "pr_status",
@@ -3784,6 +3977,25 @@ mod tests {
         assert_eq!(
             tool("request_repo")["inputSchema"]["properties"]["visibility"]["enum"],
             json!(["private", "public"])
+        );
+        // request_git_permission names the repo, each permission and why;
+        // the answer's promise (where to look, not to retry) is in its words.
+        assert_eq!(
+            tool("request_git_permission")["inputSchema"]["required"],
+            json!(["repo", "permissions", "why"])
+        );
+        assert_eq!(
+            tool("request_git_permission")["inputSchema"]["properties"]["permissions"]["items"]["required"],
+            json!(["name", "level"])
+        );
+        let ask = tool("request_git_permission")["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            ask.contains("list_repos (permissionRequests)")
+                && ask.contains("Do not retry")
+                && ask.contains("Admin → Git hosts"),
+            "{ask}"
         );
         assert_eq!(
             tool("pr_status")["inputSchema"]["required"],

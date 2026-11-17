@@ -37,7 +37,7 @@ type Log = Arc<Mutex<Vec<(String, String, String, String)>>>;
 /// and metadata: it holds `held` (changeable), each mint answers
 /// `tok-<n>` carrying exactly what was posted for `acme/widgets`, after
 /// `before_mint(n)` has run, and a revoke is a 204.
-async fn github(
+pub(crate) async fn github(
     inst: &'static str,
     held: Arc<Mutex<Value>>,
     before_mint: Option<Hook>,
@@ -166,13 +166,13 @@ fn posted(body: &str) -> Value {
     serde_json::from_str::<Value>(body).unwrap()["permissions"].clone()
 }
 
-async fn pg() -> PgPool {
+pub(crate) async fn pg() -> PgPool {
     let url = std::env::var("DATABASE_URL")
         .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
     PgPool::connect(&url).await.expect("connect")
 }
 
-fn sb() -> SecretBox {
+pub(crate) fn sb() -> SecretBox {
     SecretBox::from_parts(
         [7u8; 32],
         HashMap::from([(1u32, talaria_secretbox::new_dek().expect("entropy"))]),
@@ -180,7 +180,7 @@ fn sb() -> SecretBox {
     )
 }
 
-fn tag() -> String {
+pub(crate) fn tag() -> String {
     static N: AtomicUsize = AtomicUsize::new(0);
     format!(
         "{}{}",
@@ -190,7 +190,7 @@ fn tag() -> String {
 }
 
 /// A Developer agent of its own. Returns its id.
-async fn agent(pg: &PgPool, tag: &str) -> String {
+pub(crate) async fn agent(pg: &PgPool, tag: &str) -> String {
     let model = format!("ghp4-{tag}");
     sqlx::query_scalar(
         "insert into agent_defs (slug, department, model, display_name, developer) \
@@ -205,7 +205,7 @@ async fn agent(pg: &PgPool, tag: &str) -> String {
 
 /// A GitHub App host at `api` using installation `inst` (empty `api`: a host
 /// nothing is asked of). Returns its id.
-async fn host(pg: &PgPool, sb: &SecretBox, tag: &str, api: &str, inst: &str) -> String {
+pub(crate) async fn host(pg: &PgPool, sb: &SecretBox, tag: &str, api: &str, inst: &str) -> String {
     let pem = include_str!("../../../tests/it/fixtures/github-jwt-traditional.pem");
     let cfg = GithubConfig {
         mode: Some("app".into()),
@@ -229,7 +229,7 @@ async fn host(pg: &PgPool, sb: &SecretBox, tag: &str, api: &str, inst: &str) -> 
     id
 }
 
-async fn grant(pg: &PgPool, agent: &str, host: &str, repo: &str) {
+pub(crate) async fn grant(pg: &PgPool, agent: &str, host: &str, repo: &str) {
     add_grant(pg, agent, host, repo).await.expect("the grant");
 }
 
@@ -252,7 +252,7 @@ async fn set(pg: &PgPool, agent: &str, host: &str, to: &PermissionSet) {
     );
 }
 
-async fn audit_rows(pg: &PgPool, action: &str, agent: &str) -> Vec<Value> {
+pub(crate) async fn audit_rows(pg: &PgPool, action: &str, agent: &str) -> Vec<Value> {
     sqlx::query_scalar::<_, Option<Value>>(
         "select after from audit_log where action = $1 and target_id = $2 order by created_at",
     )
@@ -266,7 +266,7 @@ async fn audit_rows(pg: &PgPool, action: &str, agent: &str) -> Vec<Value> {
     .collect()
 }
 
-async fn cleanup(pg: &PgPool, agents: &[&str], host: &str) {
+pub(crate) async fn cleanup(pg: &PgPool, agents: &[&str], host: &str) {
     for a in agents {
         sqlx::query("delete from audit_log where target_id = $1")
             .bind(*a)

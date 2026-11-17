@@ -101,6 +101,10 @@ pub async fn resolve_grant(
 pub struct GrantChange {
     pub added: Vec<RepoRef>,
     pub removed: Vec<RepoRef>,
+    /// The agent's open GitHub permission requests the write withdrew: on a
+    /// host where it no longer holds any repo ([`crate::requests`]). The
+    /// caller settles their approvals.
+    pub withdrawn: Vec<String>,
 }
 
 impl GrantChange {
@@ -155,6 +159,13 @@ pub async fn set_granted_repos(
         .await
         .map_err(|e| format!("workbench grant write: {e}"))?
     };
+    // A permission request is the host's, not one repo's: it is withdrawn
+    // with the agent's LAST grant on its host, in the same transaction, so an
+    // approval can never land on a host the agent just left.
+    let mut emptied: Vec<String> = removed.iter().map(|(h, _)| h.clone()).collect();
+    emptied.sort();
+    emptied.dedup();
+    let withdrawn = crate::requests::withdraw_without_grants(&mut tx, agent_id, &emptied).await?;
     tx.commit()
         .await
         .map_err(|e| format!("workbench grant commit: {e}"))?;
@@ -169,6 +180,7 @@ pub async fn set_granted_repos(
     Ok(GrantChange {
         added: refs(added),
         removed: refs(removed),
+        withdrawn,
     })
 }
 
