@@ -26,8 +26,10 @@
 // record keeps the read that began later, whichever lands first (`record`).
 // A row for an installation no longer selected goes. A permission
 // an installation no longer holds revokes every token this process keeps
-// that carries it, and writes an audit row. (A permission newly accepted is
-// reported; the per-agent grants that waited on it are the grants' concern.)
+// that carries it, and writes an audit row. A permission newly accepted that
+// an admin had already given an agent on the host is effective from that
+// agent's next token: each such agent gets a
+// `workbench.github_permission_activated` row (crate::permissions).
 //
 // WHO READS IT, AND HOW.
 //   · The mint (talaria-github) reads `held` through [`TableHoldings`] before
@@ -53,8 +55,8 @@ use talaria_git_host_types::{GitHost, HostKind, HostStatus, InstallationStatus, 
 use talaria_github::{Github, HeldFuture, HoldingsStore, InstallationSnapshot};
 use talaria_secretbox::SecretBox;
 
-use crate::Host;
 use crate::registry::{HostRow, get_host, get_host_on, host_rows};
+use crate::{Host, permissions};
 
 /// How often the scheduler reads every host's App and installations again.
 pub const REFRESH_EVERY_MS: u64 = 10 * 60_000;
@@ -313,6 +315,9 @@ pub struct Refreshed {
     pub revoked: usize,
     /// Tokens whose revoke GitHub did not confirm.
     pub revoke_failed: usize,
+    /// Agents whose permissions on the host an installation's change made
+    /// effective (one per agent and installation).
+    pub activated: usize,
 }
 
 impl Refreshed {
@@ -324,6 +329,7 @@ impl Refreshed {
         self.gained.extend(other.gained);
         self.revoked += other.revoked;
         self.revoke_failed += other.revoke_failed;
+        self.activated += other.activated;
     }
 }
 
@@ -584,6 +590,7 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
         return Ok(Refreshed::default());
     }
 
+    let single = tracked.len() == 1;
     let lock = host_lock(host_id);
     let _one = lock.lock().await;
     let started_ms = db_now_ms(pg).await?;
@@ -611,6 +618,7 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
 
     // What changed, acted on after the record is written.
     let mut out = Refreshed::default();
+    let mut accepted: Vec<Accepted> = Vec::new();
     for (Read { id, answer, .. }, fate) in recorded {
         let snapshot = match answer {
             Ok(s) => s,
@@ -649,6 +657,14 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
                 snapshot.account
             );
             out.gained.push((id.clone(), gained));
+            if let Some(before) = &before {
+                accepted.push(Accepted {
+                    installation: id.clone(),
+                    account: snapshot.account.clone(),
+                    before: before.clone(),
+                    now: snapshot.permissions.clone(),
+                });
+            }
         }
         if !lost.is_empty() {
             log_audit(
@@ -702,7 +718,89 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
         out.revoked += revocation.revoked;
         out.revoke_failed += revocation.failed;
     }
+    if !accepted.is_empty() {
+        out.activated = record_activations(pg, host_id, single, &accepted).await;
+    }
     Ok(out)
+}
+
+/// One installation's change that gave it something it did not hold.
+struct Accepted {
+    installation: String,
+    account: String,
+    before: PermissionSet,
+    now: PermissionSet,
+}
+
+/// Every agent whose set on `host_id` an installation's change just made
+/// effective, recorded: one `workbench.github_permission_activated` row per
+/// agent and installation, naming what became effective and the repos whose
+/// tokens carry it from the next mint. An admin gave it ahead of GitHub, and
+/// an org owner's acceptance on GitHub is a decision of its own: the row is
+/// how the two meet in the trail. Only sets an admin gave are counted: an
+/// agent on the default was given nothing. `single`: the host uses one
+/// installation, which mints every repo's token; with several, a repo's is
+/// the one on its owner's account. Answers how many rows were written.
+async fn record_activations(
+    pg: &PgPool,
+    host_id: &str,
+    single: bool,
+    accepted: &[Accepted],
+) -> usize {
+    let sets = match permissions::agent_sets(pg).await {
+        Ok(sets) => sets,
+        Err(e) => {
+            tracing::warn!(
+                "[git-hosts] host {host_id} accepted new permissions, and the agents holding them could not be read: {e}"
+            );
+            return 0;
+        }
+    };
+    let mut written = 0;
+    for e in sets.iter().filter(|e| e.host_id == host_id) {
+        for a in accepted {
+            let repos: Vec<&String> = e
+                .repos
+                .iter()
+                .filter(|r| single || permissions::on_account(r, &a.account))
+                .collect();
+            let now = permissions::activated(&e.permissions, &a.before, &a.now);
+            if repos.is_empty() || now.is_empty() {
+                continue;
+            }
+            tracing::info!(
+                "[git-hosts] {} now carries {now} on {} ({host_id}): installation {} accepted it",
+                e.agent_name,
+                repos
+                    .iter()
+                    .map(|r| r.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                a.installation
+            );
+            log_audit(
+                pg,
+                AuditEntry {
+                    actor: "talaria",
+                    action: "workbench.github_permission_activated",
+                    target_type: "agent",
+                    target_id: Some(&e.agent_id),
+                    target_label: Some(&e.agent_name),
+                    before: None,
+                    after: Some(json!({
+                        "host": host_id,
+                        "installation": a.installation,
+                        "account": a.account,
+                        "activated": now.to_json(),
+                        "repos": repos,
+                    })),
+                },
+            )
+            .await;
+            written += 1;
+        }
+    }
+    written
 }
 
 /// [`refresh_host`] after an admin's write to the host: the write stands
@@ -1332,11 +1430,33 @@ mod live {
         .map(|(_, fate)| fate)
         .collect();
         assert_eq!(fates, [Fate::Superseded, Fate::Superseded]);
+        // `checked_at_ms` is the row's age on the database's clock set back
+        // from this process's, so two reads of one row differ by however
+        // far apart the two clocks were read: the rows match without it, and
+        // it stays well inside the minute a superseded write would set it
+        // back by.
+        let after = installation_rows(&pg, &id).await.expect("read");
+        let unstamped = |rows: &[InstallationRow]| {
+            rows.iter()
+                .map(|r| InstallationRow {
+                    checked_at_ms: None,
+                    ..r.clone()
+                })
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            installation_rows(&pg, &id).await.expect("read"),
-            rows,
+            unstamped(&after[..]),
+            unstamped(&rows[..]),
             "the newer read stands, and no row is made for 93003"
         );
+        let stamps = |rows: &[InstallationRow]| {
+            rows.iter()
+                .map(|r| r.checked_at_ms.is_some())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(stamps(&after[..]), stamps(&rows[..]));
+        let drift = after[0].checked_at_ms.expect("read") - acme.checked_at_ms.expect("read");
+        assert!(drift.abs() < 5_000, "the read is not set back: {drift} ms");
 
         // The card's wire: the App's ask live, each installation from the
         // record, in the config's order.

@@ -762,6 +762,7 @@ talaria-fleet-resources = { workspace = true }
 talaria-fleet-seal = { workspace = true }
 talaria-gaps = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-github = { workspace = true }
 talaria-google-agent = { workspace = true }
 talaria-google-api-health = { workspace = true }

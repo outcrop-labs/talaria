@@ -83,6 +83,20 @@ async fn serve() {
         tokio::spawn(async move { talaria_chat_persist::keep_replies(st).await });
     }
 
+    // An agent's git tokens live in each api process's own cache, so a
+    // revoke one process makes (an admin narrowed what the agent may do on
+    // a git host, or took its Developer switch away) is broadcast, and every
+    // process takes the same tokens back (talaria-git-hosts' revoke). Not
+    // behind the scheduler switch: a process that mints tokens must hear
+    // the revokes for them. It subscribes through the process's realtime
+    // hub, which waits for Redis and resubscribes after a reconnect.
+    {
+        let pg = state.pg.clone();
+        let subscribe =
+            talaria_realtime::RealtimeDeps::streams_only(&state.cfg.redis_url).subscribe;
+        tokio::spawn(talaria_git_hosts::revoke::listen(pg, subscribe));
+    }
+
     // The builtin MCP rows (the toolkit, the Workbench) are this api's to
     // guarantee: every reader — the gateway, agents' rendered configs, the
     // SPA harness's capability reach — treats them as present, so boot seeds

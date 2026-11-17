@@ -28,7 +28,11 @@
 //      only through that host's grant check, so an ask for `api.github.com`,
 //      for a registered origin's hostname without its port, or for another
 //      host on the secret's list passes it over (`CredentialScope::withheld`)
-//   3. the workspace store, then the host's own login for the granted repo
+//   3. the workspace store, then the host's own login for the granted repo:
+//      on GitHub a token for this agent alone, carrying the agent's set on
+//      the host (what an admin set, or the default) as far as the
+//      installation holds it, re-checked after the mint against a grant
+//      narrowed meanwhile (talaria-git-hosts)
 //   4. one `git.credential` audit row per (agent, token) — on a mint, and on
 //      the first serve of a token this agent had not been handed — never one
 //      per helper call (git asks on every fetch and push)
@@ -171,11 +175,12 @@ pub async fn post(
         },
         // The login of the git host registered at the host git named
         // (talaria-git-hosts: on GitHub, an installation token scoped to the
-        // one repo and narrowed to what a push spends) — the credential a
-        // workbench job needs to push, and the one that used to ride into the
-        // model's context inside the clone URL.
+        // one repo, filed under this agent, and narrowed to the agent's set
+        // on the host) — the credential the agent pushes and calls the host's
+        // API with, and the one that used to ride into the model's context
+        // inside the clone URL.
         (None, CredentialScope::Granted { row, rule, .. }) => {
-            match hosts::grant_login(&state.pg, &sb, &row, &rule.repo).await {
+            match hosts::grant_login(&state.pg, &sb, &row, &rule.repo, &agent_id).await {
                 Ok(Some(g)) => Served {
                     username: g.login.username,
                     password: g.login.password,
@@ -184,6 +189,7 @@ pub async fn post(
                         installation: g.installation,
                         carried: g.carried,
                         shortfall: g.shortfall,
+                        shortfall_why: g.shortfall_why,
                         minted: g.minted,
                     },
                     host_id: Some(g.host_id),
@@ -270,6 +276,9 @@ enum Source {
         installation: Option<String>,
         carried: Option<PermissionSet>,
         shortfall: PermissionSet,
+        /// GitHub's words for the part of the ask it would not put on the
+        /// token (organization permissions on a repository token).
+        shortfall_why: Option<String>,
         minted: bool,
     },
 }
@@ -311,12 +320,16 @@ fn audit_after(served: &Served, host: &str, hashed: &str) -> Value {
             installation,
             carried,
             shortfall,
+            shortfall_why,
             minted,
         } => {
             after["source"] = json!("git_host");
             after["installation"] = json!(installation);
             after["carried"] = carried.as_ref().map_or(Value::Null, PermissionSet::to_json);
             after["shortfall"] = shortfall.to_json();
+            if let Some(why) = shortfall_why {
+                after["shortfallWhy"] = json!(why);
+            }
             after["minted"] = json!(minted);
         }
     }
@@ -405,6 +418,7 @@ mod tests {
                     ("metadata", talaria_git_hosts::Level::Read),
                 ])),
                 shortfall: PermissionSet::new(),
+                shortfall_why: None,
                 minted: true,
             },
             host_id: Some("github".into()),
@@ -427,6 +441,32 @@ mod tests {
             })
         );
         assert!(!after.to_string().contains("ghs_secret_value"));
+
+        // Organization keys GitHub would not put on the token: the shortfall
+        // names them, with GitHub's own words beside it.
+        let refused = Served {
+            source: Source::GitHost {
+                installation: Some("93001".into()),
+                carried: None,
+                shortfall: PermissionSet::of(&[(
+                    "organization_secrets",
+                    talaria_git_hosts::Level::Read,
+                )]),
+                shortfall_why: Some("not on a repository token".into()),
+                minted: true,
+            },
+            username: served.username.clone(),
+            password: served.password.clone(),
+            name: served.name.clone(),
+            host_id: served.host_id.clone(),
+            repo: served.repo.clone(),
+        };
+        let after = audit_after(&refused, "github.com", &hashed);
+        assert_eq!(
+            after["shortfall"],
+            json!({ "organization_secrets": "read" })
+        );
+        assert_eq!(after["shortfallWhy"], "not on a repository token");
 
         let stored = Served {
             source: Source::WorkspaceSecret {
@@ -929,8 +969,8 @@ mod tests {
             let posted: Value = serde_json::from_str(&mints[0]).unwrap();
             assert_eq!(
                 posted["permissions"],
-                json!({ "contents": "write", "metadata": "read" }),
-                "the sandbox token never asks for pull requests"
+                json!({ "contents": "write", "metadata": "read", "pull_requests": "write" }),
+                "an agent nobody set anything for asks for the default, never the installation's workflows"
             );
             let rows = credential_rows(&state, &id).await;
             assert_eq!(rows.len(), 1, "{rows:?}");
