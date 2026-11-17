@@ -151,6 +151,24 @@ describe('reset — secrets scope', () => {
     expect(sql.endsWith('commit;')).toBe(true)
   })
 
+  test('both Google OAuth client records go: their secrets are sealed with the data key', async () => {
+    const ctx = fakeCtx({ reply: 'secrets' })
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
+    plantUp(ctx)
+    await runReset(ctx, 'secrets')
+    const batch = ctx.calls.find((c) => c.args.includes('ON_ERROR_STOP=1'))!
+    const sql = batch.args[batch.args.indexOf('-c') + 1]!
+    const settings = sql.split('\n').find((l) => l.startsWith('delete from app_settings'))!
+    for (const key of ['google_oauth_client', 'google_signin_oauth_client', 'email_config', 'storage_config', 'github_config']) {
+      expect(settings).toContain(`'${key}'`)
+    }
+    // The agentic declarations hold no secret and survive: they are facts
+    // about client ids, not credentials.
+    expect(sql).not.toContain('google_client_evidence')
+    // The count names what it counts.
+    expect(ctx.logLines.some((l) => l.msg.includes('app_settings: email/storage/github/google'))).toBe(true)
+  })
+
   test('every count prints on its own line', async () => {
     const ctx = fakeCtx({ reply: 'no' })
     ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
@@ -159,6 +177,24 @@ describe('reset — secrets scope', () => {
     const rows = ctx.logLines.filter((l) => l.kind === 'raw' && l.msg.trim() !== '')
     expect(rows.length).toBeGreaterThan(5)
     for (const r of rows) expect(r.msg.endsWith('\n')).toBe(true)
+  })
+})
+
+describe('reset — secrets clears every Google token store', () => {
+  // A store left behind keeps a cipher no new data key opens: the agent's
+  // token read fails on unseal forever instead of reading "not connected".
+  test('per-user, org and per-agent connections are counted and deleted', async () => {
+    const ctx = fakeCtx({ reply: 'secrets' })
+    ctx.root = makeTree('postgres://talaria:talaria@127.0.0.1:5544/talaria')
+    plantUp(ctx)
+    await runReset(ctx, 'secrets')
+    const batch = ctx.calls.find((c) => c.args.includes('ON_ERROR_STOP=1'))!
+    const sql = batch.args[batch.args.indexOf('-c') + 1]!
+    for (const table of ['google_connections', 'google_org_connection', 'agent_google_connections']) {
+      expect(sql).toContain(`delete from ${table};`)
+      expect(sql.indexOf(`delete from ${table};`)).toBeLessThan(sql.indexOf('delete from secret_keys'))
+      expect(ctx.calls.some((c) => c.args.some((a) => a.includes(`select count(*) from ${table}`)))).toBe(true)
+    }
   })
 })
 

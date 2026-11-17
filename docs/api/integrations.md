@@ -70,12 +70,13 @@
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google.rs)
 
 > /api/integrations/google. This user's Google connection: status (never
-> exposes tokens) and disconnect (revoke + forget).
+> exposes tokens) and disconnect (forget, and revoke unless the grant is
+> shared with another stored connection).
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{available, connected, email, scope, connectedAt}` | 200 | — |
-| DELETE | `session` | — | `{ok}` | 200 | — |
+| DELETE | `session` | — | `{ok, revoked, revokeNote}` | 200 | — |
 
 ## `/api/integrations/google/agent/calendar`
 
@@ -717,7 +718,7 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `admin` | — | `{available, connected, email, scope, connectedAt, targets}` | 200 | — |
 | PUT | `admin` | [body](#put-apiintegrationsgoogleorg-body) | `{ok, connected, email, scope, connectedAt, targets}` | 200, 400 | — |
-| DELETE | `admin` | — | `{ok}` | 200 | — |
+| DELETE | `admin` | — | `{ok, revoked, revokeNote}` | 200 | — |
 
 ### PUT `/api/integrations/google/org` body
 
@@ -760,8 +761,8 @@ Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_g
 Source: [`api/crates/talaria-routes-integrations/src/integrations/integrations_google_org_health.rs`](../../api/crates/talaria-routes-integrations/src/integrations/integrations_google_org_health.rs)
 
 > GET /api/integrations/google/org/health — live probe of Drive / Calendar /
-> Gmail with the org connection's token. Admin-only, and
-> deliberately a separate route from the org status read: it makes three real
+> Gmail / Sheets / Slides with the org connection's token. Admin-only, and
+> deliberately a separate route from the org status read: it makes five real
 > Google calls and must only run when an admin asks for it, not on every
 > …
 

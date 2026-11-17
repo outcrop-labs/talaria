@@ -5367,6 +5367,7 @@ dependencies = [
  "talaria-body",
  "talaria-gateway",
  "talaria-secretbox",
+ "tokio",
  "tracing",
 ]
 
@@ -5383,6 +5384,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-google-client",
  "talaria-secretbox",
+ "tokio",
  "tracing",
  "url",
 ]
@@ -5430,8 +5432,10 @@ name = "talaria-google-errors"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "serde_json",
  "talaria-error",
  "talaria-google-connections",
+ "tokio",
  "tracing",
 ]
 
@@ -5473,6 +5477,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-google-client",
  "talaria-google-connections",
+ "talaria-google-errors",
  "talaria-google-org",
  "talaria-secretbox",
  "talaria-session",
@@ -5486,7 +5491,6 @@ dependencies = [
 name = "talaria-google-org"
 version = "0.1.0"
 dependencies = [
- "axum",
  "base64 0.23.1",
  "reqwest",
  "serde",
@@ -5497,7 +5501,6 @@ dependencies = [
  "talaria-google-connections",
  "talaria-secretbox",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -5514,6 +5517,7 @@ dependencies = [
  "talaria-google-connections",
  "talaria-google-docs",
  "talaria-google-drive",
+ "talaria-google-errors",
  "talaria-google-gmail",
  "talaria-google-org",
  "talaria-google-sheets",

@@ -107,9 +107,13 @@ multi-account setup path.
 
 ## Security
 
-- Refresh tokens are **encrypted at rest** (AES-256-GCM, `server/secretbox.ts`,
-  key derived from `AUTH_SECRET`). They are the one runtime credential we must
-  store — unlike API keys, where we persist only the env-var *name*.
+- Refresh tokens are **encrypted at rest** (AES-256-GCM envelope encryption,
+  `api/crates/talaria-secretbox`: a data key per version, wrapped by a key
+  derived from the root secret `TALARIA_SECRET_KEY`, falling back to
+  `AUTH_SECRET` — [ENCRYPTION.md](./ENCRYPTION.md)). They are the one runtime
+  credential we must store. A `talaria reset secrets` clears every Google token
+  store: per-user (`google_connections`), org (`google_org_connection`) and
+  per-agent (`agent_google_connections`).
 - Access tokens are cached (also encrypted) and refreshed transparently; an
   `invalid_grant` clears the connection so the UI prompts a reconnect.
 - Scopes actually requested (`WORKSPACE_SCOPES` in `talaria-google-oauth`):
@@ -127,11 +131,90 @@ multi-account setup path.
   **restricted** scopes and full `drive` is **sensitive** — fine for an
   internal/Workspace-only app, but public/external distribution would need
   Google's security assessment.
-- Disconnect best-effort **revokes** the token at Google, then forgets it.
+- Disconnect — personal, org, or an agent's own identity — **revokes** the
+  grant at Google, then forgets the connection. A revoke ends more than the
+  token sent — Google: "Revocation removes all OAuth 2.0 scopes previously
+  granted to a project, invalidating any issued access or refresh tokens for
+  all clients registered under that project" (see below) — so a disconnect
+  first checks the other stored connections: when another one holds a live token
+  for the same Google account (an admin who connected the org with their own
+  account; an agent identity connected with its manager's account), it
+  forgets its own row **without revoking** and says so — the last connection
+  to go revokes the grant. A revoke Google refuses still forgets the row, and
+  the answer quotes Google's words.
 
 ## Operator setup
 
-Uses the **same** Google OAuth client as Google login:
+### Two client roles
+
+Talaria gives a Google OAuth client one of two jobs. Admin → Google Workspace
+has a card for each, and each has an env twin:
+
+| Role | What runs on it | Admin record | Env fallback |
+|---|---|---|---|
+| **Connections** | every stored grant: personal connect, the org account, per-agent identities. Also Google login while no sign-in client is set. | `google_oauth_client` | `AUTH_GOOGLE_CLIENT_ID` / `_SECRET` / `AUTH_GOOGLE_HD` |
+| **Sign-in** (optional) | Google login only | `google_signin_oauth_client` | `AUTH_GOOGLE_SIGNIN_CLIENT_ID` / `_SECRET` |
+
+- A record wins over its env twin only when it is complete (id and secret).
+  A half-saved record never takes over.
+- With the sign-in slot empty, login uses the connections client. That is how
+  every install ran before the split, and nothing changes until a sign-in
+  client is saved.
+- **The domain restriction (`hd`) belongs to the connections client.** Login
+  sends and enforces the connections client's domain whichever client runs it,
+  so setting a sign-in client can never open login to every Google account.
+  Login admits any Google account only when a connections client is configured
+  with no domain, the same configuration that did before the split. With no
+  connections client at all, the sign-in client runs login only if a domain is
+  still written down (`AUTH_GOOGLE_HD`, or a connections record saved without
+  its secret). So removing the connections client stops login, as it always
+  did, and the panel says why.
+- Moving login to a sign-in client changes no stored connection: every
+  grant keeps refreshing with the connections client, which minted it.
+
+**Why two.** Google now sorts OAuth clients into agentic and not, with the
+checkbox **"Use this client for an AI-powered agent"** under *Google Auth
+Platform → Clients*. Google's notice: "Starting November 11, 2026, Google
+Workspace MCP servers will reject requests from any app or integration whose
+OAuth client is not marked as agentic … OAuth clients that are not marked as
+agentic by November 12, 2026 will remain non-agentic and can't call Google
+Workspace MCP servers." And: "If an existing OAuth client is used for both AI
+agent and non-agent features, create a separate OAuth client for the AI agent
+and mark only that client as agentic. Keep the existing client for your
+non-agent features." The REST APIs Talaria calls today are not affected: "Apps
+and integrations that are not AI agents, like those that only call Google
+Workspace REST APIs, are not affected by this change."
+
+**Which shape to run.** Signing in is a person, not an agent:
+
+- **The connections client is marked agentic** (it was ticked before the
+  lock, so every stored grant can reach Google's MCP servers later with no
+  reconnect). Create a second Web client *without* the box ticked, register
+  only `<public-url>/api/auth/google/callback` on it, and save it as the
+  sign-in client. Then remove the login callback from the connections
+  client's redirect URIs.
+- **The connections client is not marked, and was not by November 12.** It
+  stays non-agentic. Nothing breaks: the REST surfaces keep working, and
+  login can stay on it. Reaching Google's MCP servers will need a new agentic
+  client. **Do not swap a new client into the connections slot while
+  connections are stored:** today every stored grant refreshes with whichever
+  client is in that slot, and OAuth binds a refresh token to the client it
+  was issued to (RFC 6749 §6). Grants that remember their own client are
+  separate, later work.
+
+**Declaring the mark.** Google exposes no API and no token claim for the
+checkbox, so each card asks what Google Cloud shows: *Ticked*, *Unticked* or
+*Not said*. The declaration is stored per client id (`google_client_evidence`
+in `app_settings`), so a client moved between roles keeps it. Headless
+installs pin it in env: `AUTH_GOOGLE_CLIENT_AGENTIC` and
+`AUTH_GOOGLE_SIGNIN_CLIENT_AGENTIC` (`1` ticked, `0` not), each describing
+only the client its own `*_CLIENT_ID` names. A declaration refuses nothing.
+The panel warns when the sign-in client is declared agentic, and when login
+is on, runs on the connections client, and that client is declared agentic.
+It also warns when a sign-in client is set but there is no connections client
+and no domain for login to take.
+
+### Credentials and redirect URIs
 
 ```
 AUTH_GOOGLE_ENABLED=1
@@ -139,26 +222,37 @@ AUTH_GOOGLE_CLIENT_ID=<client id>.apps.googleusercontent.com
 AUTH_GOOGLE_CLIENT_SECRET=<client secret>
 AUTH_SECRET=<random, ≥32 bytes>        # also encrypts stored tokens
 # AUTH_GOOGLE_HD=yourdomain.com        # optional: restrict to a Workspace domain
+# AUTH_GOOGLE_SIGNIN_CLIENT_ID=<id>    # optional: login's own client
+# AUTH_GOOGLE_SIGNIN_CLIENT_SECRET=<secret>
 # TALARIA_SECRET_KEY=<override>         # optional: separate key for secretbox
 ```
 
-In the **Google Cloud console** for that OAuth client, register **all four**
-redirect URIs (login + per-user connect + org connect + per-agent identity):
+In the **Google Cloud console**, register these redirect URIs on the
+**connections** client (per-user connect, org connect, per-agent identity):
 
 ```
-<public-url>/api/auth/google/callback
 <public-url>/api/integrations/google/callback
 <public-url>/api/integrations/google/org/callback
 <public-url>/api/integrations/google/agent/callback
 ```
 
-The Admin → Google Workspace · OAuth client panel lists these with the actual
+and the login callback on whichever client runs login: the sign-in client
+when one is set, otherwise the connections client:
+
+```
+<public-url>/api/auth/google/callback
+```
+
+The Admin → Google Workspace panel lists each client's URIs with the actual
 origin — copy them from there rather than by hand.
 
-and enable the **Google Drive API**, **Google Calendar API**, and **Gmail API**
-(listed with console links under Admin → Google Workspace · OAuth client;
-**Test** next to the connected org account probes all three live — consent
-succeeds even with the APIs off, so the probe is how you find out). Add the
+and enable the **Google Drive API**, **Google Calendar API**, **Gmail API**,
+**Google Sheets API** and **Google Slides API** — the agents' sheet and slides
+tools call the last two (listed with console links under Admin → Google
+Workspace · OAuth client; **Test** next to the connected org account probes
+all five live — consent succeeds even with the APIs off, so the probe is how
+you find out, and a disabled API shows Google's own sentence and its
+activation page for your project). Add the
 `drive`, `calendar`, `calendar.events`, `gmail.modify`, and `gmail.send`
 scopes to the consent screen. `drive` / `calendar` / `calendar.events` are
 sensitive; `gmail.*` are restricted.
@@ -167,10 +261,54 @@ review; a public/External app would (especially the Gmail scopes).
 
 ## Verified vs. trusted
 
-The connect redirect (offline + `drive.file` + `prompt=consent`), the token
+**What a revoke ends: documented by Google, not exercised live.** Google's
+[OAuth 2.0 for web server applications](https://developers.google.com/identity/protocols/oauth2/web-server)
+page, under "Token revocation", says: "Revocation removes all OAuth 2.0 scopes
+previously granted to a project, invalidating any issued access or refresh
+tokens for all clients registered under that project." The shared-grant check
+before a disconnect's revoke rests on that sentence. The scope it names is the
+Google Cloud **project**, not one OAuth client: a second client in the same
+project (a sign-in client, say) shares the grant. So the check matches stored
+connections on the Google account alone, whichever client minted them. No
+revoke of a real grant has been made here; every revoke exercised so far sent
+a token Google never issued.
+
+The connect redirect (offline + `WORKSPACE_SCOPES` + `prompt=consent`), the token
 encryption round-trip/tamper-rejection, the DB model, and the export permission
 gating are all verified live. The **actual Drive round-trip** (create Doc/Sheet)
 requires real Google client credentials + a consented account and cannot be
 exercised in a headless dev env — it's wired to Drive's documented multipart
 convert-on-upload API but is the one path proven by the API contract rather than
 a local screenshot.
+
+## When Google refuses — whose words you read
+
+Every refusal reaches the person or agent in **Google's own words**, quoted, not
+replaced by a Talaria sentence. Each Google crate keeps Google's status and body
+on its failure (`<what> failed: <status> <body>`), and
+`talaria_google_errors::upstream_reason` lifts out what Google wrote. A REST
+body gives its most specific code, then its message. The code is the
+`ErrorInfo` reason (`SERVICE_DISABLED`), else `status` (`PERMISSION_DENIED`),
+else the legacy `errors[].reason` (`notFound`, which is all Drive v3 sends). An
+OAuth body gives `error`, then `error_description`, through the one parser of
+that shape (`talaria_google_connections::oauth_reason`), which a disconnect's
+refused revoke quotes through too. The quote is capped at 300
+characters, and the code always leads, so a cut never loses it. Nothing matches
+a class of refusal from wording Google has not been seen to send. That includes
+the "client not marked for AI agents" refusal from Google's Workspace MCP
+servers, which is not yet captured.
+
+| Where | What the reader gets |
+|---|---|
+| A Google call an agent or person made (`google_fail_with`) | 502 `Google <Product> refused: «SERVICE_DISABLED: Google Sheets API has not been used in project … Enable it by visiting …»`. A scope refusal is still the 409 `reconnect_needed`, with `Google said: «…»` appended. Only a failure with no Google body (a timeout, a local fault) still reads `Could not reach Google <Product>.` |
+| An agent's token (every `/api/integrations/google/agent/*` route and the agent arm of `POST /api/artifacts/{id}/export/google`) | `resolve_agent_google` no longer turns a failed token into "No Google account is connected". `invalid_grant` is a 409 `reconnect_needed`, which quotes Google and says the stored grant was cleared. `invalid_client` / `unauthorized_client` is a 502 `client_rejected`, which quotes Google, keeps the connection, and names the admin's fix. Anything else is a 502 that quotes Google when it answered. |
+| Approving a held action (`POST /api/integrations/google/pending/{id}`, chips, Inbox, the brief) | A token that fails at approval **releases the row back to `pending`**. It used to sit in `executing` until the ten-minute takeover. The answer quotes Google, and the same sentence stays on the row as `result.error`. The agent's queue reads (`GET /api/integrations/google/agent/pending[/{id}]`) show it as `lastError`. A refused grant answers 409 `not_connected` (a reconnect fixes it); a refused OAuth client answers 502 `client_rejected` (the admin's fix), and any other refused refresh 502 `google_error`. An action Google rejected answers `Google rejected the action: «…»`, or `The action did not run: «…»`, folded and capped, when no Google error body came back. A chip-unlocked draft that runs at once (`draft_email`, `draft_calendar_event`) answers the agent with the same sentence, and says when the draft is back in the queue as pending. |
+| A disconnect (`DELETE /api/integrations/google`, `…/google/org`, `/api/fleet/defs/{id}/google`) | The connection is forgotten either way. When Google refuses the revoke, `revokeNote` reads `Disconnected here, but not revoked at Google: Google answered 400: invalid_token.`, the same code-then-sentence quote. |
+| The connect bounces (`/settings/connections?google=`, `/admin?googleOrg=`, `/agents?googleAgent=`) | `exchange_failed` and `denied` carry `&reason=<code>`. That is Google's OAuth error code from the refused exchange, or the `?error=` Google redirected with: `invalid_client`, `invalid_grant`, `access_denied`. The flash shows `Google said: <code>.` Only a bare snake_case code ever rides the URL, and the page drops anything else. The Agents page now reads its bounce; before this, nothing did. |
+
+**Out of reach.** Some refusals are shown on Google's own consent page and are
+never sent back to Talaria: `redirect_uri_mismatch`, `org_internal`, and
+`admin_policy_enforced` (a Workspace admin's app-access policy). Nothing on the
+Talaria side can quote them. The person reads them on Google's page. This is
+how Google is known to behave; none of the three has been captured against a
+Talaria instance.
