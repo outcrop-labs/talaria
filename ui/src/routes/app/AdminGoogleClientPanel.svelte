@@ -388,7 +388,7 @@
           <div class="space-y-1">
             {#each data.census as c (c.clientId ?? '')}
               <div class="flex items-center gap-2 text-xs">
-                <StatusDot status={!c.role && c.clientId ? 'warn' : c.flagged ? 'warn' : 'ok'} />
+                <StatusDot status={!c.clientId ? 'idle' : !c.role || c.flagged ? 'warn' : 'ok'} />
                 <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-fg">{c.clientId ?? 'Not recorded yet'}</span>
                 <span class="shrink-0 font-sans text-[10px] text-muted">{censusCounts(c)}</span>
                 {#if c.flagged}<span class="shrink-0 font-sans text-[10px] text-warning">{c.flagged} refused</span>{/if}
