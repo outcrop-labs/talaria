@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-22 routes.
+23 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -41,6 +41,8 @@
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | DELETE | `admin` |
 | [`/api/workbench/git-hosts/{id}/refresh`](#apiworkbenchgit-hostsidrefresh) | POST | `admin` |
 | [`/api/workbench/git-hosts/{id}/test`](#apiworkbenchgit-hostsidtest) | POST | `admin` |
+| [`/api/workbench/github-permissions/{agentId}`](#apiworkbenchgithub-permissionsagentid) | GET | `session` + `agent-reader` |
+| [`/api/workbench/github-permissions/{agentId}`](#apiworkbenchgithub-permissionsagentid) | PUT | `admin` |
 | [`/api/workbench/harnesses`](#apiworkbenchharnesses) | GET | `admin` |
 | [`/api/workbench/harnesses`](#apiworkbenchharnesses) | POST | `admin` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | GET | `session` |
@@ -437,6 +439,29 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `admin` | — | `{ok, status, repoCount, repos, reposError}` | 200, 404 | — |
 
+## `/api/workbench/github-permissions/{agentId}`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_github_permissions_agent_id.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_github_permissions_agent_id.rs)
+
+> /api/workbench/github-permissions/{agentId}. The GitHub permissions one
+> agent's token carries on each git host (talaria-git-hosts' permissions:
+> `agent_github_permissions`). Per agent, per host, the agent's WHOLE set:
+> any key GitHub knows, repository and organization keys, administration
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `agent-reader` | — | `{agentId, canEdit, default, catalog, hosts}` | 200, 404 | — |
+| PUT | `admin` | [body](#put-apiworkbenchgithub-permissionsagentid-body) | `{ok, host, permissions, isDefault, notes}` | 200, 400, 404, 409 | — |
+
+### PUT `/api/workbench/github-permissions/{agentId}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `host` | `string(1, 40)` |  |
+| `from` | `permissions_or_default` | What the editor read: the agent's set, or null when it is on the default. |
+| `to` | `permissions_or_default` | The whole new set, or null to put the agent back on the default. |
+
 ## `/api/workbench/harnesses`
 
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_harnesses.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_harnesses.rs)
@@ -521,7 +546,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repos_agen
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `{hosts, available, granted, rules, branches}` | 200, 404 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | audit |
 
 ### PUT `/api/workbench/repos/{agentId}` body
 

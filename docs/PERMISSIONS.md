@@ -107,6 +107,15 @@ same manage surface read-only.
 - **The roster is never empty.** The PUT refuses a manager list of zero, so nobody can lock
   themselves out of their own agent: hand it over by adding the new manager in the same request
   that drops yourself.
+- **One carve-out: GitHub permissions are an admin's.** What an agent's GitHub token carries on
+  a git host — its whole set, any permission GitHub's App catalog knows (repository and
+  organization keys, `administration` included), or the default (`contents: write`,
+  `pull_requests: write`, `metadata: read`) when none is set — is set per agent and per host by
+  an **admin** only (`PUT /api/workbench/github-permissions/{agentId}`, `require_admin`), because
+  the git-host plane is admin-only and the set reaches every repo the agent holds on that host.
+  An agent's managers see what it carries there, read-only, and still grant and remove its repos
+  and set their branch rules; every grant change is audited. See
+  [WORKBENCH.md → Git hosts](./WORKBENCH.md#git-hosts-the-operators-choice).
 
 The rows live in `agent_managers` (agent × user). Where this is asked in code:
 `talaria_agent_managers::manages_agent` and the route guard

@@ -47,3 +47,6 @@ redis = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 talaria-api-facades = { workspace = true }
+
+[dev-dependencies]
+talaria-config = { workspace = true }

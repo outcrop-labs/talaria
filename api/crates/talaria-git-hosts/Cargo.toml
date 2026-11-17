@@ -21,6 +21,7 @@ talaria-audit = { workspace = true }
 talaria-forgejo = { workspace = true }
 talaria-git-host-types = { workspace = true }
 talaria-github = { workspace = true }
+talaria-realtime = { workspace = true }
 talaria-scheduler = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-workspace-secrets = { workspace = true }

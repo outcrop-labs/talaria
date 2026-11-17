@@ -167,6 +167,13 @@ CREATE TABLE public.agent_dm_mutes (
     agent_model text NOT NULL,
     muted_until timestamp with time zone NOT NULL
 );
+CREATE TABLE public.agent_github_permissions (
+    agent_id uuid NOT NULL,
+    host_id text NOT NULL,
+    permissions jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_by uuid,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.agent_google_connections (
     agent_model text NOT NULL,
     google_sub text NOT NULL,
@@ -1855,6 +1862,8 @@ ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_slug_key UNIQUE (slug);
 ALTER TABLE ONLY public.agent_dm_mutes
     ADD CONSTRAINT agent_dm_mutes_pkey PRIMARY KEY (user_id, agent_model);
+ALTER TABLE ONLY public.agent_github_permissions
+    ADD CONSTRAINT agent_github_permissions_pkey PRIMARY KEY (agent_id, host_id);
 ALTER TABLE ONLY public.agent_google_connections
     ADD CONSTRAINT agent_google_connections_pkey PRIMARY KEY (agent_model);
 ALTER TABLE ONLY public.agent_google_oauth_states
@@ -2345,6 +2354,12 @@ ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_ticket_template_id_fkey FOREIGN KEY (ticket_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.agent_dm_mutes
     ADD CONSTRAINT agent_dm_mutes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_github_permissions
+    ADD CONSTRAINT agent_github_permissions_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_github_permissions
+    ADD CONSTRAINT agent_github_permissions_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_github_permissions
+    ADD CONSTRAINT agent_github_permissions_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.agent_google_connections
     ADD CONSTRAINT agent_google_connections_agent_model_fkey FOREIGN KEY (agent_model) REFERENCES public.agent_defs(model) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_google_connections

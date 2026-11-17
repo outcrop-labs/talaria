@@ -353,6 +353,7 @@ async fn run_verb(state: AppState, def: AgentDefRow, action: String) -> Response
             {
                 return catch(e.to_string());
             }
+            revoke_git_tokens(&state, &def.id, "it was retired").await;
             if let Err(e) = fleet_remove(&state.pg, &def.department).await
                 && let Err(last) = settled(
                     &state,
@@ -386,6 +387,7 @@ async fn run_verb(state: AppState, def: AgentDefRow, action: String) -> Response
             };
             match delete_agent_forever(&state.pg, &sb, &def.id).await {
                 Ok(removed_volume) => {
+                    revoke_git_tokens(&state, &def.id, "it was deleted").await;
                     Json(json!({ "ok": true, "removedVolume": removed_volume })).into_response()
                 }
                 // Includes delete_agent_forever's own refusals — every throw
@@ -430,6 +432,21 @@ async fn run_verb(state: AppState, def: AgentDefRow, action: String) -> Response
         }
         _ => internal("[fleet] control: unknown action", &action),
     }
+}
+
+/// A retired or deleted agent's git tokens, taken back: the credential door
+/// already answers a disabled agent nothing, and every token it was handed
+/// is revoked in every api process (talaria-git-hosts' revoke).
+async fn revoke_git_tokens(state: &AppState, agent_id: &str, why: &str) {
+    talaria_git_hosts::revoke::revoke_agent_tokens(
+        &state.pg,
+        &talaria_realtime_watch::RealtimeDeps::publish_only(state.redis().await.ok()),
+        None,
+        agent_id,
+        None,
+        why,
+    )
+    .await;
 }
 
 /// ONE CONTAINER PER DEPARTMENT. Every verb on this route addresses the
@@ -507,6 +524,7 @@ async fn department_guard(
             &could_not("retire"),
         ));
     }
+    revoke_git_tokens(state, &def.id, "it was retired").await;
     let rendered = match state.secretbox().await {
         Ok(sb) => render_fleet(&state.pg, &sb).await,
         Err(e) => Err(e),

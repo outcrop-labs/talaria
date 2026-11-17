@@ -6,6 +6,8 @@
 // with `coding_broker` and `coding_gate` holding what both halves share.
 pub mod coding_broker;
 pub mod coding_gate;
+#[cfg(test)]
+pub(crate) mod live_support;
 pub mod workbench_auth_credential;
 pub mod workbench_auth_credential_id_block;
 pub mod workbench_auth_credential_id_blocks;
@@ -23,6 +25,7 @@ pub mod workbench_git_hosts;
 pub mod workbench_git_hosts_id;
 pub mod workbench_git_hosts_id_refresh;
 pub mod workbench_git_hosts_id_test;
+pub mod workbench_github_permissions_agent_id;
 pub mod workbench_harnesses;
 pub mod workbench_jobs;
 pub mod workbench_repo_requests;

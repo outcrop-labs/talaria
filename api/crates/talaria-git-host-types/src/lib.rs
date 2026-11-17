@@ -10,7 +10,8 @@
 //
 // WHAT THE INTERFACE COVERS is exactly what those callers need, and nothing a
 // caller does not:
-//   · repo-scoped credentials for clone, fetch and push (`repo_login`)
+//   · repo-scoped credentials for clone, fetch and push (`repo_login`), and
+//     whether the host can narrow one per agent (`narrowing`)
 //   · the default branch, the branch list, cutting a branch, how far a branch
 //     is ahead of its base
 //   · creating a repository, with its visibility and default-branch protection
@@ -82,23 +83,103 @@ impl std::fmt::Debug for Login {
     }
 }
 
-/// What a repo-scoped credential may do. `Write` is a workbench job's git in
-/// the sandbox (clone, fetch, push a branch; Talaria opens the pull request
-/// itself, from the api); `Read` is a clone's (app install and update). An
-/// adapter that can narrow a token narrows it to this; one that cannot says
-/// so in its own docs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a repo-scoped credential is for. `Read` is a clone's (app install and
+/// update): the repository's contents, read, and nothing that writes. `Job`
+/// is the credential one agent's sandbox is handed for a repository it was
+/// granted: `permissions` is that agent's COMPLETE set on the host, as an
+/// admin set it (or the default when none did), and the agent spends it
+/// directly — git push, and the host's API. An adapter that can narrow a
+/// token narrows it to exactly this, met with what it can give; one that
+/// cannot says so through [`GitHost::narrowing`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoAccess {
-    Write,
     Read,
+    Job {
+        agent_id: String,
+        permissions: PermissionSet,
+    },
+}
+
+impl RepoAccess {
+    /// The agent a `Job` credential is for. None for a `Read`, which is the
+    /// platform's own and no agent's.
+    pub fn agent(&self) -> Option<&str> {
+        match self {
+            RepoAccess::Read => None,
+            RepoAccess::Job { agent_id, .. } => Some(agent_id),
+        }
+    }
+}
+
+/// Whether a host can narrow a credential per repository and per agent. A
+/// GitHub App mints a token for one repository with exactly the permissions
+/// asked; a PAT, or a Forgejo token, is the host's own and carries whatever
+/// its owner gave it, so on such a host no per-agent permission is offered
+/// and none is claimed: the host's own token decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Narrowing {
+    PerRepo,
+    /// The sentence that says why this host's token cannot be narrowed.
+    HostWide(&'static str),
+}
+
+impl Narrowing {
+    /// `perRepo` or `hostWide`, as a page reads it.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Narrowing::PerRepo => "perRepo",
+            Narrowing::HostWide(_) => "hostWide",
+        }
+    }
+}
+
+/// A repo-scoped login a host handed out, and what is known about it: what
+/// the credential door records for each one (the `git.credential` audit row),
+/// and what a caller that must take it back again needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuedLogin {
+    pub login: Login,
+    /// The GitHub App installation the token was minted on. None for every
+    /// other credential.
+    pub installation: Option<String>,
+    /// What the token carries, when the host says (a GitHub App token). None
+    /// when it does not: a PAT or a Forgejo token carries whatever its owner
+    /// gave it.
+    pub carried: Option<PermissionSet>,
+    /// What the ask named that the host could not give (on GitHub, what the
+    /// App's installation does not hold, and organization permissions GitHub
+    /// would not put on a repository token).
+    pub shortfall: PermissionSet,
+    /// The host's own words for a part of the ask it refused, when it
+    /// refused one rather than lacked it (GitHub's message when it would not
+    /// mint a repository token carrying organization permissions). None
+    /// otherwise.
+    pub shortfall_why: Option<String>,
+    /// Minted by this call, rather than served from a cache or stored.
+    pub minted: bool,
+}
+
+impl IssuedLogin {
+    /// A login the host keeps no record of: nothing is known about what it
+    /// carries, and it was not minted.
+    pub fn plain(login: Login) -> IssuedLogin {
+        IssuedLogin {
+            login,
+            installation: None,
+            carried: None,
+            shortfall: PermissionSet::new(),
+            shortfall_why: None,
+            minted: false,
+        }
+    }
 }
 
 // ── Permissions ──────────────────────────────────────────────────────────────
 //
 // A host that can narrow a credential narrows it to named permissions, each at
 // a level. The names are the host's own (GitHub's are `contents`, `metadata`,
-// `workflows`, …), and which of them exist, and which may ever ride on a
-// token, is the adapter's catalog, never this crate's. What lives here is the
+// `workflows`, …), and which of them exist, at which levels, is the
+// adapter's catalog, never this crate's. What lives here is the
 // arithmetic every adapter and caller shares: the order of the levels, and the
 // set operations a mint is built from.
 
@@ -680,14 +761,19 @@ pub trait GitHost: Send + Sync {
     /// agents from.
     fn reachable_repos(&self) -> impl Future<Output = Result<Vec<String>, String>> + Send;
 
+    /// Whether this connection can narrow a credential per repository and
+    /// per agent ([`Narrowing`]). From its configuration alone (no network).
+    fn narrowing(&self) -> Narrowing;
+
     /// A login for `repo` alone where the host can scope one (GitHub App),
-    /// narrowed to `access` where it can narrow one. None when the connection
-    /// has nothing to give (a public repo then clones anonymously).
+    /// narrowed to `access` where it can narrow one, with what is known
+    /// about it. None when the connection has nothing to give (a public repo
+    /// then clones anonymously).
     fn repo_login(
         &self,
         repo: &str,
-        access: RepoAccess,
-    ) -> impl Future<Output = Result<Option<Login>, String>> + Send;
+        access: &RepoAccess,
+    ) -> impl Future<Output = Result<Option<IssuedLogin>, String>> + Send;
 
     fn default_branch(&self, repo: &str) -> impl Future<Output = Result<String, String>> + Send;
 
@@ -953,6 +1039,21 @@ mod tests {
             password: "s3cret".into(),
         };
         assert!(!format!("{l:?}").contains("s3cret"));
+        let issued = IssuedLogin::plain(l);
+        assert!(!format!("{issued:?}").contains("s3cret"));
+        assert_eq!((issued.carried, issued.minted), (None, false));
+    }
+
+    #[test]
+    fn a_job_credential_names_its_agent_and_a_read_names_none() {
+        let job = RepoAccess::Job {
+            agent_id: "a-1".into(),
+            permissions: PermissionSet::of(&[("workflows", Level::Write)]),
+        };
+        assert_eq!(job.agent(), Some("a-1"));
+        assert_eq!(RepoAccess::Read.agent(), None);
+        assert_eq!(Narrowing::PerRepo.wire(), "perRepo");
+        assert_eq!(Narrowing::HostWide("why").wire(), "hostWide");
     }
 
     /// The status wire an admin's page reads: a host with no app says so
