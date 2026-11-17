@@ -246,6 +246,19 @@ fn google_refusal(
             pack::denied_sentence(p, &tool, !policy::denied_by_name(&tool)),
         ));
     }
+    // The deny list's floor, by argument: a label tool asked to apply or
+    // remove TRASH or SPAM. Refused here, before the hold, an admin's allow
+    // or an owner's unlock is read, so none of them can lift it.
+    if let Some(label) = rpc
+        .pointer("/params/arguments")
+        .and_then(policy::forbidden_label)
+    {
+        return Some((
+            -32602,
+            Outcome::Denied,
+            pack::forbidden_label_sentence(p, &tool, &label),
+        ));
+    }
     if rpc
         .pointer("/params/arguments")
         .is_some_and(|a| talaria_workspace_secrets::mentions_handle(&a.to_string()))
@@ -2261,11 +2274,25 @@ mod tests {
     /// (talaria-google-mcp's fixtures), with each tool's scopes from its
     /// protected-resource document.
     fn calendar_pack() -> (McpServer, GoogleCall) {
-        let listed = talaria_api_facades::google::mcp::catalog::read_tools_list(
-            200,
+        google_pack(
+            "calendar",
+            "calendarmcp.googleapis.com",
             include_str!("../../../talaria-google-mcp/fixtures/tools-list/calendarmcp.json"),
         )
-        .unwrap();
+    }
+
+    /// The same for Gmail's captured catalog.
+    fn gmail_pack() -> (McpServer, GoogleCall) {
+        google_pack(
+            "gmail",
+            "gmailmcp.googleapis.com",
+            include_str!("../../../talaria-google-mcp/fixtures/tools-list/gmailmcp.json"),
+        )
+    }
+
+    fn google_pack(product: &str, host: &str, tools_list: &str) -> (McpServer, GoogleCall) {
+        let listed =
+            talaria_api_facades::google::mcp::catalog::read_tools_list(200, tools_list).unwrap();
         let docs: Value = serde_json::from_str(include_str!(
             "../../../talaria-google-mcp/fixtures/protected-resource.json"
         ))
@@ -2274,9 +2301,8 @@ mod tests {
             .into_iter()
             .map(|mut t| {
                 let name = t["name"].as_str().unwrap().to_string();
-                let doc = &docs["documents"][format!(
-                    "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/{name}"
-                )];
+                let doc = &docs["documents"]
+                    [format!("{host}/.well-known/oauth-protected-resource/{name}")];
                 t["requiredScopesAnyOf"] = doc["scopes_supported"].clone();
                 t
             })
@@ -2284,12 +2310,12 @@ mod tests {
         let mut server =
             not_connected(talaria_api_facades::mcp::not_connected::ConnectScope::GoogleOwner)
                 .server;
-        server.name = "google-calendar".into();
+        server.name = format!("google-{product}");
         server.auth_mode = "google".into();
         server.oauth_enabled = false;
         server.tools = Value::Array(tools);
         let g = GoogleCall {
-            product: pack::product("calendar").unwrap(),
+            product: pack::product(product).unwrap(),
             grant: talaria_api_facades::google::connections::GrantRow::User("u1".into()),
             principal: talaria_api_facades::google::agent::PrincipalKind::Owner,
             // The personal connect's grant (WORKSPACE_SCOPES).
@@ -2422,6 +2448,113 @@ mod tests {
             );
         }
         assert!(google_refusal(None, &server, &g).is_none());
+    }
+
+    /// The deny list's floor by argument, on Google's live Gmail catalog: a
+    /// label tool asked to apply or remove TRASH or SPAM is refused at the
+    /// gate — held by default, allowed by an admin's override, or not — so
+    /// no hold is queued, no unlock is read and nothing reaches the relay.
+    /// The same tools with any other label pass to the hold (or the relay,
+    /// under an allow).
+    #[test]
+    fn a_label_call_naming_trash_or_spam_is_refused_whatever_its_policy() {
+        use super::super::mcp_gw_google_hold::held_tool;
+        let (server, g) = gmail_pack();
+        let org = GoogleCall {
+            grant: talaria_api_facades::google::connections::GrantRow::Org,
+            principal: talaria_api_facades::google::agent::PrincipalKind::Org,
+            scope: Some(talaria_api_facades::google::oauth::ORG_CONNECT_SCOPES.join(" ")),
+            ..g.clone()
+        };
+        // An admin's ALLOW on every label tool (the org account's call, where
+        // an allow applies) and an owner's call where they are held.
+        let allowed = GoogleCall {
+            overrides: [
+                "label_thread",
+                "unlabel_thread",
+                "label_message",
+                "unlabel_message",
+                "update_message_labels",
+            ]
+            .iter()
+            .map(|t| (t.to_string(), policy::Policy::Allow))
+            .collect(),
+            ..org.clone()
+        };
+        let forbidden = [
+            (
+                "unlabel_thread",
+                json!({ "threadId": "t1", "labelIds": ["TRASH"] }),
+            ),
+            (
+                "unlabel_message",
+                json!({ "messageId": "m1", "labelIds": ["TRASH"] }),
+            ),
+            (
+                "label_thread",
+                json!({ "threadId": "t1", "labelIds": ["SPAM"] }),
+            ),
+            (
+                "label_message",
+                json!({ "messageId": "m1", "labelIds": ["UNREAD", "TRASH"] }),
+            ),
+            (
+                "update_message_labels",
+                json!({ "messageId": "m1", "addLabelIds": ["spam"] }),
+            ),
+            (
+                "update_message_labels",
+                json!({ "messageId": "m1", "removeLabelIds": ["TRASH"] }),
+            ),
+        ];
+        for who in [&g, &org, &allowed] {
+            for (tool, args) in &forbidden {
+                let rpc = call(tool, args.clone());
+                let (code, outcome, sentence) = google_refusal(Some(&rpc), &server, who)
+                    .unwrap_or_else(|| panic!("{tool} {args} passed the gate"));
+                assert_eq!((code, outcome), (-32602, Outcome::Denied), "{tool}");
+                assert!(
+                    sentence
+                        .contains("never lets an agent move mail to or out of the trash or spam"),
+                    "{sentence}"
+                );
+                assert!(
+                    sentence.ends_with("Nothing was sent to Google's Workspace MCP servers."),
+                    "{sentence}"
+                );
+            }
+        }
+        // Any other label: held for a person by default, relayed under the
+        // admin's allow.
+        for (tool, args) in [
+            (
+                "unlabel_thread",
+                json!({ "threadId": "t1", "labelIds": ["UNREAD"] }),
+            ),
+            (
+                "label_message",
+                json!({ "messageId": "m1", "labelIds": ["STARRED", "Label_7"] }),
+            ),
+            (
+                "update_message_labels",
+                json!({ "messageId": "m1", "removeLabelIds": ["INBOX"] }),
+            ),
+        ] {
+            let rpc = call(tool, args.clone());
+            for who in [&g, &org] {
+                assert!(google_refusal(Some(&rpc), &server, who).is_none(), "{tool}");
+                assert_eq!(held_tool(Some(&rpc), &server, who).as_deref(), Some(tool));
+            }
+            assert!(
+                google_refusal(Some(&rpc), &server, &allowed).is_none(),
+                "{tool}"
+            );
+            assert_eq!(
+                held_tool(Some(&rpc), &server, &allowed),
+                None,
+                "{tool} relays"
+            );
+        }
     }
 
     /// The agent's listing of Google's live Calendar catalog: the reads as

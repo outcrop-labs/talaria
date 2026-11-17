@@ -1319,38 +1319,31 @@ pub enum McpAccess {
     NotConnected(NotConnected),
 }
 
-/// What one AGENT may do on one server: assignment ∪ team-agent grants,
-/// intersected (for a personal assistant) with its owner's user/team access —
-/// with the owner's credentials on per-user servers. Access is decided
-/// BEFORE credentials, so a server the agent may not use answers `Denied`
-/// whether or not anyone connected it, and only a granted one can answer
-/// `NotConnected`.
-pub async fn effective_mcp_for(
-    pg: &PgPool,
-    sb: &SecretBox,
-    subject: &AgentSubject,
-    server_name: &str,
-) -> Result<McpAccess, String> {
-    let agent_model = subject_model(subject);
-    let Some(server) = get_mcp_server(pg, server_name)
-        .await
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(McpAccess::Denied);
-    };
-    if !server.serving() {
-        return Ok(McpAccess::Denied);
-    }
-    // A Google Workspace MCP server speaks as the caller's own Google
-    // principal, which a legacy shared-key caller does not have: refused
-    // before anything else is read. So is a pack row no product claims.
-    let google_product = crate::google::product_of(&server);
-    if crate::google::is_google(&server)
-        && (google_product.is_none() || !talaria_agent_auth::subject_proven(subject))
-    {
-        return Ok(McpAccess::Denied);
-    }
+/// What the registry grants one agent on one server, before any credential
+/// is read: refused, or granted with a tool allowance (None = every tool)
+/// and, for a personal assistant, its owner.
+pub enum Allowance {
+    /// No assignment or team grant, or the owner's access is denied.
+    Denied,
+    Granted {
+        tools: Option<Vec<String>>,
+        owner: Option<String>,
+    },
+}
 
+/// The ACCESS half of `effective_mcp_for`: assignment ∪ team-agent grants
+/// (or, for the Workbench, the agent's Developer Agent switch alone),
+/// intersected for a personal assistant with its owner's user and team
+/// access. Reads no credential and no server state beyond `server`'s id and
+/// name — the caller has decided the row serves. The approved replay of a
+/// held Google Workspace MCP call reads it again (talaria-google-pending), so
+/// access revoked after the call was queued stops it.
+pub async fn mcp_allowance(
+    pg: &PgPool,
+    subject: &AgentSubject,
+    server: &McpServer,
+) -> Result<Allowance, String> {
+    let agent_model = subject_model(subject);
     // The Workbench is granted by the agent's Developer Agent switch and by
     // nothing else. Assignment and team rows for it are ignored, so the
     // switch and the tools can never disagree.
@@ -1362,7 +1355,7 @@ pub async fn effective_mcp_for(
                 .await
                 .map_err(|e| e.to_string())?
         {
-            return Ok(McpAccess::Denied);
+            return Ok(Allowance::Denied);
         }
         None
     } else {
@@ -1397,7 +1390,7 @@ pub async fn effective_mcp_for(
             if server.all_agents {
                 None
             } else if team_allow_lists.is_empty() {
-                return Ok(McpAccess::Denied);
+                return Ok(Allowance::Denied);
             } else {
                 union_tool_lists(team_allow_lists)
             }
@@ -1420,7 +1413,7 @@ pub async fn effective_mcp_for(
         .await
         .map_err(|e| e.to_string())?;
         if access.as_ref().is_some_and(|(allowed, _)| !allowed) {
-            return Ok(McpAccess::Denied);
+            return Ok(Allowance::Denied);
         }
         let team_rows: Vec<(bool, Option<Vec<String>>)> = sqlx::query_as(
             "select a.allowed, a.tools \
@@ -1437,7 +1430,7 @@ pub async fn effective_mcp_for(
         let any_team_allow = team_rows.iter().any(|(allowed, _)| *allowed);
         let user_allow = access.as_ref().is_some_and(|(allowed, _)| *allowed);
         if any_team_deny && !any_team_allow && !user_allow {
-            return Ok(McpAccess::Denied);
+            return Ok(Allowance::Denied);
         }
         let mut allowed_lists = Vec::new();
         if user_allow {
@@ -1449,18 +1442,59 @@ pub async fn effective_mcp_for(
             }
         }
         user_tools = union_tool_lists(allowed_lists);
-    } else if server.auth_mode == "per-user" {
+    }
+    Ok(Allowance::Granted {
+        tools: intersect(agent_tools, user_tools),
+        owner,
+    })
+}
+
+/// What one AGENT may do on one server: assignment ∪ team-agent grants,
+/// intersected (for a personal assistant) with its owner's user/team access —
+/// with the owner's credentials on per-user servers. Access is decided
+/// BEFORE credentials, so a server the agent may not use answers `Denied`
+/// whether or not anyone connected it, and only a granted one can answer
+/// `NotConnected`.
+pub async fn effective_mcp_for(
+    pg: &PgPool,
+    sb: &SecretBox,
+    subject: &AgentSubject,
+    server_name: &str,
+) -> Result<McpAccess, String> {
+    let Some(server) = get_mcp_server(pg, server_name)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(McpAccess::Denied);
+    };
+    if !server.serving() {
+        return Ok(McpAccess::Denied);
+    }
+    // A Google Workspace MCP server speaks as the caller's own Google
+    // principal, which a legacy shared-key caller does not have: refused
+    // before anything else is read. So is a pack row no product claims.
+    let google_product = crate::google::product_of(&server);
+    if crate::google::is_google(&server)
+        && (google_product.is_none() || !talaria_agent_auth::subject_proven(subject))
+    {
+        return Ok(McpAccess::Denied);
+    }
+
+    let (tools, owner) = match mcp_allowance(pg, subject, &server).await? {
+        Allowance::Denied => return Ok(McpAccess::Denied),
+        Allowance::Granted { tools, owner } => (tools, owner),
+    };
+    if owner.is_none() && server.auth_mode == "per-user" {
         // Org agents have no single acting user to be — per-user servers are
         // personal-assistant territory by definition. Granted, so it is not a
         // refusal; but nothing anyone connects will change it.
         return Ok(McpAccess::NotConnected(NotConnected {
             scope: ConnectScope::PerUserOnOrgAgent,
             server,
-            tools: agent_tools,
+            tools,
             detail: None,
         }));
     }
-    let tools = intersect(agent_tools, user_tools);
 
     // A Google Workspace MCP server: the allowance narrowed to the tools the
     // pack runs or holds (never one it denies, never one Google's catalog
@@ -1510,7 +1544,13 @@ pub async fn effective_mcp_for(
                         principal,
                         scope: facts.scope,
                         flagged: facts.flagged.is_some(),
-                        overrides,
+                        // An admin's ALLOW never reaches a personal
+                        // assistant's call: a write into one member's own
+                        // account stays held for that member.
+                        overrides: talaria_google_mcp::policy::overrides_for(
+                            &overrides,
+                            principal == talaria_google_agent::PrincipalKind::Owner,
+                        ),
                     }),
                 })
             }

@@ -278,6 +278,37 @@ mod tests {
     const NO_CREDENTIAL: &str = include_str!("../fixtures/list-labels-401-nocred.json");
     // The same server, an unknown method: HTTP 200 with a JSON-RPC error.
     const UNKNOWN_METHOD: &str = include_str!("../fixtures/unknown-method-200.json");
+    // The WRITE tools the replay sends, refused the same way, captured on
+    // 2026-11-17 (16:00 UTC) exactly as `call_tool` sends them — one
+    // `tools/call`, no `initialize` — with no credential and with a bogus
+    // bearer: `create_event` at https://calendarmcp.googleapis.com/mcp/v1 and
+    // `create_draft` at https://gmailmcp.googleapis.com/mcp/v1. Each answered
+    // HTTP 401; with no credential `WWW-Authenticate: Bearer
+    // resource_metadata="https://<host>/.well-known/oauth-protected-resource/
+    // <tool>"`, with the bogus bearer `Bearer realm="https://accounts.google.
+    // com/", error="invalid_token"`.
+    const WRITES_REFUSED: [(&str, &str, &str); 4] = [
+        (
+            "create_event",
+            "no credential",
+            include_str!("../fixtures/create-event-401-nocred.json"),
+        ),
+        (
+            "create_event",
+            "a bogus bearer",
+            include_str!("../fixtures/create-event-401-bogus.json"),
+        ),
+        (
+            "create_draft",
+            "no credential",
+            include_str!("../fixtures/create-draft-401-nocred.json"),
+        ),
+        (
+            "create_draft",
+            "a bogus bearer",
+            include_str!("../fixtures/create-draft-401-bogus.json"),
+        ),
+    ];
 
     /// MCP's CallToolResult shape (the specification's, NOT a Google
     /// capture: no accepted call has been made here).
@@ -298,6 +329,23 @@ mod tests {
                 text: Some(t),
             } => assert!(t.starts_with("Request is missing required authentication credential.")),
             other => panic!("{other:?}"),
+        }
+        // The write tools the replay actually sends: Google's own 401s,
+        // quoted whole.
+        for (tool, how, body) in WRITES_REFUSED {
+            let want = if how == "no credential" {
+                "Request is missing required authentication credential. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project."
+            } else {
+                "Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project."
+            };
+            assert_eq!(
+                read_replay(401, body),
+                ReplayAnswer::Failed {
+                    status: 401,
+                    text: Some(want.into()),
+                },
+                "{tool} with {how}"
+            );
         }
         assert_eq!(
             read_replay(200, UNKNOWN_METHOD),

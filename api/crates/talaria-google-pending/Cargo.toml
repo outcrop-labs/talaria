@@ -25,6 +25,7 @@ talaria-google-errors = { workspace = true }
 talaria-google-gmail = { workspace = true }
 talaria-google-mcp = { workspace = true }
 talaria-google-org = { workspace = true }
+talaria-mcp = { workspace = true }
 talaria-notify = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-safe-fetch = { workspace = true }

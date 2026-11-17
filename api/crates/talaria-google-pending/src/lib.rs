@@ -284,6 +284,25 @@ fn mcp_call_lock_key(input: &QueueAction<'_>) -> String {
 /// the one an approval is running right now (`executing`, up to the replay's
 /// two minutes), so a retry never becomes a second card whose approval would
 /// run the write twice.
+/// Is the `executing` row `action_id` still inside an approved replay's time
+/// — the replay's two-minute answer budget, the token vend before it, and a
+/// margin: five minutes since it was claimed? False for an older claim (a
+/// process that stopped mid-replay, whose outcome nobody knows) and for a
+/// row that is not `executing`. The gateway reads it to tell a retry
+/// "running right now" from "outcome unknown"; the dedupe matches both, so
+/// neither queues a second run.
+pub async fn replay_still_running(pg: &PgPool, action_id: &str) -> Result<bool, String> {
+    let live: Option<Option<bool>> = sqlx::query_scalar(
+        "select decided_at > now() - interval '5 minutes' from google_pending_actions \
+         where id = $1::uuid and status = 'executing'",
+    )
+    .bind(action_id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| format!("google pending action running read: {e}"))?;
+    Ok(live.flatten().unwrap_or(false))
+}
+
 async fn find_same_mcp_call<'e, E: sqlx::PgExecutor<'e>>(
     exec: E,
     input: &QueueAction<'_>,

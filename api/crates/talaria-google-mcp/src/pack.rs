@@ -211,6 +211,16 @@ pub fn denied_sentence(p: &Product, tool: &str, by_admin: bool) -> String {
     }
 }
 
+/// The gateway's (and the replay's) sentence for a call naming a label no
+/// agent may apply or remove (`policy::forbidden_label`): refused whatever
+/// the tool's policy, an override or an unlock says.
+pub fn forbidden_label_sentence(p: &Product, tool: &str, label: &str) -> String {
+    format!(
+        "\u{201c}{tool}\u{201d} on Google's {} MCP server was called with the {label} label, and Talaria never lets an agent move mail to or out of the trash or spam, with any tool, approved or not. Nothing was sent to Google's Workspace MCP servers.",
+        p.name
+    )
+}
+
 /// The gateway's sentence for a tool the server's cached catalog does not
 /// list: Google did not offer it when Talaria last asked, so the pack has no
 /// policy for it and runs nothing — not even a hold.
@@ -261,6 +271,17 @@ pub fn held_sentence(
 pub fn running_sentence(p: &Product, tool: &str, id: &str) -> String {
     format!(
         "An identical call ({id}) was approved and is running on Google's {} MCP server right now; nothing new was queued. Do not call \u{201c}{tool}\u{201d} again to check: read_pending_send no longer lists it once it has run.",
+        p.name
+    )
+}
+
+/// What the agent reads when an identical call was approved long enough ago
+/// that its replay should have finished, yet the row never settled (a
+/// process that stopped mid-replay): whether it ran on Google is unknown.
+/// Nothing new is queued — a second run could do the write twice.
+pub fn stranded_sentence(p: &Product, tool: &str, id: &str) -> String {
+    format!(
+        "An identical call ({id}) was approved minutes ago and never reported back from Google's {} MCP server, so whether \u{201c}{tool}\u{201d} ran is unknown; nothing new was queued. Do not call it again: tell the person to check in Google whether it happened.",
         p.name
     )
 }

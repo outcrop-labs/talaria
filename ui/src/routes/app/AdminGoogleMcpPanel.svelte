@@ -27,7 +27,9 @@
   // HELD — each call waits in the approval queue for a person (the owner for
   // a personal assistant, an admin for the org account or an agent's own
   // identity). An admin may override a tool's default here, except that the
-  // deny list stays denied.
+  // deny list stays denied, and that "runs" reaches only the org account and
+  // agents' own identities: a personal assistant's call into its owner's own
+  // Google account still waits for that owner.
   type Policy = 'allow' | 'hold' | 'deny'
   interface Tool {
     name: string
@@ -41,8 +43,10 @@
     policy: Policy
     /** The admin's override, when there is one. */
     override: Policy | null
-    /** What the gateway does with it now. */
+    /** What the gateway does with it now, for the org account and agents' own identities. */
     effective: Policy
+    /** …and for a personal assistant, where an admin's “runs” does not reach. */
+    effectivePersonal: Policy
     /** Google's own list of the scopes it accepts for the tool. */
     requiredScopesAnyOf: string[] | null
   }
@@ -91,7 +95,11 @@
   const POLICY_LABEL: Record<Policy, string> = { allow: 'runs', hold: 'held for a person', deny: 'denied' }
   const policyTitle = (t: Tool) =>
     t.override && t.override === t.effective
-      ? `An admin set this tool to “${POLICY_LABEL[t.override]}” (the default is “${POLICY_LABEL[t.policy]}”).`
+      ? `An admin set this tool to “${POLICY_LABEL[t.override]}” (the default is “${POLICY_LABEL[t.policy]}”).${
+          t.effectivePersonal !== t.effective
+            ? ` A personal assistant’s call is still ${POLICY_LABEL[t.effectivePersonal]}: its owner approves each one.`
+            : ''
+        }`
       : t.effective === 'allow'
         ? 'On the pinned read list and marked read-only by Google: relayed to Google.'
         : t.effective === 'deny'
@@ -105,7 +113,7 @@
     if (next === 'allow' && t.policy !== 'allow') {
       const ok = await confirm({
         title: `Let agents run ${t.name} without a person`,
-        message: `${t.name} on ${p.name} ${t.readOnlyHint ? 'is marked read-only by Google but is not on Talaria’s pinned read list' : 'can change something in Google Workspace'}. Set to “runs”, every agent assigned this server calls it as its own Google account with no approval. Google calls its tool annotations untrusted hints.`,
+        message: `${t.name} on ${p.name} ${t.readOnlyHint ? 'is marked read-only by Google but is not on Talaria’s pinned read list' : 'can change something in Google Workspace'}. Set to “runs”, the org account and every agent with its own Google identity assigned this server call it with no approval. A personal assistant’s call into its owner’s own Google account still waits for that owner: an admin never approves those. Google calls its tool annotations untrusted hints.`,
         confirmLabel: 'Let it run',
         danger: true,
       })
@@ -222,7 +230,7 @@
                       {#each p.tools as t (t.name)}
                         <li class="flex flex-wrap items-center gap-2 text-xs">
                           <span class="font-mono text-fg">{t.name}</span>
-                          <Chip tone={POLICY_TONE[t.effective]} title={policyTitle(t)}>{POLICY_LABEL[t.effective]}{t.override ? ' · set here' : ''}</Chip>
+                          <Chip tone={POLICY_TONE[t.effective]} title={policyTitle(t)}>{POLICY_LABEL[t.effective]}{t.override ? ' · set here' : ''}{t.effectivePersonal !== t.effective ? ' · personal: held' : ''}</Chip>
                           <Select
                             size="sm"
                             class="w-40"

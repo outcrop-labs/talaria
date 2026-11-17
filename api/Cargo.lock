@@ -5543,6 +5543,7 @@ dependencies = [
  "talaria-google-org",
  "talaria-google-sheets",
  "talaria-google-slides",
+ "talaria-mcp",
  "talaria-notify",
  "talaria-realtime",
  "talaria-safe-fetch",

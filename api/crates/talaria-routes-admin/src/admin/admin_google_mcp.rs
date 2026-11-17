@@ -12,11 +12,17 @@
 // and sensitive labels are denied; every other tool — every write, and any
 // tool Google adds later — is HELD: the exact call waits in the approval
 // queue for a person (`mcp_call`). An admin may override the default per
-// tool, except that the deny list stays denied. Deliberately requireAdmin.
+// tool, except that the deny list stays denied, and an ALLOW reaches only the
+// org account and agents' own identities: a personal assistant's write into
+// its owner's Google account stays held for that owner. A call naming TRASH
+// or SPAM in a label argument is refused whatever the policy. Deliberately
+// requireAdmin.
 //   GET → every product: its endpoint and the two Google Cloud services to
 //   enable, whether it is enabled here, its registry row and last probe, and
 //   each cached tool with the pack's default policy for it (allow, hold,
-//   deny), the admin's override if any, the policy in effect, and the scopes
+//   deny), the admin's override if any, the policy in effect — for the org
+//   account and agent identities (`effective`) and for a personal assistant
+//   (`effectivePersonal`, where an ALLOW does not reach) — and the scopes
 //   Google accepts for it; plus Google's preview terms, and the last
 //   refusals Google's servers gave each Google grant (`refusals`).
 //   POST /{product} {acknowledgePreview: true} → enable it: the registry
@@ -60,12 +66,19 @@ async fn pack_row(state: &AppState, p: &Product) -> Result<Option<McpServer>, sq
 
 /// One cached tool as the panel shows it: the pack's default, the admin's
 /// override, and the policy in effect (the override, except that the deny
-/// list stays denied).
+/// list stays denied) — for the org account and agent identities, and for a
+/// personal assistant, where an admin's ALLOW does not reach.
 fn tool_view(p: &Product, t: &Value, overrides: &[(String, policy::Policy)]) -> Option<Value> {
     let name = t.get("name").and_then(Value::as_str)?;
     let default = policy::default_policy(p.id, name, Some(t));
     let override_ = policy::override_of(overrides, name);
     let effective = policy::policy_for(p.id, name, Some(t), override_);
+    let personal = policy::policy_for(
+        p.id,
+        name,
+        Some(t),
+        policy::override_of(&policy::overrides_for(overrides, true), name),
+    );
     Some(json!({
         "name": name,
         "title": t.get("title").cloned().or_else(|| t.pointer("/annotations/title").cloned()),
@@ -76,6 +89,7 @@ fn tool_view(p: &Product, t: &Value, overrides: &[(String, policy::Policy)]) -> 
         "policy": default,
         "override": override_,
         "effective": effective,
+        "effectivePersonal": personal,
         "requiredScopesAnyOf": t.get("requiredScopesAnyOf").cloned(),
     }))
 }
@@ -484,7 +498,16 @@ mod tests {
         assert_eq!(v["policy"], "hold");
         assert_eq!(v["override"], "allow");
         assert_eq!(v["effective"], "allow");
+        // A personal assistant's call stays held for its owner.
+        assert_eq!(v["effectivePersonal"], "hold");
         assert_eq!(v["denyListed"], false);
+        // A HOLD reaches everyone.
+        let read = json!({ "name": "get_thread", "annotations": { "readOnlyHint": true } });
+        let held = vec![("get_thread".to_string(), policy::Policy::Hold)];
+        let v = tool_view(&p, &read, &held).unwrap();
+        assert_eq!((v["effective"].as_str(), v["effectivePersonal"].as_str()), (Some("hold"), Some("hold")));
+        let v = tool_view(&p, &read, &[]).unwrap();
+        assert_eq!((v["effective"].as_str(), v["effectivePersonal"].as_str()), (Some("allow"), Some("allow")));
         // A row on a deny-listed tool (never written by this route) changes
         // nothing: the effect stays deny.
         let v = tool_view(&p, &trash, &overrides).unwrap();

@@ -18,7 +18,11 @@
 //               exact call for a person (the `mcp_call` approval) and Google
 //               hears nothing until they approve. An admin's per-tool
 //               override (`mcp_tool_policies`, `tool_overrides`) wins over
-//               the default, except that no override lifts the deny list.
+//               the default, except that no override lifts the deny list,
+//               and an ALLOW never reaches a personal assistant's call
+//               (`policy::overrides_for`): its owner approves those. A call
+//               naming TRASH or SPAM in a label argument is refused
+//               whatever the policy (`policy::forbidden_label`).
 //   WHERE       the product's endpoint as the code names it
 //               (`pack::endpoint`), never the row's stored URL.
 //
@@ -75,7 +79,9 @@ pub struct GoogleCall {
     /// The grant carries a flag from a 401 a fresh token did not cure
     /// (`last_mcp_refusal.flagged`): an accepted call forgets it.
     pub flagged: bool,
-    /// The admin's per-tool overrides on this server (`tool_overrides`).
+    /// The admin's per-tool overrides on this server (`tool_overrides`), as
+    /// they apply to this caller (`policy::overrides_for`: no ALLOW for a
+    /// personal assistant).
     pub overrides: Vec<(String, Policy)>,
 }
 

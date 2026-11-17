@@ -20,6 +20,16 @@
 // of the trash, marking or unmarking spam, and applying a sensitive label.
 // Talaria's own REST tools refuse TRASH and SPAM too.
 //
+// THE SAME FLOOR, BY ARGUMENT. Gmail's label tools reach the trash and spam
+// without the words in their names: Google's own catalog says `unlabel_thread`
+// and `unlabel_message` take "a system label ID (e.g., `INBOX`, `TRASH`, …)",
+// and `label_*` and `update_message_labels` take system label IDs too. So a
+// call of ANY tool that names TRASH, SPAM or BIN in a label argument
+// (`forbidden_label`) is refused at the gateway, before a hold, an allow or
+// an unlock is read, and again at the approved replay — no override, no
+// unlock and no approval lifts it. The set is the REST organize path's own
+// (talaria-google-gmail's `FORBIDDEN_LABELS`).
+//
 // AN ADMIN'S OVERRIDE (`mcp_tool_policies`, one row per server and tool)
 // wins over the default — with one floor: a tool on the deny list stays
 // denied whatever the row says (`override_refusal` refuses to write one, and
@@ -153,6 +163,46 @@ pub fn denied_by_name(tool: &str) -> bool {
             .any(|w| matches!(w, "trash" | "untrash" | "spam" | "unspam"))
 }
 
+/// The labels no agent call may name, on either side of a change: the REST
+/// organize path's set (talaria-google-gmail's `FORBIDDEN_LABELS`). Moving
+/// mail to or out of the trash or spam is not organizing.
+pub const FORBIDDEN_LABELS: [&str; 3] = ["TRASH", "SPAM", "BIN"];
+
+/// The forbidden label a call's arguments name, as written, or None: any
+/// string — alone, or in an array — under any object key whose name
+/// contains `label` (`labelIds`, `addLabelIds`, `removeLabelIds`,
+/// `labelOption`, …), at any depth, equal to TRASH, SPAM or BIN ignoring
+/// case. Read for every tool on every product, whatever its policy: a tool
+/// Google adds later with the same arguments is covered too — the strict
+/// direction. No read tool on Google's live catalogs takes a label argument.
+pub fn forbidden_label(arguments: &Value) -> Option<String> {
+    fn labels(v: &Value) -> Vec<&str> {
+        match v {
+            Value::String(s) => vec![s.as_str()],
+            Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        }
+    }
+    match arguments {
+        Value::Object(map) => map.iter().find_map(|(k, v)| {
+            k.to_ascii_lowercase()
+                .contains("label")
+                .then(|| {
+                    labels(v).into_iter().find(|l| {
+                        FORBIDDEN_LABELS
+                            .iter()
+                            .any(|f| f.eq_ignore_ascii_case(l.trim()))
+                    })
+                })
+                .flatten()
+                .map(str::to_string)
+                .or_else(|| forbidden_label(v))
+        }),
+        Value::Array(items) => items.iter().find_map(forbidden_label),
+        _ => None,
+    }
+}
+
 /// Does the catalog entry mark the tool read-only? Only a JSON `true`
 /// counts; absent, null or anything else is not read-only.
 pub fn marked_read_only(entry: Option<&Value>) -> bool {
@@ -195,6 +245,22 @@ pub fn policy_for(
         return Policy::Deny;
     }
     override_.unwrap_or_else(|| default_policy(product, tool, entry))
+}
+
+/// The admin's overrides as they apply to one caller. For a PERSONAL
+/// assistant (an owner principal: the call writes into one member's own
+/// Google account) an admin's ALLOW is dropped, so a write there stays held
+/// for that member — the approval model gives the owner alone, never an
+/// admin, the say over an owner's row, and an ALLOW would be an admin's
+/// standing approval of every such call. HOLD and DENY rows apply to every
+/// caller (the strict direction), and an ALLOW applies to the org account
+/// and to agent identities, whose calls an admin approves anyway.
+pub fn overrides_for(overrides: &Overrides, personal: bool) -> Vec<(String, Policy)> {
+    overrides
+        .iter()
+        .filter(|(_, p)| !(personal && *p == Policy::Allow))
+        .cloned()
+        .collect()
 }
 
 /// Why an admin may not set `policy` on `tool`, or None when they may: a
@@ -561,6 +627,117 @@ pub(crate) mod tests {
         );
         assert!(
             held_tools("calendar", &catalog, &overrides).contains(&"brand_new_tool".to_string())
+        );
+    }
+
+    /// Google's own catalog documents the label tools taking system label
+    /// IDs, TRASH among them (`unlabel_*`), so the deny list's words alone
+    /// would not keep mail out of the trash or spam: the arguments are read.
+    #[test]
+    fn a_trash_or_spam_label_in_any_label_argument_is_named() {
+        let gmail = live_catalog("gmail");
+        let described = |tool: &str| {
+            catalog_entry(&gmail, tool).unwrap()["inputSchema"]["properties"]["labelIds"]
+                ["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // The captured catalog says so in Google's words.
+        assert!(described("unlabel_thread").contains("`TRASH`"));
+        assert!(described("unlabel_message").contains("`TRASH`"));
+        assert!(described("label_thread").contains("system label ID"));
+        for args in [
+            json!({ "threadId": "t1", "labelIds": ["TRASH"] }),
+            json!({ "threadId": "t1", "labelIds": ["UNREAD", "spam"] }),
+            json!({ "messageId": "m1", "labelIds": [" Trash "] }),
+            json!({ "messageId": "m1", "addLabelIds": ["SPAM"] }),
+            json!({ "messageId": "m1", "removeLabelIds": ["INBOX", "TRASH"] }),
+            json!({ "messageId": "m1", "labelOption": "TRASH" }),
+            json!({ "messageId": "m1", "labelIds": ["BIN"] }),
+            // A shape Google has not shipped: nested, singular.
+            json!({ "changes": [{ "labelId": "SPAM" }] }),
+        ] {
+            assert!(forbidden_label(&args).is_some(), "{args}");
+        }
+        assert_eq!(
+            forbidden_label(&json!({ "labelIds": ["INBOX", "TRASH"] })).as_deref(),
+            Some("TRASH")
+        );
+        for args in [
+            json!({ "threadId": "t1", "labelIds": ["UNREAD", "STARRED", "Label_12"] }),
+            json!({ "messageId": "m1", "addLabelIds": [], "removeLabelIds": ["INBOX"] }),
+            // The words outside a label argument are not a label.
+            json!({ "subject": "TRASH", "body": "SPAM" }),
+            json!({ "query": "in:trash" }),
+            json!({ "displayName": "Spam reports" }),
+            json!({}),
+            Value::Null,
+        ] {
+            assert_eq!(forbidden_label(&args), None, "{args}");
+        }
+        // No read tool Google listed takes a label argument at all, so the
+        // floor never refuses a read.
+        for p in PRODUCTS {
+            let catalog = live_catalog(p.id);
+            for name in allowed_tools(p.id, &catalog) {
+                let props = &catalog_entry(&catalog, &name).unwrap()["inputSchema"]["properties"];
+                let keys: Vec<&String> = props
+                    .as_object()
+                    .map(|o| o.keys().collect())
+                    .unwrap_or_default();
+                assert!(
+                    !keys
+                        .iter()
+                        .any(|k| k.to_ascii_lowercase().contains("label")),
+                    "{}/{name}: {keys:?}",
+                    p.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_admins_allow_never_reaches_a_personal_assistant() {
+        let gmail = live_catalog("gmail");
+        let overrides = vec![
+            ("create_draft".to_string(), Policy::Allow),
+            ("label_thread".to_string(), Policy::Allow),
+            ("search_threads".to_string(), Policy::Hold),
+            ("list_labels".to_string(), Policy::Deny),
+        ];
+        let personal = overrides_for(&overrides, true);
+        let shared = overrides_for(&overrides, false);
+        assert_eq!(shared, overrides, "org account and agent identities");
+        // A personal assistant's writes stay held for its owner; the
+        // stricter rows still apply to it.
+        for (tool, want) in [
+            ("create_draft", Policy::Hold),
+            ("label_thread", Policy::Hold),
+            ("search_threads", Policy::Hold),
+            ("list_labels", Policy::Deny),
+            ("get_thread", Policy::Allow),
+        ] {
+            assert_eq!(
+                gateway_policy("gmail", tool, &gmail, &personal),
+                want,
+                "{tool}"
+            );
+        }
+        assert_eq!(
+            gateway_policy("gmail", "create_draft", &gmail, &shared),
+            Policy::Allow
+        );
+        // An ALLOW on a pinned read is the default anyway.
+        let read_allowed = vec![("get_thread".to_string(), Policy::Allow)];
+        assert_eq!(
+            gateway_policy(
+                "gmail",
+                "get_thread",
+                &gmail,
+                &overrides_for(&read_allowed, true)
+            ),
+            Policy::Allow
         );
     }
 

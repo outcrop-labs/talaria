@@ -20,9 +20,11 @@
 // THE UNLOCK FAST PATH (owner decision D7). A personal principal's
 // conversation that holds an unspent grant for `<server>/<tool>` — left by
 // approving the same tool there within the last thirty minutes — runs ONE
-// more call without a new card: the row is queued, then approved in the
-// owner's name at once, and the agent reads Google's result. An org-account
-// or agent-identity call never rides an unlock: an admin decides each one.
+// more call to no one the approved call did not address (its attendees,
+// recipients or Chat space: talaria-chips' `mcp_call_addressees`) without a
+// new card: the row is queued, then approved in the owner's name at once,
+// and the agent reads Google's result. An org-account or agent-identity call
+// never rides an unlock: an admin decides each one.
 //
 // The arguments are kept as the agent sent them (plaintext jsonb, readable
 // only through the approver's routes, as a drafted email's body is today).
@@ -39,7 +41,7 @@ use talaria_api_facades::google::agent::{
 use talaria_api_facades::google::mcp::{pack, policy};
 use talaria_api_facades::google::pending_actions::{
     MCP_CALL, QueueAction, decide_action, discard_unproven, executed_result, held_payload,
-    held_summary, queue_action, queue_proof_failure,
+    held_summary, queue_action, queue_proof_failure, replay_still_running,
 };
 use talaria_api_facades::mcp::calls::Outcome;
 use talaria_api_facades::mcp::google::GoogleCall;
@@ -294,12 +296,27 @@ pub(super) async fn hold(
     let action_id = queued.action.id.clone();
 
     // An identical call an approval is running right now: no second row, no
-    // second card, and no unlock spent on it.
+    // second card, and no unlock spent on it. One claimed so long ago that
+    // its replay should have answered (a process stopped mid-replay) is not
+    // "running": its outcome is unknown, and still nothing new is queued.
     if queued.already_pending && queued.action.status == "executing" {
-        let sentence = pack::running_sentence(&p, tool, &action_id);
+        let running = match replay_still_running(pg, &action_id).await {
+            Ok(r) => r,
+            Err(e) => return failed_inside("[mcp/google] running-call read failed", e),
+        };
+        let sentence = if running {
+            pack::running_sentence(&p, tool, &action_id)
+        } else {
+            pack::stranded_sentence(&p, tool, &action_id)
+        };
         tracing::info!(
-            "[mcp/google] {agent_model}: {}/{tool} is already running as {action_id}",
-            server.name
+            "[mcp/google] {agent_model}: {}/{tool} is already {} as {action_id}",
+            server.name,
+            if running {
+                "running"
+            } else {
+                "stranded mid-replay"
+            }
         );
         return answer(held_reply(&id, &sentence), Outcome::Held, Some(sentence));
     }
@@ -316,7 +333,7 @@ pub(super) async fn hold(
             pg,
             &conv,
             &talaria_chips::mcp_unlock_key(&server.name, tool),
-            &[],
+            &talaria_chips::mcp_call_addressees(&arguments),
         )
         .await
         .unwrap_or(false)

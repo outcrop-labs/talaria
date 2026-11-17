@@ -22,7 +22,11 @@
 //     still turned on;
 //   · Google's catalog, as last listed, still has the tool;
 //   · the pack's policy for it — an admin's override, else the default — is
-//     not DENY now;
+//     not DENY now, and its arguments name no TRASH or SPAM label;
+//   · the agent may still use the server and the tool: its assignment or
+//     team grant, and for a personal assistant its owner's user and team
+//     access, as the gateway reads them (talaria-mcp's `mcp_allowance`) — so
+//     access an admin revoked after the call was queued stops it;
 // and only then vends a token for `Purpose::HostedMcp` through the one door
 // (a grant minted by a client declared not marked for AI agents never
 // reaches Google) and sends ONE stateless `tools/call` to the product's
@@ -179,6 +183,11 @@ pub fn replay_refusal(
     if talaria_workspace_secrets::mentions_handle(&held.arguments.to_string()) {
         return Some(pack::SECRET_HANDLE_REFUSAL.to_string());
     }
+    // The deny list's floor by argument: TRASH or SPAM in a label argument
+    // never runs, whoever approves it.
+    if let Some(label) = policy::forbidden_label(&held.arguments) {
+        return Some(pack::forbidden_label_sentence(p, &held.tool, &label));
+    }
     let Some(row) = row else {
         return Some(format!(
             "Google's {} MCP server was removed from this workspace after this call was queued. {nothing}",
@@ -240,6 +249,51 @@ async fn registry_facts(pg: &PgPool, server_id: &str) -> Result<Option<RegistryF
         serving,
         tools,
     }))
+}
+
+/// The tools the agent may call on the server now (`Some(None)`: every
+/// one), or None when the registry no longer grants it the server at all.
+/// Read as the gateway reads it (talaria-mcp's `mcp_allowance`), for the
+/// stored agent, proven — the agent the call was queued for.
+async fn allowance_now(
+    pg: &PgPool,
+    server_id: &str,
+    agent_model: &str,
+) -> Result<Option<Option<Vec<String>>>, String> {
+    let Some(server) = talaria_mcp::registry::get_mcp_server(pg, server_id)
+        .await
+        .map_err(|e| format!("mcp_call registry read: {e}"))?
+    else {
+        return Ok(None);
+    };
+    let subject = talaria_agent_auth::AgentSubject::Model(agent_model.to_string());
+    Ok(
+        match talaria_mcp::registry::mcp_allowance(pg, &subject, &server)
+            .await
+            .map_err(|e| format!("mcp_call access read: {e}"))?
+        {
+            talaria_mcp::registry::Allowance::Denied => None,
+            talaria_mcp::registry::Allowance::Granted { tools, .. } => Some(tools),
+        },
+    )
+}
+
+/// Why the agent may no longer run the held call, or None: the registry no
+/// longer grants it the server (`allowance` None), or its tool allowance no
+/// longer names the tool. The sentence says nothing was sent. Pure.
+pub fn access_refusal(held: &HeldCall, allowance: Option<&Option<Vec<String>>>) -> Option<String> {
+    let p = &held.product;
+    match allowance {
+        None => Some(format!(
+            "The agent that asked for this no longer has access to Google's {} MCP server here: an admin changed its assignment, or its owner's or team's access, after the call was queued. Nothing was sent to Google's Workspace MCP servers.",
+            p.name
+        )),
+        Some(Some(tools)) if !tools.iter().any(|t| t == &held.tool) => Some(format!(
+            "\u{201c}{}\u{201d} is no longer among the tools the agent that asked for this may use on Google's {} MCP server here. Nothing was sent to Google's Workspace MCP servers.",
+            held.tool, p.name
+        )),
+        Some(_) => None,
+    }
 }
 
 async fn tool_override(
@@ -353,6 +407,19 @@ pub(crate) async fn decide(
         }
     };
     if let Some(why) = replay_refusal(&held, facts.as_ref(), override_) {
+        return fail(pg, action_id, actor_id, &why).await;
+    }
+    // The agent's access to the server and the tool, as the gateway reads it
+    // now: an admin's revoke after the call was queued stops it.
+    let allowance = match allowance_now(pg, &held.server_id, agent_model.unwrap_or_default()).await
+    {
+        Ok(a) => a,
+        Err(e) => {
+            release_claim(pg, action_id, NOT_CHECKED).await?;
+            return Err(e);
+        }
+    };
+    if let Some(why) = access_refusal(&held, allowance.as_ref()) {
         return fail(pg, action_id, actor_id, &why).await;
     }
 
@@ -690,15 +757,81 @@ mod tests {
             replay_refusal(&secret, Some(&row(catalog())), None).as_deref(),
             Some(pack::SECRET_HANDLE_REFUSAL)
         );
+        // A forbidden label in the arguments, however the row got there and
+        // whatever an admin's row says: Gmail's own label tools, approved.
+        let gmail_row = RegistryFacts {
+            name: "google-gmail".into(),
+            auth_mode: "google".into(),
+            serving: true,
+            tools: json!([
+                { "name": "unlabel_thread", "annotations": { "destructiveHint": true } },
+                { "name": "update_message_labels", "annotations": { "readOnlyHint": false } },
+            ]),
+        };
+        let gmail_call = |tool: &str, args: Value| HeldCall {
+            server: "google-gmail".into(),
+            product: product("gmail").unwrap(),
+            ..held(tool, args)
+        };
+        let untrash = gmail_call(
+            "unlabel_thread",
+            json!({ "threadId": "t1", "labelIds": ["TRASH"] }),
+        );
+        let spam = gmail_call(
+            "update_message_labels",
+            json!({ "messageId": "m1", "addLabelIds": ["SPAM"] }),
+        );
+        let mut labelled = Vec::new();
+        for call in [&untrash, &spam] {
+            for override_ in [
+                None,
+                Some(policy::Policy::Allow),
+                Some(policy::Policy::Hold),
+            ] {
+                let why = replay_refusal(call, Some(&gmail_row), override_).unwrap();
+                assert!(
+                    why.contains("never lets an agent move mail to or out of the trash or spam"),
+                    "{why}"
+                );
+                labelled.push(why);
+            }
+        }
+        let fine = gmail_call(
+            "unlabel_thread",
+            json!({ "threadId": "t1", "labelIds": ["UNREAD"] }),
+        );
+        assert_eq!(replay_refusal(&fine, Some(&gmail_row), None), None);
         // Every refusal says nothing was sent.
-        for why in [
+        for why in labelled.into_iter().chain([
             denied,
             floor,
             absent,
             replay_refusal(&ok, None, None).unwrap(),
             replay_refusal(&ok, Some(&off), None).unwrap(),
-        ] {
+        ]) {
             assert!(why.to_lowercase().contains("nothing was sent"), "{why}");
+        }
+    }
+
+    #[test]
+    fn the_replay_rechecks_the_agents_access_to_the_server_and_the_tool() {
+        let call = held("create_event", json!({ "summary": "Standup" }));
+        // Granted every tool, or a list naming it: runs.
+        assert_eq!(access_refusal(&call, Some(&None)), None);
+        let named = Some(vec!["list_events".to_string(), "create_event".to_string()]);
+        assert_eq!(access_refusal(&call, Some(&named)), None);
+        // Revoked outright, or narrowed past the tool: refused, nothing sent.
+        let revoked = access_refusal(&call, None).unwrap();
+        assert!(revoked.contains("no longer has access"), "{revoked}");
+        let narrowed = Some(vec!["list_events".to_string()]);
+        let narrowed = access_refusal(&call, Some(&narrowed)).unwrap();
+        assert!(narrowed.contains("no longer among the tools"), "{narrowed}");
+        let nothing = access_refusal(&call, Some(&Some(vec![]))).unwrap();
+        for why in [revoked, narrowed, nothing] {
+            assert!(
+                why.ends_with("Nothing was sent to Google's Workspace MCP servers."),
+                "{why}"
+            );
         }
     }
 
@@ -807,8 +940,10 @@ mod live {
     const OWNER: &str = "00000000-0000-4000-8000-0000000000b1";
     const ADMIN: &str = "00000000-0000-4000-8000-0000000000b2";
     const SERVER: &str = "00000000-0000-4000-8000-0000000000c1";
+    /// Google's 401 for `create_event` with a bogus bearer, captured from
+    /// https://calendarmcp.googleapis.com/mcp/v1 on 2026-11-17.
     const BOGUS_BEARER: &str =
-        include_str!("../../talaria-google-mcp/fixtures/list-labels-401-bogus.json");
+        include_str!("../../talaria-google-mcp/fixtures/create-event-401-bogus.json");
 
     fn test_box() -> SecretBox {
         let kek = talaria_secretbox::derive_kek("mcp-call-live-test");
@@ -912,6 +1047,13 @@ mod live {
             "google_connections",
             "google_org_connection",
             "agent_google_connections",
+            // What the registry's access read (`mcp_allowance`) consults.
+            "mcp_server_agents",
+            "mcp_team_access",
+            "team_agents",
+            "mcp_user_access",
+            "team_members",
+            "agent_defs",
         ] {
             ddl.push(format!(
                 "create table {schema}.{table} (like public.{table} including all)"
@@ -948,6 +1090,14 @@ mod live {
         .execute(&pg)
         .await
         .expect("the pack row");
+        // The test agent is assigned the server, every tool.
+        sqlx::query(
+            "insert into mcp_server_agents (server_id, agent_model) values ($1::uuid, 'pa-ops')",
+        )
+        .bind(SERVER)
+        .execute(&pg)
+        .await
+        .expect("the assignment");
         let later = talaria_agent_auth::epoch_ms_to_iso(talaria_agent_auth::now_ms() + 50 * 60_000);
         sqlx::query(
             "insert into google_connections (user_id, google_sub, email, scope, refresh_token_enc, \
@@ -1261,6 +1411,107 @@ mod live {
     /// A retried call converges on the row still waiting: one approval can
     /// never run the same call twice. A different argument, tool or agent is
     /// a new ask.
+    /// Access an admin revokes after a call was queued stops its approval,
+    /// read as the gateway reads it: the agent's assignment, its tool list,
+    /// and for a personal assistant its owner's access. Nothing is sent for
+    /// any of them; restored, the same call runs once.
+    #[tokio::test]
+    #[ignore = "live DB: set DATABASE_URL"]
+    async fn mcp_call_live_access_revoked_after_queueing_stops_the_replay() {
+        let sb = test_box();
+        let (pg, admin, schema) = scratch("access", &sb).await;
+        let stub = stub().await;
+        stub.answer(200, "application/json", RESULT);
+        let replay = McpReplay::to(stub.url.clone());
+        let now = talaria_agent_auth::now_ms();
+        let approve = |id: String| {
+            let (pg, sb, replay) = (&pg, &sb, &replay);
+            async move {
+                decide_action_with(pg, sb, &id, OWNER, false, "approve", now, replay)
+                    .await
+                    .expect("no hard failure")
+                    .expect("the row exists")
+            }
+        };
+        // Every statement binds the server as $1 and the owner as $2.
+        let exec = |sql: &'static str| {
+            let pg = &pg;
+            async move {
+                sqlx::query(sql)
+                    .bind(SERVER)
+                    .bind(OWNER)
+                    .execute(pg)
+                    .await
+                    .expect(sql);
+            }
+        };
+        // The agent is a personal assistant of OWNER.
+        sqlx::query(
+            "insert into agent_defs (slug, department, model, display_name, owner_user_id) \
+             values ('pa', 'ops', 'pa-ops', 'PA', $1::uuid)",
+        )
+        .bind(OWNER)
+        .execute(&pg)
+        .await
+        .expect("the agent");
+
+        // The assignment removed after the hold.
+        let id = held_row(&pg, "create_event", json!({ "summary": "A" }), "owner").await;
+        exec("delete from mcp_server_agents where server_id = $1::uuid and $2::uuid is not null")
+            .await;
+        let out = approve(id.clone()).await;
+        assert_eq!(out.status, "failed", "{out:?}");
+        assert!(
+            out.message
+                .as_deref()
+                .unwrap_or("")
+                .contains("no longer has access"),
+            "{out:?}"
+        );
+        assert_eq!(row_state(&pg, &id).await.0, "failed");
+        assert!(stub.calls().is_empty(), "nothing sent when unassigned");
+
+        // Assigned again, but narrowed to a tool list without it.
+        let id = held_row(&pg, "create_event", json!({ "summary": "B" }), "owner").await;
+        exec(
+            "insert into mcp_server_agents (server_id, agent_model, tools) \
+             select $1::uuid, 'pa-ops', array['list_events'] where $2::uuid is not null",
+        )
+        .await;
+        let out = approve(id).await;
+        assert_eq!(out.status, "failed", "{out:?}");
+        assert!(
+            out.message
+                .as_deref()
+                .unwrap_or("")
+                .contains("no longer among the tools"),
+            "{out:?}"
+        );
+        assert!(stub.calls().is_empty(), "nothing sent when narrowed");
+
+        // Every tool again, but the owner's own access denied by an admin.
+        exec("update mcp_server_agents set tools = null where server_id = $1::uuid and $2::uuid is not null")
+            .await;
+        let id = held_row(&pg, "create_event", json!({ "summary": "C" }), "owner").await;
+        exec(
+            "insert into mcp_user_access (server_id, user_id, allowed) values ($1::uuid, $2::uuid, false)",
+        )
+        .await;
+        let out = approve(id).await;
+        assert_eq!(out.status, "failed", "{out:?}");
+        assert!(
+            stub.calls().is_empty(),
+            "nothing sent when the owner is denied"
+        );
+
+        // Restored: the same kind of call runs, once.
+        exec("delete from mcp_user_access where server_id = $1::uuid and user_id = $2::uuid").await;
+        let id = held_row(&pg, "create_event", json!({ "summary": "D" }), "owner").await;
+        assert_eq!(approve(id).await.status, "executed");
+        assert_eq!(stub.calls().len(), 1);
+        drop_schema(&admin, &schema).await;
+    }
+
     #[tokio::test]
     #[ignore = "live DB: set DATABASE_URL"]
     async fn mcp_call_live_a_retried_call_converges_on_the_waiting_row() {
@@ -1322,15 +1573,48 @@ mod live {
         }
         // While an approval runs it, a retry converges on it too: no second
         // card whose approval would run the write twice.
-        sqlx::query("update google_pending_actions set status = 'executing' where id = $1::uuid")
-            .bind(&first.action.id)
-            .execute(&pg)
-            .await
-            .unwrap();
+        assert!(
+            !crate::replay_still_running(&pg, &first.action.id)
+                .await
+                .unwrap(),
+            "a pending row is not running"
+        );
+        sqlx::query(
+            "update google_pending_actions set status = 'executing', decided_at = now() \
+             where id = $1::uuid",
+        )
+        .bind(&first.action.id)
+        .execute(&pg)
+        .await
+        .unwrap();
         let running = queue("create_event", json!({ "summary": "Standup" }), "pa-ops").await;
         assert!(running.already_pending);
         assert_eq!(running.action.id, first.action.id);
         assert_eq!(running.action.status, "executing");
+        assert!(
+            crate::replay_still_running(&pg, &first.action.id)
+                .await
+                .unwrap()
+        );
+        // A claim older than any replay (a process stopped mid-replay): still
+        // matched — nothing new is queued, a second run could write twice —
+        // but no longer "running"; the gateway says its outcome is unknown.
+        sqlx::query(
+            "update google_pending_actions set decided_at = now() - interval '6 minutes' \
+             where id = $1::uuid",
+        )
+        .bind(&first.action.id)
+        .execute(&pg)
+        .await
+        .unwrap();
+        let stranded = queue("create_event", json!({ "summary": "Standup" }), "pa-ops").await;
+        assert!(stranded.already_pending);
+        assert_eq!(stranded.action.id, first.action.id);
+        assert!(
+            !crate::replay_still_running(&pg, &first.action.id)
+                .await
+                .unwrap()
+        );
         // Once decided, the same call is a fresh ask.
         sqlx::query("update google_pending_actions set status = 'rejected' where id = $1::uuid")
             .bind(&first.action.id)
