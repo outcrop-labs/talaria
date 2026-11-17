@@ -5365,6 +5365,7 @@ dependencies = [
  "talaria-body",
  "talaria-gateway",
  "talaria-secretbox",
+ "tokio",
  "tracing",
 ]
 

@@ -131,7 +131,76 @@ multi-account setup path.
 
 ## Operator setup
 
-Uses the **same** Google OAuth client as Google login:
+### Two client roles
+
+Talaria gives a Google OAuth client one of two jobs. Admin → Google Workspace
+has a card for each, and each has an env twin:
+
+| Role | What runs on it | Admin record | Env fallback |
+|---|---|---|---|
+| **Connections** | every stored grant: personal connect, the org account, per-agent identities. Also Google login while no sign-in client is set. | `google_oauth_client` | `AUTH_GOOGLE_CLIENT_ID` / `_SECRET` / `AUTH_GOOGLE_HD` |
+| **Sign-in** (optional) | Google login only | `google_signin_oauth_client` | `AUTH_GOOGLE_SIGNIN_CLIENT_ID` / `_SECRET` |
+
+- A record wins over its env twin only when it is complete (id and secret).
+  A half-saved record never takes over.
+- With the sign-in slot empty, login uses the connections client. That is how
+  every install ran before the split, and nothing changes until a sign-in
+  client is saved.
+- **The domain restriction (`hd`) belongs to the connections client.** Login
+  sends and enforces the connections client's domain whichever client runs it,
+  so setting a sign-in client can never open login to every Google account.
+  Login admits any Google account only when a connections client is configured
+  with no domain, the same configuration that did before the split. With no
+  connections client at all, the sign-in client runs login only if a domain is
+  still written down (`AUTH_GOOGLE_HD`, or a connections record saved without
+  its secret). So removing the connections client stops login, as it always
+  did, and the panel says why.
+- Moving login to a sign-in client changes no stored connection: every
+  grant keeps refreshing with the connections client, which minted it.
+
+**Why two.** Google now sorts OAuth clients into agentic and not, with the
+checkbox **"Use this client for an AI-powered agent"** under *Google Auth
+Platform → Clients*. Google's notice: "Starting November 11, 2026, Google
+Workspace MCP servers will reject requests from any app or integration whose
+OAuth client is not marked as agentic … OAuth clients that are not marked as
+agentic by November 12, 2026 will remain non-agentic and can't call Google
+Workspace MCP servers." And: "If an existing OAuth client is used for both AI
+agent and non-agent features, create a separate OAuth client for the AI agent
+and mark only that client as agentic. Keep the existing client for your
+non-agent features." The REST APIs Talaria calls today are not affected: "Apps
+and integrations that are not AI agents, like those that only call Google
+Workspace REST APIs, are not affected by this change."
+
+**Which shape to run.** Signing in is a person, not an agent:
+
+- **The connections client is marked agentic** (it was ticked before the
+  lock, so every stored grant can reach Google's MCP servers later with no
+  reconnect). Create a second Web client *without* the box ticked, register
+  only `<public-url>/api/auth/google/callback` on it, and save it as the
+  sign-in client. Then remove the login callback from the connections
+  client's redirect URIs.
+- **The connections client is not marked, and was not by November 12.** It
+  stays non-agentic. Nothing breaks: the REST surfaces keep working, and
+  login can stay on it. Reaching Google's MCP servers will need a new agentic
+  client. **Do not swap a new client into the connections slot while
+  connections are stored:** today every stored grant refreshes with whichever
+  client is in that slot, and OAuth binds a refresh token to the client it
+  was issued to (RFC 6749 §6). Grants that remember their own client are
+  separate, later work.
+
+**Declaring the mark.** Google exposes no API and no token claim for the
+checkbox, so each card asks what Google Cloud shows: *Ticked*, *Unticked* or
+*Not said*. The declaration is stored per client id (`google_client_evidence`
+in `app_settings`), so a client moved between roles keeps it. Headless
+installs pin it in env: `AUTH_GOOGLE_CLIENT_AGENTIC` and
+`AUTH_GOOGLE_SIGNIN_CLIENT_AGENTIC` (`1` ticked, `0` not), each describing
+only the client its own `*_CLIENT_ID` names. A declaration refuses nothing.
+The panel warns when the sign-in client is declared agentic, and when login
+is on, runs on the connections client, and that client is declared agentic.
+It also warns when a sign-in client is set but there is no connections client
+and no domain for login to take.
+
+### Credentials and redirect URIs
 
 ```
 AUTH_GOOGLE_ENABLED=1
@@ -139,20 +208,28 @@ AUTH_GOOGLE_CLIENT_ID=<client id>.apps.googleusercontent.com
 AUTH_GOOGLE_CLIENT_SECRET=<client secret>
 AUTH_SECRET=<random, ≥32 bytes>        # also encrypts stored tokens
 # AUTH_GOOGLE_HD=yourdomain.com        # optional: restrict to a Workspace domain
+# AUTH_GOOGLE_SIGNIN_CLIENT_ID=<id>    # optional: login's own client
+# AUTH_GOOGLE_SIGNIN_CLIENT_SECRET=<secret>
 # TALARIA_SECRET_KEY=<override>         # optional: separate key for secretbox
 ```
 
-In the **Google Cloud console** for that OAuth client, register **all four**
-redirect URIs (login + per-user connect + org connect + per-agent identity):
+In the **Google Cloud console**, register these redirect URIs on the
+**connections** client (per-user connect, org connect, per-agent identity):
 
 ```
-<public-url>/api/auth/google/callback
 <public-url>/api/integrations/google/callback
 <public-url>/api/integrations/google/org/callback
 <public-url>/api/integrations/google/agent/callback
 ```
 
-The Admin → Google Workspace · OAuth client panel lists these with the actual
+and the login callback on whichever client runs login: the sign-in client
+when one is set, otherwise the connections client:
+
+```
+<public-url>/api/auth/google/callback
+```
+
+The Admin → Google Workspace panel lists each client's URIs with the actual
 origin — copy them from there rather than by hand.
 
 and enable the **Google Drive API**, **Google Calendar API**, and **Gmail API**
