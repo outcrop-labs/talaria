@@ -123,7 +123,8 @@ delegate_task(
 
 The harness lines come from `start_job`'s answer and are run as given — never swap `--model`,
 never `--no-session`, never the TUI (the oh-my-pi skill). Git over https works in the workdir
-with no setup; never `gh`, never a token in a URL.
+with no setup; never a token in a URL, and a GitHub API call reads the repo's token for one
+command (talaria-toolkit, "The GitHub API").
 
 #### Step 2: Dispatch a Spec Compliance Reviewer
 
