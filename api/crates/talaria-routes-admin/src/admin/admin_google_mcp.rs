@@ -95,7 +95,9 @@ fn product_view(p: &Product, row: Option<&McpServer>) -> Value {
 
 /// The last refusal Google's MCP servers gave each Google grant, newest
 /// first: whose grant (a person's, the org account's, an agent's own), the
-/// status, Google's words and the tool.
+/// status, Google's words, the tool, and whether it flags the grant for a
+/// reconnect (a 401 a fresh token did not cure, until Google accepts that
+/// grant again).
 async fn refusals(state: &AppState) -> Result<Vec<Value>, sqlx::Error> {
     let rows: Vec<(String, Option<String>, Value)> = sqlx::query_as(
         "select * from ( \
@@ -122,6 +124,7 @@ async fn refusals(state: &AppState) -> Result<Vec<Value>, sqlx::Error> {
                 "text": refusal.get("text").cloned(),
                 "tool": refusal.get("tool").cloned(),
                 "at": refusal.get("at").cloned(),
+                "flagged": refusal.get("flagged").and_then(Value::as_bool).unwrap_or(false),
             })
         })
         .collect())

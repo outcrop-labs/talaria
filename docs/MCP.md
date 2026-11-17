@@ -38,7 +38,10 @@ access rules. Four kinds of rows:
   agent. Each call speaks as the calling agent's own Google principal (its owner's connection,
   the org account, or its own identity) through Talaria's one Google token door, never the org
   account in an owner's place; only the read-only subset runs. The row's address, credentials
-  and auth mode are the pack's, and the custom-URL form refuses Google's Workspace MCP hosts.
+  and auth mode are the pack's, and the custom-URL form refuses Google's Workspace MCP hosts
+  under every name Google serves them by (`*mcp.googleapis.com`, `*mcp.mtls.googleapis.com`,
+  `*mcp.clients6.google.com`, `content-*`, and People's `/mcp` on its names); the gateway relays
+  nothing to an older row that names one.
   The whole story: [GOOGLE-WORKSPACE.md](./GOOGLE-WORKSPACE.md), "Google's Workspace MCP
   servers".
 
@@ -162,13 +165,18 @@ Per server:
   principal (`Purpose::HostedMcp`) and injects that bearer; a legacy shared-key caller is
   refused, and a principal with no grant, or a grant minted by a client declared not marked for
   AI agents, gets the not-connected sentence for its kind (the owner's Settings → Connections,
-  Admin → Org, or the agent's page) and nothing is sent to Google. The gateway then relays only
-  the tools on the pinned read list that Google also marks `readOnlyHint: true`, refuses every
+  Admin → Org, or the agent's page) and nothing is sent to Google. Only `initialize`, `ping`,
+  `tools/list`, `tools/call` and `notifications/*` are relayed (anything else is answered with
+  `-32601`, or a 400 for a batch or a response), as the JSON the gate read. The gateway then
+  relays only the tools on the pinned read list that Google also marks `readOnlyHint: true`,
+  refuses every
   other tool and any argument naming a workspace secret, says which scope a tool needs (from
   Google's per-tool protected-resource document) before asking Google, and answers Google's HTTP
-  errors in Google's words — a 401 retried once on a fresh token and flagged for a reconnect if it
-  persists, a 401 or 403 recorded on the grant as `last_mcp_refusal`. Settings → Connections lists
-  each enabled Google server as "via your Google connection". The health pass and **Discover
+  errors in Google's words — a 401 or 403 recorded on the grant as `last_mcp_refusal`, a 401
+  retried once on a fresh token and, if it persists, flagged there for a reconnect (never in the
+  grant's `reconnect_reason`, which is the OAuth client's) until Google accepts that grant again.
+  Settings → Connections lists each enabled Google server as "via your Google connection", or asks
+  for a reconnect. The health pass and **Discover
   tools** ask Google for the catalog the pack's own way: the org account's bearer when the door
   vends one, else no credential, keeping each tool's annotations and scopes.
 

@@ -319,6 +319,10 @@ pub struct McpToolResult {
 /// dispatches through the compiled app module (apps/*/mcp.ts — authors'
 /// TS/node code, owned by the app runtime). OAuth servers do not refuse
 /// here — the org bearer rides `org_session`.
+///
+/// AND REFUSES GOOGLE'S WORKSPACE MCP SERVERS: a pack row acts only as a
+/// calling agent's own Google principal, and any other row naming one of
+/// those servers is relayed to by nobody (`pack::UNPACKED_ROW_REFUSAL`).
 pub async fn call_mcp_tool(
     pg: &PgPool,
     sb: &SecretBox,
@@ -354,6 +358,14 @@ pub async fn call_mcp_tool(
         return Err(format!(
             "MCP server \"{server_name}\" is a Google Workspace MCP server, which acts only as a \
              calling agent's own Google account through the gateway; a platform stage cannot call it."
+        ));
+    }
+    if talaria_google_mcp::pack::is_google_workspace_mcp_url(&server.url) {
+        // Not the pack's, yet one of Google's Workspace MCP servers: the
+        // gateway relays nothing to it, and neither does a stage.
+        return Err(format!(
+            "MCP server \"{server_name}\": {}",
+            talaria_google_mcp::pack::UNPACKED_ROW_REFUSAL
         ));
     }
 
@@ -1468,7 +1480,7 @@ pub async fn effective_mcp_for(
                 })
             }
             crate::google::Speak::As { token, grant } => {
-                let scope = crate::google::scope_of(pg, &grant).await;
+                let facts = crate::google::facts_of(pg, &grant).await;
                 let principal = match &grant {
                     talaria_google_connections::GrantRow::User(_) => {
                         talaria_google_agent::PrincipalKind::Owner
@@ -1491,7 +1503,8 @@ pub async fn effective_mcp_for(
                         product,
                         grant,
                         principal,
-                        scope,
+                        scope: facts.scope,
+                        flagged: facts.flagged.is_some(),
                     }),
                 })
             }

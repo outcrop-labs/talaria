@@ -104,7 +104,7 @@ Source: [`api/crates/talaria-routes-fleet/src/mcp/mcp_gw_server.rs`](../../api/c
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `agent` | — | `…` | 200, 403, 404, 405, 502 | SSE |
-| POST | `agent` | — | `…` | 200, 202, 403, 404, 502 | SSE |
+| POST | `agent` | — | `…` | 200, 202, 400, 403, 404, 502 | SSE |
 
 ## `/api/mcp/health`
 

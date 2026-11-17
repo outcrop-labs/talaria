@@ -9,8 +9,10 @@
 // `authKind: "google"`: it takes no account of its own here — your assistant
 // uses it through your Google connection (Settings → Connections → Google),
 // `connected` says whether that connection is in place, and `needsReconnect`
-// whether it needs you first (Google refused it last time, or it was made
-// with an OAuth client declared not marked for AI agents). PUT refuses it.
+// whether it needs you first (Google refused its OAuth client last time,
+// Google's MCP servers refused a freshly refreshed token from it, or it was
+// made with an OAuth client declared not marked for AI agents). PUT refuses
+// it.
 
 use axum::Json;
 use axum::extract::State;
@@ -43,10 +45,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         .iter()
         .filter(|s| s.enabled && s.auth_mode == talaria_api_facades::mcp::google::AUTH_MODE)
         .collect();
-    // Connected, and whether that connection needs the person: Google refused
-    // it last time (`flagged`), or it was made with a client declared not
-    // marked for AI agents with no acceptance from Google on record — the
-    // one door would keep it from these servers.
+    // Connected, and whether that connection needs the person: Google's
+    // token endpoint refused its client last time (`flagged`), Google's MCP
+    // servers refused a token freshly refreshed from it (`last_mcp_refusal`
+    // flagged), or it was made with a client declared not marked for AI
+    // agents with no acceptance from Google on record — the one door would
+    // keep it from these servers.
     let (google_connected, google_attention) = if google_rows.is_empty() {
         (false, false)
     } else {
@@ -63,9 +67,21 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
                     }
                     _ => false,
                 };
+                let mcp_flagged = status.connected
+                    && match talaria_api_facades::google::connections::grant_mcp_facts(
+                        &state.pg,
+                        &talaria_api_facades::google::connections::GrantRow::User(user.id.clone()),
+                    )
+                    .await
+                    {
+                        Ok(facts) => facts.flagged.is_some(),
+                        Err(e) => {
+                            return Ok(internal("[me/mcp] google connection read failed", e));
+                        }
+                    };
                 (
                     status.connected,
-                    status.connected && (status.flagged.is_some() || unmarked),
+                    status.connected && (status.flagged.is_some() || unmarked || mcp_flagged),
                 )
             }
             Err(e) => return Ok(internal("[me/mcp] google connection read failed", e)),

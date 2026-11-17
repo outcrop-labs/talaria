@@ -67,6 +67,7 @@
       text: string | null
       tool: string | null
       at: string | null
+      flagged: boolean
     }>
   }
 
@@ -217,6 +218,7 @@
                   <span class="font-mono text-[10px] uppercase text-muted">{r.principal}</span>
                   {r.who ?? '—'}{#if r.tool} · <code>{r.tool}</code>{/if}: HTTP {r.status}
                   {#if r.text}<span class="break-words">«{r.text}»</span>{/if}
+                  {#if r.flagged}<span class="font-sans text-[10px] text-warning">· a fresh token was refused too: needs a reconnect</span>{/if}
                   {#if r.at}<span class="font-sans text-[10px] text-muted">· {relativeTime(r.at)}</span>{/if}
                 </span>
               </div>

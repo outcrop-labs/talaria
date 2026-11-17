@@ -641,6 +641,8 @@ pub async fn save_agent_connection(
                  then agent_google_connections.reconnect_reason end, \
              reconnect_flagged_at = case when excluded.refresh_token_enc is null \
                  then agent_google_connections.reconnect_flagged_at end, \
+             last_mcp_refusal = case when excluded.refresh_token_enc is null \
+                 then agent_google_connections.last_mcp_refusal end, \
              access_token_enc = excluded.access_token_enc, \
              access_expires_at = excluded.access_expires_at, \
              connected_by = excluded.connected_by, \

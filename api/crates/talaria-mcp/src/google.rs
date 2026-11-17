@@ -28,7 +28,7 @@ use talaria_google_agent::{
     AgentPrincipal, PrincipalKind, Purpose, Vend, principal_grant, resolve_agent_principal,
     vend_principal_token,
 };
-use talaria_google_connections::{GrantRow, TokenError, grant_scope};
+use talaria_google_connections::{GrantRow, McpGrantFacts, TokenError, grant_mcp_facts};
 use talaria_google_errors::token_failure_sentence;
 use talaria_google_mcp::catalog::{CatalogError, fetch_catalog};
 use talaria_google_mcp::{Product, pack, policy};
@@ -67,6 +67,9 @@ pub struct GoogleCall {
     pub principal: PrincipalKind,
     /// The grant's stored scope, space-joined; None when not recorded.
     pub scope: Option<String>,
+    /// The grant carries a flag from a 401 a fresh token did not cure
+    /// (`last_mcp_refusal.flagged`): an accepted call forgets it.
+    pub flagged: bool,
 }
 
 /// The connect scope for a principal kind.
@@ -165,10 +168,10 @@ pub async fn speak_as(pg: &PgPool, sb: &SecretBox, subject: &AgentSubject, now_m
     speak_of(true, principal.as_ref(), agent_model, vend)
 }
 
-/// The grant's stored scope, read for the missing-scope check; a read that
-/// fails is unknown, and Google decides.
-pub async fn scope_of(pg: &PgPool, grant: &GrantRow) -> Option<String> {
-    grant_scope(pg, grant).await.ok().flatten()
+/// The grant's stored scope (for the missing-scope check) and its MCP flag,
+/// in one read; a read that fails is unknown, and Google decides.
+pub async fn facts_of(pg: &PgPool, grant: &GrantRow) -> McpGrantFacts {
+    grant_mcp_facts(pg, grant).await.unwrap_or_default()
 }
 
 /// Does this agent's Google principal need a connection before the door

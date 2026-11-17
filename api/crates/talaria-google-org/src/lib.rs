@@ -304,6 +304,8 @@ pub async fn save_org_connection(
                  then google_org_connection.reconnect_reason end, \
              reconnect_flagged_at = case when excluded.refresh_token_enc is null \
                  then google_org_connection.reconnect_flagged_at end, \
+             last_mcp_refusal = case when excluded.refresh_token_enc is null \
+                 then google_org_connection.last_mcp_refusal end, \
              access_token_enc = excluded.access_token_enc, \
              access_expires_at = excluded.access_expires_at, \
              connected_by = excluded.connected_by, \

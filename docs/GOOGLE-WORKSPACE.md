@@ -324,9 +324,18 @@ other server; the owner-access and team rules apply unchanged. Disabling
 (`DELETE …/{product}`, `google.mcp_disable`) removes the row and its
 assignments. The row's address, credentials and auth mode belong to the pack:
 the MCP page refuses to change them, and the custom-URL form refuses Google's
-Workspace MCP hosts (`*mcp.googleapis.com`, `people.googleapis.com/mcp`) with
-a sentence naming the pack. Registered by URL they would take no Google grant,
-and every call would come back as Google's refusal.
+Workspace MCP hosts with a sentence naming the pack. Google serves each of
+those servers under several names, and every one is refused: any host under
+`googleapis.com` or `google.com` with a label ending in `mcp`
+(`gmailmcp.googleapis.com`, `gmailmcp.mtls.googleapis.com`,
+`gmailmcp.clients6.google.com`, `content-gmailmcp.googleapis.com`, …), and
+People's `/mcp` path on any of its names (`people.googleapis.com`,
+`people.mtls.googleapis.com`, `content-people.googleapis.com`). Each of those
+aliases answered a credential-less `tools/list` with the same catalog when
+probed on 2026-11-17. Registered by URL they would take no Google grant, or an
+attached one with none of the pack's policy. A row that already names one (it
+was registered before this guard) is relayed nothing by the gateway, and
+`call_mcp_tool` refuses it too.
 
 **Whose account a call uses.** Each call speaks as the calling agent's own
 Google principal, through the one door with `Purpose::HostedMcp`:
@@ -345,6 +354,13 @@ is not connected). A token that cannot be had reads in Google's words. The
 bearer is injected by the gateway; refresh and access tokens never enter an
 agent's container, a tool result or a log. Calls go to the product's endpoint
 as the code names it, never to the row's stored URL.
+
+**Which methods reach Google.** A pack row relays `initialize`, `ping`,
+`tools/list`, `tools/call` and `notifications/*` only. Any other method
+(resources, prompts, completion, logging, one Google adds later) is answered
+by the gateway with `-32601`, and a batch or a JSON-RPC response gets HTTP 400.
+None of them is sent to Google. Google receives the JSON the gateway's gate
+read, re-serialized, never the agent's raw bytes.
 
 **What runs.** A tool runs only when it is on the pinned read list
 (`talaria-google-mcp`'s `policy::READ_LIST`: every tool Google's live catalogs
@@ -378,11 +394,16 @@ People tools, whose scopes no Talaria connect asks for.
 **When Google refuses.** The agent reads Google's words, quoted, as a tool
 result with `isError` (an HTTP 401 handed to the agent's own MCP client would
 send it looking for an OAuth flow Talaria owns). A 401 or 403 is also stored
-on the grant as `last_mcp_refusal` (`{status, text, tool, at}`), and the admin
-panel lists the latest. A 401 drops the cached token and retries once on a
-fresh one; a 401 that persists sets the grant's `reconnect_reason` with
-Google's words, until its next successful refresh. A 403 never flags: it may
-be one file or one quota. A 429 or 5xx is only quoted. No refusal is matched
+on the grant as `last_mcp_refusal` (`{status, text, tool, at, flagged}`), and
+the admin panel lists the latest. A 401 drops the cached token and retries
+once on a fresh one. A 401 that persists is stored with `flagged: true`:
+Settings → Connections asks the person to reconnect, and the admin panel says
+a fresh token was refused too. It is not written to `reconnect_reason`, which
+is the token endpoint's refusal of the OAuth client: the refresh that minted
+the fresh token succeeded, and the cards and the census read
+`reconnect_reason` as the client's. The flag stands until Google accepts a
+call made with that grant, a later refusal does not repeat it, or a reconnect
+brings a new grant. A 403 never flags: it may be one file or one quota. A 429 or 5xx is only quoted. No refusal is matched
 for a class: Google's answer to a client not marked for AI agents has not been
 captured.
 
@@ -407,12 +428,17 @@ and the 401 bodies were captured from Google without a credential on
 unauthenticated one), elicitation or MRTR on a read, and Google's refusal of an
 unmarked client are all still unobserved.
 
-**Testing against a stand-in.** A DEBUG build only (`talaria dev`'s `cargo
-run`, or CI's `--api-from-ci` artifact) reads
-`TALARIA_TEST_GOOGLE_MCP_ORIGINS=gmail=http://127.0.0.1:7811,calendar=…` and
-sends those products' calls to a loopback stub instead of Google; anything but
-a loopback `http://` origin is ignored, and a release build has no such
-variable. The gateway's address guard still applies, so the stack also needs
+**Testing against a stand-in.**
+`TALARIA_TEST_GOOGLE_MCP_ORIGINS=gmail=http://127.0.0.1:7811,calendar=…` sends
+those products' calls to a loopback stub instead of Google. Only a loopback
+`http://` origin is taken; anything else in the variable is ignored. The code
+is compiled into debug-profile builds only: `talaria dev`'s `cargo run`, CI's
+`--api-from-ci` artifact, and also the nightly and rc channel images, which
+`release.yml` builds with the dev profile. It is read only outside a
+deployment: a process carrying the published image's `TALARIA_INSTALL=image`,
+or a production checkout's `TALARIA_RUNTIME=prod-server`, ignores the
+variable. A release-profile build (main's feed and every stable tag) has no
+such code. The gateway's address guard still applies, so the stack also needs
 `TALARIA_FETCH_ALLOW_HOSTS=127.0.0.1`.
 
 ### Which client a connection refreshes with
