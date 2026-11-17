@@ -174,3 +174,32 @@ requires real Google client credentials + a consented account and cannot be
 exercised in a headless dev env — it's wired to Drive's documented multipart
 convert-on-upload API but is the one path proven by the API contract rather than
 a local screenshot.
+
+## When Google refuses — whose words you read
+
+Every refusal reaches the person or agent in **Google's own words**, quoted, not
+replaced by a Talaria sentence. Each Google crate keeps Google's status and body
+on its failure (`<what> failed: <status> <body>`), and
+`talaria_google_errors::upstream_reason` lifts out what Google wrote. A REST
+body gives its most specific code, then its message. The code is the
+`ErrorInfo` reason (`SERVICE_DISABLED`), else `status` (`PERMISSION_DENIED`),
+else the legacy `errors[].reason` (`notFound`, which is all Drive v3 sends). An
+OAuth body gives `error`, then `error_description`. The quote is capped at 300
+characters, and the code always leads, so a cut never loses it. Nothing matches
+a class of refusal from wording Google has not been seen to send. That includes
+the "client not marked for AI agents" refusal from Google's Workspace MCP
+servers, which is not yet captured.
+
+| Where | What the reader gets |
+|---|---|
+| A Google call an agent or person made (`google_fail_with`) | 502 `Google <Product> refused: «SERVICE_DISABLED: Google Sheets API has not been used in project … Enable it by visiting …»`. A scope refusal is still the 409 `reconnect_needed`, with `Google said: «…»` appended. Only a failure with no Google body (a timeout, a local fault) still reads `Could not reach Google <Product>.` |
+| An agent's token (every `/api/integrations/google/agent/*` route and the agent arm of `POST /api/artifacts/{id}/export/google`) | `resolve_agent_google` no longer turns a failed token into "No Google account is connected". `invalid_grant` is a 409 `reconnect_needed`, which quotes Google and says the stored grant was cleared. `invalid_client` / `unauthorized_client` is a 502 `client_rejected`, which quotes Google, keeps the connection, and names the admin's fix. Anything else is a 502 that quotes Google when it answered. |
+| Approving a held action (`POST /api/integrations/google/pending/{id}`, chips, Inbox, the brief) | A token that fails at approval **releases the row back to `pending`**. It used to sit in `executing` until the ten-minute takeover. The answer quotes Google, and the same sentence stays on the row as `result.error`. The agent's queue reads (`GET /api/integrations/google/agent/pending[/{id}]`) show it as `lastError`. A refused grant answers 409 `not_connected` (a reconnect fixes it); a refused OAuth client answers 502 `client_rejected` (the admin's fix), and any other refused refresh 502 `google_error`. An action Google rejected answers `Google rejected the action: «…»`, or `The action did not run: «…»`, folded and capped, when no Google error body came back. A chip-unlocked draft that runs at once (`draft_email`, `draft_calendar_event`) answers the agent with the same sentence, and says when the draft is back in the queue as pending. |
+| The connect bounces (`/settings/connections?google=`, `/admin?googleOrg=`, `/agents?googleAgent=`) | `exchange_failed` and `denied` carry `&reason=<code>`. That is Google's OAuth error code from the refused exchange, or the `?error=` Google redirected with: `invalid_client`, `invalid_grant`, `access_denied`. The flash shows `Google said: <code>.` Only a bare snake_case code ever rides the URL, and the page drops anything else. The Agents page now reads its bounce; before this, nothing did. |
+
+**Out of reach.** Some refusals are shown on Google's own consent page and are
+never sent back to Talaria: `redirect_uri_mismatch`, `org_internal`, and
+`admin_policy_enforced` (a Workspace admin's app-access policy). Nothing on the
+Talaria side can quote them. The person reads them on Google's page. This is
+how Google is known to behave; none of the three has been captured against a
+Talaria instance.

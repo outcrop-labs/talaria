@@ -19,6 +19,7 @@ talaria-error = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-google-client = { workspace = true }
 talaria-google-connections = { workspace = true }
+talaria-google-errors = { workspace = true }
 talaria-google-org = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-session = { workspace = true }

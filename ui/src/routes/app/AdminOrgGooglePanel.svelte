@@ -11,6 +11,7 @@
   import { cn } from '@/lib/cn'
   import { delJson, errorMessage, getJson, getJsonOr } from '@/lib/fetch-json'
   import type { GoogleApiHealth } from '@/lib/google-apis'
+  import { googleBounceText, readGoogleBounce, type GoogleBounce } from '@/lib/google-bounce'
   import { toastError } from '@/lib/toast.svelte'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
   import AdminOrgGoogleWorkspace from './AdminOrgGoogleWorkspace.svelte'
@@ -30,13 +31,15 @@
     queryFn: (): Promise<OrgGoogle> => getJson<OrgGoogle>('/api/integrations/google/org'),
   }))
   const data = $derived(query.data)
-  let flash = $state<string | null>(null)
+  // The org connect's bounce (?googleOrg=…, plus Google's own `reason` code
+  // when it sent one), shown once.
+  let flash = $state<GoogleBounce | null>(null)
   $effect(() => {
-    const p = new URLSearchParams(window.location.search).get('googleOrg')
-    if (!p) return
-    flash = p
+    const bounce = readGoogleBounce(window.location.search, 'googleOrg')
+    if (!bounce) return
+    flash = bounce
     window.history.replaceState({}, '', window.location.pathname)
-    if (p === 'connected') void qc.invalidateQueries({ queryKey: ['org-google'] })
+    if (bounce.status === 'connected') void qc.invalidateQueries({ queryKey: ['org-google'] })
     const t = setTimeout(() => (flash = null), 4000)
     return () => clearTimeout(t)
   })
@@ -164,8 +167,8 @@
   {#if data?.connected}<AdminOrgGoogleTargets targets={data.targets} />{/if}
   {#if data?.connected}<AdminOrgGoogleWorkspace />{/if}
   {#if flash}
-    <div class={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>
-      {msg[flash] ?? flash}
+    <div class={cn('mt-3 text-xs', flash.status === 'connected' ? 'text-success' : 'text-danger')}>
+      {googleBounceText(flash, msg)}
     </div>
   {/if}
 </Panel>

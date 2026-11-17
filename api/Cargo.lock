@@ -5428,8 +5428,10 @@ name = "talaria-google-errors"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "serde_json",
  "talaria-error",
  "talaria-google-connections",
+ "tokio",
  "tracing",
 ]
 
@@ -5471,6 +5473,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-google-client",
  "talaria-google-connections",
+ "talaria-google-errors",
  "talaria-google-org",
  "talaria-secretbox",
  "talaria-session",
@@ -5512,6 +5515,7 @@ dependencies = [
  "talaria-google-connections",
  "talaria-google-docs",
  "talaria-google-drive",
+ "talaria-google-errors",
  "talaria-google-gmail",
  "talaria-google-org",
  "talaria-google-sheets",

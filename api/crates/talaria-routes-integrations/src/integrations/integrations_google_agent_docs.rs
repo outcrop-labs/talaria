@@ -33,7 +33,7 @@ use talaria_api_facades::google::docs::{
     create_doc_with_token, get_doc_with_token, last_modifier_with_token, modified_after_agent,
     read_file_media_with_token, search_files_fulltext, update_doc_with_token,
 };
-use talaria_api_facades::google::errors::google_fail;
+use talaria_api_facades::google::errors::{google_fail, google_token_fail};
 use talaria_api_facades::google::oauth::query_pairs;
 use talaria_api_facades::google::pending_actions::{
     QueueAction, agent_created, agent_created_record, forget_agent_created, queue_action,
@@ -75,11 +75,13 @@ pub async fn get_doc(
         return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    let Some(google) =
-        resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
-    else {
-        return Ok(not_connected());
-    };
+    let google =
+        match resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await {
+            Ok(Some(google)) => google,
+            Ok(None) => return Ok(not_connected()),
+            // The token itself failed: Google's words, never "not connected".
+            Err(e) => return Ok(google_token_fail(e, "Docs")),
+        };
     match get_doc_with_token(&google.token, &id).await {
         Ok(doc) => Ok(Json(json!({
             "id": doc.id,
@@ -186,11 +188,13 @@ pub async fn post_create(
         .await);
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    let Some(google) =
-        resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
-    else {
-        return Ok(not_connected());
-    };
+    let google =
+        match resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await {
+            Ok(Some(google)) => google,
+            Ok(None) => return Ok(not_connected()),
+            // The token itself failed: Google's words, never "not connected".
+            Err(e) => return Ok(google_token_fail(e, "Docs")),
+        };
     let doc =
         match create_doc_with_token(&google.token, &title, &markdown, folder_id.as_deref()).await {
             Ok(d) => d,
@@ -265,11 +269,13 @@ pub async fn post_update(
     };
     let mut owns = created.is_some();
     let sb = state.secretbox().await.unwrap_or_default();
-    let Some(google) =
-        resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
-    else {
-        return Ok(not_connected());
-    };
+    let google =
+        match resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await {
+            Ok(Some(google)) => google,
+            Ok(None) => return Ok(not_connected()),
+            // The token itself failed: Google's words, never "not connected".
+            Err(e) => return Ok(google_token_fail(e, "Docs")),
+        };
     // Ownership expires when a person takes the doc over. Drive says who
     // last changed the file and whether that was the token holder; an edit
     // by anyone else ends the agent's standing to replace the body without a
@@ -408,11 +414,13 @@ pub async fn get_search(
         return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    let Some(google) =
-        resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
-    else {
-        return Ok(not_connected());
-    };
+    let google =
+        match resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await {
+            Ok(Some(google)) => google,
+            Ok(None) => return Ok(not_connected()),
+            // The token itself failed: Google's words, never "not connected".
+            Err(e) => return Ok(google_token_fail(e, "Drive")),
+        };
     let q = query_pairs(uri.query())
         .get("q")
         .cloned()
@@ -433,11 +441,13 @@ pub async fn get_file(
         return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    let Some(google) =
-        resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
-    else {
-        return Ok(not_connected());
-    };
+    let google =
+        match resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await {
+            Ok(Some(google)) => google,
+            Ok(None) => return Ok(not_connected()),
+            // The token itself failed: Google's words, never "not connected".
+            Err(e) => return Ok(google_token_fail(e, "Drive")),
+        };
     // What an agent can pull out of Drive is what a person can push in: the
     // upload limit, checked on Content-Length and again on the bytes.
     match read_file_media_with_token(&google.token, &id, talaria_uploads::MAX_BYTES).await {
