@@ -824,7 +824,8 @@ pub enum MintError {
         shortfall: PermissionSet,
     },
     /// GitHub minted a token for something other than what was asked: another
-    /// repository, or a key above the level it was asked at.
+    /// repository, a key above the level it was asked at, or a key that was
+    /// not asked for (`metadata: read` aside, which every token carries).
     /// It was revoked on GitHub (`revoked`, when GitHub confirmed it) and was
     /// never used.
     Overbroad {
@@ -1005,16 +1006,12 @@ fn plan(
 
 /// Check the token GitHub minted against what was posted (`asked`). Refused,
 /// with the reason: a token for anything but exactly `repo` (the selection is
-/// `selected`, with that one repository), and a token that carries an asked
-/// key above the asked level. Accepted, it answers what the token carries,
-/// and the keys it carries that were not asked for. `metadata` is implied on
-/// every token. What else GitHub implies is not known yet, so the caller
-/// logs any other unasked key rather than refusing it.
-fn check_reply(
-    repo: &str,
-    asked: &PermissionSet,
-    reply: &Value,
-) -> Result<(PermissionSet, PermissionSet), String> {
+/// `selected`, with that one repository), a token that carries an asked key
+/// above the asked level, and a token that carries a key that was not asked
+/// for at all. `metadata: read` is the one key GitHub puts on every token,
+/// asked or not, so it alone is never refused. Accepted, it answers what the
+/// token carries.
+fn check_reply(repo: &str, asked: &PermissionSet, reply: &Value) -> Result<PermissionSet, String> {
     let selection = reply.get("repository_selection").and_then(Value::as_str);
     if selection != Some("selected") {
         return Err(format!(
@@ -1044,16 +1041,20 @@ fn check_reply(
         None => return Err("it states no permissions".into()),
     };
     for (key, level) in carried.iter() {
-        if let Some(asked_level) = asked.get(key)
-            && level > asked_level
-        {
-            return Err(format!(
-                "it carries {key}:{level}, above the {asked_level} asked for"
-            ));
+        match asked.get(key) {
+            Some(asked_level) if level > asked_level => {
+                return Err(format!(
+                    "it carries {key}:{level}, above the {asked_level} asked for"
+                ));
+            }
+            Some(_) => {}
+            None if key == "metadata" && level == Level::Read => {}
+            None => {
+                return Err(format!("it carries {key}:{level}, which was not asked for"));
+            }
         }
     }
-    let unasked = carried.without(|k| k == "metadata" || asked.contains(k));
-    Ok((carried, unasked))
+    Ok(carried)
 }
 
 /// How long a revoke may take before it counts as unconfirmed. The shared
@@ -1674,8 +1675,8 @@ impl Github {
             .and_then(Value::as_str)
             .ok_or_else(|| MintError::Other("github installation token: no token in reply".into()))?
             .to_string();
-        let (carried, unasked) = match check_reply(repo, &effective, &reply) {
-            Ok(checked) => checked,
+        let carried = match check_reply(repo, &effective, &reply) {
+            Ok(carried) => carried,
             Err(why) => {
                 let revoked = revoke_installation_token(&base, &token).await;
                 tracing::error!(
@@ -1694,12 +1695,6 @@ impl Github {
                 });
             }
         };
-        if !unasked.is_empty() {
-            tracing::warn!(
-                "[github] the token minted for {repo} on installation {installation_id} of host {} carries {unasked}, which was not asked for (asked for {effective})",
-                self.host_id
-            );
-        }
         install_tokens().lock().unwrap().insert(
             key,
             CachedToken {
@@ -2807,7 +2802,6 @@ impl GitHost for Github {
             .issue(repo, &permissions_for(access), access.agent())
             .await?
             .map(|issued| IssuedLogin {
-                hashed_token: Some(hashed_token(&issued.token)),
                 login: Login {
                     username: "x-access-token".into(),
                     password: issued.token,
@@ -3985,12 +3979,21 @@ mod tests {
                     json!({ "contents": "write", "pull_requests": "write", "administration": "write", "metadata": "read" }),
                 ),
             ),
-            // Administration asked to read, and carried to write.
+            // Administration never asked for, and carried to write.
             ("POST", "/app/installations/91041/access_tokens") if req.body.contains("\"admin-leak\"") => (
                 201,
                 minted(
                     "tok-admin",
                     "acme/admin-leak",
+                    json!({ "contents": "write", "pull_requests": "write", "metadata": "read", "administration": "write" }),
+                ),
+            ),
+            // Administration asked to read, and carried to write.
+            ("POST", "/app/installations/91041/access_tokens") if req.body.contains("\"admin-above\"") => (
+                201,
+                minted(
+                    "tok-above",
+                    "acme/admin-above",
                     json!({ "contents": "write", "pull_requests": "write", "metadata": "read", "administration": "write" }),
                 ),
             ),
@@ -4007,15 +4010,26 @@ mod tests {
         let err = conn
             .token(
                 "acme/admin-leak",
-                &PermissionSet::of(REPO_TOKEN_PERMISSIONS)
-                    .union(&PermissionSet::of(&[("administration", Level::Read)])),
+                &PermissionSet::of(DEFAULT_AGENT_PERMISSIONS),
             )
             .await
             .expect_err("revoked");
         assert!(
             err.contains("administration:write")
-                && err.contains("above the read")
+                && err.contains("not asked for")
                 && err.contains("it was revoked"),
+            "{err}"
+        );
+        let err = conn
+            .token(
+                "acme/admin-above",
+                &PermissionSet::of(DEFAULT_AGENT_PERMISSIONS)
+                    .union(&PermissionSet::of(&[("administration", Level::Read)])),
+            )
+            .await
+            .expect_err("revoked");
+        assert!(
+            err.contains("administration:write") && err.contains("above the read"),
             "{err}"
         );
         let err = conn
@@ -4027,25 +4041,43 @@ mod tests {
             "{err}"
         );
         let log = seen.lock().unwrap().clone();
+        let mints = calls(&log, "POST", "/app/installations/91041/access_tokens");
+        assert!(
+            !posted_permissions(mints[0])
+                .as_object()
+                .unwrap()
+                .contains_key("administration"),
+            "administration was never posted: {}",
+            mints[0].body
+        );
         let revoked: Vec<&str> = calls(&log, "DELETE", "/installation/token")
             .iter()
             .map(|r| r.auth.as_str())
             .collect();
-        assert_eq!(revoked, ["Bearer tok-admin", "Bearer tok-write"]);
-        // Neither was cached: the next ask mints again, and is revoked again.
+        assert_eq!(
+            revoked,
+            ["Bearer tok-admin", "Bearer tok-above", "Bearer tok-write"]
+        );
+        // None was cached: the next ask mints again, and is revoked again.
+        let _ = conn
+            .token(
+                "acme/admin-leak",
+                &PermissionSet::of(DEFAULT_AGENT_PERMISSIONS),
+            )
+            .await;
         let _ = conn
             .token("acme/read-leak", &PermissionSet::of(REPO_READ_PERMISSIONS))
             .await;
         let log = seen.lock().unwrap().clone();
         assert_eq!(
             calls(&log, "POST", "/app/installations/91041/access_tokens").len(),
-            3
+            5
         );
-        assert_eq!(calls(&log, "DELETE", "/installation/token").len(), 3);
+        assert_eq!(calls(&log, "DELETE", "/installation/token").len(), 5);
     }
 
     #[tokio::test]
-    async fn an_implied_metadata_key_is_accepted_and_an_unasked_one_is_said_not_refused() {
+    async fn an_implied_metadata_key_is_accepted_and_an_unasked_one_is_revoked() {
         let sb = test_box();
         let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
             // The installation's answer leaves metadata out: every App holds
@@ -4074,35 +4106,41 @@ mod tests {
                     json!({ "contents": "read", "metadata": "read", "checks": "read" }),
                 ),
             ),
+            ("DELETE", "/installation/token") => (204, String::new()),
             _ => (500, "{}".into()),
         })
         .await;
         let conn = app_conn(&base, &["91051"], &sb);
-        let ask = PermissionSet::of(&[("contents", Level::Read), ("metadata", Level::Read)]);
+        // Metadata is not asked for, and carried: GitHub puts it on every
+        // token, so it is accepted.
+        let only_contents = PermissionSet::of(&[("contents", Level::Read)]);
         let plain = conn
-            .installation_token("91051", "acme/plain", &ask, None)
+            .installation_token("91051", "acme/plain", &only_contents, None)
             .await
             .expect("metadata is implied");
         assert_eq!(plain.token, "tok-plain");
+        assert_eq!(plain.carried.get("metadata"), Some(Level::Read));
         assert!(plain.shortfall.is_empty(), "{}", plain.shortfall);
-        let only_contents = PermissionSet::of(&[("contents", Level::Read)]);
-        let extra = conn
+        // Checks is not asked for either, and carried: the token is wider
+        // than what was posted, so it is revoked and never handed out, even
+        // at read and even though the installation holds it.
+        let err = conn
             .installation_token("91051", "acme/extra", &only_contents, None)
             .await
-            .expect("an unasked key is said, not refused");
-        assert_eq!(extra.token, "tok-extra");
-        assert_eq!(extra.carried.get("metadata"), Some(Level::Read));
-        assert_eq!(extra.carried.get("checks"), Some(Level::Read));
-        let seen = seen.lock().unwrap().clone();
+            .err()
+            .expect("an unasked key is refused");
         assert!(
-            calls(&seen, "DELETE", "/installation/token").is_empty(),
-            "nothing was revoked: {seen:?}"
+            matches!(&err, MintError::Overbroad { why, revoked: true, .. } if why.contains("checks:read") && why.contains("not asked for")),
+            "{err}"
         );
+        let seen = seen.lock().unwrap().clone();
+        let revoked: Vec<&str> = calls(&seen, "DELETE", "/installation/token")
+            .iter()
+            .map(|r| r.auth.as_str())
+            .collect();
+        assert_eq!(revoked, ["Bearer tok-extra"]);
         let mints = calls(&seen, "POST", "/app/installations/91051/access_tokens");
-        assert_eq!(
-            posted_permissions(mints[0]),
-            json!({ "contents": "read", "metadata": "read" })
-        );
+        assert_eq!(posted_permissions(mints[0]), json!({ "contents": "read" }));
         assert_eq!(posted_permissions(mints[1]), json!({ "contents": "read" }));
     }
 
@@ -4254,10 +4292,6 @@ mod tests {
             ("x-access-token", "tok-sandbox")
         );
         assert!(issued.minted);
-        assert_eq!(
-            issued.hashed_token.as_deref(),
-            Some(hashed_token("tok-sandbox").as_str())
-        );
         let mints = calls(
             &seen.lock().unwrap(),
             "POST",

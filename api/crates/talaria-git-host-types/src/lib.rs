@@ -157,10 +157,6 @@ pub struct IssuedLogin {
     pub shortfall_why: Option<String>,
     /// Minted by this call, rather than served from a cache or stored.
     pub minted: bool,
-    /// The token as the host's own audit log names it, when it has one
-    /// (GitHub's `hashed_token`: base64 of its SHA-256). It reveals nothing
-    /// a reader could spend.
-    pub hashed_token: Option<String>,
 }
 
 impl IssuedLogin {
@@ -174,7 +170,6 @@ impl IssuedLogin {
             shortfall: PermissionSet::new(),
             shortfall_why: None,
             minted: false,
-            hashed_token: None,
         }
     }
 }
@@ -1046,10 +1041,7 @@ mod tests {
         assert!(!format!("{l:?}").contains("s3cret"));
         let issued = IssuedLogin::plain(l);
         assert!(!format!("{issued:?}").contains("s3cret"));
-        assert_eq!(
-            (issued.carried, issued.minted, issued.hashed_token),
-            (None, false, None)
-        );
+        assert_eq!((issued.carried, issued.minted), (None, false));
     }
 
     #[test]
