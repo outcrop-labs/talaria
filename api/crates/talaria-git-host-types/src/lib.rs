@@ -24,7 +24,7 @@
 // outrank engines"), so the adapters share them without depending on each
 // other and the registry above them can dispatch over all of them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 
 use serde::Serialize;
@@ -82,14 +82,213 @@ impl std::fmt::Debug for Login {
     }
 }
 
-/// What a repo-scoped credential may do. `Write` is a workbench job's (push a
-/// branch, open a pull request); `Read` is a clone's (app install and
-/// update). An adapter that can narrow a token narrows it to this; one that
-/// cannot says so in its own docs.
+/// What a repo-scoped credential may do. `Write` is a workbench job's git in
+/// the sandbox (clone, fetch, push a branch; Talaria opens the pull request
+/// itself, from the api); `Read` is a clone's (app install and update). An
+/// adapter that can narrow a token narrows it to this; one that cannot says
+/// so in its own docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepoAccess {
     Write,
     Read,
+}
+
+// ── Permissions ──────────────────────────────────────────────────────────────
+//
+// A host that can narrow a credential narrows it to named permissions, each at
+// a level. The names are the host's own (GitHub's are `contents`, `metadata`,
+// `workflows`, …), and which of them exist, and which may ever ride on a
+// token, is the adapter's catalog, never this crate's. What lives here is the
+// arithmetic every adapter and caller shares: the order of the levels, and the
+// set operations a mint is built from.
+
+/// How much of one permission a credential carries: `read` < `write` <
+/// `admin`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    Read,
+    Write,
+    Admin,
+}
+
+impl Level {
+    pub fn parse(s: &str) -> Option<Level> {
+        match s {
+            "read" => Some(Level::Read),
+            "write" => Some(Level::Write),
+            "admin" => Some(Level::Admin),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Level::Read => "read",
+            Level::Write => "write",
+            Level::Admin => "admin",
+        }
+    }
+}
+
+impl std::fmt::Display for Level {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A set of permissions, each at one level. It is ordered by name, so two
+/// spellings of one set (the same keys in another order) are one value with
+/// one canonical JSON. That is what lets a token cache key on it. It
+/// serializes as that JSON object (`{"contents":"write",…}`), the shape hosts
+/// answer in and an admin's page reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct PermissionSet(BTreeMap<String, Level>);
+
+impl PermissionSet {
+    pub fn new() -> PermissionSet {
+        PermissionSet::default()
+    }
+
+    /// The set the pairs name. A key named twice keeps its higher level.
+    pub fn of(pairs: &[(&str, Level)]) -> PermissionSet {
+        let mut set = PermissionSet::new();
+        for (key, level) in pairs {
+            set.raise(key, *level);
+        }
+        set
+    }
+
+    /// Read a `{"key": "level", …}` object, the shape hosts answer in. Any
+    /// level this crate does not know is an error rather than a guess: a set
+    /// that cannot be read cannot be compared, and a caller deciding what a
+    /// credential may carry must treat it as unknown.
+    pub fn from_json(v: &Value) -> Result<PermissionSet, String> {
+        let obj = v
+            .as_object()
+            .ok_or_else(|| format!("permissions are not an object: {v}"))?;
+        let mut set = PermissionSet::new();
+        for (key, level) in obj {
+            let level = level.as_str().and_then(Level::parse).ok_or_else(|| {
+                format!("permission {key}: level {level} is not read, write or admin")
+            })?;
+            set.raise(key, level);
+        }
+        Ok(set)
+    }
+
+    /// The canonical JSON object, keys in order.
+    pub fn to_json(&self) -> Value {
+        let mut obj = serde_json::Map::new();
+        for (key, level) in &self.0 {
+            obj.insert(key.clone(), Value::String(level.as_str().into()));
+        }
+        Value::Object(obj)
+    }
+
+    /// The canonical JSON text: one string per set, whatever order it was
+    /// spelled in.
+    pub fn canonical(&self) -> String {
+        self.to_json().to_string()
+    }
+
+    pub fn get(&self, key: &str) -> Option<Level> {
+        self.0.get(key).copied()
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        self.0.contains_key(key)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, Level)> {
+        self.0.iter().map(|(k, l)| (k.as_str(), *l))
+    }
+
+    /// Put `key` in the set at `level`, or keep the level it already has if
+    /// that is higher.
+    pub fn raise(&mut self, key: &str, level: Level) {
+        let at = self.0.entry(key.to_string()).or_insert(level);
+        if level > *at {
+            *at = level;
+        }
+    }
+
+    /// The set without the keys `leave_out` names.
+    pub fn without(&self, leave_out: impl Fn(&str) -> bool) -> PermissionSet {
+        PermissionSet(
+            self.0
+                .iter()
+                .filter(|(k, _)| !leave_out(k.as_str()))
+                .map(|(k, l)| (k.clone(), *l))
+                .collect(),
+        )
+    }
+
+    /// Every key either set has, at the higher of its two levels.
+    pub fn union(&self, other: &PermissionSet) -> PermissionSet {
+        let mut out = self.clone();
+        for (key, level) in other.iter() {
+            out.raise(key, level);
+        }
+        out
+    }
+
+    /// What both sets allow: the keys they share, each at the lower of its
+    /// two levels. An ask met with what a credential's issuer holds is the
+    /// most that can be asked for without being refused, and never more than
+    /// the ask.
+    pub fn meet(&self, other: &PermissionSet) -> PermissionSet {
+        PermissionSet(
+            self.0
+                .iter()
+                .filter_map(|(k, l)| other.get(k).map(|o| (k.clone(), (*l).min(o))))
+                .collect(),
+        )
+    }
+
+    /// What this set asks that `held` does not cover: each key `held` lacks,
+    /// or holds below the asked level, at the asked level.
+    pub fn missing_from(&self, held: &PermissionSet) -> PermissionSet {
+        PermissionSet(
+            self.0
+                .iter()
+                .filter(|(k, l)| held.get(k.as_str()).is_none_or(|h| h < **l))
+                .map(|(k, l)| (k.clone(), *l))
+                .collect(),
+        )
+    }
+
+    /// Whether this set holds everything `ask` names, each at least as high.
+    pub fn covers(&self, ask: &PermissionSet) -> bool {
+        ask.missing_from(self).is_empty()
+    }
+}
+
+impl std::fmt::Display for PermissionSet {
+    /// `contents:write, metadata:read`, or `nothing`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            return f.write_str("nothing");
+        }
+        let mut first = true;
+        for (key, level) in &self.0 {
+            if !first {
+                f.write_str(", ")?;
+            }
+            first = false;
+            write!(f, "{key}:{level}")?;
+        }
+        Ok(())
+    }
 }
 
 /// Who may see a repository Talaria creates. Private unless the request or
@@ -174,13 +373,55 @@ pub struct OpenPullRequest {
 }
 
 /// A host's live answer to "can you reach it": whether it is configured
-/// enough to try, who it acts as, and why not.
+/// enough to try, who it acts as, and why not. A host whose credential is
+/// a registered app that each account accepts on its own terms (a GitHub
+/// App) also says what the app asks for and what each installation it uses
+/// has accepted; every other host leaves both empty.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostStatus {
     pub configured: bool,
     pub account: Option<String>,
     pub error: Option<String>,
+    /// What the app's registration asks for, read live with the status.
+    /// None when the host has no app, or the read failed.
+    pub app_permissions: Option<PermissionSet>,
+    /// Each installation the connection uses, as the registry last recorded
+    /// it (never asked live with the status: that is the holdings refresh's
+    /// job, and an admin's Refresh).
+    pub installations: Vec<InstallationStatus>,
+}
+
+/// One installation of a host's app, as the registry last checked it: what
+/// the app asked for then, what the installation had accepted, and what is
+/// still waiting for the account's owner to accept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallationStatus {
+    pub id: String,
+    /// The account (an org, or a user) the app is installed on.
+    pub account: String,
+    /// What the app's registration asked for at the last check.
+    pub app_permissions: Option<PermissionSet>,
+    /// What the installation had accepted at the last check. None: never
+    /// read, which is unknown, never "nothing".
+    pub held: Option<PermissionSet>,
+    /// What the app asks for that the installation has not accepted: each
+    /// key it lacks, or holds below the asked level, at the asked level. An
+    /// owner of the account accepts it on the host.
+    pub pending: PermissionSet,
+    /// `all` or `selected`: which of the account's repositories it covers.
+    pub repository_selection: Option<String>,
+    /// When the account suspended the installation, if it has.
+    pub suspended_at: Option<String>,
+    /// When the registry last read it successfully (ISO).
+    pub checked_at: Option<String>,
+    /// Why the last check failed, when it did. What is above is then the
+    /// last good read.
+    pub error: Option<String>,
+    /// The host's own page for the installation, where an owner reviews and
+    /// accepts what is pending.
+    pub url: Option<String>,
 }
 
 /// The number at the end of a pull request's page URL — GitHub's `…/pull/42`
@@ -636,11 +877,120 @@ mod tests {
     }
 
     #[test]
+    fn a_permission_set_is_one_value_whatever_order_it_was_spelled_in() {
+        let a = PermissionSet::from_json(
+            &serde_json::from_str::<Value>(r#"{"metadata":"read","contents":"write"}"#).unwrap(),
+        )
+        .unwrap();
+        let b = PermissionSet::of(&[("contents", Level::Write), ("metadata", Level::Read)]);
+        assert_eq!(a, b);
+        assert_eq!(a.canonical(), b.canonical());
+        assert_eq!(a.canonical(), r#"{"contents":"write","metadata":"read"}"#);
+        assert_eq!(a.to_string(), "contents:write, metadata:read");
+        assert_eq!(PermissionSet::new().to_string(), "nothing");
+        // It serializes as that same canonical object, never as a list.
+        assert_eq!(serde_json::to_value(&a).unwrap(), a.to_json());
+        // A key named twice keeps its higher level.
+        assert_eq!(
+            PermissionSet::of(&[("contents", Level::Write), ("contents", Level::Read)])
+                .get("contents"),
+            Some(Level::Write)
+        );
+    }
+
+    #[test]
+    fn a_level_no_one_knows_is_an_error_never_a_guess() {
+        let read = |s: &str| PermissionSet::from_json(&serde_json::from_str::<Value>(s).unwrap());
+        assert!(read(r#"{"contents":"maintain"}"#).is_err());
+        assert!(read(r#"{"contents":1}"#).is_err());
+        assert!(read(r#"["contents"]"#).is_err());
+        assert_eq!(read("{}").unwrap(), PermissionSet::new());
+        assert!(Level::Read < Level::Write && Level::Write < Level::Admin);
+        assert_eq!(Level::parse("admin"), Some(Level::Admin));
+        assert_eq!(Level::parse("none"), None);
+    }
+
+    #[test]
+    fn meet_never_rises_above_the_ask_and_missing_from_names_the_shortfall() {
+        let ask = PermissionSet::of(&[
+            ("contents", Level::Write),
+            ("pull_requests", Level::Write),
+            ("metadata", Level::Read),
+        ]);
+        let held = PermissionSet::of(&[
+            ("contents", Level::Read),
+            ("metadata", Level::Read),
+            ("administration", Level::Write),
+        ]);
+        // The shared keys at the lower level: contents comes down to read,
+        // and administration, held but never asked, is not in it.
+        assert_eq!(
+            ask.meet(&held),
+            PermissionSet::of(&[("contents", Level::Read), ("metadata", Level::Read)])
+        );
+        // What the ask wants that held does not give, at the asked level.
+        assert_eq!(
+            ask.missing_from(&held),
+            PermissionSet::of(&[("contents", Level::Write), ("pull_requests", Level::Write)])
+        );
+        assert!(!held.covers(&ask));
+        assert!(held.union(&ask).covers(&ask));
+        assert_eq!(
+            held.union(&ask).get("contents"),
+            Some(Level::Write),
+            "a union keeps the higher level"
+        );
+        assert_eq!(
+            ask.without(|k| k == "pull_requests"),
+            PermissionSet::of(&[("contents", Level::Write), ("metadata", Level::Read)])
+        );
+    }
+
+    #[test]
     fn a_login_never_prints_its_password() {
         let l = Login {
             username: "bot".into(),
             password: "s3cret".into(),
         };
         assert!(!format!("{l:?}").contains("s3cret"));
+    }
+
+    /// The status wire an admin's page reads: a host with no app says so
+    /// with a null and an empty list, never by leaving the keys out.
+    #[test]
+    fn a_status_carries_the_apps_ask_and_each_installation_in_camel_case() {
+        let bare = serde_json::to_value(HostStatus::default()).unwrap();
+        assert_eq!(bare["appPermissions"], Value::Null);
+        assert_eq!(bare["installations"], json!([]));
+        let st = HostStatus {
+            configured: true,
+            account: Some("Talaria".into()),
+            error: None,
+            app_permissions: Some(PermissionSet::of(&[("contents", Level::Write)])),
+            installations: vec![InstallationStatus {
+                id: "91".into(),
+                account: "acme".into(),
+                held: Some(PermissionSet::new()),
+                pending: PermissionSet::of(&[("contents", Level::Write)]),
+                checked_at: Some("2026-11-16T00:00:00.000Z".into()),
+                ..InstallationStatus::default()
+            }],
+        };
+        let wire = serde_json::to_value(&st).unwrap();
+        assert_eq!(wire["appPermissions"], json!({ "contents": "write" }));
+        let inst = &wire["installations"][0];
+        assert_eq!(inst["id"], "91");
+        assert_eq!(inst["held"], json!({}));
+        assert_eq!(inst["pending"], json!({ "contents": "write" }));
+        assert_eq!(inst["checkedAt"], "2026-11-16T00:00:00.000Z");
+        for key in [
+            "appPermissions",
+            "repositorySelection",
+            "suspendedAt",
+            "error",
+            "url",
+        ] {
+            assert_eq!(inst[key], Value::Null, "{key}");
+        }
     }
 }

@@ -21,8 +21,29 @@ pub mod workbench_env_repo;
 pub mod workbench_flow;
 pub mod workbench_git_hosts;
 pub mod workbench_git_hosts_id;
+pub mod workbench_git_hosts_id_refresh;
 pub mod workbench_git_hosts_id_test;
 pub mod workbench_harnesses;
 pub mod workbench_jobs;
 pub mod workbench_repo_requests;
 pub mod workbench_repos_agent_id;
+
+/// The git host `id` names, or the answer when there is none: a 404, or a
+/// 500 when the registry cannot be read. The git host routes that act on one
+/// host (`workbench_git_hosts_id*`) share it.
+async fn git_host_or_404(
+    state: &talaria_state::AppState,
+    id: &str,
+) -> Result<talaria_git_hosts::HostRow, axum::response::Response> {
+    match talaria_git_hosts::registry::get_host(&state.pg, id).await {
+        Ok(Some(row)) => Ok(row),
+        Ok(None) => Err(talaria_error::house_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "no such git host",
+        )),
+        Err(e) => Err(talaria_error::internal(
+            "[workbench/git-hosts] host read failed",
+            e,
+        )),
+    }
+}

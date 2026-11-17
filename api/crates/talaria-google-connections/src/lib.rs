@@ -84,23 +84,50 @@ pub async fn get_connection_status(
 /// the CONNECTION IS DEAD (revoked or expired at Google's end) — the caller
 /// clears the stored refresh token so the UI prompts a reconnect instead of
 /// erroring forever, rather than treating it like a transient failure.
+///
+/// `ClientRejected` is Google refusing the OAuth CLIENT (`invalid_client`,
+/// `unauthorized_client`): a wrong secret pasted, a client deleted. That is
+/// the server's configuration, not this connection — nothing clears the
+/// stored grant on it, or one bad paste would disconnect everyone. Each
+/// variant carries the status and Google's body verbatim.
 #[derive(Debug)]
 pub enum TokenError {
     InvalidGrant(String),
+    ClientRejected(String),
     Other(String),
 }
 
 impl std::fmt::Display for TokenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TokenError::InvalidGrant(m) | TokenError::Other(m) => write!(f, "{m}"),
+            TokenError::InvalidGrant(m) | TokenError::ClientRejected(m) | TokenError::Other(m) => {
+                write!(f, "{m}")
+            }
         }
     }
 }
 
+/// A token endpoint's refusal, by the `error` code Google put in its body
+/// (RFC 6749 §5.2). A body that is not JSON falls back to the substring test
+/// this classification replaced, so nothing that read as a dead grant before
+/// reads as anything else now.
+pub fn classify_token_refusal(body: &str, err: String) -> TokenError {
+    let code = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from));
+    match code.as_deref() {
+        Some("invalid_grant") => TokenError::InvalidGrant(err),
+        Some("invalid_client" | "unauthorized_client") => TokenError::ClientRejected(err),
+        Some(_) => TokenError::Other(err),
+        None if body.contains("invalid_grant") => TokenError::InvalidGrant(err),
+        None => TokenError::Other(err),
+    }
+}
+
 /// Exchange a refresh token for a fresh access token. Shared by the per-user
-/// and org connections. Errors carry the status and body verbatim — the only
-/// consumer is the log.
+/// and org connections. Errors carry the status and body verbatim, so the
+/// answer a person or agent reads can quote what Google said
+/// (`talaria_google_errors::upstream_reason`).
 pub async fn request_refresh(
     pg: &PgPool,
     sb: &SecretBox,
@@ -137,11 +164,7 @@ pub async fn request_refresh(
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
         let err = format!("google token refresh failed: {status} {body}");
-        return Err(if body.contains("invalid_grant") {
-            TokenError::InvalidGrant(err)
-        } else {
-            TokenError::Other(err)
-        });
+        return Err(classify_token_refusal(&body, err));
     }
     let tokens: serde_json::Value = res
         .json()
@@ -581,7 +604,7 @@ pub async fn revoke_at_google(token: String) -> Result<(), String> {
 }
 
 /// The longest quote of Google's words a note carries: the same 300 as
-/// `talaria_google_errors::REASON_MAX_CHARS`.
+/// `talaria_google_errors::REASON_MAX_CHARS`, which asserts the two agree.
 pub const OAUTH_REASON_MAX_CHARS: usize = 300;
 
 /// Google's words from an OAuth endpoint's error body,
@@ -589,9 +612,9 @@ pub const OAUTH_REASON_MAX_CHARS: usize = 300;
 /// `code: sentence`, or whichever of the two Google sent. Whitespace is
 /// folded and the whole is capped at `OAUTH_REASON_MAX_CHARS`, with an
 /// ellipsis when cut; the code leads, so a cut never loses it. None when the
-/// body is not that shape. This is the one parser for the OAuth shape, in the
-/// format `talaria_google_errors::upstream_reason` quotes a refused refresh
-/// in, so a refused revoke and a refused refresh read alike.
+/// body is not that shape. This is the one parser for the OAuth shape:
+/// `talaria_google_errors::upstream_reason` quotes a refused refresh through
+/// it, so a refused revoke and a refused refresh read alike.
 pub fn oauth_reason(body: &serde_json::Value) -> Option<String> {
     let text = |v: Option<&serde_json::Value>| {
         v.and_then(serde_json::Value::as_str)
@@ -1116,10 +1139,9 @@ mod tests {
     // POST https://oauth2.googleapis.com/revoke with a token that was never
     // issued → HTTP 400.
     const REVOKE_GARBAGE_TOKEN: &str = "{\n  \"error\": \"invalid_token\"\n}";
-    // POST https://oauth2.googleapis.com/token, grant_type=refresh_token, with
-    // a client id Google never issued → HTTP 401. (The same bytes, under the
-    // same name, as the refresh classifier's fixture.)
-    const NOT_FOUND_CLIENT: &str = "{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The OAuth client was not found.\"\n}";
+    // The token endpoint's answer to a client id Google never issued (HTTP
+    // 401) is NOT_FOUND_CLIENT, with the refresh classifier's captures below:
+    // one fixture for the revoke note and the refresh classifier.
 
     #[test]
     fn oauth_errors_are_quoted_in_googles_words() {
@@ -1155,5 +1177,49 @@ mod tests {
             oauth_reason(&serde_json::json!({"error": {"code": 403, "message": "no"}})),
             None
         );
+    }
+
+    // Bodies captured from https://oauth2.googleapis.com/token on 2026-11-12
+    // with no real credential: a bogus refresh token, sent with a bogus
+    // client id, a real client id and a bogus secret, and gcloud's published
+    // installed-app client.
+    const NOT_FOUND_CLIENT: &str = "{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The OAuth client was not found.\"\n}";
+    const BAD_SECRET: &str = "{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The provided client secret is invalid.\"\n}";
+    const BAD_REFRESH: &str =
+        "{\n  \"error\": \"invalid_grant\",\n  \"error_description\": \"Bad Request\"\n}";
+
+    fn class(body: &str) -> &'static str {
+        match classify_token_refusal(body, format!("google token refresh failed: 400 {body}")) {
+            TokenError::InvalidGrant(_) => "invalid_grant",
+            TokenError::ClientRejected(_) => "client_rejected",
+            TokenError::Other(_) => "other",
+        }
+    }
+
+    #[test]
+    fn a_refused_client_is_not_a_dead_grant() {
+        assert_eq!(class(NOT_FOUND_CLIENT), "client_rejected");
+        assert_eq!(class(BAD_SECRET), "client_rejected");
+        assert_eq!(class(BAD_REFRESH), "invalid_grant");
+    }
+
+    #[test]
+    fn the_message_keeps_googles_body_verbatim() {
+        let e = classify_token_refusal(
+            BAD_SECRET,
+            format!("google token refresh failed: 401 Unauthorized {BAD_SECRET}"),
+        );
+        assert!(
+            e.to_string()
+                .contains("The provided client secret is invalid.")
+        );
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_keeps_the_old_substring_rule() {
+        assert_eq!(class("400 invalid_grant"), "invalid_grant");
+        assert_eq!(class("<html>502 Bad Gateway</html>"), "other");
+        // A code this classifier does not name is not guessed at.
+        assert_eq!(class("{\"error\":\"invalid_request\"}"), "other");
     }
 }

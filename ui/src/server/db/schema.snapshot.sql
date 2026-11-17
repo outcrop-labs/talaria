@@ -741,6 +741,18 @@ CREATE TABLE public.fleet_agents (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.git_host_installations (
+    host_id text NOT NULL,
+    installation_id bigint NOT NULL,
+    account text DEFAULT ''::text NOT NULL,
+    app_permissions jsonb,
+    held jsonb,
+    repository_selection text,
+    suspended_at timestamp with time zone,
+    html_url text,
+    checked_at timestamp with time zone,
+    error text
+);
 CREATE TABLE public.git_hosts (
     id text NOT NULL,
     kind text NOT NULL,
@@ -1966,6 +1978,8 @@ ALTER TABLE ONLY public.fleet_agents
     ADD CONSTRAINT fleet_agents_name_key UNIQUE (name);
 ALTER TABLE ONLY public.fleet_agents
     ADD CONSTRAINT fleet_agents_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.git_host_installations
+    ADD CONSTRAINT git_host_installations_pkey PRIMARY KEY (host_id, installation_id);
 ALTER TABLE ONLY public.git_hosts
     ADD CONSTRAINT git_hosts_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.google_connections
@@ -2482,6 +2496,8 @@ ALTER TABLE ONLY public.daily_briefs
     ADD CONSTRAINT daily_briefs_artifact_id_fkey FOREIGN KEY (artifact_id) REFERENCES public.artifacts(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.daily_briefs
     ADD CONSTRAINT daily_briefs_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.git_host_installations
+    ADD CONSTRAINT git_host_installations_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.google_connections
     ADD CONSTRAINT google_connections_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.google_org_connection

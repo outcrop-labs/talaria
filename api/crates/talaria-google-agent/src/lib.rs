@@ -133,10 +133,16 @@ pub async fn resolve_agent_principal(
     load_principal(pg, agent_model).await
 }
 
-/// A Google access token for the calling agent, or None when the relevant
+/// A Google access token for the calling agent. `Ok(None)` when the relevant
 /// connection isn't set up. A personal assistant NEVER falls back to the org
-/// account. A registry read that fails also returns None — handing out the
-/// org token because a lookup blipped is the silent fallback this refuses.
+/// account. A registry read that fails also answers `Ok(None)` — handing out
+/// the org token because a lookup blipped is the silent fallback this refuses.
+///
+/// `Err` is the token itself failing — Google refusing the grant or the
+/// client, or the refresh not getting through. It is NOT folded into "not
+/// connected": the caller answers it through `google_token_fail`, which
+/// quotes what Google said. (It used to be `.unwrap_or_default()`, so an
+/// `invalid_client` read to the agent as "No Google account is connected".)
 ///
 /// Takes the CALLER, not a bare name: handing out an OAuth token is the single
 /// largest grant on the agent surface, so the proof check lives HERE.
@@ -145,31 +151,27 @@ pub async fn resolve_agent_google(
     sb: &SecretBox,
     agent: &AgentSubject,
     now_ms: i64,
-) -> Option<AgentGoogle> {
+) -> Result<Option<AgentGoogle>, TokenError> {
     if !subject_proven(agent) {
-        return None;
+        return Ok(None);
     }
     let agent_model = subject_model(agent);
-    let principal = load_principal(pg, agent_model).await.ok()?;
+    let Ok(principal) = load_principal(pg, agent_model).await else {
+        return Ok(None);
+    };
     let token = match principal.kind {
-        PrincipalKind::Owner => {
-            let user_id = principal.owner_user_id.as_deref()?;
-            get_access_token(pg, sb, user_id, now_ms)
-                .await
-                .unwrap_or_default()
-        }
-        PrincipalKind::Org => get_org_access_token(pg, sb, now_ms)
-            .await
-            .unwrap_or_default(),
-        PrincipalKind::Agent => get_agent_access_token(pg, sb, agent_model, now_ms)
-            .await
-            .unwrap_or_default(),
-    }?;
-    Some(AgentGoogle {
+        PrincipalKind::Owner => match principal.owner_user_id.as_deref() {
+            Some(user_id) => get_access_token(pg, sb, user_id, now_ms).await?,
+            None => None,
+        },
+        PrincipalKind::Org => get_org_access_token(pg, sb, now_ms).await?,
+        PrincipalKind::Agent => get_agent_access_token(pg, sb, agent_model, now_ms).await?,
+    };
+    Ok(token.map(|token| AgentGoogle {
         token,
         principal: principal.kind.as_str(),
         owner_user_id: principal.owner_user_id,
-    })
+    }))
 }
 
 /// Why an outbound write must not queue. `Ok(None)` means the principal's

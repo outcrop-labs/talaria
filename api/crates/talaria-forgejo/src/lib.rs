@@ -309,6 +309,7 @@ impl GitHost for Forgejo {
                 configured: false,
                 account: None,
                 error: Some(e),
+                ..HostStatus::default()
             };
         }
         match self.me().await {
@@ -316,11 +317,13 @@ impl GitHost for Forgejo {
                 configured: true,
                 account: Some(login),
                 error: None,
+                ..HostStatus::default()
             },
             Err(e) => HostStatus {
                 configured: true,
                 account: None,
                 error: Some(truncate_utf16(&e, 200).to_string()),
+                ..HostStatus::default()
             },
         }
     }
