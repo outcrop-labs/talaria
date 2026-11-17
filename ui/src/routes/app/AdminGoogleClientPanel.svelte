@@ -56,7 +56,43 @@
     personalConnected: boolean
     /** Each role's list is what that client must have registered. */
     redirectUris: Array<{ uri: string; what: string; role: Role }>
+    /** Every stored grant, counted per OAuth client that minted it. `role` is
+     *  the slot that client sits in now (null: configured nowhere, so those
+     *  grants need a reconnect); `shadowed` marks the ui/.env pair behind that
+     *  slot's Admin record, which refreshes the grants it minted and mints
+     *  none; a null clientId is grants not yet recorded, which record their
+     *  client on their next refresh. */
+    census: Array<{
+      clientId: string | null
+      role: Role | null
+      source: 'admin' | 'env' | null
+      shadowed: boolean
+      personal: number
+      org: number
+      agent: number
+      /** Of those, the ones Google last refused the client for. */
+      flagged: number
+    }>
   }
+
+  const censusCounts = (c: Payload['census'][number]) =>
+    [
+      c.personal ? `${c.personal} personal` : '',
+      c.org ? `${c.org} org` : '',
+      c.agent ? `${c.agent} agent` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  const censusSlot = (c: Payload['census'][number]) =>
+    c.shadowed
+      ? `${c.role === 'signin' ? 'sign-in' : 'connections'} slot's ui/.env pair, behind its Admin record · refreshes only`
+      : c.role === 'connections'
+        ? `connections client${c.source === 'env' ? ' · ui/.env' : ''}`
+        : c.role === 'signin'
+          ? `sign-in client${c.source === 'env' ? ' · ui/.env' : ''}`
+          : c.clientId
+            ? 'configured nowhere: these need a reconnect'
+            : 'recorded on their next refresh'
 
   type AgenticChoice = 'ticked' | 'unticked' | 'unsure'
   const AGENTIC: ReadonlyArray<SegmentedOption<AgenticChoice>> = [
@@ -133,7 +169,7 @@
     const loginToo = data?.signin.configured
       ? ' Google login stops too: the sign-in client takes its domain from this client, so login stays off until a connections client is configured again, unless AUTH_GOOGLE_HD in ui/.env names a domain.'
       : ''
-    if (!(await confirm({ title: 'Remove the Google client', message: `Remove the Google client credentials stored in the Admin UI? Connected accounts stop working until a client is configured again.${loginToo}`, confirmLabel: 'Remove', danger: true }))) return
+    if (!(await confirm({ title: 'Remove the Google client', message: `Remove the Google client credentials stored in the Admin UI? Connections made with this client stop refreshing until it is configured again, in either slot, or they reconnect on another client.${loginToo}`, confirmLabel: 'Remove', danger: true }))) return
     busy = true
     error = null
     notice = null
@@ -343,6 +379,29 @@
 
       {#if data.status.clientId}
         {@render agenticRow('connections', data.status)}
+      {/if}
+
+      <!-- Which client each stored grant refreshes with. A grant keeps the
+           client that minted it, wherever that client sits now, so this is
+           what to read before and after moving a client between slots. -->
+      {#if data.census.length}
+        <div class="border-t border-line pt-3">
+          <div class="mb-1.5 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+            <span>Stored connections by client</span>
+            <InfoTip text="Every stored Google connection remembers the OAuth client that minted it and refreshes with that client, whichever slot it is in. A client configured nowhere leaves its connections needing a reconnect. Connections made before clients were recorded are recorded on their next refresh." />
+          </div>
+          <div class="space-y-1">
+            {#each data.census as c (c.clientId ?? '')}
+              <div class="flex items-center gap-2 text-xs">
+                <StatusDot status={!c.clientId ? 'idle' : !c.role || c.flagged ? 'warn' : 'ok'} />
+                <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-fg">{c.clientId ?? 'Not recorded yet'}</span>
+                <span class="shrink-0 font-sans text-[10px] text-muted">{censusCounts(c)}</span>
+                {#if c.flagged}<span class="shrink-0 font-sans text-[10px] text-warning">{c.flagged} refused</span>{/if}
+                <span class="shrink-0 font-sans text-[10px] text-muted">{censusSlot(c)}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
       {/if}
 
       <!-- The redirect URIs — the one thing every Google setup asks for first. -->

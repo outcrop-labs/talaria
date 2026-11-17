@@ -461,7 +461,9 @@ pub fn google_connect_url(
 }
 
 /// What a connect exchange handed back — the tokens plus the two userinfo
-/// fields the savers read.
+/// fields the savers read, and the OAuth client the exchange ran on: the
+/// client that minted the refresh token, which every saver records so the
+/// grant refreshes with it wherever that client later sits.
 pub struct ConnectExchange {
     pub access_token: Option<String>,
     pub refresh_token: Option<String>,
@@ -469,6 +471,7 @@ pub struct ConnectExchange {
     pub scope: Option<String>,
     pub sub: String,
     pub email: Option<String>,
+    pub client_id: String,
 }
 
 /// Exchange an auth code for tokens + the Google identity — the fetch BOTH
@@ -567,6 +570,7 @@ pub async fn exchange_google_tokens(
         scope: field("scope"),
         sub,
         email,
+        client_id: cfg.client_id,
     })
 }
 
@@ -600,6 +604,7 @@ pub async fn complete_google_connect(
             refresh_token: ex.refresh_token.as_deref(),
             access_token: ex.access_token.as_deref(),
             expires_in_seconds: ex.expires_in,
+            oauth_client_id: &ex.client_id,
             now_ms,
         },
     )
@@ -634,6 +639,7 @@ pub async fn complete_google_org_connect(
             access_token: ex.access_token.as_deref(),
             expires_in_seconds: ex.expires_in,
             connected_by,
+            oauth_client_id: &ex.client_id,
             now_ms,
         },
     )

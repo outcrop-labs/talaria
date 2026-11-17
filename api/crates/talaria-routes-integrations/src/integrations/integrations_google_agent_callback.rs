@@ -137,6 +137,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
             access_token: ex.access_token.as_deref(),
             expires_in_seconds: ex.expires_in,
             connected_by: Some(&manager.id),
+            oauth_client_id: &ex.client_id,
             now_ms: now_ms(),
         },
     )

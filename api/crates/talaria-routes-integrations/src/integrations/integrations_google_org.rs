@@ -1,7 +1,9 @@
 // /api/integrations/google/org — the shared org Google connection
 // (admin-managed); general fleet agents act as this identity for
 // Drive/Docs/Calendar/Gmail. GET → status + targets · PUT → save build
-// targets · DELETE → disconnect.
+// targets · DELETE → disconnect. The status carries `clientId` (the OAuth
+// client that minted the stored grant) and `reconnectReason`, as on GET
+// /api/integrations/google.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -10,7 +12,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_api_facades::google::connections::revoke_note;
+use talaria_api_facades::google::client::configured_google_clients;
+use talaria_api_facades::google::connections::{reconnect_reason, revoke_note};
 use talaria_api_facades::google::oauth::google_integration_enabled;
 use talaria_api_facades::google::org::{
     OrgTargetsPatch, disconnect_org, get_org_connection_status, set_org_targets,
@@ -29,9 +32,10 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         Ok(s) => s,
         Err(e) => return Ok(internal("[integrations/google/org] status read failed", e)),
     };
+    let configured = configured_google_clients(&state.pg, &sb).await;
     Ok(
         // Wire key order: available, then the status fields, then targets (whose
-        // own key order is TargetsWire's declaration order).
+        // own key order is TargetsWire's declaration order), then the client.
         Json(json!({
             "available": available,
             "connected": status.connected,
@@ -39,6 +43,12 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             "scope": status.scope,
             "connectedAt": status.connected_at,
             "targets": status.targets,
+            "clientId": status.client_id,
+            "reconnectReason": reconnect_reason(
+                status.client_id.as_deref(),
+                status.flagged.as_deref(),
+                &configured,
+            ),
         }))
         .into_response(),
     )

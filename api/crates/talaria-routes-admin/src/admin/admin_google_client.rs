@@ -6,9 +6,16 @@
 // Deliberately requireAdmin: these are org credentials, not a grantable
 // surface.
 //   GET → both clients' redacted status, which client login runs on, the
-//   panel's warnings, and the redirect URIs each client needs in Google Cloud
-//   Console · PUT `?role=connections|signin` (default connections) → save
-//   that client · DELETE `?role=…` → drop that record (env fallback resumes;
+//   panel's warnings, the redirect URIs each client needs in Google Cloud
+//   Console, and the census: every stored grant counted per OAuth client
+//   that minted it (personal, org, agent; how many carry a refusal), with
+//   the slot that client sits in now — `shadowed` when it is only the env
+//   pair behind that slot's Admin record (it refreshes what it minted and
+//   mints nothing new), null when it is configured nowhere, and a null
+//   clientId for grants not yet recorded · PUT
+//   `?role=connections|signin` (default connections) → save that client; a
+//   new secret forgets the refusals recorded on that client's grants · DELETE
+//   `?role=…` → drop that record (env fallback resumes;
 //   an empty sign-in slot hands login back to the connections client, and
 //   with no connections client and no AUTH_GOOGLE_HD login stops, sign-in
 //   client or not — login never runs without the connections side's domain).
@@ -21,12 +28,14 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_api_facades::google::client::{
-    ClientConfigPatch, ClientRole, GoogleClientStatus, agentic_declaration,
-    clear_google_client_config, client_evidence, client_warnings, declare_agentic,
-    google_client_status, google_login_enabled, google_login_pinned_by_env,
+    ClientConfigPatch, ClientRole, GoogleClient, GoogleClientStatus, agentic_declaration,
+    clear_google_client_config, client_evidence, client_warnings, configured_google_clients,
+    declare_agentic, google_client_status, google_login_enabled, google_login_pinned_by_env,
     resolve_google_signin_client, set_google_client_config,
 };
-use talaria_api_facades::google::connections::get_connection_status;
+use talaria_api_facades::google::connections::{
+    ClientCensus, clear_client_flags, get_connection_status, grant_census,
+};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
     nullable_boolean_member, nullable_optional_string_member, parse, string_member,
@@ -83,6 +92,74 @@ fn answer(clients: &Clients) -> Response {
     .into_response()
 }
 
+/// The census's two reads: live grants per minting client, and every client
+/// a stored grant can refresh with.
+async fn census_reads(
+    state: &AppState,
+    sb: &SecretBox,
+) -> Result<(Vec<ClientCensus>, Vec<GoogleClient>), sqlx::Error> {
+    let (rows, configured) = tokio::join!(
+        grant_census(&state.pg),
+        configured_google_clients(&state.pg, sb)
+    );
+    Ok((rows?, configured))
+}
+
+/// Where a census row's client sits now, as (role, source, shadowed): the
+/// slot whose own client it is (`active`: each slot's configured client id
+/// and source), else the env pair an Admin record shadows in a slot
+/// (`shadowed` — it refreshes the grants it minted and mints none), else
+/// None: configured nowhere, so its grants answer a named reconnect.
+fn census_slot(
+    client_id: &str,
+    active: &[(ClientRole, &str, &'static str)],
+    configured: &[GoogleClient],
+) -> Option<(&'static str, &'static str, bool)> {
+    if let Some(&(role, _, source)) = active.iter().find(|(_, id, _)| *id == client_id) {
+        return Some((role.as_str(), source, false));
+    }
+    configured
+        .iter()
+        .find(|k| k.client_id == client_id)
+        .map(|k| (k.role.as_str(), k.source, true))
+}
+
+/// Stored grants per minting client, each with the slot that client sits in
+/// now (`census_slot`). The census an operator reads before and after moving
+/// clients between slots.
+fn census(
+    rows: Vec<ClientCensus>,
+    configured: &[GoogleClient],
+    clients: &Clients,
+) -> Vec<serde_json::Value> {
+    let active: Vec<(ClientRole, &str, &'static str)> = [
+        (ClientRole::Connections, &clients.connections),
+        (ClientRole::SignIn, &clients.signin),
+    ]
+    .into_iter()
+    .filter(|(_, s)| s.configured)
+    .map(|(role, s)| (role, s.client_id.as_str(), s.source.unwrap_or_default()))
+    .collect();
+    rows.into_iter()
+        .map(|c| {
+            let slot = c
+                .client_id
+                .as_deref()
+                .and_then(|id| census_slot(id, &active, configured));
+            json!({
+                "clientId": c.client_id,
+                "role": slot.map(|(role, _, _)| role),
+                "source": slot.map(|(_, source, _)| source),
+                "shadowed": slot.is_some_and(|(_, _, shadowed)| shadowed),
+                "personal": c.personal,
+                "org": c.org,
+                "agent": c.agent,
+                "flagged": c.flagged,
+            })
+        })
+        .collect()
+}
+
 /// Each role's list is exactly what that client must have registered: the
 /// three connect callbacks on the connections client, the login callback on
 /// the sign-in client — and on the connections client too while login still
@@ -124,13 +201,18 @@ pub async fn get(
         talaria_api_facades::google::oauth::resolve_origin(origin.as_deref(), &headers, &uri);
     // The admin's OWN account connection — drives the "connect your account"
     // affordance in the panel (offered only once a client resolves).
-    let (clients, conn) = tokio::join!(
+    let (clients, conn, reads) = tokio::join!(
         read_clients(&state, &sb),
-        get_connection_status(&state.pg, &user.id)
+        get_connection_status(&state.pg, &user.id),
+        census_reads(&state, &sb)
     );
     let conn = match conn {
         Ok(c) => c,
         Err(e) => return Ok(internal("[admin/google-client] connection read failed", e)),
+    };
+    let census = match reads {
+        Ok((rows, configured)) => census(rows, &configured, &clients),
+        Err(e) => return Ok(internal("[admin/google-client] census read failed", e)),
     };
     Ok(Json(json!({
         "status": clients.connections,
@@ -141,6 +223,7 @@ pub async fn get(
         "warnings": client_warnings(&clients.connections, &clients.signin, clients.login_enabled),
         "personalConnected": conn.connected,
         "redirectUris": redirect_uris(&origin, clients.signin.configured),
+        "census": census,
     }))
     .into_response())
 }
@@ -192,6 +275,15 @@ pub async fn put(
     if let Err(e) = set_google_client_config(&state.pg, &sb, role, &patch).await {
         // The one refusal is a client id that trims to nothing — a 500.
         return Ok(internal("[admin/google-client] set failed", e));
+    }
+    // A new secret may be the fix for a refusal recorded on this client's
+    // grants: forget those, and let the next refresh ask Google again.
+    if client_secret
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+        && let Err(e) = clear_client_flags(&state.pg, client_id.trim()).await
+    {
+        tracing::error!("[admin/google-client] clearing refusal flags failed: {e}");
     }
     // `after` carries hd only when the body's hd was a string — '' rides,
     // null/absent are dropped.
@@ -374,4 +466,59 @@ pub async fn put_login(
     )
     .await;
     Ok(Json(json!({ "loginEnabled": google_login_enabled(&state.pg, &sb).await })).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client(id: &str, role: ClientRole, source: &'static str) -> GoogleClient {
+        GoogleClient {
+            client_id: id.into(),
+            client_secret: String::new(),
+            hd: None,
+            source,
+            role,
+        }
+    }
+
+    #[test]
+    fn the_census_names_a_shadowed_env_pair_apart_from_the_slots_own_client() {
+        // Connections record conn-a over env pair conn-env; sign-in record
+        // signin-b. `configured_google_clients`' order.
+        let configured = [
+            client("conn-a", ClientRole::Connections, "admin"),
+            client("conn-env", ClientRole::Connections, "env"),
+            client("signin-b", ClientRole::SignIn, "admin"),
+        ];
+        let active = [
+            (ClientRole::Connections, "conn-a", "admin"),
+            (ClientRole::SignIn, "signin-b", "admin"),
+        ];
+        assert_eq!(
+            census_slot("conn-a", &active, &configured),
+            Some(("connections", "admin", false))
+        );
+        assert_eq!(
+            census_slot("signin-b", &active, &configured),
+            Some(("signin", "admin", false))
+        );
+        assert_eq!(
+            census_slot("conn-env", &active, &configured),
+            Some(("connections", "env", true)),
+            "the env pair behind the record refreshes only"
+        );
+        assert_eq!(census_slot("rotated-away", &active, &configured), None);
+        // A sign-in record whose id is also the connections env pair: the
+        // trial list holds it once, under connections — but it is the
+        // sign-in slot's own client, not a shadow.
+        let configured = [
+            client("conn-a", ClientRole::Connections, "admin"),
+            client("signin-b", ClientRole::Connections, "env"),
+        ];
+        assert_eq!(
+            census_slot("signin-b", &active, &configured),
+            Some(("signin", "admin", false))
+        );
+    }
 }

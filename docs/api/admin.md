@@ -426,7 +426,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings, personalConnected, redirectUris}` | 200 | — |
+| GET | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings, personalConnected, redirectUris, census}` | 200 | — |
 | PUT | `admin` | [body](#put-apiadmingoogle-client-body) | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings}` | 200, 400 | audit |
 | DELETE | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings}` | 200, 400 | audit |
 

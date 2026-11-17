@@ -22,6 +22,11 @@
     email: string | null
     connectedAt: string | null
     targets: { driveFolderId: string | null; calendarId: string | null; sendAs: string | null }
+    /** The OAuth client that minted the org grant (null until recorded). */
+    clientId: string | null
+    /** Why the org connection needs a person, else null — the server's
+     *  sentence, Google's words inside it when Google refused the client. */
+    reconnectReason: string | null
   }
 
   // The shared org Google account general fleet agents act as for Drive/Docs.
@@ -128,18 +133,31 @@
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1.5 text-sm font-medium text-fg">
           Shared Drive &amp; Docs
-          {#if data?.connected}<StatusDot status="ok" />{/if}
+          {#if data?.connected}<StatusDot status={data.reconnectReason ? 'warn' : 'ok'} />{/if}
         </div>
         <div class="truncate font-mono text-[11px] text-muted">
           {data?.connected ? `Connected${data.email ? ` as ${data.email}` : ''}` : 'Not connected'}
         </div>
+        {#if data?.connected && data.clientId}
+          <!-- The client the grant refreshes with — the census above counts by it. -->
+          <div class="truncate font-mono text-[10px] text-ink-dim" title="The OAuth client that minted this connection">client {data.clientId}</div>
+        {/if}
       </div>
       {#if data?.connected}
+        {#if data.reconnectReason}
+          <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm' })}>Reconnect</a>
+        {/if}
         <Button variant="danger-outline" size="sm" onclick={() => void disconnect()}>Disconnect</Button>
       {:else}
         <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm' })}>Connect</a>
       {/if}
     </div>
+    {#if data?.connected && data.reconnectReason}
+      <div class="mt-2 flex max-w-prose items-start gap-2 text-xs text-warning">
+        <StatusDot status="warn" class="mt-1" />
+        <span>{data.reconnectReason}</span>
+      </div>
+    {/if}
     {#if revokeNote}<p class="mt-2 max-w-prose text-xs text-muted">{revokeNote}</p>{/if}
     {#if data?.connected}
       <!-- The "can we actually call Google" check — see probeApis above. -->
