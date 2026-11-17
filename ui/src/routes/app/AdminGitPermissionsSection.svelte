@@ -76,7 +76,7 @@
           ? `${r.agentName} now carries ${askedLabel(r)} on ${r.hostName}.`
           : res.status === 'awaiting_github'
             ? `Approved. ${r.agentName}'s ${askedLabel(r)} waits on GitHub: an owner of the account accepts it for the App.`
-            : `Closed. The ticket says so.`
+            : `${r.status === 'awaiting_github' ? 'Closed' : 'Denied'}.${r.ticket ? ' The ticket says so.' : ''}`
       if (note && threadPost[r.id] && r.ticket) {
         try {
           await postNote(r, note)

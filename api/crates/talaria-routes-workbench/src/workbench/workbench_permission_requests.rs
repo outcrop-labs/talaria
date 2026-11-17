@@ -809,6 +809,43 @@ mod tests {
                 ("denied", Some("use the deploy key"))
             );
 
+            // The agent's grants on the host went before the approval: 409,
+            // and nothing written — not the request, not the set.
+            let filing = ask(&state, &a, &model, &task, &[("actions", "write")]).await;
+            let requests::Raised::Filed { id: late, .. } = &filing.permissions[0].raised else {
+                panic!("{filing:?}")
+            };
+            sqlx::query("delete from workbench_repos where agent_id = $1::uuid")
+                .bind(&a)
+                .execute(&state.pg)
+                .await
+                .unwrap();
+            let (status, body) = put_as(
+                &state,
+                &as_decider,
+                json!({ "id": late, "action": "approve" }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("no longer holds a repo")),
+                "{body}"
+            );
+            let still: String = sqlx::query_scalar(
+                "select status from workbench_permission_requests where id = $1::uuid",
+            )
+            .bind(late)
+            .fetch_one(&state.pg)
+            .await
+            .unwrap();
+            assert_eq!(still, "pending");
+            let set = talaria_git_hosts::permissions::host_permissions(&state.pg, &a, &h)
+                .await
+                .unwrap();
+            assert!(!set.contains("actions"), "{set}");
+
             sqlx::query("delete from boards where id = $1::uuid")
                 .bind(&board)
                 .execute(&state.pg)
