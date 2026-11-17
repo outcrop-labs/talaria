@@ -121,7 +121,7 @@ impl GrantCredential {
                 "api": self.api,
             }),
             Credential::HostWide { why } => json!({
-                "narrowing": Narrowing::HostWide(*why).wire(),
+                "narrowing": Narrowing::HostWide(why).wire(),
                 "why": why,
                 "carries": null,
                 "shortfall": null,
