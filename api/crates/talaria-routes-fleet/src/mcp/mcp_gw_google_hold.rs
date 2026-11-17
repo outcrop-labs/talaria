@@ -97,6 +97,46 @@ pub(super) fn arguments_refusal(rpc: &Value) -> Option<&'static str> {
     )
 }
 
+/// The person in the agent's live conversation, when one is streaming (the
+/// REST draft routes' twin: integrations_google_agent_queue's
+/// `streaming_conversation_user`). None when the agent is not mid-turn.
+async fn streaming_conversation_user(
+    pg: &sqlx::PgPool,
+    agent_model: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select c.user_id::text \
+         from messages m join conversations c on c.id = m.conversation_id \
+         where c.agent_model = $1 and m.role = 'assistant' and m.status = 'streaming' \
+           and m.streamed_at > now() - interval '15 minutes' \
+         order by m.streamed_at desc limit 1",
+    )
+    .bind(agent_model)
+    .fetch_optional(pg)
+    .await
+}
+
+/// Why a personal hold must not be queued in this conversation, or None:
+/// the person talking is not the assistant's owner, whose queue the row
+/// would land in. An org-approved row is not a mismatch; no live
+/// conversation is not one either. Pure.
+pub(super) fn owner_conflict(
+    admin_approves: bool,
+    owner: Option<&str>,
+    talking_to: Option<&str>,
+) -> Option<String> {
+    if admin_approves {
+        return None;
+    }
+    let talking_to = talking_to?;
+    match owner {
+        Some(owner) if owner == talking_to => None,
+        _ => Some(
+            "This conversation is not with the assistant's owner, who is the one person who approves its Google calls. Nothing was queued, and nothing was sent to Google's Workspace MCP servers.".into(),
+        ),
+    }
+}
+
 /// The agent's answer for a held call: a normal tool result (not an error)
 /// whose text names the approval id and says it is not done. No
 /// `structuredContent`: the gateway drops a held tool's `outputSchema` from
@@ -196,6 +236,21 @@ pub(super) async fn hold(
         Ok(Some(why)) => return refused(&id, NOT_CONNECTED_CODE, Outcome::NotConnected, why),
         Ok(None) => {}
         Err(e) => return failed_inside("[mcp/google] principal connection read failed", e),
+    }
+    // And the REST draft routes' other one: a personal hold for one person,
+    // asked for in a conversation with another, would wait where the person
+    // asking never sees it.
+    match streaming_conversation_user(pg, agent_model).await {
+        Ok(talking_to) => {
+            if let Some(why) = owner_conflict(
+                principal.is_org,
+                principal.owner_user_id.as_deref(),
+                talking_to.as_deref(),
+            ) {
+                return refused(&id, -32603, Outcome::Error, &why);
+            }
+        }
+        Err(e) => return failed_inside("[mcp/google] conversation owner read failed", e),
     }
 
     let p = g.product;
@@ -365,6 +420,20 @@ mod tests {
         }
         let big = json!({ "body": "x".repeat(MAX_HELD_ARGUMENTS_BYTES) });
         assert!(arguments_refusal(&call(big)).unwrap().contains("too large"));
+    }
+
+    #[test]
+    fn a_personal_hold_queues_only_in_its_owners_conversation() {
+        assert_eq!(owner_conflict(false, Some("u1"), Some("u1")), None);
+        assert_eq!(
+            owner_conflict(false, Some("u1"), None),
+            None,
+            "not mid-turn"
+        );
+        assert!(owner_conflict(false, Some("u1"), Some("u2")).is_some());
+        assert!(owner_conflict(false, None, Some("u2")).is_some());
+        // The org account and an agent identity: an admin approves.
+        assert_eq!(owner_conflict(true, None, Some("anyone")), None);
     }
 
     #[test]

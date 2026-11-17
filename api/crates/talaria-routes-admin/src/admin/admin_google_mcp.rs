@@ -225,7 +225,7 @@ pub async fn post(
     let name = pack::server_name(&p);
     let label = pack::server_label(&p);
     let description = format!(
-        "Google's {} MCP server (Developer Preview). Read-only tools only; each agent acts with its own Google account.",
+        "Google's {} MCP server (Developer Preview). Read-only tools run; every other call waits for a person to approve it. Each agent acts with its own Google account.",
         p.name
     );
     let endpoint = pack::endpoint(&p);

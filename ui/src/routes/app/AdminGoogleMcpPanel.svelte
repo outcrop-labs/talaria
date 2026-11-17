@@ -99,7 +99,8 @@
           : t.pinnedRead
             ? 'On the read list, but Google’s catalog does not mark it read-only now: each call waits for a person.'
             : 'Changes something, or is new: each call waits in the approval queue until a person approves it.'
-  const setPolicy = async (p: Product, t: Tool, value: string) => {
+  const setPolicy = async (p: Product, t: Tool, select: HTMLSelectElement) => {
+    const value = select.value
     const next: Policy | null = value === 'default' ? null : (value as Policy)
     if (next === 'allow' && t.policy !== 'allow') {
       const ok = await confirm({
@@ -109,7 +110,7 @@
         danger: true,
       })
       if (!ok) {
-        await qc.invalidateQueries({ queryKey: ['google-mcp'] })
+        select.value = t.override ?? 'default'
         return
       }
     }
@@ -229,7 +230,7 @@
                             value={t.override ?? 'default'}
                             disabled={busy !== null || t.denyListed}
                             title={t.denyListed ? 'On the owner’s deny list: no override lifts it.' : undefined}
-                            onchange={(e) => void setPolicy(p, t, e.currentTarget.value)}
+                            onchange={(e) => void setPolicy(p, t, e.currentTarget)}
                           >
                             <option value="default">Default ({POLICY_LABEL[t.policy]})</option>
                             <option value="allow">Runs</option>

@@ -187,7 +187,7 @@ pub fn is_google_workspace_mcp_url(raw: &str) -> bool {
 /// one of Google's Workspace MCP servers — one registered before the
 /// custom-URL guard, or under a name the guard did not know then. Nothing is
 /// relayed to it, with or without a credential.
-pub const UNPACKED_ROW_REFUSAL: &str = "This server's address is one of Google's Workspace MCP servers, which run here only through the Google Workspace MCP pack (Admin → Org → Google Workspace MCP, Developer Preview), where each call acts with the agent's own Google connection and only read-only tools run. Nothing was sent to Google's Workspace MCP servers.";
+pub const UNPACKED_ROW_REFUSAL: &str = "This server's address is one of Google's Workspace MCP servers, which run here only through the Google Workspace MCP pack (Admin → Org → Google Workspace MCP, Developer Preview), where each call acts with the agent's own Google connection, read-only tools run and every other call waits for a person to approve it. Nothing was sent to Google's Workspace MCP servers.";
 
 /// The custom-URL form's refusal for a Google Workspace MCP URL.
 pub const CUSTOM_URL_REFUSAL: &str = "Google's Workspace MCP servers are added through the Google Workspace MCP pack (Admin → Org → Google Workspace MCP, Developer Preview), which acts with each agent's own Google connection. Registered here they would take no Google grant, and every call would come back as Google's refusal.";
