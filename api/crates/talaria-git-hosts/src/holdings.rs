@@ -732,12 +732,13 @@ struct Accepted {
     now: PermissionSet,
 }
 
-/// Every agent whose permissions on `host_id` an installation's change just
-/// made effective, recorded: one `workbench.github_permission_activated` row
-/// per agent and installation, naming what became effective and the repos
-/// whose tokens carry it from the next mint. An admin gave it ahead of
-/// GitHub, and an org owner's acceptance on GitHub is a decision of its own:
-/// the row is how the two meet in the trail. `single`: the host uses one
+/// Every agent whose set on `host_id` an installation's change just made
+/// effective, recorded: one `workbench.github_permission_activated` row per
+/// agent and installation, naming what became effective and the repos whose
+/// tokens carry it from the next mint. An admin gave it ahead of GitHub, and
+/// an org owner's acceptance on GitHub is a decision of its own: the row is
+/// how the two meet in the trail. Only sets an admin gave are counted: an
+/// agent on the default was given nothing. `single`: the host uses one
 /// installation, which mints every repo's token; with several, a repo's is
 /// the one on its owner's account. Answers how many rows were written.
 async fn record_activations(
@@ -746,8 +747,8 @@ async fn record_activations(
     single: bool,
     accepted: &[Accepted],
 ) -> usize {
-    let extras = match permissions::all_extras(pg).await {
-        Ok(extras) => extras,
+    let sets = match permissions::agent_sets(pg).await {
+        Ok(sets) => sets,
         Err(e) => {
             tracing::warn!(
                 "[git-hosts] host {host_id} accepted new permissions, and the agents holding them could not be read: {e}"
@@ -756,7 +757,7 @@ async fn record_activations(
         }
     };
     let mut written = 0;
-    for e in extras.iter().filter(|e| e.host_id == host_id) {
+    for e in sets.iter().filter(|e| e.host_id == host_id) {
         for a in accepted {
             let repos: Vec<&String> = e
                 .repos

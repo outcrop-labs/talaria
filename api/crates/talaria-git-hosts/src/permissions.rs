@@ -1,66 +1,81 @@
-// Which GitHub permissions each agent holds on each host, above the base its
-// sandbox token carries: `agent_github_permissions`, one row per (agent,
-// host), the permissions as a `{key: level}` object.
+// Which GitHub permissions each agent's token carries on each host:
+// `agent_github_permissions`, one row per (agent, host), the permissions as a
+// `{key: level}` object.
 //
-// PER AGENT, PER HOST. An admin gives an agent a permission on a host, and it
-// applies to every repository the agent is granted there (`workbench_repos`
-// stays the repo gate and carries no permission). A token is still minted per
-// repository, filed under the agent, so the permission rides on each repo's
-// token and the narrowing of one agent's grant takes back that agent's tokens
-// alone. No row, or `{}`, is the base: `contents: write` and `metadata: read`.
+// THE AGENT'S WHOLE SET, PER HOST. A row is everything the agent's token may
+// carry on that host, not something added to a base: any key GitHub knows,
+// repository and organization keys alike, administration included, narrower
+// or wider than the default. It applies to every repository the agent is
+// granted there (`workbench_repos` stays the repo gate and carries no
+// permission). A token is still minted per repository, filed under the
+// agent, carrying the set met with what the installation holds, so the
+// narrowing of one agent's set takes back that agent's tokens alone. No row
+// is the default, [`DEFAULT_AGENT_PERMISSIONS`]: contents and pull requests
+// to write, metadata to read, what the sandbox carried before sets were per
+// agent.
 //
 // ADMINS ONLY decide (docs/PERMISSIONS.md, "Agent managers"): an agent's
-// managers see what it holds, read-only. The route enforces it; this module
-// writes what the route validated, through two doors only:
+// managers see what it holds, read-only. The route enforces it and checks
+// each key against the adapter's catalog (talaria-github's `CATALOG`: a key
+// and level GitHub knows, nothing more); this module writes what the route
+// validated, through two doors only:
 //   · `set_agent_host_permissions_cas`, the editor's write: from what the
-//     admin read to what they chose, refused when it changed meanwhile, with
-//     its `workbench.github_permissions` audit row in the same transaction
+//     admin read to what they chose (or back to the default), refused when
+//     it changed meanwhile, with its `workbench.github_permissions` audit row
+//     in the same transaction
 //   · `merge_agent_host_permission`, an approval's write (a request names one
-//     permission): raises one key, never lowers it, atomically
+//     permission): raises one key, never lowers it, atomically, starting
+//     from the default when the agent had no row
 // Both take the (agent, host) advisory lock, so neither lands inside the
 // other's read-then-write.
-//
-// WHAT RIDES WHERE is the adapter's catalog (talaria-github's GRANTABLE): a
-// permission git spends (`workflows`) rides on the sandbox's token; one a
-// Talaria tool spends never does. Which keys may be stored at all is that
-// catalog's allowlist, checked by the route before it writes.
 //
 // WHAT IS READ FROM HERE besides the mint: the activation audit the holdings
 // refresh writes when an installation accepts a permission an agent was
 // already given, and the admin alert for agents whose permissions the
 // installation has not accepted (talaria-alerts), both from the record and
-// never from GitHub.
+// never from GitHub, and both about rows an admin set: an agent on the
+// default was given nothing.
 
 use serde_json::{Value, json};
 use sqlx::{PgConnection, PgPool};
 
 use talaria_audit::{AuditEntry, log_audit_in};
 use talaria_git_host_types::{Level, PermissionSet};
-use talaria_github::{BranchProtection, ProtectionState};
+pub use talaria_github::DEFAULT_AGENT_PERMISSIONS;
 
-use crate::Host;
 use crate::holdings::{HostHoldings, InstallationRow};
 
-/// A stored set, or the base when there is none. A set that cannot be read
-/// is the base too (and said): the narrower answer, never a guess.
-fn stored(agent_id: &str, host_id: &str, v: Option<Value>) -> PermissionSet {
-    match v.filter(|v| !v.is_null()) {
-        None => PermissionSet::new(),
-        Some(v) => PermissionSet::from_json(&v).unwrap_or_else(|e| {
-            tracing::warn!(
-                "[git-hosts] agent {agent_id}'s GitHub permissions on {host_id} cannot be read ({e}) — it gets the base"
-            );
-            PermissionSet::new()
-        }),
-    }
+/// The set an agent carries on a host where no admin set one.
+pub fn default_set() -> PermissionSet {
+    PermissionSet::of(DEFAULT_AGENT_PERMISSIONS)
 }
 
-/// What `agent_id` holds on `host_id` above the base. `{}` for none.
-pub async fn host_permissions(
+/// What an agent carries on a host, given its row: the row's set, or the
+/// default when there is none.
+pub fn effective(set: Option<PermissionSet>) -> PermissionSet {
+    set.unwrap_or_else(default_set)
+}
+
+/// A stored set as it was set, or None when there is no row. A set that
+/// cannot be read is an empty one (and said): no token is minted from it,
+/// which is narrower than any guess at what an admin meant.
+fn stored(agent_id: &str, host_id: &str, v: Option<Value>) -> Option<PermissionSet> {
+    let v = v.filter(|v| !v.is_null())?;
+    Some(PermissionSet::from_json(&v).unwrap_or_else(|e| {
+        tracing::warn!(
+            "[git-hosts] agent {agent_id}'s GitHub permissions on {host_id} cannot be read ({e}) — its token asks for nothing until an admin sets them again"
+        );
+        PermissionSet::new()
+    }))
+}
+
+/// The set an admin gave `agent_id` on `host_id`, or None when none did (the
+/// agent carries the default).
+pub async fn set_on_host(
     pg: &PgPool,
     agent_id: &str,
     host_id: &str,
-) -> Result<PermissionSet, String> {
+) -> Result<Option<PermissionSet>, String> {
     let row: Option<Value> = sqlx::query_scalar(
         "select permissions from agent_github_permissions \
          where agent_id = $1::uuid and host_id = $2",
@@ -73,7 +88,16 @@ pub async fn host_permissions(
     Ok(stored(agent_id, host_id, row))
 }
 
-/// One agent's permissions on one host, as the editor reads them.
+/// What `agent_id`'s token may carry on `host_id`: its set, or the default.
+pub async fn host_permissions(
+    pg: &PgPool,
+    agent_id: &str,
+    host_id: &str,
+) -> Result<PermissionSet, String> {
+    Ok(effective(set_on_host(pg, agent_id, host_id).await?))
+}
+
+/// One agent's set on one host, as an admin set it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentHostPermissions {
     pub host_id: String,
@@ -84,7 +108,8 @@ pub struct AgentHostPermissions {
     pub updated_at_ms: i64,
 }
 
-/// Every host's row for `agent_id`, by host.
+/// Every host's row for `agent_id`, by host. A host with no row is one where
+/// the agent carries the default.
 pub async fn agent_permissions(
     pg: &PgPool,
     agent_id: &str,
@@ -101,7 +126,7 @@ pub async fn agent_permissions(
     Ok(rows
         .into_iter()
         .map(|(host_id, permissions, updated_by, updated_at_ms)| {
-            let permissions = stored(agent_id, &host_id, Some(permissions));
+            let permissions = stored(agent_id, &host_id, Some(permissions)).unwrap_or_default();
             AgentHostPermissions {
                 host_id,
                 permissions,
@@ -127,11 +152,11 @@ async fn lock(conn: &mut PgConnection, agent_id: &str, host_id: &str) -> Result<
 /// What a compare-and-set did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cas {
-    /// The permissions are now `to`.
+    /// The agent now carries what was asked.
     Ok,
-    /// They were not `from` when the write came: this is what they are. The
-    /// editor reads again, and nothing was written.
-    Changed(PermissionSet),
+    /// It did not carry `from` when the write came: this is its row now
+    /// (None: the default). The editor reads again, and nothing was written.
+    Changed(Option<PermissionSet>),
 }
 
 /// Who changed an agent's permissions, and what the audit row says beside
@@ -143,14 +168,26 @@ pub struct PermissionsChange<'a> {
     pub user_id: Option<&'a str>,
     /// The agent's name, the audit row's label.
     pub agent_label: &'a str,
-    /// Merged into the row's after-data: what the admin was shown and
-    /// acknowledged (the `workflows` protection states).
+    /// Merged into the row's after-data: what the admin was told beside the
+    /// write.
     pub note: Value,
 }
 
-/// THE EDITOR'S WRITE: set what `agent_id` holds on `host_id` to `to`, if it
-/// is still `from` (what the admin read). `{}` removes the row. The
-/// `workbench.github_permissions` audit row is written in the same
+/// A set as an audit row records it: what the agent carries, and whether
+/// that is the default.
+fn audit_set(host_id: &str, set: Option<&PermissionSet>) -> Value {
+    json!({
+        "host": host_id,
+        "permissions": set.cloned().unwrap_or_else(default_set).to_json(),
+        "default": set.is_none(),
+    })
+}
+
+/// THE EDITOR'S WRITE: set what `agent_id` carries on `host_id` to `to`
+/// (None: back to the default, and the row goes), if it carries `from` now
+/// (what the admin read, the default included). The comparison is of what
+/// the agent carries, so a row equal to the default and no row are one
+/// read. The `workbench.github_permissions` audit row is written in the same
 /// transaction, so a write that landed always has its row. Revoking what a
 /// narrowing took away is the caller's ([`crate::revoke`]), after this
 /// commits.
@@ -159,7 +196,7 @@ pub async fn set_agent_host_permissions_cas(
     agent_id: &str,
     host_id: &str,
     from: &PermissionSet,
-    to: &PermissionSet,
+    to: Option<&PermissionSet>,
     change: &PermissionsChange<'_>,
 ) -> Result<Cas, String> {
     let write = |e: sqlx::Error| format!("agent GitHub permissions write: {e}");
@@ -175,35 +212,38 @@ pub async fn set_agent_host_permissions_cas(
     .await
     .map_err(|e| format!("agent GitHub permissions read: {e}"))?;
     let current = stored(agent_id, host_id, current);
-    if &current != from {
+    if &effective(current.clone()) != from {
         return Ok(Cas::Changed(current));
     }
-    if to.is_empty() {
-        sqlx::query(
-            "delete from agent_github_permissions where agent_id = $1::uuid and host_id = $2",
-        )
-        .bind(agent_id)
-        .bind(host_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(write)?;
-    } else {
-        sqlx::query(
-            "insert into agent_github_permissions (agent_id, host_id, permissions, updated_by) \
-             values ($1::uuid, $2, $3, $4::uuid) \
-             on conflict (agent_id, host_id) do update set \
-               permissions = excluded.permissions, updated_by = excluded.updated_by, \
-               updated_at = now()",
-        )
-        .bind(agent_id)
-        .bind(host_id)
-        .bind(to.to_json())
-        .bind(change.user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(write)?;
+    match to {
+        None => {
+            sqlx::query(
+                "delete from agent_github_permissions where agent_id = $1::uuid and host_id = $2",
+            )
+            .bind(agent_id)
+            .bind(host_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(write)?;
+        }
+        Some(to) => {
+            sqlx::query(
+                "insert into agent_github_permissions (agent_id, host_id, permissions, updated_by) \
+                 values ($1::uuid, $2, $3, $4::uuid) \
+                 on conflict (agent_id, host_id) do update set \
+                   permissions = excluded.permissions, updated_by = excluded.updated_by, \
+                   updated_at = now()",
+            )
+            .bind(agent_id)
+            .bind(host_id)
+            .bind(to.to_json())
+            .bind(change.user_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(write)?;
+        }
     }
-    let mut after = json!({ "host": host_id, "permissions": to.to_json() });
+    let mut after = audit_set(host_id, to);
     if let (Some(after), Some(note)) = (after.as_object_mut(), change.note.as_object()) {
         for (k, v) in note {
             after.insert(k.clone(), v.clone());
@@ -217,7 +257,7 @@ pub async fn set_agent_host_permissions_cas(
             target_type: "agent",
             target_id: Some(agent_id),
             target_label: Some(change.agent_label),
-            before: Some(json!({ "host": host_id, "permissions": current.to_json() })),
+            before: Some(audit_set(host_id, current.as_ref())),
             after: Some(after),
         },
     )
@@ -229,9 +269,11 @@ pub async fn set_agent_host_permissions_cas(
 
 /// AN APPROVAL'S WRITE: give `agent_id` permission `key` at `level` on
 /// `host_id`, in the caller's transaction — one statement, which adds the
-/// key or raises it and never lowers a level the agent already holds. It
-/// answers what the agent holds after. The caller validated the key against
-/// the catalog and writes its own decision's audit row beside it.
+/// key or raises it and never lowers a level the agent already holds. An
+/// agent with no row starts from the default, so an approval adds to what
+/// it carried rather than replacing it. It answers what the agent carries
+/// after. The caller validated the key against the catalog and writes its
+/// own decision's audit row beside it.
 pub async fn merge_agent_host_permission(
     tx: &mut PgConnection,
     agent_id: &str,
@@ -241,9 +283,10 @@ pub async fn merge_agent_host_permission(
     user_id: Option<&str>,
 ) -> Result<PermissionSet, String> {
     lock(tx, agent_id, host_id).await?;
+    let seed = default_set().union(&PermissionSet::of(&[(key, level)]));
     let after: Value = sqlx::query_scalar(
         "insert into agent_github_permissions (agent_id, host_id, permissions, updated_by) \
-         values ($1::uuid, $2, jsonb_build_object($3::text, $4::text), $5::uuid) \
+         values ($1::uuid, $2, $6::jsonb, $5::uuid) \
          on conflict (agent_id, host_id) do update set \
            permissions = agent_github_permissions.permissions || jsonb_build_object($3::text, \
              case when array_position(array['read','write','admin'], \
@@ -259,16 +302,17 @@ pub async fn merge_agent_host_permission(
     .bind(key)
     .bind(level.as_str())
     .bind(user_id)
+    .bind(seed.to_json())
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| format!("agent GitHub permission merge: {e}"))?;
-    Ok(stored(agent_id, host_id, Some(after)))
+    Ok(stored(agent_id, host_id, Some(after)).unwrap_or_default())
 }
 
 /// THE CREDENTIAL DOOR'S RE-CHECK ([`crate::grant_login`]): what `agent_id`
-/// may do on `repo` of `host_id` now. Its permissions on the host, while it
-/// still holds the grant and is an enabled Developer Agent; None when either
-/// went.
+/// may carry on `repo` of `host_id` now. Its set on the host (or the
+/// default), while it still holds the grant and is an enabled Developer
+/// Agent; None when either went.
 pub async fn recheck(
     pg: &PgPool,
     agent_id: &str,
@@ -289,56 +333,17 @@ pub async fn recheck(
     .await
     .map_err(|e| format!("agent grant re-read: {e}"))?;
     Ok(match row {
-        Some((true, permissions)) => Some(stored(agent_id, host_id, permissions)),
+        Some((true, permissions)) => Some(effective(stored(agent_id, host_id, permissions))),
         _ => None,
     })
 }
 
-// ── The `workflows` gate ─────────────────────────────────────────────────────
-
-/// Each of `repos`' default-branch protection on `host`, read concurrently
-/// (talaria-github's `default_branch_protection`, each read bounded), in
-/// `repos`' order. A host that is not GitHub has no answer: empty. A read
-/// that never came back is `unknown`, never left out, so an admin is asked
-/// to acknowledge it like any other repo that is not known to be protected.
-pub async fn default_branch_protections(host: &Host, repos: &[String]) -> Vec<BranchProtection> {
-    let Host::Github(github) = host else {
-        return Vec::new();
-    };
-    let mut reads = tokio::task::JoinSet::new();
-    for repo in repos {
-        let (github, repo) = (github.clone(), repo.clone());
-        reads.spawn(async move { github.default_branch_protection(&repo).await });
-    }
-    let mut read: Vec<BranchProtection> = Vec::new();
-    while let Some(done) = reads.join_next().await {
-        match done {
-            Ok(p) => read.push(p),
-            Err(e) => tracing::warn!("[git-hosts] a default-branch protection read stopped: {e}"),
-        }
-    }
-    repos
-        .iter()
-        .map(|repo| {
-            read.iter()
-                .find(|p| &p.repo == repo)
-                .cloned()
-                .unwrap_or_else(|| BranchProtection {
-                    repo: repo.clone(),
-                    branch: None,
-                    state: ProtectionState::Unknown,
-                    why: "the read stopped before GitHub answered".into(),
-                })
-        })
-        .collect()
-}
-
 // ── What the record says about them ──────────────────────────────────────────
 
-/// One agent's permissions on one host, with the repos it holds there: what
-/// the activation audit and the dormant-permissions alert read.
+/// One agent's set on one host, as an admin set it, with the repos it holds
+/// there: what the activation audit and the dormant-permissions alert read.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeldExtras {
+pub struct AgentSet {
     pub agent_id: String,
     /// The agent's display name.
     pub agent_name: String,
@@ -348,8 +353,9 @@ pub struct HeldExtras {
     pub repos: Vec<String>,
 }
 
-/// Every agent holding anything above the base, on every host.
-pub async fn all_extras(pg: &PgPool) -> Result<Vec<HeldExtras>, String> {
+/// Every set an admin gave an agent, on every host. An agent on the default
+/// is not here: it was given nothing.
+pub async fn agent_sets(pg: &PgPool) -> Result<Vec<AgentSet>, String> {
     let rows: Vec<(String, String, String, Value, Vec<String>)> = sqlx::query_as(
         "select p.agent_id::text, d.display_name, p.host_id, p.permissions, \
                 coalesce(array_agg(w.repo order by w.repo) filter (where w.repo is not null), \
@@ -367,8 +373,8 @@ pub async fn all_extras(pg: &PgPool) -> Result<Vec<HeldExtras>, String> {
     Ok(rows
         .into_iter()
         .map(|(agent_id, agent_name, host_id, permissions, repos)| {
-            let permissions = stored(&agent_id, &host_id, Some(permissions));
-            HeldExtras {
+            let permissions = stored(&agent_id, &host_id, Some(permissions)).unwrap_or_default();
+            AgentSet {
                 agent_id,
                 agent_name,
                 host_id,
@@ -405,8 +411,8 @@ pub fn installation_for_repo<'a>(
         .find(|r| on_account(repo, &r.account))
 }
 
-/// An agent whose permissions on a host the installation its repos are
-/// minted on has not accepted: given in Talaria, carried by no token yet.
+/// An agent whose set on a host names permissions the installation its repos
+/// are minted on has not accepted: given in Talaria, carried by no token yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dormant {
     pub agent_id: String,
@@ -425,9 +431,9 @@ pub struct Dormant {
 /// here: that is the "unknown" alert's, never a dormant grant. An agent with
 /// no repo on the host carries nothing anywhere, so it is not counted
 /// either.
-pub fn dormant_extras(holdings: &[HostHoldings], extras: &[HeldExtras]) -> Vec<Dormant> {
+pub fn dormant(holdings: &[HostHoldings], sets: &[AgentSet]) -> Vec<Dormant> {
     let mut out = Vec::new();
-    for e in extras {
+    for e in sets {
         let Some(h) = holdings.iter().find(|h| h.host.id == e.host_id) else {
             continue;
         };
@@ -458,16 +464,16 @@ pub fn dormant_extras(holdings: &[HostHoldings], extras: &[HeldExtras]) -> Vec<D
     out
 }
 
-/// What of `extras` an installation's change from `before` to `now` made
-/// effective: each permission it lacked before, at the level given, and
-/// holds now.
+/// What of an agent's `set` an installation's change from `before` to `now`
+/// made effective: each permission it lacked before, at the level given,
+/// and holds now.
 pub fn activated(
-    extras: &PermissionSet,
+    set: &PermissionSet,
     before: &PermissionSet,
     now: &PermissionSet,
 ) -> PermissionSet {
-    let still = extras.missing_from(now);
-    extras.missing_from(before).without(|k| still.contains(k))
+    let still = set.missing_from(now);
+    set.missing_from(before).without(|k| still.contains(k))
 }
 
 #[cfg(test)]
@@ -509,8 +515,8 @@ mod tests {
         }
     }
 
-    fn extras(agent: &str, permissions: PermissionSet, repos: &[&str]) -> HeldExtras {
-        HeldExtras {
+    fn agent_set(agent: &str, permissions: PermissionSet, repos: &[&str]) -> AgentSet {
+        AgentSet {
             agent_id: agent.into(),
             agent_name: format!("Agent {agent}"),
             host_id: "github".into(),
@@ -551,14 +557,14 @@ mod tests {
                 row("93", "gamma", None),
             ],
         )];
-        let found = dormant_extras(
+        let found = dormant(
             &h,
             &[
-                extras("a1", wf.clone(), &["acme/site", "beta/app"]),
-                extras("a2", wf.clone(), &["beta/app"]),
-                extras("a3", wf.clone(), &["gamma/x"]),
+                agent_set("a1", wf.clone(), &["acme/site", "beta/app"]),
+                agent_set("a2", wf.clone(), &["beta/app"]),
+                agent_set("a3", wf.clone(), &["gamma/x"]),
                 // Nothing granted on the host: no token carries anything.
-                extras("a4", wf.clone(), &[]),
+                agent_set("a4", wf.clone(), &[]),
             ],
         );
         assert_eq!(found.len(), 1, "{found:?}");
@@ -567,9 +573,9 @@ mod tests {
         assert_eq!(found[0].repos, ["acme/site"]);
         assert_eq!(found[0].host_name, "GitHub");
         // Another host's agent is not this host's.
-        let mut elsewhere = extras("a5", wf, &["acme/site"]);
+        let mut elsewhere = agent_set("a5", wf, &["acme/site"]);
         elsewhere.host_id = "forge".into();
-        assert!(dormant_extras(&h, &[elsewhere]).is_empty());
+        assert!(dormant(&h, &[elsewhere]).is_empty());
     }
 
     #[test]
@@ -587,13 +593,28 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_set_nobody_can_read_is_the_base() {
-        assert!(stored("a", "h", None).is_empty());
-        assert!(stored("a", "h", Some(Value::Null)).is_empty());
-        assert!(stored("a", "h", Some(json!({ "workflows": "sometimes" }))).is_empty());
+    fn no_row_is_the_default_and_a_row_nobody_can_read_is_nothing() {
+        assert_eq!(stored("a", "h", None), None);
+        assert_eq!(stored("a", "h", Some(Value::Null)), None);
+        assert_eq!(effective(None), default_set());
         assert_eq!(
-            stored("a", "h", Some(json!({ "workflows": "write" }))),
-            set(&[("workflows", Level::Write)])
+            default_set(),
+            set(&[
+                ("contents", Level::Write),
+                ("pull_requests", Level::Write),
+                ("metadata", Level::Read),
+            ])
         );
+        assert_eq!(
+            stored("a", "h", Some(json!({ "workflows": "sometimes" }))),
+            Some(PermissionSet::new())
+        );
+        let set_by_admin = set(&[("administration", Level::Write)]);
+        assert_eq!(
+            stored("a", "h", Some(json!({ "administration": "write" }))),
+            Some(set_by_admin.clone())
+        );
+        // A set is the whole set: nothing of the default is added to it.
+        assert_eq!(effective(Some(set_by_admin.clone())), set_by_admin);
     }
 }

@@ -15,14 +15,14 @@
 // per-repo-scoped installation tokens that are never wider than asked (met
 // with what the installation holds, checked when GitHub returns them), the
 // GitHub permission catalog, each agent's sandbox token (filed under the
-// agent, carrying the extras git spends, revoked when the agent's grant
-// narrows), the default-branch protection read the `workflows` grant shows,
-// the repo→installation routing table, the live
-// status and installation listing, repo creation (on the org's own
-// installation, with the default-branch ruleset), and the branch /
-// pull-request reads and writes the workbench drives. Which agent may touch
-// which repo is the registry's grant table, not this crate's: connecting
-// GitHub grants nothing to anyone by itself.
+// agent, carrying the agent's set on the host as far as the installation
+// holds it, revoked when the agent's grant narrows), the repo→installation
+// routing table, the live status and installation listing, repo creation (on
+// the org's own installation, with the default-branch ruleset), and the
+// branch / pull-request reads and writes the workbench drives. Which agent
+// may touch which repo, and with what, is the registry's (its grant table
+// and each agent's permissions), not this crate's: connecting GitHub grants
+// nothing to anyone by itself.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -381,140 +381,167 @@ pub fn app_jwt(app_id: &str, private_key_pem: &str) -> Result<String, String> {
 
 // ── The permission catalog ───────────────────────────────────────────────────
 //
-// GitHub's own names for what an installation token may carry. Two tables and
-// no prefix rule for what may be granted: a key is grantable only when it is
-// listed with its levels in GRANTABLE. The never-list is the one place a
-// prefix counts, because it only ever refuses.
+// GitHub's own names for what an App installation token may carry, the
+// repository keys and the organization keys, each with the levels GitHub
+// takes it at. The catalog is what an agent's permissions on a host are
+// checked against before they are stored: a key it does not list, or a level
+// GitHub does not take that key at, is refused, and anything it lists may be
+// given, administration and the organization keys included. It decides
+// nothing else: what an agent may carry is an admin's choice, per agent and
+// per host (talaria-git-hosts' permissions), and what a token carries is that
+// choice met with what the installation holds. A key GitHub adds is a line
+// here. The user-account keys (`email_addresses`, `profile`, …) are not here:
+// an installation token never carries them.
 
-/// The keys no repo-scoped token Talaria mints may carry, whatever was asked
-/// for and whatever the installation holds: the ones that rewrite who may do
-/// what to a repository or an org, and a user account's own. A mint never
-/// asks for one, and a token GitHub returns carrying one is revoked.
-/// `administration` is here, so it is never grantable, on a token or through
-/// a tool. So is every `organization_*` key ([`never_on_repo_token`]).
-pub const NEVER_ON_REPO_TOKEN: &[&str] = &[
-    "administration",
-    "members",
-    "custom_properties_for_organizations",
-    "enterprise_custom_properties_for_organizations",
-    "repository_creation",
-    "installation_repositories",
-    // The account keys: a user's own data, never a repository's.
-    "email_addresses",
-    "followers",
-    "git_ssh_keys",
-    "gpg_keys",
-    "interaction_limits",
-    "profile",
-    "starring",
-];
-
-/// Whether `key` may never ride on a repo-scoped token: it is listed in
-/// [`NEVER_ON_REPO_TOKEN`], or it is any `organization_*` key.
-pub fn never_on_repo_token(key: &str) -> bool {
-    key.starts_with("organization_") || NEVER_ON_REPO_TOKEN.contains(&key)
-}
-
-/// Who spends a grantable permission: the sandbox's git token, or a Talaria
-/// tool that mints its own token inside the api and never hands it out.
+/// Where a permission applies: one repository, or the organization the App is
+/// installed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpentBy {
-    Token,
-    Tool(&'static str),
+pub enum Scope {
+    Repository,
+    Organization,
 }
 
-/// One permission an admin may grant an agent above the platform's base.
+impl Scope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::Repository => "repository",
+            Scope::Organization => "organization",
+        }
+    }
+}
+
+/// One permission GitHub knows, and the levels it takes it at.
 #[derive(Debug, Clone, Copy)]
-pub struct Grantable {
+pub struct CatalogEntry {
     pub key: &'static str,
-    /// The levels it may be granted at. `workflows`, for one, is write-only.
+    pub scope: Scope,
     pub levels: &'static [Level],
-    pub spent_by: SpentBy,
-    /// The sentence an admin reads before granting it.
-    pub risk: &'static str,
-    /// A grant an admin confirms with the risk sentence in front of them,
-    /// rather than a toggle.
-    pub high_risk: bool,
 }
 
-impl Grantable {
-    /// The catalog entry as a page reads it: `{key, levels, spentBy, tool,
-    /// risk, highRisk}`, `spentBy` being `token` or `tool`.
+impl CatalogEntry {
+    /// The entry as a page reads it: `{key, scope, levels}`.
     pub fn wire(&self) -> Value {
-        let (spent_by, tool) = match self.spent_by {
-            SpentBy::Token => ("token", None),
-            SpentBy::Tool(name) => ("tool", Some(name)),
-        };
         json!({
             "key": self.key,
+            "scope": self.scope.as_str(),
             "levels": self.levels.iter().map(|l| l.as_str()).collect::<Vec<_>>(),
-            "spentBy": spent_by,
-            "tool": tool,
-            "risk": self.risk,
-            "highRisk": self.high_risk,
         })
     }
 }
 
-/// THE ONLY HARD-CODED PERMISSION TABLE: what may be granted above the base,
-/// at which levels, and what spends it. A key nothing spends is a key no
-/// grant may name, so a key arrives here with the surface that spends it:
-/// `workflows` with the per-agent grant (the sandbox's git token carries it),
-/// and each Talaria tool with the keys it spends.
-pub const GRANTABLE: &[Grantable] = &[Grantable {
-    key: "workflows",
-    levels: &[Level::Write],
-    spent_by: SpentBy::Token,
-    risk: "Lets this agent's sandbox change what CI runs. A workflow can reach every credential CI can reach — repo and org secrets, deploy environments, cloud roles, self-hosted runners. Carried by a token the agent's code can read for up to an hour.",
-    high_risk: true,
-}];
+const RW: &[Level] = &[Level::Read, Level::Write];
+const RWA: &[Level] = &[Level::Read, Level::Write, Level::Admin];
+const RO: &[Level] = &[Level::Read];
+const WO: &[Level] = &[Level::Write];
 
-/// The catalog entry that lets `key` be granted at `level`. Err is the
-/// sentence a refusal carries: a key no repo token may carry, a key nothing
-/// spends, or a level the key is not granted at.
-pub fn grantable(key: &str, level: Level) -> Result<&'static Grantable, String> {
-    if never_on_repo_token(key) {
-        return Err(format!(
-            "{key} is never granted to an agent: no repository token Talaria mints may carry it"
-        ));
+const fn repo_key(key: &'static str, levels: &'static [Level]) -> CatalogEntry {
+    CatalogEntry {
+        key,
+        scope: Scope::Repository,
+        levels,
     }
-    let entry = GRANTABLE
-        .iter()
-        .find(|g| g.key == key)
-        .ok_or_else(|| format!("no Talaria surface spends the GitHub permission {key} yet"))?;
+}
+
+const fn org_key(key: &'static str, levels: &'static [Level]) -> CatalogEntry {
+    CatalogEntry {
+        key,
+        scope: Scope::Organization,
+        levels,
+    }
+}
+
+/// Every App permission GitHub documents for an installation token, by key,
+/// repository keys first. `workflows` is write-only, and the project keys and
+/// organization custom properties take `admin`.
+pub const CATALOG: &[CatalogEntry] = &[
+    repo_key("actions", RW),
+    repo_key("administration", RW),
+    repo_key("artifact_metadata", RW),
+    repo_key("attestations", RW),
+    repo_key("checks", RW),
+    repo_key("codespaces", RW),
+    repo_key("contents", RW),
+    repo_key("dependabot_secrets", RW),
+    repo_key("deployments", RW),
+    repo_key("discussions", RW),
+    repo_key("environments", RW),
+    repo_key("issues", RW),
+    repo_key("merge_queues", RW),
+    repo_key("metadata", RW),
+    repo_key("packages", RW),
+    repo_key("pages", RW),
+    repo_key("pull_requests", RW),
+    repo_key("repository_advisories", RW),
+    repo_key("repository_custom_properties", RW),
+    repo_key("repository_hooks", RW),
+    repo_key("repository_projects", RWA),
+    repo_key("secret_scanning_alerts", RW),
+    repo_key("secrets", RW),
+    repo_key("security_events", RW),
+    repo_key("single_file", RW),
+    repo_key("statuses", RW),
+    repo_key("vulnerability_alerts", RW),
+    repo_key("workflows", WO),
+    org_key("custom_properties_for_organizations", RW),
+    org_key("members", RW),
+    org_key("organization_administration", RW),
+    org_key("organization_announcement_banners", RW),
+    org_key("organization_copilot_seat_management", WO),
+    org_key("organization_custom_org_roles", RW),
+    org_key("organization_custom_properties", RWA),
+    org_key("organization_custom_roles", RW),
+    org_key("organization_events", RO),
+    org_key("organization_hooks", RW),
+    org_key("organization_packages", RW),
+    org_key("organization_personal_access_token_requests", RW),
+    org_key("organization_personal_access_tokens", RW),
+    org_key("organization_plan", RO),
+    org_key("organization_projects", RWA),
+    org_key("organization_secrets", RW),
+    org_key("organization_self_hosted_runners", RW),
+    org_key("organization_user_blocking", RW),
+    org_key("team_discussions", RW),
+];
+
+/// The catalog's entry for `key`, when GitHub knows it.
+pub fn catalog_entry(key: &str) -> Option<&'static CatalogEntry> {
+    CATALOG.iter().find(|e| e.key == key)
+}
+
+/// Whether GitHub takes `key` at `level`. Err is the sentence a refusal
+/// carries: a key the catalog does not know, or a level GitHub does not take
+/// it at.
+pub fn known(key: &str, level: Level) -> Result<&'static CatalogEntry, String> {
+    let entry = catalog_entry(key)
+        .ok_or_else(|| format!("{key} is not a GitHub App permission Talaria knows"))?;
     if !entry.levels.contains(&level) {
         let levels: Vec<&str> = entry.levels.iter().map(|l| l.as_str()).collect();
         return Err(format!(
-            "{key} is granted at {} only, not {level}",
+            "GitHub takes {key} at {} only, not {level}",
             levels.join(" or ")
         ));
     }
     Ok(entry)
 }
 
-/// Every key of `extra` may be granted at its level ([`grantable`]): the
-/// allowlist, key by key, that an agent's permissions on a host are checked
-/// against before they are stored. Err is the first refusal's sentence.
-pub fn validate_extras(extra: &PermissionSet) -> Result<(), String> {
-    for (key, level) in extra.iter() {
-        grantable(key, level)?;
+/// Every key of `set` is one GitHub knows, at a level it takes ([`known`]):
+/// the one check an agent's permissions on a host pass before they are
+/// stored. Err is the first refusal's sentence.
+pub fn validate_permissions(set: &PermissionSet) -> Result<(), String> {
+    for (key, level) in set.iter() {
+        known(key, level)?;
     }
     Ok(())
 }
 
-/// The part of an agent's extras the sandbox's git token may carry: each key
-/// [`GRANTABLE`] lists as spent by the token, at a level it may be granted
-/// at. A key a Talaria tool spends never rides on the sandbox's token, and a
-/// key the catalog does not list (a row written before the catalog changed)
-/// is left out, never guessed at.
-pub fn token_spent(extra: &PermissionSet) -> PermissionSet {
-    let mut out = PermissionSet::new();
-    for (key, level) in extra.iter() {
-        if grantable(key, level).is_ok_and(|g| g.spent_by == SpentBy::Token) {
-            out.raise(key, level);
-        }
+/// Whether `key` is an organization's rather than a repository's. A key the
+/// catalog does not know counts as one when it is named like one
+/// (`organization_…`), since GitHub names its new organization keys so.
+pub fn is_organization_key(key: &str) -> bool {
+    match catalog_entry(key) {
+        Some(entry) => entry.scope == Scope::Organization,
+        None => key.starts_with("organization_"),
     }
-    out
 }
 
 // ── The asks ─────────────────────────────────────────────────────────────────
@@ -523,24 +550,25 @@ pub fn token_spent(extra: &PermissionSet) -> PermissionSet {
 /// create, a default-branch read, a compare and a pull-request open or find
 /// need, and nothing an installation might also hold (administration,
 /// workflows, secrets, packages). Talaria spends it inside the api, for the
-/// workbench's own verbs, and never hands it out: the sandbox's git gets
-/// [`SANDBOX_TOKEN_PERMISSIONS`].
+/// workbench's own verbs, and never hands it out: an agent's sandbox gets
+/// its own token, carrying its own set ([`permissions_for`]).
 pub const REPO_TOKEN_PERMISSIONS: &[(&str, Level)] = &[
     ("contents", Level::Write),
     ("pull_requests", Level::Write),
     ("metadata", Level::Read),
 ];
 
-/// The permissions the token the SANDBOX's git is handed asks for: what
-/// `git clone`, `fetch` and `push` spend, and nothing else. The credential
-/// helper hands this token to model-authored code, which can read it for as
-/// long as it lives, so a permission it does not carry is one that code
-/// cannot spend. Pull requests are not here: Talaria opens them itself, from
-/// the api, with [`REPO_TOKEN_PERMISSIONS`] (`finish_job`). The base: an
-/// agent an admin gave `workflows` on the host gets that too
-/// ([`permissions_for`]), and nothing a Talaria tool spends.
-pub const SANDBOX_TOKEN_PERMISSIONS: &[(&str, Level)] =
-    &[("contents", Level::Write), ("metadata", Level::Read)];
+/// What an agent's sandbox token asks for on a host where no admin set the
+/// agent's permissions: push a branch, open and comment on its pull request,
+/// read the repository. It is what the sandbox carried before permissions
+/// were set per agent, so an agent nobody set anything for does what it
+/// always did. An admin may set any other set, narrower or wider
+/// (talaria-git-hosts' permissions).
+pub const DEFAULT_AGENT_PERMISSIONS: &[(&str, Level)] = &[
+    ("contents", Level::Write),
+    ("pull_requests", Level::Write),
+    ("metadata", Level::Read),
+];
 
 /// The permissions a READ-ONLY repo token asks for: a clone or a fetch of the
 /// repository and nothing else. App install and update use it
@@ -549,17 +577,14 @@ pub const SANDBOX_TOKEN_PERMISSIONS: &[(&str, Level)] =
 pub const REPO_READ_PERMISSIONS: &[(&str, Level)] =
     &[("contents", Level::Read), ("metadata", Level::Read)];
 
-/// The permission set a [`RepoAccess`] narrows a token to. `Job` is the
-/// sandbox's git (its only caller is the credential door,
-/// talaria-git-hosts): [`SANDBOX_TOKEN_PERMISSIONS`], never the platform's
-/// set, with the agent's extras that the token spends ([`token_spent`]) and
-/// none that a tool does.
+/// The permission set a [`RepoAccess`] asks a token for. `Job` is an agent's
+/// sandbox (its only caller is the credential door, talaria-git-hosts):
+/// exactly the agent's set on the host, which the mint then meets with what
+/// the installation holds.
 pub fn permissions_for(access: &RepoAccess) -> PermissionSet {
     match access {
         RepoAccess::Read => PermissionSet::of(REPO_READ_PERMISSIONS),
-        RepoAccess::Job { extra, .. } => {
-            PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS).union(&token_spent(extra))
-        }
+        RepoAccess::Job { permissions, .. } => permissions.clone(),
     }
 }
 
@@ -627,8 +652,11 @@ struct CachedToken {
     expires_at: i64,
     /// What GitHub said the token carries.
     carried: PermissionSet,
-    /// What the ask named that the installation did not hold at the mint.
+    /// What the ask named that the installation did not hold at the mint,
+    /// or that GitHub would not put on a repository token.
     shortfall: PermissionSet,
+    /// GitHub's words for what it would not put on the token, when it said.
+    shortfall_why: Option<String>,
     /// The REST origin it was minted on, which is where it is revoked: a
     /// revoke that arrives from another api process names a host and an
     /// agent, never a connection.
@@ -796,7 +824,7 @@ pub enum MintError {
         shortfall: PermissionSet,
     },
     /// GitHub minted a token for something other than what was asked: another
-    /// repository, a key no repo token may carry, or a level above the ask.
+    /// repository, or a key above the level it was asked at.
     /// It was revoked on GitHub (`revoked`, when GitHub confirmed it) and was
     /// never used.
     Overbroad {
@@ -809,11 +837,10 @@ pub enum MintError {
         repo: String,
         shortfall: PermissionSet,
     },
-    /// The ask names nothing a repository token may carry: it is empty, or
-    /// every key in it is one no repo token may carry. An empty permissions
-    /// block is never posted, because GitHub documents only the omitted one
-    /// (a token carrying everything the installation holds), and nothing
-    /// says `{}` is not read the same way.
+    /// The ask names nothing. An empty permissions block is never posted,
+    /// because GitHub documents only the omitted one (a token carrying
+    /// everything the installation holds), and nothing says `{}` is not read
+    /// the same way.
     NothingAsked { repo: String },
     /// The host has several installations, and GitHub says none of the ones
     /// this connection uses covers the repo. `unselected` is the installation
@@ -859,7 +886,7 @@ impl std::fmt::Display for MintError {
             ),
             MintError::NothingAsked { repo } => write!(
                 f,
-                "a token for {repo} was asked for nothing a repository token may carry, so none was asked of GitHub"
+                "a token for {repo} was asked for no permission at all, so none was asked of GitHub"
             ),
             MintError::Unrouted {
                 repo,
@@ -891,8 +918,11 @@ struct Minted {
     token: String,
     /// What GitHub said the token carries.
     carried: PermissionSet,
-    /// What the ask named that the installation does not hold.
+    /// What the ask named that the installation does not hold, or that
+    /// GitHub would not put on a repository token.
     shortfall: PermissionSet,
+    /// GitHub's words for what it would not put on the token, when it said.
+    shortfall_why: Option<String>,
     /// Minted by this call, rather than served from the cache.
     minted: bool,
 }
@@ -908,8 +938,12 @@ pub struct IssuedToken {
     /// What GitHub said the token carries. None for a PAT, which carries
     /// whatever its owner gave it and says nothing about it.
     pub carried: Option<PermissionSet>,
-    /// What the ask named that the installation does not hold.
+    /// What the ask named that the installation does not hold, or that
+    /// GitHub would not put on a repository token.
     pub shortfall: PermissionSet,
+    /// GitHub's words for what it would not put on the token, when it said
+    /// (organization permissions on a repository token).
+    pub shortfall_why: Option<String>,
     /// Minted by this call, rather than served from the cache (or a PAT,
     /// which is never minted).
     pub minted: bool,
@@ -922,6 +956,7 @@ impl std::fmt::Debug for IssuedToken {
             .field("installation", &self.installation)
             .field("carried", &self.carried)
             .field("shortfall", &self.shortfall)
+            .field("shortfall_why", &self.shortfall_why)
             .field("minted", &self.minted)
             .finish()
     }
@@ -940,28 +975,41 @@ impl InstallationWide {
 }
 
 /// The permissions a mint posts for `ask`, and what the ask lacks. The first
-/// is the ask met with what the installation holds, minus every key a repo
-/// token may never carry; the second is each asked key the installation does
-/// not hold at the asked level (never one no repo token may carry: that one
-/// is not asked for at all, so it is no gap an admin should fill). Holdings
-/// unknown: the ask goes unchanged (and GitHub is then the one to refuse it),
-/// and nothing is known to be short.
+/// is the ask met with what the installation holds; the second is each asked
+/// key the installation does not hold at the asked level. Holdings unknown:
+/// the ask goes unchanged (and GitHub is then the one to refuse it), and
+/// nothing is known to be short.
 fn narrow(ask: &PermissionSet, held: Option<&PermissionSet>) -> (PermissionSet, PermissionSet) {
-    let allowed = ask.without(never_on_repo_token);
     match held {
-        Some(held) => (allowed.meet(held), allowed.missing_from(held)),
-        None => (allowed, PermissionSet::new()),
+        Some(held) => (ask.meet(held), ask.missing_from(held)),
+        None => (ask.clone(), PermissionSet::new()),
     }
+}
+
+/// What a mint posts for `ask` once GitHub has refused its organization
+/// keys on a repository token (`org_refused`): the rest of the ask, narrowed
+/// as [`narrow`] does, with every organization key of the ask added to the
+/// shortfall. Not refused: exactly [`narrow`].
+fn plan(
+    ask: &PermissionSet,
+    held: Option<&PermissionSet>,
+    org_refused: bool,
+) -> (PermissionSet, PermissionSet) {
+    if !org_refused {
+        return narrow(ask, held);
+    }
+    let (effective, shortfall) = narrow(&ask.without(is_organization_key), held);
+    let org_keys = ask.without(|k| !is_organization_key(k));
+    (effective, shortfall.union(&org_keys))
 }
 
 /// Check the token GitHub minted against what was posted (`asked`). Refused,
 /// with the reason: a token for anything but exactly `repo` (the selection is
-/// `selected`, with that one repository), and a token that carries a key no
-/// repo token may carry or an asked key above the asked level. Accepted, it
-/// answers what the token carries, and the keys it carries that were not
-/// asked for. `metadata` is implied on every token. What else GitHub implies
-/// is not known yet, so the caller logs any other unasked key rather than
-/// refusing it.
+/// `selected`, with that one repository), and a token that carries an asked
+/// key above the asked level. Accepted, it answers what the token carries,
+/// and the keys it carries that were not asked for. `metadata` is implied on
+/// every token. What else GitHub implies is not known yet, so the caller
+/// logs any other unasked key rather than refusing it.
 fn check_reply(
     repo: &str,
     asked: &PermissionSet,
@@ -996,11 +1044,6 @@ fn check_reply(
         None => return Err("it states no permissions".into()),
     };
     for (key, level) in carried.iter() {
-        if never_on_repo_token(key) {
-            return Err(format!(
-                "it carries {key}:{level}, which no repository token may carry"
-            ));
-        }
         if let Some(asked_level) = asked.get(key)
             && level > asked_level
         {
@@ -1226,130 +1269,6 @@ impl Revocation {
     /// Tokens dropped, revoked or not.
     pub fn total(&self) -> usize {
         self.revoked + self.failed
-    }
-}
-
-// ── A default branch's protection (the `workflows` gate) ─────────────────────
-//
-// `workflows` lets the sandbox change what CI runs. Where the default branch
-// takes a direct push from the App, a workflow change lands where deploys
-// run without a person reading it, so the grant tells an admin which state
-// each repo is in and asks them to acknowledge the ones that are not
-// protected (talaria-git-hosts). Talaria does not set the customer's branch
-// policy: this is a read and a sentence, never a refusal.
-
-/// How long one protection read may take before the repo is `unknown`.
-const PROTECTION_READ_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Whether a push by the App lands on a default branch directly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProtectionState {
-    /// A ruleset requires a pull request, or lets nobody update the branch
-    /// directly.
-    Protected,
-    /// No ruleset rule and no classic protection: a direct App push lands.
-    Unprotected,
-    /// It could not be read, or classic protection is on and its settings
-    /// are not readable without administration.
-    Unknown,
-}
-
-impl ProtectionState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ProtectionState::Protected => "protected",
-            ProtectionState::Unprotected => "unprotected",
-            ProtectionState::Unknown => "unknown",
-        }
-    }
-}
-
-/// One repository's default-branch protection, as
-/// [`Github::default_branch_protection`] read it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchProtection {
-    pub repo: String,
-    /// The default branch, when it could be read.
-    pub branch: Option<String>,
-    pub state: ProtectionState,
-    /// The sentence an admin reads: what was found, or why it is unknown.
-    pub why: String,
-}
-
-impl BranchProtection {
-    /// `{repo, branch, state, why}`, as a page and an audit row read it.
-    pub fn wire(&self) -> Value {
-        json!({
-            "repo": self.repo,
-            "branch": self.branch,
-            "state": self.state.as_str(),
-            "why": self.why,
-        })
-    }
-}
-
-/// The state the two reads add up to (see
-/// [`Github::default_branch_protection`]): `rules` is the branch's ruleset
-/// rules (`GET /repos/{o}/{r}/rules/branches/{b}`, an array), `classic` the
-/// branch (`GET /repos/{o}/{r}/branches/{b}`).
-pub fn protection_of(
-    rules: Result<&Value, &String>,
-    classic: Result<&Value, &String>,
-) -> (ProtectionState, String) {
-    const BYPASS: &str = " (assuming the App is not on its bypass list, which only an administration token can read)";
-    let rule_types: Option<Vec<&str>> = rules.ok().and_then(Value::as_array).map(|rules| {
-        rules
-            .iter()
-            .filter_map(|r| r.get("type").and_then(Value::as_str))
-            .collect()
-    });
-    if let Some(types) = &rule_types {
-        if types.contains(&"pull_request") {
-            return (
-                ProtectionState::Protected,
-                format!("a ruleset requires a pull request{BYPASS}"),
-            );
-        }
-        if types.contains(&"update") {
-            return (
-                ProtectionState::Protected,
-                format!("a ruleset lets nobody update the branch directly{BYPASS}"),
-            );
-        }
-    }
-    let Some(types) = rule_types else {
-        return (
-            ProtectionState::Unknown,
-            match rules {
-                Err(e) => format!("its rulesets could not be read ({e})"),
-                Ok(_) => "its rulesets came back in a shape Talaria cannot read".into(),
-            },
-        );
-    };
-    match classic.map(|b| b.get("protected").and_then(Value::as_bool)) {
-        Ok(Some(false)) => (
-            ProtectionState::Unprotected,
-            if types.is_empty() {
-                "no ruleset and no branch protection: a direct push lands".into()
-            } else {
-                format!(
-                    "its rulesets ({}) require no pull request, and it has no branch protection: a direct push lands",
-                    types.join(", ")
-                )
-            },
-        ),
-        Ok(Some(true)) => (
-            ProtectionState::Unknown,
-            "it has classic branch protection, and whether that requires a pull request is in settings only an administration token can read".into(),
-        ),
-        Ok(None) => (
-            ProtectionState::Unknown,
-            "GitHub did not say whether the branch is protected".into(),
-        ),
-        Err(e) => (
-            ProtectionState::Unknown,
-            format!("the branch could not be read ({e})"),
-        ),
     }
 }
 
@@ -1589,17 +1508,20 @@ impl Github {
     /// sandbox running model-authored code, so:
     ///   1. What the installation holds is read first
     ///      ([`Self::installation_permissions`]).
-    ///   2. The ask is met with it, minus every key a repo token may never
-    ///      carry ([`narrow`]). A token is asked only for what the
-    ///      installation can give, and what it cannot is the shortfall.
-    ///      Holdings unknown: the ask goes as it is. An empty permissions
-    ///      block is never posted: an ask that comes to nothing is refused
-    ///      here, before GitHub sees it.
+    ///   2. The ask is met with it ([`narrow`]). A token is asked only for
+    ///      what the installation can give, and what it cannot is the
+    ///      shortfall. Holdings unknown: the ask goes as it is. An empty
+    ///      permissions block is never posted: an ask that comes to nothing
+    ///      is refused here, before GitHub sees it.
     ///   3. The body always names the one repository and the permissions
     ///      ([`access_tokens_body`]). A refusal is never retried without them:
     ///      that token would carry everything the installation holds. On a
     ///      422 the holdings are read again, once, past the cache, and the
-    ///      mint is retried only if that changes what would be asked.
+    ///      mint is retried if that changes what would be asked. A 422 that
+    ///      does not, on an ask carrying organization keys, is retried once
+    ///      without them ([`plan`]): GitHub may refuse an organization key on
+    ///      a token for one repository, and the agent still gets the rest,
+    ///      with those keys in the shortfall and GitHub's words beside them.
     ///      Otherwise the mint fails with GitHub's own reason and the
     ///      shortfall.
     ///   4. The token GitHub returns is checked ([`check_reply`]). One that is
@@ -1630,43 +1552,46 @@ impl Github {
                 token: hit.token.clone(),
                 carried: hit.carried.clone(),
                 shortfall: hit.shortfall.clone(),
+                shortfall_why: hit.shortfall_why.clone(),
                 minted: false,
             });
         }
 
-        let never: Vec<&str> = ask
-            .iter()
-            .map(|(k, _)| k)
-            .filter(|k| never_on_repo_token(k))
-            .collect();
-        if !never.is_empty() {
-            tracing::warn!(
-                "[github] a token for {repo} was asked to carry {} — no repository token may, so it is not asked for",
-                never.join(", ")
-            );
-        }
-        // An ask that names nothing a repo token may carry is never posted:
-        // its permissions block would be `{}`, and GitHub documents only what
-        // a missing block means (everything the installation holds).
-        let allowed = ask.without(never_on_repo_token);
-        if allowed.is_empty() {
+        // An ask that names nothing is never posted: its permissions block
+        // would be `{}`, and GitHub documents only what a missing block means
+        // (everything the installation holds).
+        if ask.is_empty() {
             return Err(MintError::NothingAsked {
                 repo: repo.to_string(),
             });
         }
         let jwt = self.app_jwt().map_err(MintError::Other)?;
         let base = self.api();
-        let held = self.known_holdings(installation_id, false).await;
+        let mut held = self.known_holdings(installation_id, false).await;
         let (mut effective, mut shortfall) = narrow(ask, held.as_ref());
         // Nothing worth a token: what the installation would give is nothing
         // at all, or at most the metadata every token carries anyway.
         let beyond_metadata = |s: &PermissionSet| !s.without(|k| k == "metadata").is_empty();
         let mut refreshed = false;
+        // GitHub's words when it refused the ask's organization keys on a
+        // token for one repository: the rest is asked without them.
+        let mut org_refused: Option<String> = None;
         let reply: Value = loop {
-            if effective.is_empty() || (beyond_metadata(&allowed) && !beyond_metadata(&effective)) {
-                return Err(MintError::NothingHeld {
-                    repo: repo.to_string(),
-                    shortfall,
+            if effective.is_empty() || (beyond_metadata(ask) && !beyond_metadata(&effective)) {
+                return Err(match &org_refused {
+                    // Nothing but organization keys was worth asking for,
+                    // and GitHub refused those: its own words say why, and
+                    // the shortfall is what the installation lacks besides.
+                    Some(message) => MintError::Refused {
+                        repo: repo.to_string(),
+                        status: 422,
+                        message: message.clone(),
+                        shortfall: shortfall.without(is_organization_key),
+                    },
+                    None => MintError::NothingHeld {
+                        repo: repo.to_string(),
+                        shortfall,
+                    },
                 });
             }
             let res = http()
@@ -1695,13 +1620,13 @@ impl Github {
                 // changed since they were read: read them once more, and ask
                 // again only if that changes what would be asked.
                 refreshed = true;
-                let held = self.known_holdings(installation_id, true).await;
+                held = self.known_holdings(installation_id, true).await;
                 // The registry's record said the same, so it may be out of
                 // date too: it is refreshed, and this mint does not wait.
                 if let Some(store) = &self.holdings_store {
                     store.refused(&self.host_id, installation_id);
                 }
-                let (next, next_shortfall) = narrow(ask, held.as_ref());
+                let (next, next_shortfall) = plan(ask, held.as_ref(), org_refused.is_some());
                 shortfall = next_shortfall;
                 if next != effective {
                     tracing::warn!(
@@ -1712,11 +1637,35 @@ impl Github {
                     continue;
                 }
             }
+            if status == 422
+                && org_refused.is_none()
+                && effective.iter().any(|(k, _)| is_organization_key(k))
+            {
+                // GitHub may not put an organization permission on a token
+                // for one repository. The agent still gets the rest: the
+                // organization keys go to the shortfall, with GitHub's own
+                // words, and the credential is never failed over them.
+                let message = github_message(&text);
+                let (next, next_shortfall) = plan(ask, held.as_ref(), true);
+                tracing::warn!(
+                    "[github] a token for {repo} on installation {installation_id} carrying organization permissions was refused (422: {message}) — asking again without them, for {next}"
+                );
+                org_refused = Some(message);
+                effective = next;
+                shortfall = next_shortfall;
+                continue;
+            }
             return Err(MintError::Refused {
                 repo: repo.to_string(),
                 status,
                 message: github_message(&text),
-                shortfall,
+                // Organization keys GitHub already refused are not a gap
+                // in what the installation holds.
+                shortfall: if org_refused.is_some() {
+                    shortfall.without(is_organization_key)
+                } else {
+                    shortfall
+                },
             });
         };
 
@@ -1758,6 +1707,7 @@ impl Github {
                 expires_at: expires_at_of(&reply),
                 carried: carried.clone(),
                 shortfall: shortfall.clone(),
+                shortfall_why: org_refused.clone(),
                 api: base.clone(),
             },
         );
@@ -1765,6 +1715,7 @@ impl Github {
             token,
             carried,
             shortfall,
+            shortfall_why: org_refused,
             minted: true,
         })
     }
@@ -1835,6 +1786,7 @@ impl Github {
                     .and_then(|p| PermissionSet::from_json(p).ok())
                     .unwrap_or_default(),
                 shortfall: PermissionSet::new(),
+                shortfall_why: None,
                 api: self.api(),
             },
         );
@@ -1911,6 +1863,7 @@ impl Github {
                 installation: None,
                 carried: None,
                 shortfall: PermissionSet::new(),
+                shortfall_why: None,
                 minted: false,
             }));
         }
@@ -1923,10 +1876,15 @@ impl Github {
             .await?;
         if minted.minted && !minted.shortfall.is_empty() {
             tracing::warn!(
-                "[github] the token for {repo} carries {} — installation {installation_id} of host {} does not hold {}, so it was not asked for",
+                "[github] the token for {repo} carries {} — installation {installation_id} of host {} does not hold {}, or GitHub would not put it on a repository token{}",
                 minted.carried,
                 self.host_id,
-                minted.shortfall
+                minted.shortfall,
+                minted
+                    .shortfall_why
+                    .as_deref()
+                    .map(|why| format!(" (GitHub: {why})"))
+                    .unwrap_or_default()
             );
         }
         Ok(Some(IssuedToken {
@@ -1934,6 +1892,7 @@ impl Github {
             installation: Some(installation_id),
             carried: Some(minted.carried),
             shortfall: minted.shortfall,
+            shortfall_why: minted.shortfall_why,
             minted: minted.minted,
         }))
     }
@@ -1965,77 +1924,6 @@ impl Github {
             .unwrap()
             .retain(|k, t| !(k.host == self.host_id && t.token == token));
         revoke_installation_token(&self.api(), token).await
-    }
-
-    /// Whether a push by the App lands on `repo`'s default branch directly,
-    /// as far as a repository token can tell ([`BranchProtection`]): what an
-    /// admin reads before giving an agent `workflows` on the repo's host.
-    /// Every read is a GET with a read-only token for the one repository
-    /// (`contents` and `metadata` read), and each is bounded, so a GitHub
-    /// that does not answer makes the state `unknown`, never `unprotected`.
-    ///
-    /// WHICH READS, AND WHY. A token without `administration` (none Talaria
-    /// mints carries it) cannot read a branch's full protection, so the
-    /// answer is put together from the two reads it can make:
-    ///   1. `GET /repos/{o}/{r}/rules/branches/{b}`: every ruleset rule in
-    ///      force on the branch, the repository's and its org's, readable
-    ///      with `metadata`. A `pull_request` rule (a PR is required) or an
-    ///      `update` rule (nobody updates the branch directly) is
-    ///      `protected`. Talaria's own default-branch ruleset blocks only
-    ///      force-push and deletion, which is not.
-    ///   2. `GET /repos/{o}/{r}/branches/{b}`: classic branch protection's
-    ///      `protected` flag. False, with no such ruleset rule, is
-    ///      `unprotected`. True is `unknown`: whether that protection
-    ///      requires a pull request is in settings only an administration
-    ///      token can read.
-    ///
-    /// A ruleset's bypass list is unreadable without administration too, so
-    /// `protected` assumes the App is not on it, and says so.
-    pub async fn default_branch_protection(&self, repo: &str) -> BranchProtection {
-        let unknown = |branch: Option<String>, why: String| BranchProtection {
-            repo: repo.to_string(),
-            branch,
-            state: ProtectionState::Unknown,
-            why,
-        };
-        let token = match tokio::time::timeout(
-            PROTECTION_READ_TIMEOUT,
-            self.token_or_err(repo, REPO_READ_PERMISSIONS),
-        )
-        .await
-        {
-            Ok(Ok(t)) => t,
-            Ok(Err(e)) => return unknown(None, format!("no token could read it ({e})")),
-            Err(_) => return unknown(None, "GitHub did not answer in time".into()),
-        };
-        let api = self.api();
-        let read = |path: String| {
-            let (api, token) = (api.clone(), token.clone());
-            async move {
-                tokio::time::timeout(
-                    PROTECTION_READ_TIMEOUT,
-                    gh_json(&api, &path, &token, "GET", None),
-                )
-                .await
-                .unwrap_or_else(|_| Err("GitHub did not answer in time".into()))
-            }
-        };
-        let branch = match read(format!("/repos/{repo}")).await {
-            Ok(v) => match v.get("default_branch").and_then(Value::as_str) {
-                Some(b) => b.to_string(),
-                None => return unknown(None, "GitHub named no default branch".into()),
-            },
-            Err(e) => return unknown(None, format!("the repository could not be read ({e})")),
-        };
-        let rules = read(format!("/repos/{repo}/rules/branches/{}", enc(&branch))).await;
-        let classic = read(format!("/repos/{repo}/branches/{}", enc(&branch))).await;
-        let (state, why) = protection_of(rules.as_ref(), classic.as_ref());
-        BranchProtection {
-            repo: repo.to_string(),
-            branch: Some(branch),
-            state,
-            why,
-        }
     }
 
     /// Repos the connection can reach — the union across all selected
@@ -2424,8 +2312,8 @@ async fn create_repo_in(
             other => return Err(other.refusal(org).unwrap_or_default()),
         };
     // Installation-wide: creating the repository and writing its ruleset need
-    // Administration, which no repo token may carry, on a repository that does
-    // not exist yet.
+    // the organization's Administration, on a repository that does not exist
+    // yet, so no token for one repository could do it.
     let wide = gh_conn
         .installation_token_unscoped(&installation, &format!("creating {org}/{name}"))
         .await?;
@@ -2906,9 +2794,10 @@ impl GitHost for Github {
         }
     }
 
-    /// The token for `repo`, narrowed to `access` ([`permissions_for`]) and
-    /// filed under the agent a `Job` is for, so one agent's narrowing
-    /// revokes that agent's tokens alone.
+    /// The token for `repo`, narrowed to `access` ([`permissions_for`]: for
+    /// a `Job`, the agent's whole set on the host) and filed under the agent
+    /// a `Job` is for, so one agent's narrowing revokes that agent's tokens
+    /// alone.
     async fn repo_login(
         &self,
         repo: &str,
@@ -2926,6 +2815,7 @@ impl GitHost for Github {
                 installation: issued.installation,
                 carried: issued.carried,
                 shortfall: issued.shortfall,
+                shortfall_why: issued.shortfall_why,
                 minted: issued.minted,
             }))
     }
@@ -3110,67 +3000,44 @@ mod tests {
         let v: Value = serde_json::from_str(&body).expect("valid JSON");
         let perms = v["permissions"].as_object().unwrap();
         assert!(perms.values().all(|p| p == "read"), "{perms:?}");
-        assert_eq!(
-            permissions_for(&job("a-1", PermissionSet::new())),
-            PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS)
-        );
     }
 
-    /// A sandbox's ask for agent `agent`, with the extras an admin gave it.
-    fn job(agent: &str, extra: PermissionSet) -> RepoAccess {
+    /// A sandbox's ask for agent `agent`, with the set an admin gave it on
+    /// the host (or the default).
+    fn job(agent: &str, permissions: PermissionSet) -> RepoAccess {
         RepoAccess::Job {
             agent_id: agent.into(),
-            extra,
+            permissions,
         }
     }
 
-    /// The sandbox's token: what git spends, and nothing a pull request
-    /// needs. Talaria opens pull requests itself, from the api.
+    fn default_set() -> PermissionSet {
+        PermissionSet::of(DEFAULT_AGENT_PERMISSIONS)
+    }
+
+    /// An agent nobody set anything for asks for what the sandbox always
+    /// carried: contents and pull requests to write, metadata to read.
     #[test]
-    fn the_sandbox_token_asks_for_contents_and_metadata_and_nothing_else() {
+    fn the_default_job_asks_for_contents_pull_requests_and_metadata() {
         assert_eq!(
-            access_tokens_body(
-                "acme/widgets",
-                &permissions_for(&job("a-1", PermissionSet::new()))
-            ),
-            r#"{"repositories":["widgets"],"permissions":{"contents":"write","metadata":"read"}}"#
-        );
-        let sandbox = PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS);
-        for key in ["pull_requests", "workflows", "administration", "checks"] {
-            assert!(!sandbox.contains(key), "{key}");
-        }
-        // The platform's own verbs keep what opening a pull request needs.
-        assert_eq!(
-            PermissionSet::of(REPO_TOKEN_PERMISSIONS).get("pull_requests"),
-            Some(Level::Write)
+            access_tokens_body("acme/widgets", &permissions_for(&job("a-1", default_set()))),
+            r#"{"repositories":["widgets"],"permissions":{"contents":"write","metadata":"read","pull_requests":"write"}}"#
         );
     }
 
-    /// The extras that ride on the sandbox's token are the ones git spends:
-    /// workflows, at write. A key a tool spends, a key nothing spends, and a
-    /// key no repo token may carry never do.
+    /// A job asks for the agent's whole set, whatever it names: no key is
+    /// held back and none is added.
     #[test]
-    fn a_job_ask_carries_the_token_spent_extras_and_never_a_tools() {
-        let extra = PermissionSet::of(&[
-            ("workflows", Level::Write),
-            ("secrets", Level::Write),
+    fn a_job_asks_for_exactly_the_agents_set() {
+        let set = PermissionSet::of(&[
             ("administration", Level::Write),
-            ("actions", Level::Read),
+            ("secrets", Level::Write),
+            ("workflows", Level::Write),
+            ("organization_secrets", Level::Read),
         ]);
-        assert_eq!(
-            token_spent(&extra),
-            PermissionSet::of(&[("workflows", Level::Write)])
-        );
-        assert_eq!(
-            permissions_for(&job("a-1", extra)),
-            PermissionSet::of(&[
-                ("contents", Level::Write),
-                ("metadata", Level::Read),
-                ("workflows", Level::Write),
-            ])
-        );
-        // A level the catalog does not grant is left out, never rounded.
-        assert!(token_spent(&PermissionSet::of(&[("workflows", Level::Admin)])).is_empty());
+        assert_eq!(permissions_for(&job("a-1", set.clone())), set);
+        let narrow = PermissionSet::of(&[("contents", Level::Read)]);
+        assert_eq!(permissions_for(&job("a-1", narrow.clone())), narrow);
     }
 
     #[test]
@@ -3187,70 +3054,107 @@ mod tests {
         assert_ne!(hashed_token("ghs_a"), hashed_token("ghs_b"));
     }
 
+    /// The catalog takes any key GitHub knows at a level GitHub takes it at,
+    /// repository and organization keys alike, and nothing else.
     #[test]
-    fn administration_is_never_grantable_and_nothing_is_that_nothing_spends() {
-        for key in [
-            "administration",
-            "members",
-            "organization_secrets",
-            "organization_administration",
-            "profile",
+    fn the_catalog_knows_githubs_keys_and_levels_and_nothing_else() {
+        for (key, level) in [
+            ("administration", Level::Write),
+            ("secrets", Level::Write),
+            ("workflows", Level::Write),
+            ("organization_secrets", Level::Read),
+            ("members", Level::Write),
+            ("repository_projects", Level::Admin),
         ] {
-            assert!(never_on_repo_token(key), "{key}");
-            let why = grantable(key, Level::Write).expect_err(key);
-            assert!(why.contains("never granted"), "{why}");
+            known(key, level).unwrap_or_else(|e| panic!("{key}: {e}"));
         }
-        for key in [
-            "contents",
-            "metadata",
-            "workflows",
-            "secrets",
-            "pull_requests",
-        ] {
-            assert!(!never_on_repo_token(key), "{key}");
+        let why = known("workflows", Level::Read).expect_err("write only");
+        assert!(why.contains("write only"), "{why}");
+        let why = known("contents", Level::Admin).expect_err("read or write");
+        assert!(why.contains("read or write only"), "{why}");
+        for key in ["profile", "email_addresses", "everything", ""] {
+            let why = known(key, Level::Read).expect_err(key);
+            assert!(why.contains("not a GitHub App permission"), "{why}");
         }
-        // The sandbox's git token spends workflows, at write and no other
-        // level; a key no surface spends is granted to nobody.
-        let entry = grantable("workflows", Level::Write).expect("workflows is grantable");
-        assert_eq!(entry.spent_by, SpentBy::Token);
-        assert!(entry.high_risk && entry.risk.contains("change what CI runs"));
-        let why = grantable("workflows", Level::Read).expect_err("write only");
-        assert!(why.contains("granted at write only"), "{why}");
-        for key in ["secrets", "actions", "statuses", "pull_requests"] {
-            let why = grantable(key, Level::Write).expect_err(key);
-            assert!(why.contains("no Talaria surface spends"), "{why}");
-        }
-        assert_eq!(
-            entry.wire(),
-            json!({
-                "key": "workflows",
-                "levels": ["write"],
-                "spentBy": "token",
-                "tool": null,
-                "risk": entry.risk,
-                "highRisk": true,
-            })
-        );
-        assert!(validate_extras(&PermissionSet::of(&[("workflows", Level::Write)])).is_ok());
         assert!(
-            validate_extras(&PermissionSet::of(&[
-                ("workflows", Level::Write),
-                ("administration", Level::Read),
+            validate_permissions(&PermissionSet::of(&[
+                ("administration", Level::Write),
+                ("organization_secrets", Level::Read),
+            ]))
+            .is_ok()
+        );
+        assert!(
+            validate_permissions(&PermissionSet::of(&[
+                ("contents", Level::Write),
+                ("sudo", Level::Write),
             ]))
             .is_err()
         );
-        for entry in GRANTABLE {
-            assert!(!never_on_repo_token(entry.key), "{}", entry.key);
-            assert!(!entry.levels.is_empty(), "{}", entry.key);
+        // Organization keys, by the catalog, and by name for a key it does
+        // not know yet.
+        for key in ["members", "organization_secrets", "team_discussions"] {
+            assert!(is_organization_key(key), "{key}");
         }
-        // None of the platform's own asks names a key no repo token may carry.
+        for key in ["contents", "administration", "secrets"] {
+            assert!(!is_organization_key(key), "{key}");
+        }
+        assert!(is_organization_key("organization_something_new"));
+        // Every entry is takeable at some level, and named once.
+        let mut keys: Vec<&str> = CATALOG.iter().map(|e| e.key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), CATALOG.len());
+        assert!(CATALOG.iter().all(|e| !e.levels.is_empty()));
+        assert_eq!(
+            catalog_entry("workflows").unwrap().wire(),
+            json!({ "key": "workflows", "scope": "repository", "levels": ["write"] })
+        );
+        // Every set the platform asks for is one GitHub knows.
         for ask in [
             REPO_TOKEN_PERMISSIONS,
             REPO_READ_PERMISSIONS,
             PR_STATUS_PERMISSIONS,
+            DEFAULT_AGENT_PERMISSIONS,
         ] {
-            assert!(ask.iter().all(|(k, _)| !never_on_repo_token(k)), "{ask:?}");
+            assert!(
+                validate_permissions(&PermissionSet::of(ask)).is_ok(),
+                "{ask:?}"
+            );
         }
+    }
+
+    #[test]
+    fn a_refused_organization_key_is_left_out_and_counted_short() {
+        let ask = PermissionSet::of(&[
+            ("contents", Level::Write),
+            ("organization_secrets", Level::Read),
+            ("members", Level::Read),
+        ]);
+        let held = PermissionSet::of(&[
+            ("contents", Level::Write),
+            ("organization_secrets", Level::Read),
+            ("metadata", Level::Read),
+        ]);
+        assert_eq!(
+            plan(&ask, Some(&held), false),
+            (
+                PermissionSet::of(&[
+                    ("contents", Level::Write),
+                    ("organization_secrets", Level::Read),
+                ]),
+                PermissionSet::of(&[("members", Level::Read)]),
+            )
+        );
+        assert_eq!(
+            plan(&ask, Some(&held), true),
+            (
+                PermissionSet::of(&[("contents", Level::Write)]),
+                PermissionSet::of(&[
+                    ("members", Level::Read),
+                    ("organization_secrets", Level::Read),
+                ]),
+            )
+        );
     }
 
     #[test]
@@ -4006,9 +3910,9 @@ mod tests {
     #[tokio::test]
     async fn an_ask_for_nothing_is_never_posted() {
         // The holdings of 91091 cannot be read, so nothing narrows an ask on
-        // its way to GitHub. An empty ask, or one of keys no repo token may
-        // carry, would go out as `{}`, and what GitHub mints for that is not
-        // documented: it is refused before GitHub sees it.
+        // its way to GitHub. An empty ask would go out as `{}`, and what
+        // GitHub mints for that is not documented: it is refused before
+        // GitHub sees it.
         let sb = test_box();
         let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
             ("GET", "/app/installations/91091") => (503, r#"{"message":"unavailable"}"#.into()),
@@ -4028,25 +3932,18 @@ mod tests {
         })
         .await;
         let conn = app_conn(&base, &["91091"], &sb);
-        for ask in [
-            PermissionSet::new(),
-            PermissionSet::of(&[("administration", Level::Write)]),
-        ] {
-            let err = conn
-                .installation_token("91091", "acme/widgets", &ask, None)
-                .await
-                .err()
-                .expect("nothing to ask for");
-            assert!(matches!(err, MintError::NothingAsked { .. }), "{err}");
-            let said = conn
-                .token("acme/widgets", &ask)
-                .await
-                .expect_err("nothing to ask for");
-            assert!(
-                said.contains("asked for nothing a repository token may carry"),
-                "{said}"
-            );
-        }
+        let ask = PermissionSet::new();
+        let err = conn
+            .installation_token("91091", "acme/widgets", &ask, None)
+            .await
+            .err()
+            .expect("nothing to ask for");
+        assert!(matches!(err, MintError::NothingAsked { .. }), "{err}");
+        let said = conn
+            .token("acme/widgets", &ask)
+            .await
+            .expect_err("nothing to ask for");
+        assert!(said.contains("asked for no permission at all"), "{said}");
         // Holdings known: an ask the installation holds none of (and without
         // the metadata it always holds) narrows to nothing, and is refused
         // with what it lacks rather than posted as `{}`.
@@ -4086,7 +3983,7 @@ mod tests {
                     json!({ "contents": "write", "pull_requests": "write", "administration": "write", "metadata": "read" }),
                 ),
             ),
-            // A key no repo token may carry.
+            // Administration asked to read, and carried to write.
             ("POST", "/app/installations/91041/access_tokens") if req.body.contains("\"admin-leak\"") => (
                 201,
                 minted(
@@ -4108,12 +4005,15 @@ mod tests {
         let err = conn
             .token(
                 "acme/admin-leak",
-                &PermissionSet::of(REPO_TOKEN_PERMISSIONS),
+                &PermissionSet::of(REPO_TOKEN_PERMISSIONS)
+                    .union(&PermissionSet::of(&[("administration", Level::Read)])),
             )
             .await
             .expect_err("revoked");
         assert!(
-            err.contains("administration:write") && err.contains("it was revoked"),
+            err.contains("administration:write")
+                && err.contains("above the read")
+                && err.contains("it was revoked"),
             "{err}"
         );
         let err = conn
@@ -4313,10 +4213,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_sandbox_login_posts_contents_and_metadata_even_when_the_installation_holds_more() {
-        // The installation holds pull requests and workflows too. The
-        // sandbox's git is asked a token for what a push spends and no more,
-        // and the second ask is the cached token, said to be one.
+    async fn the_default_sandbox_login_posts_the_default_even_when_the_installation_holds_more() {
+        // The installation holds workflows and administration too. An agent
+        // nobody set anything for is asked a token for the default (contents
+        // and pull requests to write, metadata to read) and no more, and the
+        // second ask is the cached token, said to be one.
         let sb = test_box();
         let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
             ("GET", "/app/installations/91091") => (
@@ -4327,24 +4228,21 @@ mod tests {
                         "contents": "write",
                         "pull_requests": "write",
                         "workflows": "write",
+                        "administration": "write",
                         "metadata": "read",
                     }),
                 ),
             ),
             ("POST", "/app/installations/91091/access_tokens") => (
                 201,
-                minted(
-                    "tok-sandbox",
-                    "acme/widgets",
-                    json!({ "contents": "write", "metadata": "read" }),
-                ),
+                minted("tok-sandbox", "acme/widgets", posted_permissions(req)),
             ),
             _ => (500, "{}".into()),
         })
         .await;
         let conn = app_conn(&base, &["91091"], &sb);
         let issued = conn
-            .repo_login("acme/widgets", &job("a-91091", PermissionSet::new()))
+            .repo_login("acme/widgets", &job("a-91091", default_set()))
             .await
             .expect("minted")
             .expect("a login");
@@ -4369,26 +4267,19 @@ mod tests {
         assert_eq!(mints.len(), 1);
         assert_eq!(
             posted_permissions(&mints[0]),
-            json!({ "contents": "write", "metadata": "read" }),
-            "no pull_requests, no workflows: {}",
+            json!({ "contents": "write", "metadata": "read", "pull_requests": "write" }),
+            "no workflows, no administration: {}",
             mints[0].body
         );
         let again = conn
-            .issue(
-                "acme/widgets",
-                &PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS),
-                Some("a-91091"),
-            )
+            .issue("acme/widgets", &default_set(), Some("a-91091"))
             .await
             .expect("served")
             .expect("a token");
         assert_eq!(again.token, "tok-sandbox");
         assert!(!again.minted, "the second ask is the cached token");
         assert_eq!(again.installation.as_deref(), Some("91091"));
-        assert_eq!(
-            again.carried,
-            Some(PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS))
-        );
+        assert_eq!(again.carried, Some(default_set()));
         assert!(again.shortfall.is_empty());
         assert_eq!(
             calls(
@@ -4414,10 +4305,7 @@ mod tests {
         let conn = Github::new("gh-test-pat", GITHUB_WEB, None, &cfg.to_auth(), sb);
         assert_eq!(conn.narrowing(), Narrowing::HostWide(PAT_HOST_WIDE));
         let issued = conn
-            .issue_token(
-                "acme/widgets",
-                &PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS),
-            )
+            .issue_token("acme/widgets", &default_set())
             .await
             .expect("no call is made")
             .expect("the pat");
@@ -4434,6 +4322,7 @@ mod tests {
                     installation: None,
                     carried: None,
                     shortfall: PermissionSet::new(),
+                    shortfall_why: None,
                     minted: false,
                 }
             )
@@ -4441,7 +4330,7 @@ mod tests {
             "Debug never prints the token"
         );
         let login = conn
-            .repo_login("acme/widgets", &job("a-1", PermissionSet::new()))
+            .repo_login("acme/widgets", &job("a-1", default_set()))
             .await
             .expect("no call is made")
             .expect("the pat");
@@ -4476,23 +4365,36 @@ mod tests {
         .await
     }
 
+    /// The full set rides on the agent's token: administration, secrets,
+    /// workflows and an organization key all go to GitHub as the agent was
+    /// given them, met with what the installation holds, and what it does
+    /// not hold is the shortfall.
     #[tokio::test]
-    async fn a_jobs_token_carries_workflows_when_granted_and_never_a_key_a_tool_spends() {
+    async fn a_jobs_token_asks_for_the_agents_whole_set_met_with_what_is_held() {
         let sb = test_box();
         let (base, seen) = minting_github(
             "91201",
             json!({
                 "contents": "write",
-                "workflows": "write",
+                "administration": "write",
                 "secrets": "write",
+                "workflows": "write",
+                "organization_secrets": "read",
                 "metadata": "read",
             }),
         )
         .await;
         let conn = app_conn(&base, &["91201"], &sb);
-        let extra = PermissionSet::of(&[("workflows", Level::Write), ("secrets", Level::Write)]);
+        let set = PermissionSet::of(&[
+            ("administration", Level::Write),
+            ("secrets", Level::Write),
+            ("workflows", Level::Write),
+            ("organization_secrets", Level::Read),
+            // Not held: asked of nobody, and said.
+            ("actions", Level::Write),
+        ]);
         let issued = conn
-            .repo_login("acme/widgets", &job("a-wf", extra))
+            .repo_login("acme/widgets", &job("a-full", set))
             .await
             .expect("minted")
             .expect("a login");
@@ -4504,18 +4406,132 @@ mod tests {
         .into_iter()
         .map(posted_permissions)
         .collect::<Vec<_>>();
+        let carried = json!({
+            "administration": "write",
+            "organization_secrets": "read",
+            "secrets": "write",
+            "workflows": "write",
+        });
+        assert_eq!(posted, [carried.clone()]);
+        assert_eq!(issued.carried.map(|c| c.to_json()), Some(carried));
         assert_eq!(
-            posted,
-            [json!({ "contents": "write", "metadata": "read", "workflows": "write" })],
-            "secrets is a tool's, never the sandbox's"
+            issued.shortfall,
+            PermissionSet::of(&[("actions", Level::Write)])
         );
+        assert_eq!(issued.shortfall_why, None);
+    }
+
+    /// GitHub may refuse organization keys on a token for one repository.
+    /// The mint asks once more without them: the agent gets the rest, and
+    /// the organization keys are its shortfall, with GitHub's own words.
+    #[tokio::test]
+    async fn organization_keys_github_refuses_on_a_repo_token_are_shortfall_never_a_failure() {
+        let sb = test_box();
+        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
+            ("GET", "/app/installations/91206") => (
+                200,
+                installation(
+                    "91206",
+                    json!({
+                        "contents": "write",
+                        "pull_requests": "write",
+                        "organization_secrets": "read",
+                        "members": "read",
+                        "metadata": "read",
+                    }),
+                ),
+            ),
+            ("POST", "/app/installations/91206/access_tokens")
+                if req.body.contains("organization_secrets") || req.body.contains("members") =>
+            {
+                (
+                    422,
+                    r#"{"message":"Organization permissions cannot be granted to a repository-scoped token."}"#.into(),
+                )
+            }
+            ("POST", "/app/installations/91206/access_tokens") => (
+                201,
+                minted("tok-repo", "acme/widgets", posted_permissions(req)),
+            ),
+            _ => (500, "{}".into()),
+        })
+        .await;
+        let conn = app_conn(&base, &["91206"], &sb);
+        let set = PermissionSet::of(&[
+            ("contents", Level::Write),
+            ("pull_requests", Level::Write),
+            ("organization_secrets", Level::Read),
+            ("members", Level::Read),
+        ]);
+        let issued = conn
+            .repo_login("acme/widgets", &job("a-org", set))
+            .await
+            .expect("the credential is not failed over its organization keys")
+            .expect("a login");
+        assert_eq!(issued.login.password, "tok-repo");
         assert_eq!(
             issued.carried,
             Some(PermissionSet::of(&[
                 ("contents", Level::Write),
-                ("metadata", Level::Read),
-                ("workflows", Level::Write),
+                ("pull_requests", Level::Write),
             ]))
+        );
+        assert_eq!(
+            issued.shortfall,
+            PermissionSet::of(&[
+                ("members", Level::Read),
+                ("organization_secrets", Level::Read)
+            ])
+        );
+        assert_eq!(
+            issued.shortfall_why.as_deref(),
+            Some("Organization permissions cannot be granted to a repository-scoped token.")
+        );
+        let log = seen.lock().unwrap().clone();
+        let mints: Vec<Value> = calls(&log, "POST", "/app/installations/91206/access_tokens")
+            .into_iter()
+            .map(posted_permissions)
+            .collect();
+        assert_eq!(
+            mints,
+            [
+                json!({ "contents": "write", "members": "read", "organization_secrets": "read", "pull_requests": "write" }),
+                json!({ "contents": "write", "pull_requests": "write" }),
+            ],
+            "asked once with them, then once without, never more: {log:?}"
+        );
+        // The cached token says the same.
+        let again = conn
+            .repo_login(
+                "acme/widgets",
+                &job(
+                    "a-org",
+                    PermissionSet::of(&[
+                        ("contents", Level::Write),
+                        ("pull_requests", Level::Write),
+                        ("organization_secrets", Level::Read),
+                        ("members", Level::Read),
+                    ]),
+                ),
+            )
+            .await
+            .expect("served")
+            .expect("a login");
+        assert!(!again.minted);
+        assert_eq!(again.shortfall_why, issued.shortfall_why);
+
+        // An ask of organization keys alone has nothing left: it fails with
+        // GitHub's words, and is asked of GitHub once.
+        let err = conn
+            .token(
+                "acme/widgets",
+                &PermissionSet::of(&[("organization_secrets", Level::Read)]),
+            )
+            .await
+            .expect_err("nothing but what GitHub refused");
+        assert!(
+            err.contains("Organization permissions cannot be granted"),
+            "{err}"
         );
     }
 
@@ -4528,7 +4544,7 @@ mod tests {
         let login = |agent: &'static str| {
             let conn = conn.clone();
             async move {
-                conn.repo_login("acme/widgets", &job(agent, PermissionSet::new()))
+                conn.repo_login("acme/widgets", &job(agent, default_set()))
                     .await
                     .expect("minted")
                     .expect("a login")
@@ -4549,10 +4565,7 @@ mod tests {
         assert_eq!(mints, 2);
         // The platform's own ask on the same repo is neither agent's token.
         let platform = conn
-            .issue_token(
-                "acme/widgets",
-                &PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS),
-            )
+            .issue_token("acme/widgets", &default_set())
             .await
             .expect("minted")
             .expect("a token");
@@ -4610,7 +4623,7 @@ mod tests {
         // The narrowed agent's next ask is a fresh mint; the other agent's is
         // still its cached token.
         let a2 = conn
-            .repo_login("acme/widgets", &job("a-narrow", PermissionSet::new()))
+            .repo_login("acme/widgets", &job("a-narrow", default_set()))
             .await
             .expect("minted")
             .expect("a login");
@@ -4634,7 +4647,7 @@ mod tests {
             minting_github("91204", json!({ "contents": "write", "metadata": "read" })).await;
         let conn = app_conn(&base, &["91204"], &sb);
         let first = conn
-            .repo_login("acme/widgets", &job("a-back", PermissionSet::new()))
+            .repo_login("acme/widgets", &job("a-back", default_set()))
             .await
             .expect("minted")
             .expect("a login");
@@ -4644,97 +4657,12 @@ mod tests {
             format!("Bearer {}", first.login.password)
         );
         let next = conn
-            .repo_login("acme/widgets", &job("a-back", PermissionSet::new()))
+            .repo_login("acme/widgets", &job("a-back", default_set()))
             .await
             .expect("minted")
             .expect("a login");
         assert!(next.minted);
         assert_ne!(next.login.password, first.login.password);
-    }
-
-    #[test]
-    fn a_default_branch_is_protected_only_by_a_rule_that_stops_a_direct_push() {
-        let rules = |types: &[&str]| -> Value {
-            Value::Array(
-                types
-                    .iter()
-                    .map(|t| json!({ "type": t, "ruleset_id": 1 }))
-                    .collect(),
-            )
-        };
-        let branch = |protected: bool| json!({ "name": "main", "protected": protected });
-        let classic_off = branch(false);
-        let classic_on = branch(true);
-
-        let (state, why) = protection_of(Ok(&rules(&["pull_request"])), Ok(&classic_off));
-        assert_eq!(state, ProtectionState::Protected);
-        assert!(why.contains("bypass list"), "{why}");
-        let (state, _) = protection_of(Ok(&rules(&["update"])), Err(&"502".to_string()));
-        assert_eq!(state, ProtectionState::Protected);
-        // Talaria's own ruleset blocks force-push and deletion, not a push.
-        let (state, why) = protection_of(
-            Ok(&rules(&["non_fast_forward", "deletion"])),
-            Ok(&classic_off),
-        );
-        assert_eq!(state, ProtectionState::Unprotected);
-        assert!(why.contains("non_fast_forward, deletion"), "{why}");
-        let (state, _) = protection_of(Ok(&rules(&[])), Ok(&classic_off));
-        assert_eq!(state, ProtectionState::Unprotected);
-        // Classic protection's settings are unreadable without
-        // administration: unknown, never protected.
-        let (state, why) = protection_of(Ok(&rules(&[])), Ok(&classic_on));
-        assert_eq!(state, ProtectionState::Unknown);
-        assert!(why.contains("administration"), "{why}");
-        // A read that failed is unknown, never unprotected.
-        let (state, _) = protection_of(Err(&"403".to_string()), Ok(&classic_off));
-        assert_eq!(state, ProtectionState::Unknown);
-        let (state, _) = protection_of(Ok(&rules(&[])), Err(&"timeout".to_string()));
-        assert_eq!(state, ProtectionState::Unknown);
-    }
-
-    #[tokio::test]
-    async fn the_protection_read_uses_a_read_only_token_and_reads_rules_then_the_branch() {
-        let sb = test_box();
-        let (base, seen) = stub(|req, _| match (req.method.as_str(), req.path.as_str()) {
-            ("GET", "/app/installations/91205") => (
-                200,
-                installation("91205", json!({ "contents": "write", "metadata": "read" })),
-            ),
-            ("POST", "/app/installations/91205/access_tokens") => (
-                201,
-                minted("tok-read", "acme/widgets", posted_permissions(req)),
-            ),
-            ("GET", "/repos/acme/widgets") => {
-                (200, json!({ "default_branch": "trunk" }).to_string())
-            }
-            ("GET", "/repos/acme/widgets/rules/branches/trunk") => (
-                200,
-                json!([{ "type": "deletion" }, { "type": "non_fast_forward" }]).to_string(),
-            ),
-            ("GET", "/repos/acme/widgets/branches/trunk") => (
-                200,
-                json!({ "name": "trunk", "protected": false }).to_string(),
-            ),
-            _ => (500, "{}".into()),
-        })
-        .await;
-        let conn = app_conn(&base, &["91205"], &sb);
-        let read = conn.default_branch_protection("acme/widgets").await;
-        assert_eq!(read.state, ProtectionState::Unprotected, "{read:?}");
-        assert_eq!(read.branch.as_deref(), Some("trunk"));
-        assert_eq!(read.wire()["state"], "unprotected");
-        let seen = seen.lock().unwrap();
-        let posted: Vec<Value> = calls(&seen, "POST", "/app/installations/91205/access_tokens")
-            .into_iter()
-            .map(posted_permissions)
-            .collect();
-        assert_eq!(posted, [json!({ "contents": "read", "metadata": "read" })]);
-        assert!(
-            seen.iter()
-                .filter(|r| r.path.starts_with("/repos/"))
-                .all(|r| r.method == "GET"),
-            "every read is a GET"
-        );
     }
 
     /// A listing GitHub did not answer is an error, never an empty pool: the

@@ -1,28 +1,30 @@
 // /api/workbench/github-permissions/{agentId}. The GitHub permissions one
-// agent holds on each git host above the base its sandbox token carries
-// (talaria-git-hosts' permissions: `agent_github_permissions`). Per agent,
-// per host: what an admin gives here applies to every repo the agent is
-// granted on that host, and rides on each repo's token where git spends it
-// (`workflows`); a permission a Talaria tool spends never does.
+// agent's token carries on each git host (talaria-git-hosts' permissions:
+// `agent_github_permissions`). Per agent, per host, the agent's WHOLE set:
+// any key GitHub knows, repository and organization keys, administration
+// included, applying to every repo the agent is granted on that host, and
+// minted into each repo's token as far as the installation holds it. With no
+// set, the agent carries the default (contents and pull requests to write,
+// metadata to read).
 //
-// GET → each host the agent holds a repo or a permission on: what it holds,
-// what the host's App asks for (from the holdings record, never GitHub), and
-// each granted repo with the installation that mints its token, what that
-// installation accepted, the shortfall, and its default branch's protection;
-// plus the base and the catalog of what may be granted. The agent's managers
-// and fleet readers read it, and `canEdit` says whether this caller writes.
+// GET → each host the agent holds a repo or a set on: what it carries and
+// whether that is the default, each key with whether the installation holds
+// it, what the host's App asks for (from the holdings record, never GitHub),
+// and each granted repo with the installation that mints its token, what
+// that installation accepted and the shortfall; plus the default and the
+// catalog of every key GitHub knows. The agent's managers and fleet readers
+// read it, and `canEdit` says whether this caller writes.
 //
-// PUT {host, from, to, acknowledge?} → ADMIN ONLY: an agent's managers see
-// these read-only (docs/PERMISSIONS.md, "Agent managers"). A compare-and-set:
-// `from` is what the editor read, and a write that finds anything else
-// answers 409 with what is there now. `to` is checked key by key against the
-// catalog's allowlist, and what it adds against what the host's App asks for
-// (unknown is allowed, and said). Adding `workflows` reads each granted
-// repo's default-branch protection, and a repo not known to need a pull
-// request needs `acknowledge: true`, which the audit row records. A host
-// whose token cannot be narrowed (a PAT, Forgejo) takes nothing: its own
-// token decides. Taking anything back revokes the agent's tokens on the host
-// in every api process.
+// PUT {host, from, to} → ADMIN ONLY: an agent's managers see these read-only
+// (docs/PERMISSIONS.md, "Agent managers"). A compare-and-set: `from` is what
+// the editor read (null: the default), and a write that finds anything else
+// answers 409 with what is there now. `to` is the whole new set, each key
+// one GitHub knows at a level it takes (an unknown key or level is a 400,
+// and nothing else is refused), or null to put the agent back on the
+// default. What the App does not ask for yet is said, not refused. A host
+// whose token cannot be narrowed (a PAT, Forgejo) takes no set: its own
+// token decides. Narrowing revokes the agent's tokens on the host in every
+// api process.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -32,17 +34,15 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 
 use talaria_agent_auth::epoch_ms_to_iso;
-use talaria_body::{optional_boolean_member, parse, string_member};
+use talaria_body::{parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_git_hosts::holdings::{InstallationRow, installation_rows, tracked_installations};
 use talaria_git_hosts::permissions::{
-    self, AgentHostPermissions, Cas, PermissionsChange, default_branch_protections,
+    self, AgentHostPermissions, Cas, PermissionsChange, default_set, effective,
     installation_for_repo, set_agent_host_permissions_cas,
 };
-use talaria_git_hosts::{self as hosts, HostKind, HostRow, Narrowing, PermissionSet};
-use talaria_github::{
-    BranchProtection, GRANTABLE, ProtectionState, SANDBOX_TOKEN_PERMISSIONS, validate_extras,
-};
+use talaria_git_hosts::{self as hosts, HostRow, Narrowing, PermissionSet};
+use talaria_github::{CATALOG, Scope, catalog_entry, is_organization_key, validate_permissions};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::{actor_of, require_admin, require_agent_reader};
 use talaria_state::AppState;
@@ -67,27 +67,53 @@ fn app_permissions(selected: &[String], rows: &[InstallationRow]) -> Option<Perm
 }
 
 /// The 409 a write measured from a stale read gets, with what is there now.
-fn changed_since(current: &PermissionSet) -> Response {
+fn changed_since(current: Option<&PermissionSet>) -> Response {
     (
         StatusCode::CONFLICT,
         Json(json!({
             "error": "this agent's GitHub permissions on that host changed since you read them — read them again",
-            "current": current.to_json(),
+            "current": current.cloned().unwrap_or_else(default_set).to_json(),
+            "isDefault": current.is_none(),
         })),
     )
         .into_response()
 }
 
-/// One `{key: level}` member of the body, as a permission set.
-fn permission_member(obj: &Map<String, Value>, key: &str) -> Result<PermissionSet, String> {
+/// One `{key: level}` member of the body, or null for the default. The
+/// member must be there: a write says what it read and what it wants.
+fn permissions_or_default_member(
+    obj: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<PermissionSet>, String> {
     match obj.get(key) {
-        Some(v @ Value::Object(_)) => {
-            PermissionSet::from_json(v).map_err(|e| format!("{key}: {e}"))
-        }
+        Some(Value::Null) => Ok(None),
+        Some(v @ Value::Object(_)) => PermissionSet::from_json(v)
+            .map(Some)
+            .map_err(|e| format!("{key}: {e}")),
         _ => Err(format!(
-            "{key} must be an object of permission → level, like {{\"workflows\": \"write\"}}"
+            "{key} must be an object of permission → level, like {{\"contents\": \"write\"}}, or null for the default"
         )),
     }
+}
+
+/// Where a key applies, as a page reads it.
+fn scope_of(key: &str) -> &'static str {
+    match catalog_entry(key) {
+        Some(entry) => entry.scope.as_str(),
+        None if is_organization_key(key) => Scope::Organization.as_str(),
+        None => Scope::Repository.as_str(),
+    }
+}
+
+/// Whether the installations in `held` (each one's record, None where it was
+/// never read) all hold `key` at `level`: true when every one read does,
+/// false when one read does not, None when none was read.
+fn held_by(held: &[Option<&PermissionSet>], key: &str, level: talaria_git_hosts::Level) -> Value {
+    let known: Vec<&PermissionSet> = held.iter().flatten().copied().collect();
+    if known.is_empty() {
+        return Value::Null;
+    }
+    json!(known.iter().all(|h| h.get(key).is_some_and(|l| l >= level)))
 }
 
 pub async fn get(
@@ -109,7 +135,7 @@ pub async fn get(
             ));
         }
     }
-    let held = match permissions::agent_permissions(&state.pg, &agent_id).await {
+    let sets = match permissions::agent_permissions(&state.pg, &agent_id).await {
         Ok(h) => h,
         Err(e) => return Ok(internal("[workbench/github-permissions] read failed", e)),
     };
@@ -123,7 +149,6 @@ pub async fn get(
         }
     };
     let grants = hosts::granted_repos(&state.pg, &agent_id).await;
-    let sb = state.secretbox().await.unwrap_or_default();
     let mut out: Vec<Value> = Vec::new();
     for row in &rows {
         let repos: Vec<String> = grants
@@ -131,45 +156,57 @@ pub async fn get(
             .filter(|g| g.host_id == row.id)
             .map(|g| g.repo.clone())
             .collect();
-        let mine = held.iter().find(|h| h.host_id == row.id);
+        let mine = sets.iter().find(|h| h.host_id == row.id);
         if repos.is_empty() && mine.is_none() {
             continue;
         }
-        let narrowing = hosts::narrowing_of(row);
-        let protection = if row.kind == HostKind::Github && narrowing == Narrowing::PerRepo {
-            default_branch_protections(&hosts::connect(&state.pg, &sb, row).await, &repos).await
-        } else {
-            Vec::new()
-        };
-        out.push(host_wire(&state.pg, row, narrowing, &repos, mine, &protection).await);
+        out.push(host_wire(&state.pg, row, &repos, mine).await);
     }
     Ok(Json(json!({
         "agentId": agent_id,
         "canEdit": user.role == "admin",
-        "base": PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS).to_json(),
-        "grantable": GRANTABLE.iter().map(|g| g.wire()).collect::<Vec<_>>(),
+        "default": default_set().to_json(),
+        "catalog": CATALOG.iter().map(|e| e.wire()).collect::<Vec<_>>(),
         "hosts": out,
     }))
     .into_response())
 }
 
-/// One host's block of the GET: `protection` is each granted repo's
-/// default-branch read, empty on a host that has none to give.
+/// One host's block of the GET.
 async fn host_wire(
     pg: &sqlx::PgPool,
     row: &HostRow,
-    narrowing: Narrowing,
     repos: &[String],
     mine: Option<&AgentHostPermissions>,
-    protection: &[BranchProtection],
 ) -> Value {
-    let extras = mine.map(|m| m.permissions.clone()).unwrap_or_default();
+    let narrowing = hosts::narrowing_of(row);
+    let base = json!({
+        "host": row.id,
+        "name": row.name,
+        "kind": row.kind.as_str(),
+        "narrowing": narrowing.wire(),
+    });
+    // A host whose own token decides carries no per-agent set: nothing is
+    // claimed about what it carries.
+    if let Narrowing::HostWide(why) = narrowing {
+        let mut block = base;
+        block["hostWide"] = json!(why);
+        block["permissions"] = Value::Null;
+        block["isDefault"] = Value::Null;
+        block["repos"] = json!(
+            repos
+                .iter()
+                .map(|r| json!({ "repo": r }))
+                .collect::<Vec<_>>()
+        );
+        return block;
+    }
+    let set = effective(mine.map(|m| m.permissions.clone()));
     let selected = tracked_installations(row);
     let installations = installation_rows(pg, &row.id).await.unwrap_or_else(|e| {
         tracing::warn!("[workbench/github-permissions] {e}");
         Vec::new()
     });
-    let wants = PermissionSet::of(SANDBOX_TOKEN_PERMISSIONS).union(&extras);
     let repo_wire: Vec<Value> = repos
         .iter()
         .map(|repo| {
@@ -179,26 +216,78 @@ async fn host_wire(
                 "repo": repo,
                 "installation": on.map(|r| r.installation_id.clone()),
                 "held": held.map(PermissionSet::to_json),
-                "shortfall": held.map(|h| wants.missing_from(h).to_json()),
-                "protection": protection.iter().find(|p| &p.repo == repo).map(BranchProtection::wire),
+                "shortfall": held.map(|h| set.missing_from(h).to_json()),
             })
         })
         .collect();
-    json!({
-        "host": row.id,
-        "name": row.name,
-        "kind": row.kind.as_str(),
-        "narrowing": narrowing.wire(),
-        "hostWide": match narrowing {
-            Narrowing::HostWide(why) => Some(why),
-            Narrowing::PerRepo => None,
-        },
-        "permissions": extras.to_json(),
-        "updatedBy": mine.and_then(|m| m.updated_by.clone()),
-        "updatedAt": mine.map(|m| epoch_ms_to_iso(m.updated_at_ms)),
-        "appPermissions": app_permissions(&selected, &installations).map(|a| a.to_json()),
-        "repos": repo_wire,
-    })
+    // Whether "the installation" holds each key: the installations the
+    // agent's repos are minted on, or every one the host uses when it holds
+    // no repo there yet.
+    let minting: Vec<Option<&PermissionSet>> = if repos.is_empty() {
+        installations
+            .iter()
+            .filter(|r| selected.contains(&r.installation_id))
+            .map(|r| r.held.as_ref())
+            .collect()
+    } else {
+        repos
+            .iter()
+            .filter_map(|repo| installation_for_repo(&selected, &installations, repo))
+            .map(|r| r.held.as_ref())
+            .collect()
+    };
+    let keys: Vec<Value> = set
+        .iter()
+        .map(|(key, level)| {
+            json!({
+                "key": key,
+                "level": level.as_str(),
+                "scope": scope_of(key),
+                "held": held_by(&minting, key, level),
+            })
+        })
+        .collect();
+    let mut block = base;
+    block["hostWide"] = Value::Null;
+    block["permissions"] = set.to_json();
+    block["isDefault"] = json!(mine.is_none());
+    block["keys"] = json!(keys);
+    block["updatedBy"] = json!(mine.and_then(|m| m.updated_by.clone()));
+    block["updatedAt"] = json!(mine.map(|m| epoch_ms_to_iso(m.updated_at_ms)));
+    block["appPermissions"] =
+        json!(app_permissions(&selected, &installations).map(|a| a.to_json()));
+    block["repos"] = json!(repo_wire);
+    block
+}
+
+/// What an admin is told beside a write, none of it a refusal: what the
+/// App's registration does not ask for yet (no token carries it until it
+/// does and the account accepts), and that organization keys ride on a
+/// repository token only where GitHub takes them there.
+fn notes_for(row: &HostRow, to: &PermissionSet, app: Option<&PermissionSet>) -> Vec<String> {
+    let mut notes = Vec::new();
+    match app {
+        Some(app) => {
+            let unasked = to.missing_from(app);
+            if !unasked.is_empty() {
+                notes.push(format!(
+                    "the GitHub App on {} does not ask for {unasked} — no token carries it until the App's owner adds it to the App on GitHub and an owner of the account accepts the change",
+                    row.name
+                ));
+            }
+        }
+        None => notes.push(format!(
+            "what the GitHub App on {} asks for is not known yet (Admin → Git hosts → Refresh reads it), so whether its tokens can carry all of this is not known",
+            row.name
+        )),
+    }
+    let org = to.without(|k| !is_organization_key(k));
+    if !org.is_empty() {
+        notes.push(format!(
+            "{org} are organization permissions: they ride on the agent's token for each repository where GitHub takes them on a token for one repository, and where it does not, the token carries the rest and the credential's audit row says which GitHub refused"
+        ));
+    }
+    notes
 }
 
 pub async fn put(
@@ -216,18 +305,31 @@ pub async fn put(
         Ok(h) => h,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let from = match permission_member(obj, "from") {
+    // What the editor read: the agent's set, or null when it is on the
+    // default.
+    let from = match permissions_or_default_member(obj, "from") {
         Ok(p) => p,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let to = match permission_member(obj, "to") {
+    // The whole new set, or null to put the agent back on the default.
+    let to = match permissions_or_default_member(obj, "to") {
         Ok(p) => p,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let acknowledge = match optional_boolean_member(obj, "acknowledge") {
-        Ok(a) => a.unwrap_or(false),
-        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
-    };
+    // The one check a set passes: every key one GitHub knows, at a level it
+    // takes. An empty set would mint nothing at all, which is what removing
+    // the agent's repo grants on the host says.
+    if let Some(to) = &to {
+        if to.is_empty() {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "an empty set gives this agent no token at all — remove its repo grants on the host instead, or send null for the default",
+            ));
+        }
+        if let Err(why) = validate_permissions(to) {
+            return Ok(house_error(StatusCode::BAD_REQUEST, &why));
+        }
+    }
     if let Some(gate) = talaria_params::uuid_gate_404(&agent_id) {
         return Ok(gate);
     }
@@ -251,117 +353,48 @@ pub async fn put(
             ));
         }
     };
-    // A stale read is told so before anything is checked against it: the
-    // gates below are measured from `from`, and an editor that read before
-    // someone else wrote must read again. The write itself compares again,
-    // so a change landing after this read is refused the same way.
-    match permissions::host_permissions(&state.pg, &agent_id, &row.id).await {
-        Ok(current) if current != from => return Ok(changed_since(&current)),
-        Ok(_) => {}
-        Err(e) => return Ok(internal("[workbench/github-permissions] read failed", e)),
-    }
-    // A host whose token cannot be narrowed takes nothing: no grant here
-    // would be enforced, so none is claimed.
-    if !to.is_empty()
-        && let Narrowing::HostWide(why) = hosts::narrowing_of(&row)
-    {
-        return Ok(house_error(StatusCode::BAD_REQUEST, why));
-    }
-    // The allowlist, key by key, each at a level it is granted at.
-    if let Err(why) = validate_extras(&to) {
-        return Ok(house_error(StatusCode::BAD_REQUEST, &why));
-    }
-    let gained = to.missing_from(&from);
-    let mut notes: Vec<String> = Vec::new();
-    // What the App's registration asks for is the ceiling: a permission it
-    // does not ask for is one no installation can accept. The record says;
-    // when it cannot, the grant stands and the answer says so.
-    if !gained.is_empty() {
-        let selected = tracked_installations(&row);
-        let installations = installation_rows(&state.pg, &row.id)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("[workbench/github-permissions] {e}");
-                Vec::new()
-            });
-        match app_permissions(&selected, &installations) {
-            Some(app) => {
-                let lacking = gained.missing_from(&app);
-                if !lacking.is_empty() {
-                    return Ok(house_error(
-                        StatusCode::BAD_REQUEST,
-                        &format!(
-                            "the GitHub App on {} does not ask for {lacking} — the App's owner adds it to the App on GitHub, then an org owner accepts it; Talaria can give an agent only what the App asks for",
-                            row.name
-                        ),
-                    ));
-                }
-            }
-            None => notes.push(format!(
-                "what the GitHub App on {} asks for is not known yet (Admin → Git hosts → Refresh reads it), so whether GitHub will give {gained} is not known",
+    // A host whose token cannot be narrowed takes no set: none would be
+    // enforced, so none is claimed.
+    if let Narrowing::HostWide(why) = hosts::narrowing_of(&row) {
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            &format!(
+                "no per-agent GitHub permissions apply on {}: {why}",
                 row.name
-            )),
-        }
+            ),
+        ));
     }
-    // The `workflows` gate: each granted repo's default branch. Advisory —
-    // Talaria does not set the repository's branch policy — but a repo not
-    // known to need a pull request is granted only with the admin's
-    // acknowledgement, which the audit row keeps.
-    let mut protection: Vec<BranchProtection> = Vec::new();
-    if gained.contains("workflows") {
-        let repos: Vec<String> = hosts::granted_repos(&state.pg, &agent_id)
-            .await
-            .into_iter()
-            .filter(|g| g.host_id == row.id)
-            .map(|g| g.repo)
-            .collect();
-        let sb = state.secretbox().await.unwrap_or_default();
-        protection =
-            default_branch_protections(&hosts::connect(&state.pg, &sb, &row).await, &repos).await;
-        let exposed: Vec<&BranchProtection> = protection
-            .iter()
-            .filter(|p| p.state != ProtectionState::Protected)
-            .collect();
-        if !exposed.is_empty() && !acknowledge {
-            let each: Vec<String> = exposed
-                .iter()
-                .map(|p| format!("{} is {} ({})", p.repo, p.state.as_str(), p.why))
-                .collect();
-            return Ok((
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!(
-                        "workflows lets this agent's sandbox change what CI runs, and on {} a direct push may land on a default branch: {}. Send acknowledge: true to give it anyway",
-                        row.name,
-                        each.join("; ")
-                    ),
-                    "protection": protection.iter().map(BranchProtection::wire).collect::<Vec<_>>(),
-                })),
-            )
-                .into_response());
-        }
-    }
-    let protection_wire: Vec<Value> = protection.iter().map(BranchProtection::wire).collect();
-    let note = json!({
-        "acknowledged": acknowledge
-            && protection.iter().any(|p| p.state != ProtectionState::Protected),
-        "protection": protection_wire,
-        "notes": notes,
-    });
+    let from = effective(from);
+    let to_effective = effective(to.clone());
+    let selected = tracked_installations(&row);
+    let installations = installation_rows(&state.pg, &row.id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("[workbench/github-permissions] {e}");
+            Vec::new()
+        });
+    let notes = notes_for(
+        &row,
+        &to_effective,
+        app_permissions(&selected, &installations).as_ref(),
+    );
     let actor = actor_of(&user);
     let change = PermissionsChange {
         actor: &actor,
         user_id: Some(&user.id),
         agent_label: &agent_label,
-        note,
+        note: json!({ "notes": notes }),
     };
-    match set_agent_host_permissions_cas(&state.pg, &agent_id, &row.id, &from, &to, &change).await {
+    match set_agent_host_permissions_cas(&state.pg, &agent_id, &row.id, &from, to.as_ref(), &change)
+        .await
+    {
         Ok(Cas::Ok) => {}
-        Ok(Cas::Changed(current)) => return Ok(changed_since(&current)),
+        Ok(Cas::Changed(current)) => return Ok(changed_since(current.as_ref())),
         Err(e) => return Ok(internal("[workbench/github-permissions] write failed", e)),
     }
-    // Anything taken back is taken out of every token already handed out.
-    let taken = from.missing_from(&to);
+    // Anything taken back is taken out of every token already handed out. A
+    // widening needs nothing: the next ask is a new set, and a new mint.
+    let taken = from.missing_from(&to_effective);
     if !taken.is_empty() {
         let rt = RealtimeDeps::publish_only(state.redis().await.ok());
         talaria_git_hosts::revoke::revoke_agent_tokens(
@@ -377,8 +410,8 @@ pub async fn put(
     Ok(Json(json!({
         "ok": true,
         "host": row.id,
-        "permissions": to.to_json(),
-        "protection": protection_wire,
+        "permissions": to_effective.to_json(),
+        "isDefault": to.is_none(),
         "notes": notes,
     }))
     .into_response())
@@ -390,18 +423,25 @@ mod tests {
     use talaria_git_hosts::Level;
 
     #[test]
-    fn a_permission_member_is_an_object_of_levels() {
-        let body = json!({ "from": {}, "to": { "workflows": "write" }, "bad": ["workflows"] });
+    fn a_permissions_member_is_an_object_of_levels_or_null_for_the_default() {
+        let body = json!({
+            "from": null,
+            "to": { "administration": "write" },
+            "bad": ["workflows"],
+        });
         let obj = body.as_object().unwrap();
-        assert!(permission_member(obj, "from").unwrap().is_empty());
+        assert_eq!(permissions_or_default_member(obj, "from").unwrap(), None);
         assert_eq!(
-            permission_member(obj, "to").unwrap(),
-            PermissionSet::of(&[("workflows", Level::Write)])
+            permissions_or_default_member(obj, "to").unwrap(),
+            Some(PermissionSet::of(&[("administration", Level::Write)]))
         );
-        assert!(permission_member(obj, "bad").is_err());
-        assert!(permission_member(obj, "missing").is_err());
+        assert!(permissions_or_default_member(obj, "bad").is_err());
+        assert!(
+            permissions_or_default_member(obj, "missing").is_err(),
+            "a write names what it read"
+        );
         let odd = json!({ "to": { "workflows": "sometimes" } });
-        assert!(permission_member(odd.as_object().unwrap(), "to").is_err());
+        assert!(permissions_or_default_member(odd.as_object().unwrap(), "to").is_err());
     }
 
     #[test]
@@ -421,6 +461,26 @@ mod tests {
         assert_eq!(app_permissions(&[], &rows), None);
     }
 
+    #[test]
+    fn a_key_is_held_when_every_installation_read_holds_it() {
+        let a = PermissionSet::of(&[("secrets", Level::Write)]);
+        let b = PermissionSet::of(&[("secrets", Level::Read)]);
+        assert_eq!(held_by(&[Some(&a)], "secrets", Level::Write), json!(true));
+        assert_eq!(
+            held_by(&[Some(&a), Some(&b)], "secrets", Level::Write),
+            json!(false)
+        );
+        assert_eq!(
+            held_by(&[Some(&a), None], "secrets", Level::Write),
+            json!(true)
+        );
+        assert_eq!(held_by(&[None], "secrets", Level::Read), Value::Null);
+        assert_eq!(held_by(&[], "secrets", Level::Read), Value::Null);
+        assert_eq!(scope_of("organization_secrets"), "organization");
+        assert_eq!(scope_of("members"), "organization");
+        assert_eq!(scope_of("administration"), "repository");
+    }
+
     // ── Live-DB: the route end to end ────────────────────────────────────────
     //
     // #[ignore]d (house rule: no service-dependent tests in the default run;
@@ -434,7 +494,7 @@ mod tests {
     mod live {
         use super::super::*;
         use crate::workbench::live_support::{
-            agent, answer, calls, cleanup, github, github_host, person, state, tag,
+            agent, answer, bodies, calls, cleanup, github, github_host, person, state, tag,
         };
 
         async fn put_as(
@@ -457,39 +517,50 @@ mod tests {
 
         #[tokio::test]
         #[ignore = "needs a live database and Redis (DATABASE_URL, REDIS_URL)"]
-        async fn only_an_admin_gives_workflows_and_a_narrowing_takes_the_token_back_everywhere() {
+        async fn an_admin_sets_the_whole_set_and_a_narrowing_takes_the_token_back_everywhere() {
             let state = state().await;
             let t = tag();
             let (admin, as_admin) = person(&state, &t, "admin", "admin").await;
             let (manager, as_manager) = person(&state, &t, "manager", "member").await;
             let a = agent(&state, &t, &manager).await;
+            let b = agent(&state, &format!("{t}b"), &manager).await;
             let (base, log) = github("95001").await;
             let h = github_host(&state, &t, &base, "95001").await;
-            talaria_git_hosts::add_grant(&state.pg, &a, &h, "acme/widgets")
-                .await
-                .unwrap();
-            let give = json!({ "host": h, "from": {}, "to": { "workflows": "write" } });
+            for agent in [&a, &b] {
+                talaria_git_hosts::add_grant(&state.pg, agent, &h, "acme/widgets")
+                    .await
+                    .unwrap();
+            }
+            let full = json!({
+                "administration": "write",
+                "organization_secrets": "read",
+                "secrets": "write",
+                "workflows": "write",
+            });
+            let give = json!({ "host": h, "from": null, "to": full });
 
             // The agent's manager may not: it is an admin's.
             let (status, _) = put_as(&state, &as_manager, &a, give.clone()).await;
             assert_eq!(status, StatusCode::FORBIDDEN);
 
-            // workflows on a repo whose default branch takes a direct push:
-            // not without the admin's acknowledgement, and the answer says
-            // which repo and why.
+            // A key GitHub does not know, or a level it does not take: 400,
+            // and nothing written.
+            for to in [
+                json!({ "sudo": "write" }),
+                json!({ "workflows": "read" }),
+                json!({}),
+            ] {
+                let body = json!({ "host": h, "from": null, "to": to });
+                let (status, body) = put_as(&state, &as_admin, &a, body).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            }
+
+            // The full set, administration and an organization key included:
+            // no gate, no acknowledgement.
             let (status, body) = put_as(&state, &as_admin, &a, give.clone()).await;
-            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-            assert_eq!(body["protection"][0]["repo"], "acme/widgets");
-            assert_eq!(body["protection"][0]["state"], "unprotected");
-            assert!(
-                body["error"].as_str().unwrap().contains("acknowledge"),
-                "{body}"
-            );
-            let mut acknowledged = give.clone();
-            acknowledged["acknowledge"] = json!(true);
-            let (status, body) = put_as(&state, &as_admin, &a, acknowledged).await;
             assert_eq!(status, StatusCode::OK, "{body}");
-            assert_eq!(body["permissions"], json!({ "workflows": "write" }));
+            assert_eq!(body["permissions"], full);
+            assert_eq!(body["isDefault"], false);
             let row: Value = sqlx::query_scalar(
                 "select after from audit_log where action = 'workbench.github_permissions' \
                  and target_id = $1",
@@ -498,40 +569,62 @@ mod tests {
             .fetch_one(&state.pg)
             .await
             .unwrap();
-            assert_eq!(row["acknowledged"], true, "{row}");
+            assert_eq!(row["permissions"], full, "{row}");
+            assert_eq!(row["default"], false, "{row}");
 
-            // A second admin who read before that write: 409, with what is
-            // there now.
+            // A second admin who read the default before that write: 409,
+            // with what is there now.
             let (status, body) = put_as(&state, &as_admin, &a, give.clone()).await;
             assert_eq!(status, StatusCode::CONFLICT, "{body}");
-            assert_eq!(body["current"], json!({ "workflows": "write" }));
-
-            // The allowlist: a key never given, and a level the key is not
-            // given at.
-            for to in [
-                json!({ "administration": "write" }),
-                json!({ "workflows": "read" }),
-            ] {
-                let body = json!({ "host": h, "from": { "workflows": "write" }, "to": to });
-                let (status, _) = put_as(&state, &as_admin, &a, body).await;
-                assert_eq!(status, StatusCode::BAD_REQUEST);
-            }
+            assert_eq!(body["current"], full);
+            assert_eq!(body["isDefault"], false);
 
             // The manager reads it, and may not write.
             let (status, body) =
                 answer(get(State(state.clone()), as_manager.clone(), Path(a.clone())).await).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["canEdit"], false);
-            assert_eq!(body["grantable"][0]["key"], "workflows");
+            assert_eq!(
+                body["default"],
+                json!({ "contents": "write", "metadata": "read", "pull_requests": "write" })
+            );
+            assert!(
+                body["catalog"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e["key"] == "administration")
+            );
             let block = &body["hosts"][0];
             assert_eq!(block["host"], h.as_str());
             assert_eq!(block["narrowing"], "perRepo");
-            assert_eq!(block["permissions"], json!({ "workflows": "write" }));
+            assert_eq!(block["permissions"], full);
+            assert_eq!(block["isDefault"], false);
             assert_eq!(block["repos"][0]["installation"], "95001");
             assert_eq!(block["repos"][0]["shortfall"], json!({}));
-            assert_eq!(block["repos"][0]["protection"]["state"], "unprotected");
+            let key = |k: &str| {
+                block["keys"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|e| e["key"] == k)
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            assert_eq!(key("administration")["held"], true);
+            assert_eq!(key("organization_secrets")["scope"], "organization");
 
-            // The agent's git gets a token carrying workflows.
+            // The other agent is on the default.
+            let (_, body) =
+                answer(get(State(state.clone()), as_admin.clone(), Path(b.clone())).await).await;
+            assert_eq!(body["hosts"][0]["isDefault"], true);
+            assert_eq!(
+                body["hosts"][0]["permissions"],
+                json!({ "contents": "write", "metadata": "read", "pull_requests": "write" })
+            );
+
+            // Each agent's git gets its own token: the set, met with what
+            // the installation holds, and the default.
             let sb = state.secretbox().await.unwrap();
             let row = talaria_git_hosts::get_host(&state.pg, &h)
                 .await
@@ -541,22 +634,38 @@ mod tests {
                 .await
                 .unwrap()
                 .expect("a credential");
+            let other = talaria_git_hosts::grant_login(&state.pg, &sb, &row, "acme/widgets", &b)
+                .await
+                .unwrap()
+                .expect("a credential");
+            assert_ne!(token.login.password, other.login.password);
+            let posted: Vec<Value> = bodies(&log, "POST", "/app/installations/95001/access_tokens")
+                .into_iter()
+                .map(|b| serde_json::from_str::<Value>(&b).unwrap()["permissions"].clone())
+                .collect();
             assert_eq!(
-                token.carried.as_ref().and_then(|c| c.get("workflows")),
-                Some(talaria_git_hosts::Level::Write)
+                posted,
+                [
+                    full.clone(),
+                    json!({ "contents": "write", "metadata": "read", "pull_requests": "write" }),
+                ],
+                "two agents, two mints"
             );
 
-            // Taking it back revokes that token here and tells every process.
+            // Narrowing takes the token back here and tells every process;
+            // the other agent's token is untouched.
             let subscribe = RealtimeDeps::streams_only(&state.cfg.redis_url).subscribe;
             let mut heard = subscribe(talaria_git_hosts::revoke::TOKEN_REVOKE_TOPIC.into()).await;
-            let take = json!({ "host": h, "from": { "workflows": "write" }, "to": {} });
+            let take = json!({ "host": h, "from": full, "to": null });
             let (status, body) = put_as(&state, &as_admin, &a, take).await;
             assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["isDefault"], true);
+            let deleted = calls(&log, "DELETE", "/installation/token");
             assert!(
-                calls(&log, "DELETE", "/installation/token")
-                    .contains(&format!("Bearer {}", token.login.password)),
+                deleted.contains(&format!("Bearer {}", token.login.password)),
                 "the token was revoked on GitHub"
             );
+            assert!(!deleted.contains(&format!("Bearer {}", other.login.password)));
             let message = tokio::time::timeout(std::time::Duration::from_secs(10), heard.recv())
                 .await
                 .expect("the broadcast arrives")
@@ -565,7 +674,7 @@ mod tests {
             assert_eq!(message.agent, a);
             assert_eq!(message.host.as_deref(), Some(h.as_str()));
 
-            cleanup(&state, &[&a], &[&admin, &manager], &[&h]).await;
+            cleanup(&state, &[&a, &b], &[&admin, &manager], &[&h]).await;
         }
     }
 }

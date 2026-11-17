@@ -243,17 +243,16 @@ pub async fn put(
         Ok(new) => new,
         Err(e) => return Ok(house_error(StatusCode::BAD_REQUEST, &e)),
     };
-    // A grant added on a host where the agent holds GitHub permissions
-    // carries them from its first token: the trail says so, as the grants
-    // editor's does.
+    // Every grant is in the trail, as the grants editor's are: a grant added
+    // on a host where an admin set the agent's GitHub permissions carries
+    // that set from its first token, and the row says so.
     if granted {
-        let held = talaria_git_hosts::permissions::host_permissions(&state.pg, &req.1, &row.id)
+        let set = talaria_git_hosts::permissions::set_on_host(&state.pg, &req.1, &row.id)
             .await
             .unwrap_or_default();
         let mut entry = json!({ "host": row.id, "repo": created.full_name, "createdFor": req.0 });
-        if !held.is_empty() {
-            entry["hostPermissions"] = held.to_json();
-            entry["protected"] = json!(protected);
+        if let Some(set) = set {
+            entry["hostPermissions"] = set.to_json();
         }
         let (pg, audit_actor, agent_id) = (state.pg.clone(), actor.clone(), req.1.clone());
         tokio::spawn(async move {

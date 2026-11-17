@@ -4881,16 +4881,18 @@ alter table tasks drop column if exists conversation_id`,
      error text,
      primary key (host_id, installation_id)
    )`,
-  // THE GITHUB PERMISSIONS AN ADMIN GIVES AN AGENT ON A HOST (talaria-git-hosts'
-  // permissions, docs/WORKBENCH.md "Git hosts"). Per agent, per host: the
-  // permissions above the base its sandbox token carries, as `{key: level}`,
+  // THE GITHUB PERMISSIONS AN ADMIN SETS FOR AN AGENT ON A HOST
+  // (talaria-git-hosts' permissions, docs/WORKBENCH.md "Git hosts"). Per
+  // agent, per host: the agent's WHOLE set as `{key: level}` — any key
+  // GitHub's App catalog knows, repository and organization keys alike —
   // applying to every repo the agent is granted on that host (workbench_repos
   // stays the repo gate and carries none). Written by an admin only, through
   // a compare-and-set or an approval's one-key merge; the credential door
-  // mints what git spends of it into the agent's token (`workflows`), and a
-  // narrowing revokes the tokens already handed out. A new table, so
-  // roll-safe: the previous release never reads it, and an agent without a
-  // row gets the base, as it always did.
+  // mints the set, met with what the installation holds, into the agent's
+  // token, and a narrowing revokes the tokens already handed out. No row is
+  // the default (contents and pull requests to write, metadata to read). A
+  // new table, so roll-safe: the previous release never reads it, and an
+  // agent without a row carries what it always did.
   `create table if not exists agent_github_permissions (
      agent_id uuid not null references agent_defs(id) on delete cascade,
      host_id text not null references git_hosts(id) on delete cascade,

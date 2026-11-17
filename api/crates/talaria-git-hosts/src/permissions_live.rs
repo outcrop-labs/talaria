@@ -233,7 +233,7 @@ async fn grant(pg: &PgPool, agent: &str, host: &str, repo: &str) {
     add_grant(pg, agent, host, repo).await.expect("the grant");
 }
 
-/// Set what the agent holds on the host, from what it holds now.
+/// Set what the agent carries on the host, from what it carries now.
 async fn set(pg: &PgPool, agent: &str, host: &str, to: &PermissionSet) {
     let from = permissions::host_permissions(pg, agent, host)
         .await
@@ -245,7 +245,7 @@ async fn set(pg: &PgPool, agent: &str, host: &str, to: &PermissionSet) {
         note: json!({}),
     };
     assert_eq!(
-        permissions::set_agent_host_permissions_cas(pg, agent, host, &from, to, &change)
+        permissions::set_agent_host_permissions_cas(pg, agent, host, &from, Some(to), &change)
             .await
             .expect("the write"),
         Cas::Ok
@@ -295,6 +295,11 @@ fn wf() -> PermissionSet {
     PermissionSet::of(&[("workflows", Level::Write)])
 }
 
+/// The default, and workflows besides.
+fn default_and_wf() -> PermissionSet {
+    permissions::default_set().union(&wf())
+}
+
 #[tokio::test]
 #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
 async fn the_editors_write_is_a_compare_and_set_with_its_audit_row_and_a_merge_only_raises() {
@@ -316,22 +321,34 @@ async fn the_editors_write_is_a_compare_and_set_with_its_audit_row_and_a_merge_o
         agent_label: "Permissions Live",
         note,
     };
-    let none = PermissionSet::new();
+    let default = permissions::default_set();
+    assert_eq!(
+        permissions::host_permissions(&pg, &a, &h).await.unwrap(),
+        default,
+        "no row is the default"
+    );
+    let full = PermissionSet::of(&[
+        ("administration", Level::Write),
+        ("secrets", Level::Write),
+        ("workflows", Level::Write),
+        ("organization_secrets", Level::Read),
+    ]);
 
     let wrote = permissions::set_agent_host_permissions_cas(
         &pg,
         &a,
         &h,
-        &none,
-        &wf(),
-        &change(json!({ "acknowledged": true, "protection": [{ "repo": "acme/widgets", "state": "unprotected" }] })),
+        &default,
+        Some(&full),
+        &change(json!({ "notes": ["a note"] })),
     )
     .await
     .expect("the write");
     assert_eq!(wrote, Cas::Ok);
     assert_eq!(
         permissions::host_permissions(&pg, &a, &h).await.unwrap(),
-        wf()
+        full,
+        "the set is the whole set: nothing of the default is added"
     );
     let rows = permissions::agent_permissions(&pg, &a).await.unwrap();
     assert_eq!(rows.len(), 1);
@@ -339,17 +356,23 @@ async fn the_editors_write_is_a_compare_and_set_with_its_audit_row_and_a_merge_o
     let audit = audit_rows(&pg, "workbench.github_permissions", &a).await;
     assert_eq!(audit.len(), 1, "{audit:?}");
     assert_eq!(audit[0]["host"], h.as_str());
-    assert_eq!(audit[0]["permissions"], json!({ "workflows": "write" }));
-    assert_eq!(audit[0]["acknowledged"], true);
-    assert_eq!(audit[0]["protection"][0]["state"], "unprotected");
+    assert_eq!(audit[0]["permissions"], full.to_json());
+    assert_eq!(audit[0]["default"], false);
+    assert_eq!(audit[0]["notes"], json!(["a note"]));
 
-    // A second editor that read before the first wrote: refused, with what
-    // is there now, and nothing written.
-    let stale =
-        permissions::set_agent_host_permissions_cas(&pg, &a, &h, &none, &none, &change(json!({})))
-            .await
-            .expect("the read");
-    assert_eq!(stale, Cas::Changed(wf()));
+    // A second editor that read the default before the first wrote: refused,
+    // with what is there now, and nothing written.
+    let stale = permissions::set_agent_host_permissions_cas(
+        &pg,
+        &a,
+        &h,
+        &default,
+        Some(&wf()),
+        &change(json!({})),
+    )
+    .await
+    .expect("the read");
+    assert_eq!(stale, Cas::Changed(Some(full.clone())));
     assert_eq!(
         audit_rows(&pg, "workbench.github_permissions", &a)
             .await
@@ -369,7 +392,7 @@ async fn the_editors_write_is_a_compare_and_set_with_its_audit_row_and_a_merge_o
     )
     .await
     .expect("the merge");
-    assert_eq!(after, wf(), "write stays write");
+    assert_eq!(after, full, "write stays write");
     let after = permissions::merge_agent_host_permission(
         &mut tx,
         &a,
@@ -383,7 +406,7 @@ async fn the_editors_write_is_a_compare_and_set_with_its_audit_row_and_a_merge_o
     tx.commit().await.unwrap();
     assert_eq!(
         after,
-        wf().union(&PermissionSet::of(&[("actions", Level::Read)]))
+        full.union(&PermissionSet::of(&[("actions", Level::Read)]))
     );
     // Two merges at once both land.
     let (pg1, pg2, a1, a2, h1, h2) = (
@@ -414,9 +437,9 @@ async fn the_editors_write_is_a_compare_and_set_with_its_audit_row_and_a_merge_o
     assert_eq!(now.get("statuses"), Some(Level::Write));
     assert_eq!(now.get("checks"), Some(Level::Read));
 
-    // Back to the base: the row goes.
+    // Back to the default: the row goes, and the audit row says so.
     assert_eq!(
-        permissions::set_agent_host_permissions_cas(&pg, &a, &h, &now, &none, &change(json!({})))
+        permissions::set_agent_host_permissions_cas(&pg, &a, &h, &now, None, &change(json!({})))
             .await
             .unwrap(),
         Cas::Ok
@@ -427,6 +450,25 @@ async fn the_editors_write_is_a_compare_and_set_with_its_audit_row_and_a_merge_o
             .unwrap()
             .is_empty()
     );
+    let audit = audit_rows(&pg, "workbench.github_permissions", &a).await;
+    assert_eq!(audit.last().unwrap()["default"], true);
+    assert_eq!(audit.last().unwrap()["permissions"], default.to_json());
+
+    // An approval for an agent on the default adds to the default: it never
+    // replaces what the agent carried with the one key.
+    let mut tx = pg.begin().await.unwrap();
+    let after = permissions::merge_agent_host_permission(
+        &mut tx,
+        &a,
+        &h,
+        "workflows",
+        Level::Write,
+        Some(&user),
+    )
+    .await
+    .expect("the merge");
+    tx.commit().await.unwrap();
+    assert_eq!(after, default_and_wf());
 
     sqlx::query("delete from users where id = $1::uuid")
         .bind(&user)
@@ -444,7 +486,8 @@ async fn a_mint_raced_by_a_narrowing_is_revoked_and_minted_again_against_the_gra
     let t = tag();
     let a = agent(&pg, &t).await;
     // The narrowing lands while GitHub is minting: mint 0 finds the agent's
-    // workflows taken back, mint 2 finds its grant gone.
+    // set gone (back to the default, without workflows), mint 2 finds its
+    // grant gone.
     let ids: Arc<Mutex<Option<(String, String)>>> = Arc::default();
     let (hook_pg, hook_ids) = (pg.clone(), ids.clone());
     let hook: Hook = Arc::new(
@@ -479,13 +522,13 @@ async fn a_mint_raced_by_a_narrowing_is_revoked_and_minted_again_against_the_gra
         },
     );
     let held = Arc::new(Mutex::new(
-        json!({ "contents": "write", "workflows": "write", "metadata": "read" }),
+        json!({ "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read" }),
     ));
     let (base, log) = github("94002", held, Some(hook)).await;
     let h = host(&pg, &sb, &t, &base, "94002").await;
     *ids.lock().unwrap() = Some((a.clone(), h.clone()));
     grant(&pg, &a, &h, "acme/widgets").await;
-    set(&pg, &a, &h, &wf()).await;
+    set(&pg, &a, &h, &default_and_wf()).await;
     let row = get_host(&pg, &h).await.unwrap().expect("the host");
 
     let got = grant_login(&pg, &sb, &row, "acme/widgets", &a)
@@ -496,13 +539,13 @@ async fn a_mint_raced_by_a_narrowing_is_revoked_and_minted_again_against_the_gra
     assert_eq!(mints.len(), 2, "{mints:?}");
     assert_eq!(
         posted(&mints[0].1),
-        json!({ "contents": "write", "metadata": "read", "workflows": "write" }),
-        "the first mint carried the grant as it was read"
+        json!({ "contents": "write", "metadata": "read", "pull_requests": "write", "workflows": "write" }),
+        "the first mint carried the set as it was read"
     );
     assert_eq!(
         posted(&mints[1].1),
-        json!({ "contents": "write", "metadata": "read" }),
-        "the second carries the grant as it stands"
+        json!({ "contents": "write", "metadata": "read", "pull_requests": "write" }),
+        "the second carries the default the agent is back on"
     );
     assert_eq!(
         calls(&log, "DELETE", "/installation/token")
@@ -640,8 +683,8 @@ async fn an_installation_accepting_what_an_agent_was_given_writes_its_activation
         .expect("recorded");
     assert_eq!((first.checked, first.activated), (1, 0), "{first:?}");
     let recorded = holdings::recorded_holdings(&pg).await.unwrap();
-    let extras = permissions::all_extras(&pg).await.unwrap();
-    let dormant: Vec<_> = permissions::dormant_extras(&recorded, &extras)
+    let sets = permissions::agent_sets(&pg).await.unwrap();
+    let dormant: Vec<_> = permissions::dormant(&recorded, &sets)
         .into_iter()
         .filter(|d| d.agent_id == a)
         .collect();
@@ -663,9 +706,9 @@ async fn an_installation_accepting_what_an_agent_was_given_writes_its_activation
     assert_eq!(rows[0]["activated"], json!({ "workflows": "write" }));
     assert_eq!(rows[0]["repos"], json!(["acme/widgets"]));
     let recorded = holdings::recorded_holdings(&pg).await.unwrap();
-    let extras = permissions::all_extras(&pg).await.unwrap();
+    let sets = permissions::agent_sets(&pg).await.unwrap();
     assert!(
-        permissions::dormant_extras(&recorded, &extras)
+        permissions::dormant(&recorded, &sets)
             .iter()
             .all(|d| d.agent_id != a),
         "accepted is no longer dormant"

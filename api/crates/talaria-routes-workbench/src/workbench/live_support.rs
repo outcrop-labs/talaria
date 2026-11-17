@@ -142,11 +142,24 @@ pub(crate) async fn answer(res: Result<Response, Response>) -> (StatusCode, Valu
 /// Each request the stub answered: method, path, authorization, body.
 pub(crate) type Log = Arc<Mutex<Vec<(String, String, String, String)>>>;
 
-/// GitHub for installation `inst` of an App, as far as a mint, a revoke,
-/// the repository listing and a default-branch read of `acme/widgets` need:
-/// the installation holds contents, workflows and metadata; each mint
-/// answers `tok-<n>` carrying what was posted; `main` has no ruleset and no
-/// classic protection.
+/// What the stub's App asks for and its installation holds: the default an
+/// agent carries, and the keys the full-set tests give one (administration,
+/// secrets, workflows, an organization key).
+pub(crate) fn held() -> Value {
+    json!({
+        "administration": "write",
+        "contents": "write",
+        "metadata": "read",
+        "organization_secrets": "read",
+        "pull_requests": "write",
+        "secrets": "write",
+        "workflows": "write",
+    })
+}
+
+/// GitHub for installation `inst` of an App, as far as a mint, a revoke and
+/// the repository listing of `acme/widgets` need: the installation holds
+/// [`held`]; each mint answers `tok-<n>` carrying what was posted.
 pub(crate) async fn github(inst: &'static str) -> (String, Log) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -205,7 +218,7 @@ pub(crate) async fn github(inst: &'static str) -> (String, Log) {
                         json!({
                             "id": inst.parse::<i64>().unwrap(),
                             "account": { "login": "acme" },
-                            "permissions": { "contents": "write", "workflows": "write", "metadata": "read" },
+                            "permissions": held(),
                         })
                         .to_string(),
                     ),
@@ -228,14 +241,6 @@ pub(crate) async fn github(inst: &'static str) -> (String, Log) {
                         200,
                         json!({ "repositories": [{ "full_name": "acme/widgets" }] }).to_string(),
                     ),
-                    ("GET", "/repos/acme/widgets") => {
-                        (200, json!({ "default_branch": "main" }).to_string())
-                    }
-                    ("GET", "/repos/acme/widgets/rules/branches/main") => (200, "[]".into()),
-                    ("GET", "/repos/acme/widgets/branches/main") => (
-                        200,
-                        json!({ "name": "main", "protected": false }).to_string(),
-                    ),
                     ("DELETE", "/installation/token") => (204, String::new()),
                     _ => (500, r#"{"message":"unexpected in this test"}"#.to_string()),
                 };
@@ -253,8 +258,7 @@ pub(crate) async fn github(inst: &'static str) -> (String, Log) {
 
 /// A GitHub App host at `api`, connected through installation `inst` with
 /// the App key sealed by this state's secretbox, and a record that says the
-/// App asks for (and the installation holds) contents, workflows and
-/// metadata. Returns its id.
+/// App asks for (and the installation holds) [`held`]. Returns its id.
 pub(crate) async fn github_host(state: &AppState, tag: &str, api: &str, inst: &str) -> String {
     let sb = state.secretbox().await.expect("secretbox loads");
     let pem = include_str!("../../../../tests/it/fixtures/github-jwt-traditional.pem");
@@ -278,7 +282,7 @@ pub(crate) async fn github_host(state: &AppState, tag: &str, api: &str, inst: &s
     .execute(&state.pg)
     .await
     .expect("the host");
-    let all = json!({ "contents": "write", "workflows": "write", "metadata": "read" });
+    let all = held();
     sqlx::query(
         "insert into git_host_installations \
            (host_id, installation_id, account, app_permissions, held, checked_at) \
@@ -299,5 +303,15 @@ pub(crate) fn calls(log: &Log, method: &str, path: &str) -> Vec<String> {
         .iter()
         .filter(|(m, p, _, _)| m == method && p == path)
         .map(|(_, _, auth, _)| auth.clone())
+        .collect()
+}
+
+/// The bodies of each `method` request to `path`, in order.
+pub(crate) fn bodies(log: &Log, method: &str, path: &str) -> Vec<String> {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter(|(m, p, _, _)| m == method && p == path)
+        .map(|(_, _, _, body)| body.clone())
         .collect()
 }

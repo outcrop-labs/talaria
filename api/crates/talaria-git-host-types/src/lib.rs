@@ -85,19 +85,18 @@ impl std::fmt::Debug for Login {
 
 /// What a repo-scoped credential is for. `Read` is a clone's (app install and
 /// update): the repository's contents, read, and nothing that writes. `Job`
-/// is a workbench job's git in the sandbox, for one agent: clone, fetch and
-/// push a branch (Talaria opens the pull request itself, from the api), plus
-/// `extra`, the permissions an admin gave that agent on the host above the
-/// base. Only the extras git itself spends may ride on this credential (the
-/// adapter's catalog says which); a permission a Talaria tool spends never
-/// does. An adapter that can narrow a token narrows it to this; one that
+/// is the credential one agent's sandbox is handed for a repository it was
+/// granted: `permissions` is that agent's COMPLETE set on the host, as an
+/// admin set it (or the default when none did), and the agent spends it
+/// directly — git push, and the host's API. An adapter that can narrow a
+/// token narrows it to exactly this, met with what it can give; one that
 /// cannot says so through [`GitHost::narrowing`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoAccess {
     Read,
     Job {
         agent_id: String,
-        extra: PermissionSet,
+        permissions: PermissionSet,
     },
 }
 
@@ -148,8 +147,14 @@ pub struct IssuedLogin {
     /// gave it.
     pub carried: Option<PermissionSet>,
     /// What the ask named that the host could not give (on GitHub, what the
-    /// App's installation does not hold).
+    /// App's installation does not hold, and organization permissions GitHub
+    /// would not put on a repository token).
     pub shortfall: PermissionSet,
+    /// The host's own words for a part of the ask it refused, when it
+    /// refused one rather than lacked it (GitHub's message when it would not
+    /// mint a repository token carrying organization permissions). None
+    /// otherwise.
+    pub shortfall_why: Option<String>,
     /// Minted by this call, rather than served from a cache or stored.
     pub minted: bool,
     /// The token as the host's own audit log names it, when it has one
@@ -167,6 +172,7 @@ impl IssuedLogin {
             installation: None,
             carried: None,
             shortfall: PermissionSet::new(),
+            shortfall_why: None,
             minted: false,
             hashed_token: None,
         }
@@ -177,8 +183,8 @@ impl IssuedLogin {
 //
 // A host that can narrow a credential narrows it to named permissions, each at
 // a level. The names are the host's own (GitHub's are `contents`, `metadata`,
-// `workflows`, …), and which of them exist, and which may ever ride on a
-// token, is the adapter's catalog, never this crate's. What lives here is the
+// `workflows`, …), and which of them exist, at which levels, is the
+// adapter's catalog, never this crate's. What lives here is the
 // arithmetic every adapter and caller shares: the order of the levels, and the
 // set operations a mint is built from.
 
@@ -1050,7 +1056,7 @@ mod tests {
     fn a_job_credential_names_its_agent_and_a_read_names_none() {
         let job = RepoAccess::Job {
             agent_id: "a-1".into(),
-            extra: PermissionSet::of(&[("workflows", Level::Write)]),
+            permissions: PermissionSet::of(&[("workflows", Level::Write)]),
         };
         assert_eq!(job.agent(), Some("a-1"));
         assert_eq!(RepoAccess::Read.agent(), None);

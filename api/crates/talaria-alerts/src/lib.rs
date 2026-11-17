@@ -340,9 +340,9 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         match talaria_git_hosts::holdings::recorded_holdings(pg).await {
             Ok(hosts) => {
                 alerts.extend(git_host_alerts(&hosts, now_ms()));
-                match talaria_git_hosts::permissions::all_extras(pg).await {
-                    Ok(extras) => alerts.extend(dormant_permissions_alert(
-                        &talaria_git_hosts::permissions::dormant_extras(&hosts, &extras),
+                match talaria_git_hosts::permissions::agent_sets(pg).await {
+                    Ok(sets) => alerts.extend(dormant_permissions_alert(
+                        &talaria_git_hosts::permissions::dormant(&hosts, &sets),
                     )),
                     Err(e) => tracing::warn!("[alerts] {e}"),
                 }
@@ -902,10 +902,11 @@ pub fn git_host_alerts(hosts: &[HostHoldings], now_ms: i64) -> Vec<Alert> {
 }
 
 /// The alert for agents given a GitHub permission on a host whose
-/// installation has not accepted it (`dormant`, as talaria-git-hosts'
-/// `dormant_extras` finds them): Talaria granted it, and every token of
-/// those repos goes without it until an owner of the account accepts the
-/// App's change on GitHub. None when there are none.
+/// installation has not accepted it (as talaria-git-hosts' `dormant` finds
+/// them): an admin set it in Talaria, and every token of those repos goes
+/// without it until the GitHub App asks for it and an owner of the account
+/// accepts the change on GitHub. Informational: nothing waits on it. None
+/// when there are none.
 pub fn dormant_permissions_alert(
     dormant: &[talaria_git_hosts::permissions::Dormant],
 ) -> Option<Alert> {
@@ -936,8 +937,10 @@ pub fn dormant_permissions_alert(
             format!("{n} agents hold GitHub permissions the installation has not accepted")
         },
         detail: format!(
-            "{}. An admin gave {} in Talaria, and the tokens of those repos go without until an owner of the account accepts the GitHub App's permission change on GitHub (Admin → Git hosts names each installation and where to accept it).",
+            "{}. An admin gave {} in Talaria, and the tokens of those repos carry the rest without {} until the GitHub App asks for {} and an owner of the account accepts the change on GitHub (Admin → Git hosts names each installation and where to accept it).",
             each.join("; "),
+            if each.len() == 1 { "it" } else { "them" },
+            if each.len() == 1 { "it" } else { "them" },
             if each.len() == 1 { "it" } else { "them" }
         ),
         href: GIT_HOSTS_HREF,

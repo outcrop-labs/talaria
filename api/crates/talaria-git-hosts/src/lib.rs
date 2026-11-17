@@ -29,9 +29,9 @@
 //   holdings   what a GitHub host's App asks for and what each installation
 //              it uses has accepted (`git_host_installations`), refreshed on
 //              a schedule, read by the mint, the alerts and the host card
-//   permissions which GitHub permissions each agent holds on each host above
-//              the base (`agent_github_permissions`), set by an admin only,
-//              minted into the agent's sandbox token where git spends them
+//   permissions which GitHub permissions each agent's token carries on each
+//              host (`agent_github_permissions`): its whole set, set by an
+//              admin only, or the default; minted into the agent's token
 //   revoke     taking an agent's tokens back when what it may do narrows, in
 //              this api process and, by a Redis broadcast, in every other
 //
@@ -522,21 +522,24 @@ pub struct AgentCredential {
     /// when it does not: a PAT or a Forgejo token carries whatever its owner
     /// gave it.
     pub carried: Option<PermissionSet>,
-    /// What the ask named that the GitHub App's installation does not hold.
+    /// What the ask named that the GitHub App's installation does not hold,
+    /// or that GitHub would not put on a repository token.
     pub shortfall: PermissionSet,
+    /// GitHub's words for what it would not put on the token, when it said
+    /// (organization permissions on a repository token).
+    pub shortfall_why: Option<String>,
     /// Minted by this call, rather than served from a cache or stored.
     pub minted: bool,
 }
 
-/// GIT'S CREDENTIAL from the registered host, for a repo [`credential_scope`]
-/// found granted to `agent_id`: the host's own login for that one repository,
-/// which is what a workbench job needs in order to push. On GitHub (App mode)
-/// an installation token scoped to the repo, filed under the agent, and
-/// narrowed to [`talaria_github::SANDBOX_TOKEN_PERMISSIONS`] — contents and
-/// metadata, never pull requests, which Talaria opens itself — plus the
-/// agent's permissions on the host that git spends (`workflows`, when an
-/// admin gave it; [`permissions`]). Elsewhere the host's own token, which
-/// cannot be narrowed.
+/// THE AGENT'S CREDENTIAL from the registered host, for a repo
+/// [`credential_scope`] found granted to `agent_id`: the host's own login for
+/// that one repository, which the agent spends directly — git push, and the
+/// host's API. On GitHub (App mode) an installation token scoped to the
+/// repo, filed under the agent, and narrowed to the agent's set on the host
+/// ([`permissions`]: what an admin set, or the default — contents and pull
+/// requests to write, metadata to read), met with what the installation
+/// holds. Elsewhere the host's own token, which cannot be narrowed.
 ///
 /// THE RE-CHECK. What the agent may do is read before the mint, and an admin
 /// can narrow it while the mint is out: the narrowing's revoke then finds no
@@ -554,19 +557,19 @@ pub async fn grant_login(
     agent_id: &str,
 ) -> Result<Option<AgentCredential>, String> {
     let host = connect(pg, sb, row).await;
-    let extra = permissions::host_permissions(pg, agent_id, &row.id).await?;
-    let job = |extra: PermissionSet| RepoAccess::Job {
+    let set = permissions::host_permissions(pg, agent_id, &row.id).await?;
+    let job = |permissions: PermissionSet| RepoAccess::Job {
         agent_id: agent_id.to_string(),
-        extra,
+        permissions,
     };
-    let Some(issued) = host.repo_login(repo, &job(extra.clone())).await? else {
+    let Some(issued) = host.repo_login(repo, &job(set.clone())).await? else {
         return Ok(None);
     };
     if !issued.minted {
         return Ok(Some(agent_credential(row, repo, issued)));
     }
     let now = permissions::recheck(pg, agent_id, &row.id, repo).await?;
-    if now.as_ref() == Some(&extra) {
+    if now.as_ref() == Some(&set) {
         return Ok(Some(agent_credential(row, repo, issued)));
     }
     let revoked = match &host {
@@ -604,6 +607,7 @@ fn agent_credential(row: &HostRow, repo: &str, issued: IssuedLogin) -> AgentCred
         installation: issued.installation,
         carried: issued.carried,
         shortfall: issued.shortfall,
+        shortfall_why: issued.shortfall_why,
         minted: issued.minted,
     }
 }

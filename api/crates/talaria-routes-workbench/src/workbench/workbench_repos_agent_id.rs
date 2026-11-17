@@ -5,9 +5,8 @@
 // list); PUT → replace the grant set (validated against the pool; a host
 // whose reach could not be read keeps the grants it has). The agent's
 // managers. Every grant added or removed is audited
-// (`workbench.repo_grant`), a removed grant's tokens are revoked in every
-// api process, and while the agent holds GitHub permissions on a host the
-// branch rules of its repos there are an admin's to change.
+// (`workbench.repo_grant`), and a removed grant's tokens are revoked in
+// every api process.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -19,7 +18,7 @@ use serde_json::{Map, Value, json};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_git_hosts::permissions::{self, AgentHostPermissions, default_branch_protections};
+use talaria_git_hosts::permissions::{self, AgentHostPermissions};
 use talaria_git_hosts::{self as hosts, GitHost, GrantChange, RepoRef, RepoRule};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::{actor_of, require_agent_manager, require_agent_reader};
@@ -163,44 +162,13 @@ pub async fn put(
         .into_iter()
         .filter(|r| pool.contains(r) || (unread.contains(&r.host_id) && current.contains(r)))
         .collect();
-    // An agent holding GitHub permissions on a host (talaria-git-hosts'
-    // permissions) carries them on every repo it is granted there, so the
-    // branch law of those repos is an admin's to change while it does: the
-    // rule is what keeps a workflows-carrying token off the base branch.
+    // The set an admin gave the agent on each host (talaria-git-hosts'
+    // permissions), for the audit row: a grant added there carries it.
     let held: Vec<AgentHostPermissions> =
         match permissions::agent_permissions(&state.pg, &agent_id).await {
-            Ok(h) => h
-                .into_iter()
-                .filter(|h| !h.permissions.is_empty())
-                .collect(),
+            Ok(h) => h,
             Err(e) => return Ok(internal("[workbench/repos] permissions read failed", e)),
         };
-    let holds_on = |host: &str| held.iter().find(|h| h.host_id == host);
-    if user.role != "admin" {
-        let now = hosts::repo_rules(&state.pg, &agent_id).await;
-        for rule in rules.iter().filter(|r| {
-            repos.contains(&RepoRef {
-                host_id: r.host_id.clone(),
-                repo: r.repo.clone(),
-            })
-        }) {
-            if holds_on(&rule.host_id).is_some()
-                && rule_changes(
-                    now.iter()
-                        .find(|n| n.host_id == rule.host_id && n.repo == rule.repo),
-                    rule,
-                )
-            {
-                return Ok(house_error(
-                    StatusCode::FORBIDDEN,
-                    &format!(
-                        "only an admin changes the branch rules of {} while this agent holds GitHub permissions on {} — the rules are what keep its token off the base branch",
-                        rule.repo, rule.host_id
-                    ),
-                ));
-            }
-        }
-    }
     let change = match hosts::set_granted_repos(&state.pg, &agent_id, &repos).await {
         Ok(c) => c,
         Err(e) => return Ok(internal("[workbench/repos] grant write failed", e)),
@@ -221,7 +189,7 @@ pub async fn put(
         }
     }
     if !change.is_empty() {
-        record_grant_change(&state, &sb, &user, &agent_id, &agent_label, &change, &held).await;
+        record_grant_change(&state, &user, &agent_id, &agent_label, &change, &held).await;
     }
     Ok(Json(json!({ "granted": repos })).into_response())
 }
@@ -270,31 +238,13 @@ fn rules_of(v: &Value) -> Result<Vec<RepoRule>, String> {
     Ok(out)
 }
 
-/// Whether writing `rule` changes the branch law `now` holds for its grant
-/// (`now` None: a new grant, which starts at the defaults).
-fn rule_changes(now: Option<&RepoRule>, rule: &RepoRule) -> bool {
-    let (base, mode, prefix) = match now {
-        Some(n) => (
-            n.base_branch.as_deref(),
-            n.push_mode.as_str(),
-            n.branch_prefix.as_deref(),
-        ),
-        None => (None, "branches_only", None),
-    };
-    rule.base_branch.as_deref() != base
-        || rule.push_mode != mode
-        || rule.branch_prefix.as_deref() != prefix
-}
-
 /// What a grant write changed, recorded and acted on: one
 /// `workbench.repo_grant` audit row with every grant added and removed (each
-/// with the GitHub permissions the agent holds on its host, and, for a repo
-/// added on a host where those include `workflows`, its default branch's
-/// protection), and the agent's tokens for each removed repo revoked in
-/// every api process.
+/// with the GitHub permissions set an admin gave the agent on its host, when
+/// one did: an added grant's token carries it), and the agent's tokens for
+/// each removed repo revoked in every api process.
 async fn record_grant_change(
     state: &AppState,
-    sb: &talaria_secretbox::SecretBox,
     user: &talaria_session::SessionUser,
     agent_id: &str,
     agent_label: &str,
@@ -306,33 +256,15 @@ async fn record_grant_change(
             .find(|h| h.host_id == host)
             .map(|h| h.permissions.to_json())
     };
-    let mut added: Vec<Value> = Vec::new();
-    for g in &change.added {
+    let entry = |g: &RepoRef| {
         let mut entry = json!({ "host": g.host_id, "repo": g.repo });
         if let Some(permissions) = on_host(&g.host_id) {
-            entry["hostPermissions"] = permissions.clone();
-            if permissions.get("workflows").is_some()
-                && let Ok(host) = hosts::host(&state.pg, sb, &g.host_id).await
-            {
-                let read = default_branch_protections(&host, std::slice::from_ref(&g.repo)).await;
-                if let Some(p) = read.first() {
-                    entry["workflowsProtection"] = p.wire();
-                }
-            }
+            entry["hostPermissions"] = permissions;
         }
-        added.push(entry);
-    }
-    let removed: Vec<Value> = change
-        .removed
-        .iter()
-        .map(|g| {
-            let mut entry = json!({ "host": g.host_id, "repo": g.repo });
-            if let Some(permissions) = on_host(&g.host_id) {
-                entry["hostPermissions"] = permissions;
-            }
-            entry
-        })
-        .collect();
+        entry
+    };
+    let added: Vec<Value> = change.added.iter().map(entry).collect();
+    let removed: Vec<Value> = change.removed.iter().map(entry).collect();
     log_audit(
         &state.pg,
         AuditEntry {
@@ -398,34 +330,6 @@ mod tests {
             rules_of(&json!([{ "host": "github", "repo": "acme/site", "pushMode": "yolo" }]))
                 .is_err()
         );
-    }
-
-    #[test]
-    fn a_rule_changes_the_law_only_when_a_field_differs() {
-        let rule = |base: Option<&str>, mode: &str, prefix: Option<&str>| RepoRule {
-            host_id: "github".into(),
-            repo: "acme/site".into(),
-            base_branch: base.map(String::from),
-            push_mode: mode.into(),
-            branch_prefix: prefix.map(String::from),
-        };
-        let now = rule(Some("main"), "branches_only", Some("agent"));
-        assert!(!rule_changes(Some(&now), &now.clone()));
-        assert!(rule_changes(
-            Some(&now),
-            &rule(Some("main"), "free", Some("agent"))
-        ));
-        assert!(rule_changes(
-            Some(&now),
-            &rule(None, "branches_only", Some("agent"))
-        ));
-        assert!(rule_changes(
-            Some(&now),
-            &rule(Some("main"), "branches_only", None)
-        ));
-        // A new grant starts at the defaults: the defaults change nothing.
-        assert!(!rule_changes(None, &rule(None, "branches_only", None)));
-        assert!(rule_changes(None, &rule(None, "free", None)));
     }
 
     // ── Live-DB: the grants editor end to end ────────────────────────────────
@@ -507,11 +411,11 @@ mod tests {
                 json!({ "added": [{ "host": gh, "repo": "acme/widgets" }], "removed": [] })
             );
 
-            // While the agent holds GitHub permissions on the host, its
-            // repos' branch rules there are an admin's.
+            // An admin gives the agent a set on the host; its manager still
+            // sets the branch rules of its repos there, as before.
             sqlx::query(
                 "insert into agent_github_permissions (agent_id, host_id, permissions) \
-                 values ($1::uuid, $2, '{\"workflows\":\"write\"}'::jsonb)",
+                 values ($1::uuid, $2, '{\"contents\":\"write\",\"workflows\":\"write\"}'::jsonb)",
             )
             .bind(&a)
             .bind(&gh)
@@ -520,13 +424,7 @@ mod tests {
             .unwrap();
             let mut free = both.clone();
             free["rules"] = json!([{ "host": gh, "repo": "acme/widgets", "pushMode": "free" }]);
-            let (status, body) = put_as(&state, &as_manager, &a, free.clone()).await;
-            assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-            assert!(
-                body["error"].as_str().unwrap().contains("only an admin"),
-                "{body}"
-            );
-            let (status, body) = put_as(&state, &as_admin, &a, free).await;
+            let (status, body) = put_as(&state, &as_manager, &a, free).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             let rule = talaria_git_hosts::repo_rule(&state.pg, &a, &gh, "acme/widgets")
                 .await
@@ -563,7 +461,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 row["removed"],
-                json!([{ "host": gh, "repo": "acme/widgets", "hostPermissions": { "workflows": "write" } }])
+                json!([{ "host": gh, "repo": "acme/widgets", "hostPermissions": { "contents": "write", "workflows": "write" } }])
             );
             assert_eq!(
                 hosts::granted_repos(&state.pg, &a).await,
@@ -574,14 +472,14 @@ mod tests {
                 "the unreadable host's grant is still there"
             );
 
-            // A host whose token cannot be narrowed takes no permission.
+            // A host whose token cannot be narrowed takes no set.
             let (status, body) = answer(
                 crate::workbench::workbench_github_permissions_agent_id::put(
                     State(state.clone()),
                     as_admin.clone(),
                     Path(a.clone()),
                     Bytes::from(
-                        json!({ "host": forge, "from": {}, "to": { "workflows": "write" } })
+                        json!({ "host": forge, "from": null, "to": { "workflows": "write" } })
                             .to_string(),
                     ),
                 )
