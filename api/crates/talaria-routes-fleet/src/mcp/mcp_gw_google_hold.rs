@@ -175,6 +175,32 @@ fn failed_inside(context: &str, e: impl std::fmt::Display) -> HoldAnswer {
     }
 }
 
+/// The approval card, where the agent is speaking. An MCP tool's name
+/// reaches the tool-events door prefixed by the agent's MCP client, so the
+/// chip is landed here; the queue, the Inbox and the brief show the row
+/// either way. Best effort.
+async fn land_card(
+    pg: &sqlx::PgPool,
+    redis: Option<redis::aio::ConnectionManager>,
+    agent_model: &str,
+    principal: &talaria_api_facades::google::agent::AgentPrincipal,
+    action_id: &str,
+    summary: &str,
+) {
+    let chip = talaria_chips::mcp_call_chip(action_id, summary);
+    if let Err(e) = talaria_chips::surface_tool_chips(
+        pg,
+        redis,
+        agent_model,
+        principal.owner_user_id.as_deref(),
+        vec![chip],
+    )
+    .await
+    {
+        tracing::warn!("[mcp/google] {action_id}: the approval chip did not land: {e}");
+    }
+}
+
 /// Hold `tool` (the pack's policy says HOLD) for a person: queue it, prove the
 /// approver's queue shows it, land its card, and answer the agent — or, on a
 /// personal principal's unspent unlock, run it once now (D7).
@@ -302,10 +328,23 @@ pub(super) async fn hold(
                     why.push_str(": ");
                     why.push_str(m);
                 }
+                // Nothing ran and the row waits again (no token, a grant
+                // whose client is declared unticked, Google's 401): the
+                // grant is spent — the strict direction — so the owner gets
+                // the card this call would have had without one.
                 if outcome.released() {
                     why.push_str(&format!(
                         " It is back in the approval queue as {action_id}; read_pending_send shows why as lastError. Do not report it as done."
                     ));
+                    land_card(
+                        pg,
+                        redis.clone(),
+                        agent_model,
+                        &principal,
+                        &action_id,
+                        &summary,
+                    )
+                    .await;
                 }
                 answer(
                     unlocked_reply(&id, None, Some(&why)),
@@ -336,21 +375,7 @@ pub(super) async fn hold(
         }
         Err(e) => return failed_inside("[mcp/google] hold queue proof failed", e),
     }
-    // The card, where the agent is speaking. An MCP tool's name reaches the
-    // tool-events door prefixed by the agent's MCP client, so the chip is
-    // landed here; the queue, the inbox and the brief show the row either way.
-    let chip = talaria_chips::mcp_call_chip(&action_id, &summary);
-    if let Err(e) = talaria_chips::surface_tool_chips(
-        pg,
-        redis,
-        agent_model,
-        principal.owner_user_id.as_deref(),
-        vec![chip],
-    )
-    .await
-    {
-        tracing::warn!("[mcp/google] {action_id}: the approval chip did not land: {e}");
-    }
+    land_card(pg, redis, agent_model, &principal, &action_id, &summary).await;
     let sentence = pack::held_sentence(
         &p,
         tool,
