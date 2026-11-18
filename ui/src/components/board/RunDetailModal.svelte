@@ -307,9 +307,12 @@
               <SkeletonRows rows={3} />
             {/snippet}
             {#snippet children(data)}
+              <!-- Live only until the work log first answers. A failed read leaves the
+                   run's state unknown, not live, and isFetched stays true through the
+                   refetch that resets a query with no data to pending. -->
               <AgentCheckpoints
                 checkpoints={fromLedger(data.checkpoints, runState)}
-                live={!history.isSuccess || runIsLive(runState)}
+                live={!history.isFetched || runIsLive(runState)}
               />
             {/snippet}
           </QueryState>
