@@ -159,6 +159,16 @@ pub mod group_key {
     pub fn mcp_down(server_id: &str) -> String {
         format!("mcp:{server_id}:down")
     }
+    /// The agent image channel's alerts: one open row per topic (a digest's
+    /// failed rollout, `<digest>:failed`; a stuck state, `checks-failing`).
+    pub fn hermes(topic: &str) -> String {
+        format!("hermes:{topic}")
+    }
+    /// The workbench harness channel's alerts: one open row per topic (a
+    /// held release, `held:<tool>:<version>`; a host failing, `host`).
+    pub fn workbench_harness(topic: &str) -> String {
+        format!("workbench-harness:{topic}")
+    }
     /// One approval waiting.
     pub fn approval(approval_id: &str) -> String {
         format!("approval:{approval_id}")
@@ -166,6 +176,10 @@ pub mod group_key {
     /// An agent's outreach on one day (`yyyy-mm-dd`).
     pub fn outreach(agent: &str, day: &str) -> String {
         format!("outreach:{agent}:{day}")
+    }
+    /// One agent design: its describe and every refine that lands share a row.
+    pub fn agent_design(design_id: &str) -> String {
+        format!("agent-design:{design_id}")
     }
 }
 
@@ -176,9 +190,14 @@ pub mod entity {
     pub const CONVERSATION: &str = "conversation";
     pub const APPROVAL: &str = "approval";
     pub const MCP_SERVER: &str = "mcp_server";
+    pub const HERMES_IMAGE: &str = "hermes_image";
+    pub const WORKBENCH_HARNESS: &str = "workbench_harness";
     pub const PLAN: &str = "plan";
     pub const RESEARCH_RUN: &str = "research_run";
     pub const KB_DOC: &str = "kb_doc";
+    /// A person's agent design (talaria-agent-design): resolved when it is
+    /// hired, discarded or replaced.
+    pub const AGENT_DESIGN: &str = "agent_design";
 }
 
 #[cfg(test)]
@@ -201,6 +220,8 @@ mod tests {
             group_key::outreach("margaret", "2026-10-31"),
             "outreach:margaret:2026-10-31"
         );
+        assert_eq!(group_key::agent_design("d1"), "agent-design:d1");
+        assert_eq!(entity::AGENT_DESIGN, "agent_design");
         assert_eq!(
             [
                 entity::TASK,

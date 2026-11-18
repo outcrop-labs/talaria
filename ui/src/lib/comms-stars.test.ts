@@ -1,6 +1,22 @@
 import assert from 'node:assert/strict'
 import { beforeEach, test, vi } from 'vitest'
-import { agentStarKey, channelStarKey, isStarred, parseStarKey, readStars, starsStorageKey, threadStarKey, toggleStar } from './comms-stars'
+import { HttpError } from './fetch-json'
+import {
+  agentStarKey,
+  channelStarKey,
+  parseStarKey,
+  readStars,
+  starsStorageKey,
+  starsToKeep,
+  threadStarKey,
+  uploadOutcome,
+  type StarKey,
+} from './comms-stars'
+
+// The pins themselves live on the server now (comms-stars.svelte.ts reads
+// and writes /api/me/pins). What stays here is the key grammar, the reader
+// for the copy older builds kept in localStorage, and the rule that decides
+// which of that copy survives an upload pass.
 
 function installLocalStorage() {
   const map = new Map<string, string>()
@@ -21,69 +37,49 @@ test('star keys are tagged strings, and the storage key is per user', () => {
   assert.equal(agentStarKey('hermes'), 'agent:hermes')
   assert.equal(threadStarKey('t1'), 'thread:t1')
   assert.equal(starsStorageKey('u1'), 'talaria:comms-stars:u1')
+  assert.deepEqual(parseStarKey('thread:t1'), { kind: 'thread', id: 't1' })
+  assert.equal(parseStarKey('board:b1'), null)
 })
 
-test('nothing stored: nothing starred', () => {
+test('nothing stored: nothing to fold in', () => {
   installLocalStorage()
   assert.deepEqual(readStars('u1'), [])
-  assert.equal(isStarred('u1', 'channel:c1'), false)
 })
 
-test('toggling stars, then unstars, and returns the new list each time', () => {
-  installLocalStorage()
-  assert.deepEqual(toggleStar('u1', 'channel:c1'), ['channel:c1'])
-  assert.equal(isStarred('u1', 'channel:c1'), true)
-  assert.deepEqual(readStars('u1'), ['channel:c1'])
-  assert.deepEqual(toggleStar('u1', 'channel:c1'), [])
-  assert.equal(isStarred('u1', 'channel:c1'), false)
-  assert.deepEqual(readStars('u1'), [])
-})
-
-test('stars keep the order they were starred in, newest last', () => {
-  installLocalStorage()
-  toggleStar('u1', 'agent:hermes')
-  toggleStar('u1', 'channel:c2')
-  toggleStar('u1', 'channel:c1')
-  assert.deepEqual(readStars('u1'), ['agent:hermes', 'channel:c2', 'channel:c1'])
-  // Unstarring from the middle keeps the rest in order; re-starring goes last.
-  toggleStar('u1', 'channel:c2')
-  toggleStar('u1', 'channel:c2')
-  assert.deepEqual(readStars('u1'), ['agent:hermes', 'channel:c1', 'channel:c2'])
-})
-
-test("one person's stars are not another's", () => {
+test("the legacy copy reads in star order, per person, and one person's is not another's", () => {
   const store = installLocalStorage()
-  toggleStar('u1', 'channel:c1')
+  store.set('talaria:comms-stars:u1', JSON.stringify(['agent:hermes', 'channel:c2', 'thread:t1']))
+  assert.deepEqual(readStars('u1'), ['agent:hermes', 'channel:c2', 'thread:t1'])
   assert.deepEqual(readStars('u2'), [])
-  toggleStar('u2', 'agent:atlas')
-  assert.deepEqual(readStars('u1'), ['channel:c1'])
-  assert.deepEqual(readStars('u2'), ['agent:atlas'])
-  assert.equal(store.get('talaria:comms-stars:u1'), '["channel:c1"]')
 })
 
-test('a malformed stored value reads as nothing starred', () => {
+test('a malformed stored value reads as nothing, and junk keys are dropped', () => {
   const store = installLocalStorage()
   for (const raw of ['"nope"', '{"channel:c1":true}', 'not json', 'null', '42']) {
     store.set('talaria:comms-stars:u1', raw)
     assert.deepEqual(readStars('u1'), [], raw)
   }
-  // And toggling over it starts clean rather than throwing.
-  store.set('talaria:comms-stars:u1', '"nope"')
-  assert.deepEqual(toggleStar('u1', 'channel:c1'), ['channel:c1'])
-})
-
-test('unknown key kinds are ignored — stored or toggled', () => {
-  const store = installLocalStorage()
   store.set('talaria:comms-stars:u1', JSON.stringify(['channel:c1', 'board:b1', 7, '', 'channel:', 'agent:hermes', 'channel:c1']))
   assert.deepEqual(readStars('u1'), ['channel:c1', 'agent:hermes'], 'junk dropped, duplicates collapsed')
-  assert.deepEqual(toggleStar('u1', 'board:b1'), ['channel:c1', 'agent:hermes'], 'an unknown kind does not star')
-  assert.equal(isStarred('u1', 'board:b1'), false)
 })
 
-test('a pinned agent thread is a star like any other', () => {
-  installLocalStorage()
-  assert.deepEqual(toggleStar('u1', threadStarKey('t1')), ['thread:t1'])
-  assert.equal(isStarred('u1', 'thread:t1'), true)
-  assert.deepEqual(parseStarKey('thread:t1'), { kind: 'thread', id: 't1' })
-  assert.deepEqual(toggleStar('u1', 'thread:t1'), [])
+test('an upload that will never succeed is refused; one that might is retried', () => {
+  // Refused for good: the server will give the same answer every time.
+  for (const status of [400, 404, 409, 413, 422]) assert.equal(uploadOutcome(new HttpError(status, 'x')), 'refused', String(status))
+  // Worth another try: a restart, a lapsed session, throttling, no answer.
+  for (const status of [500, 502, 503, 401, 403, 408, 429]) assert.equal(uploadOutcome(new HttpError(status, 'x')), 'retry', String(status))
+  assert.equal(uploadOutcome(new TypeError('Failed to fetch')), 'retry')
+  assert.equal(uploadOutcome('offline'), 'retry')
+})
+
+test('the local copy keeps only what is worth another try, and clears when nothing is', () => {
+  const r = (key: StarKey, outcome: 'landed' | 'refused' | 'retry') => ({ key, outcome })
+  // The deploy-moment 502 and the expired session: those pins stay.
+  assert.deepEqual(
+    starsToKeep([r('channel:c1', 'landed'), r('agent:a', 'retry'), r('thread:t', 'refused'), r('channel:c2', 'retry')]),
+    ['agent:a', 'channel:c2'],
+  )
+  // Everything landed or was refused for good: nothing left to keep.
+  assert.deepEqual(starsToKeep([r('channel:c1', 'landed'), r('thread:t', 'refused')]), [])
+  assert.deepEqual(starsToKeep([]), [])
 })

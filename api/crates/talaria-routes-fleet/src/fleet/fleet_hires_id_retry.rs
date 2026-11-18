@@ -198,6 +198,10 @@ pub struct RetryPlan {
     pub department: String,
     pub name: String,
     pub def_exists: bool,
+    /// Who the agent is hired FOR (the input's manager, else the row's
+    /// owner): an agent design spent on it is theirs. A retry's row is owned
+    /// by whoever pressed Retry, so the row alone would follow the wrong slot.
+    pub owner: Option<String>,
 }
 
 /// The retry up to docker: read the hire, decide who may act, and refuse —
@@ -248,6 +252,11 @@ pub async fn plan_retry(
         .filter(|n| !n.is_empty())
         .unwrap_or(&slug)
         .to_string();
+    let owner = input
+        .get("managerUserId")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or(hire.owner);
     Ok(RetryPlan {
         input,
         retry_id: hire.retry_id,
@@ -255,6 +264,7 @@ pub async fn plan_retry(
         department,
         name,
         def_exists: hire.def_exists,
+        owner,
     })
 }
 
@@ -310,6 +320,12 @@ pub async fn post(
     };
     let realtime = RealtimeDeps::publish_only(Some(redis.clone()));
     let deps = dispatch_deps(state.pg.clone(), redis, realtime);
+    // An agent design spent on the failed hire follows the retry before it
+    // is enqueued, so it is consumed when the retry finishes instead of
+    // coming back for an agent that by then exists.
+    if let Some(owner) = plan.owner.as_deref() {
+        talaria_agent_design::follow_retry(&state, owner, &id, &plan.retry_id).await;
+    }
     let row = match enqueue(
         agent_hire_run(),
         plan.input,

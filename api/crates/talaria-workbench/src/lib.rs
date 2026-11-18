@@ -27,7 +27,8 @@ pub fn sandbox_env() -> Map<String, Value> {
 /// The container image Developer Agents run instead of the chassis image,
 /// when the operator sets `TALARIA_WORKBENCH_IMAGE` (e.g. the pre-baked
 /// `talaria-workbench:latest` from scripts/build-workbench-image.sh). Unset or
-/// blank keeps the chassis image, and omp installs through `npx` on first use.
+/// blank keeps the chassis image. Either way omp is the pinned per-volume
+/// install a job's provisioning makes (talaria-workbench-harnesses).
 pub fn sandbox_image() -> Option<String> {
     std::env::var("TALARIA_WORKBENCH_IMAGE")
         .ok()

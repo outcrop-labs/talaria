@@ -489,6 +489,12 @@ pub fn router(state: AppState) -> Router {
             "/api/channels/{id}/notify",
             put(talaria_routes_comms::comms::channels_id_notify::put).fallback(|| async { method_not_allowed("PUT") }),
         )
+        // Mark unread: the caller's channel cursor steps back one countable
+        // message — the read route's twin, on their own row.
+        .route(
+            "/api/channels/{id}/unread",
+            post(talaria_routes_comms::comms::channels_id_unread::post).fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/channels/{id}/plan",
             get(talaria_routes_comms::comms::channels_id_plan::get)
@@ -543,6 +549,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/conversations/{id}/read",
             post(talaria_routes_comms::comms::conversations_id_read::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/conversations/{id}/unread",
+            post(talaria_routes_comms::comms::conversations_id_unread::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         // Run control on the reply that is streaming NOW: stop it, or say
@@ -957,6 +968,21 @@ pub fn router(state: AppState) -> Router {
             "/api/me/threads",
             get(talaria_routes_comms::comms::me_threads::get).fallback(|| async { method_not_allowed("GET") }),
         )
+        // The caller's Comms rail pins and their agent-DM mutes: per person,
+        // their own filing, no access check on what a key names.
+        .route(
+            "/api/me/pins",
+            get(talaria_routes_comms::comms::me_pins::get)
+                .post(talaria_routes_comms::comms::me_pins::post)
+                .delete(talaria_routes_comms::comms::me_pins::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
+        )
+        .route(
+            "/api/me/agent-mutes",
+            get(talaria_routes_comms::comms::me_agent_mutes::get)
+                .put(talaria_routes_comms::comms::me_agent_mutes::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
         .route(
             "/api/me/sent",
             get(talaria_routes_comms::comms::me_sent::get).fallback(|| async { method_not_allowed("GET") }),
@@ -998,6 +1024,32 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/admin/google-client/login",
             put(talaria_routes_admin::admin::admin_google_client::put_login)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        .route(
+            "/api/admin/google-client/agentic",
+            put(talaria_routes_admin::admin::admin_google_client::put_agentic)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        .route(
+            "/api/admin/google-client/check",
+            post(talaria_routes_admin::admin::admin_google_client::post_check)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/admin/google/mcp",
+            get(talaria_routes_admin::admin::admin_google_mcp::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/admin/google/mcp/{product}",
+            post(talaria_routes_admin::admin::admin_google_mcp::post)
+                .delete(talaria_routes_admin::admin::admin_google_mcp::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/admin/google/mcp/{product}/tools/{tool}",
+            put(talaria_routes_admin::admin::admin_google_mcp::put_tool)
                 .fallback(|| async { method_not_allowed("PUT") }),
         )
         .route(
@@ -1423,6 +1475,14 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_fleet::fleet::fleet_create::post).fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/fleet/agent-design",
+            get(talaria_routes_fleet::agents::agent_design::get)
+                .post(talaria_routes_fleet::agents::agent_design::post)
+                .patch(talaria_routes_fleet::agents::agent_design::patch)
+                .delete(talaria_routes_fleet::agents::agent_design::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PATCH, DELETE") }),
+        )
+        .route(
             "/api/fleet/hires",
             get(talaria_routes_fleet::fleet::fleet_hires::get).fallback(|| async { method_not_allowed("GET") }),
         )
@@ -1451,6 +1511,12 @@ pub fn router(state: AppState) -> Router {
             "/api/fleet/roll",
             get(talaria_routes_fleet::fleet::fleet_roll::get)
                 .post(talaria_routes_fleet::fleet::fleet_roll::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
+            "/api/fleet/hermes",
+            get(talaria_routes_fleet::fleet::fleet_hermes::get)
+                .post(talaria_routes_fleet::fleet::fleet_hermes::post)
                 .fallback(|| async { method_not_allowed("GET, POST") }),
         )
         .route(
@@ -1519,10 +1585,12 @@ pub fn router(state: AppState) -> Router {
         )
         // The workbench family, the agent sandbox plane: the per-repo git
         // flow, the operator's git hosts (talaria-git-hosts — list/add,
-        // read/patch/remove, test connection; admin, they hold org
-        // credentials), the human side of
+        // read/patch/remove, test connection, refresh what a GitHub App's
+        // installations accepted; admin, they hold org credentials), the
+        // human side of
         // workbench jobs (the ticket strip + approve/reject/merge-to-testing),
-        // the repo-creation approval queue, and the per-agent repo grants.
+        // the repo-creation approval queue, the per-agent repo grants, and
+        // the GitHub permissions an admin gives an agent on each host.
         // Who is a developer is the agent's own switch (fleet/defs PATCH).
         .route(
             "/api/workbench/flow",
@@ -1544,14 +1612,37 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
+            "/api/workbench/git-hosts/{id}/refresh",
+            post(talaria_routes_workbench::workbench::workbench_git_hosts_id_refresh::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/workbench/git-hosts/{id}/test",
             post(talaria_routes_workbench::workbench::workbench_git_hosts_id_test::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
+            "/api/workbench/github-permissions/{agentId}",
+            get(talaria_routes_workbench::workbench::workbench_github_permissions_agent_id::get)
+                .put(talaria_routes_workbench::workbench::workbench_github_permissions_agent_id::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/workbench/harnesses",
+            get(talaria_routes_workbench::workbench::workbench_harnesses::get)
+                .post(talaria_routes_workbench::workbench::workbench_harnesses::post)
+                .fallback(|| async { method_not_allowed("GET, POST") }),
+        )
+        .route(
             "/api/workbench/jobs",
             get(talaria_routes_workbench::workbench::workbench_jobs::get)
                 .put(talaria_routes_workbench::workbench::workbench_jobs::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/workbench/permission-requests",
+            get(talaria_routes_workbench::workbench::workbench_permission_requests::get)
+                .put(talaria_routes_workbench::workbench::workbench_permission_requests::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(

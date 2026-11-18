@@ -326,8 +326,18 @@ export const USER_STREAM_KEYS = [
   'conversations',
   'research-runs',
   'research-run',
+  'agent-design',
   'daily-brief',
 ] as const
+
+/** Whether a run event is about the person's agent design: its own run, the
+ *  hire spending it, or any run while no design is cached. */
+function designRunIs(qc: QueryClient, runId: string): boolean {
+  const read = qc.getQueryData<{ design: { runId: string | null } | null; hiring?: Array<{ hireRunId: string }> }>(['agent-design'])
+  if (!read) return false // nothing reads the design on this page
+  const d = read.design
+  return !d || d.runId === runId || (read.hiring ?? []).some((h) => h.hireRunId === runId)
+}
 
 /** The app-wide invalidation map, one line per event: what refetches when
  *  the firehose ticks. Mounted once (AppLayout) so a badge or a list moves
@@ -371,6 +381,14 @@ export function useUserEventInvalidation(): void {
         case 'run':
           void qc.invalidateQueries({ queryKey: ['research-runs'] })
           void qc.invalidateQueries({ queryKey: ['research-run', event.runId] })
+          // An agent design is a run too (talaria-agent-design), and so is
+          // the hire it is spent on: their events reach the roster row, the
+          // New agent mark and an open modal on this tick instead of the
+          // next poll. Only THOSE runs — a hire's phases and a research
+          // run's steps are not the design's business — unless no design is
+          // cached yet (another tab may have started one; that read is a
+          // single Redis lookup).
+          if (designRunIs(qc, event.runId)) void qc.invalidateQueries({ queryKey: ['agent-design'] })
           break
         case 'brief':
           void qc.invalidateQueries({ queryKey: ['daily-brief'] })

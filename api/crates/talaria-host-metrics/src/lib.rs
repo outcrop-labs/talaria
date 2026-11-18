@@ -495,6 +495,21 @@ pub fn mount_free_bytes(path: &Path) -> Option<u64> {
     statvfs_usage(&resolved).map(|u| u.available)
 }
 
+/// Bytes available to an unprivileged writer, and the filesystem's size,
+/// for the filesystem holding `path` (a host path; resolved like
+/// [`mount_free_bytes`]).
+pub fn mount_space(path: &Path) -> Option<(u64, u64)> {
+    let resolved = host_path(&host_root()?, &path.to_string_lossy());
+    statvfs_usage(&resolved).map(|u| (u.available, u.total))
+}
+
+/// [`mount_space`] for a path as this process sees it, with no host root:
+/// inside a container, its own `/` reports the filesystem its overlay's
+/// upper directory lives on — the docker root's.
+pub fn local_space(path: &Path) -> Option<(u64, u64)> {
+    statvfs_usage(path).map(|u| (u.available, u.total))
+}
+
 fn parse_loadavg(text: &str) -> Option<LoadReading> {
     let mut parts = text.split_whitespace();
     Some(LoadReading {

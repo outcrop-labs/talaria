@@ -279,6 +279,7 @@ export const GROUP = {
   mcpDown: (serverId: string) => `mcp:${serverId}:down`,
   approval: (approvalId: string) => `approval:${approvalId}`,
   outreach: (agent: string, day: string) => `outreach:${agent}:${day}`,
+  agentDesign: (designId: string) => `agent-design:${designId}`,
 } as const
 
 /** The entity kinds a row can be about (the server's `entity::*`). */
@@ -291,4 +292,5 @@ export const ENTITY = {
   plan: 'plan',
   researchRun: 'research_run',
   kbDoc: 'kb_doc',
+  agentDesign: 'agent_design',
 } as const

@@ -389,7 +389,7 @@ async fn a_removed_workdir_retires_its_steps_with_the_job_s_done_marker() {
 #[ignore = "needs a live dev database and redis (source ui/.env)"]
 async fn a_late_frame_is_restorable_only_when_the_run_s_transcript_holds_its_call() {
     use futures_util::FutureExt as _;
-    use talaria_routes_fleet::agents::tool_snapshots::{TranscriptRead, land_with};
+    use talaria_routes_fleet::agents::tool_snapshots::{Transcript, TranscriptRead, land_with};
     let state = live_app_state().await;
     let tag = "late-verify";
     cleanup(&state.pg, tag).await;
@@ -412,7 +412,13 @@ async fn a_late_frame_is_restorable_only_when_the_run_s_transcript_holds_its_cal
         legacy: false,
     };
     let held: TranscriptRead = std::sync::Arc::new(|_model, _session| {
-        async { Some(vec!["call_held".to_string()]) }.boxed()
+        async {
+            Some(Transcript {
+                live: vec!["call_held".to_string()],
+                archived: vec![],
+            })
+        }
+        .boxed()
     });
     let unreadable: TranscriptRead = std::sync::Arc::new(|_model, _session| async { None }.boxed());
 
@@ -461,5 +467,236 @@ async fn a_late_frame_is_restorable_only_when_the_run_s_transcript_holds_its_cal
     land_with(&state, &caller, other, &held).await.unwrap();
     assert!(rows.len() == 3 && run_checkpoints(&state.pg, &run).await.unwrap().len() == 3);
 
+    cleanup(&state.pg, tag).await;
+}
+
+/// A job whose workdir was removed has no checkout to restore from: a frame
+/// naming it lands as unrestorable with that reason, whatever it carries.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn a_frame_on_a_cleared_job_never_promises_a_restore() {
+    let state = live_app_state().await;
+    let tag = "cleared";
+    cleanup(&state.pg, tag).await;
+    let (def_id, model, key) = agent(&state, tag).await;
+    let job = started_job(&state.pg, &def_id, &model).await;
+    sqlx::query("update workbench_jobs set workspace_cleared_at = now() where id = $1::uuid")
+        .bind(&job)
+        .execute(&state.pg)
+        .await
+        .unwrap();
+    let run = live_run(&state.pg, &model, 1).await;
+    let (_, body) = post(
+        &state,
+        Some(&key),
+        frame(
+            &run,
+            Some(&job),
+            json!([{"id": "call_1", "name": "terminal"}]),
+        ),
+    )
+    .await;
+    assert_eq!(body["landed"], true, "{body}");
+    let rows = run_checkpoints(&state.pg, &run).await.unwrap();
+    assert!(!rows[0].restorable, "{:?}", rows[0]);
+    assert!(
+        rows[0]
+            .unrestorable_reason
+            .as_deref()
+            .unwrap()
+            .contains("removed"),
+        "{:?}",
+        rows[0]
+    );
+    cleanup(&state.pg, tag).await;
+}
+
+/// A transcript the container could not give at the moment a late frame
+/// landed is not a verdict: the row waits, and the next read that succeeds
+/// settles it either way.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn an_unreadable_transcript_leaves_a_late_step_waiting_for_the_next_read() {
+    use futures_util::FutureExt as _;
+    use talaria_routes_fleet::agents::tool_snapshots::{Transcript, TranscriptRead, land_with};
+    let state = live_app_state().await;
+    let tag = "late-wait";
+    cleanup(&state.pg, tag).await;
+    let (def_id, model, _key) = agent(&state, tag).await;
+    let job = started_job(&state.pg, &def_id, &model).await;
+    let run = live_run(&state.pg, &model, 1).await;
+    sqlx::query(
+        "update runs set state = 'done', finished_at = now(), \
+                checkpoint = '{\"stage\":\"send\",\"turn\":2,\"stageAttempt\":0}' \
+         where id = $1::uuid",
+    )
+    .bind(&run)
+    .execute(&state.pg)
+    .await
+    .unwrap();
+    let caller = talaria_api::agent_auth::AgentCaller {
+        id: Some(def_id.clone()),
+        model: model.clone(),
+        legacy: false,
+    };
+    let unreadable: TranscriptRead = std::sync::Arc::new(|_m, _s| async { None }.boxed());
+    let held: TranscriptRead = std::sync::Arc::new(|_m, _s| {
+        async {
+            Some(Transcript {
+                live: vec!["call_a".to_string(), "call_b".to_string()],
+                archived: vec![],
+            })
+        }
+        .boxed()
+    });
+    let f = |call: &str| frame(&run, Some(&job), json!([{"id": call, "name": "terminal"}]));
+    land_with(&state, &caller, f("call_a"), &unreadable)
+        .await
+        .unwrap();
+    let rows = run_checkpoints(&state.pg, &run).await.unwrap();
+    assert!(!rows[0].restorable);
+    assert!(
+        rows[0]
+            .unrestorable_reason
+            .as_deref()
+            .unwrap()
+            .contains("could not be read")
+    );
+    // The next late frame reads the transcript, and the waiting row is settled by it.
+    land_with(&state, &caller, f("call_b"), &held)
+        .await
+        .unwrap();
+    let rows = run_checkpoints(&state.pg, &run).await.unwrap();
+    let by = |call: &str| {
+        rows.iter()
+            .find(|r| r.tool_call_id.as_deref() == Some(call))
+            .unwrap()
+    };
+    assert!(by("call_a").restorable, "{:?}", by("call_a"));
+    assert_eq!(by("call_a").unrestorable_reason, None);
+    assert!(by("call_b").restorable);
+    // And one the transcript never held is retired by that same read.
+    land_with(&state, &caller, f("call_c"), &unreadable)
+        .await
+        .unwrap();
+    let judged: TranscriptRead = std::sync::Arc::new(|_m, _s| {
+        async {
+            Some(Transcript {
+                live: vec![
+                    "call_a".to_string(),
+                    "call_b".to_string(),
+                    "call_d".to_string(),
+                ],
+                archived: vec![],
+            })
+        }
+        .boxed()
+    });
+    land_with(&state, &caller, f("call_d"), &judged)
+        .await
+        .unwrap();
+    let rows = run_checkpoints(&state.pg, &run).await.unwrap();
+    let by = |call: &str| {
+        rows.iter()
+            .find(|r| r.tool_call_id.as_deref() == Some(call))
+            .unwrap()
+    };
+    assert!(!by("call_c").restorable);
+    assert!(
+        by("call_c")
+            .unrestorable_reason
+            .as_deref()
+            .unwrap()
+            .starts_with("not in this run's transcript"),
+        "{:?}",
+        by("call_c")
+    );
+    cleanup(&state.pg, tag).await;
+}
+
+/// A waiting late step is promoted by the next read only while it still has
+/// something to restore. A step whose commit the door could not read says
+/// so at once rather than waiting for a read to promote it, and a waiting
+/// step whose checkout is removed before the read is retired with the
+/// checkout rather than promoted into one that no longer exists.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (source ui/.env)"]
+async fn a_late_step_waits_only_while_it_has_a_checkout_and_a_commit_to_restore() {
+    use futures_util::FutureExt as _;
+    use talaria_routes_fleet::agents::tool_snapshots::{Transcript, TranscriptRead, land_with};
+    let state = live_app_state().await;
+    let tag = "late-hollow";
+    cleanup(&state.pg, tag).await;
+    let (def_id, model, _key) = agent(&state, tag).await;
+    let job = started_job(&state.pg, &def_id, &model).await;
+    let run = live_run(&state.pg, &model, 1).await;
+    sqlx::query(
+        "update runs set state = 'done', finished_at = now(), \
+                checkpoint = '{\"stage\":\"send\",\"turn\":2,\"stageAttempt\":0}' \
+         where id = $1::uuid",
+    )
+    .bind(&run)
+    .execute(&state.pg)
+    .await
+    .unwrap();
+    let caller = talaria_api::agent_auth::AgentCaller {
+        id: Some(def_id.clone()),
+        model: model.clone(),
+        legacy: false,
+    };
+    let unreadable: TranscriptRead = std::sync::Arc::new(|_m, _s| async { None }.boxed());
+    let held: TranscriptRead = std::sync::Arc::new(|_m, _s| {
+        async {
+            Some(Transcript {
+                live: vec![
+                    "call_hollow".to_string(),
+                    "call_waiting".to_string(),
+                    "call_after".to_string(),
+                ],
+                archived: vec![],
+            })
+        }
+        .boxed()
+    });
+    let f = |call: &str| frame(&run, Some(&job), json!([{"id": call, "name": "terminal"}]));
+
+    // A 64-hex id is not a commit the door reads, so the step has none.
+    let mut hollow = f("call_hollow");
+    hollow["commit"] = json!("ab".repeat(32));
+    land_with(&state, &caller, hollow, &unreadable)
+        .await
+        .unwrap();
+    // A restorable step waits on the read, and then its checkout is removed.
+    land_with(&state, &caller, f("call_waiting"), &unreadable)
+        .await
+        .unwrap();
+    talaria_workbench_mcp::teardown::mark_removed(&state.pg, &job)
+        .await
+        .unwrap();
+    // The next late frame reads a transcript that holds every call.
+    land_with(&state, &caller, f("call_after"), &held)
+        .await
+        .unwrap();
+
+    let rows = run_checkpoints(&state.pg, &run).await.unwrap();
+    let by = |call: &str| {
+        rows.iter()
+            .find(|r| r.tool_call_id.as_deref() == Some(call))
+            .unwrap()
+    };
+    assert!(!by("call_hollow").restorable, "{:?}", by("call_hollow"));
+    assert_eq!(
+        by("call_hollow").unrestorable_reason.as_deref(),
+        Some("the step carried no snapshot commit")
+    );
+    for call in ["call_waiting", "call_after"] {
+        assert!(!by(call).restorable, "{:?}", by(call));
+        assert_eq!(
+            by(call).unrestorable_reason.as_deref(),
+            Some("the job's checkout was removed"),
+            "{:?}",
+            by(call)
+        );
+    }
     cleanup(&state.pg, tag).await;
 }

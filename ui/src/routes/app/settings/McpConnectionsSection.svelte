@@ -21,7 +21,10 @@
     label: string
     description: string | null
     requiredHeaders: HeaderDecl[]
-    authKind: 'oauth' | 'headers'
+    /** `google`: a Google Workspace MCP server (Developer Preview). It has no
+     *  account of its own — your assistant uses it through your Google
+     *  connection, and `connected` is that connection. */
+    authKind: 'oauth' | 'headers' | 'google'
     connected: boolean
     /** Connected once, and the provider has since refused to refresh it
      *  (found by the hourly MCP health check): sign in again. */
@@ -109,7 +112,21 @@
                 <div class="text-sm text-fg">{s.label}</div>
                 {#if s.description}<div class="truncate font-sans text-xs text-muted">{s.description}</div>{/if}
               </div>
-              {#if s.connected}
+              {#if s.authKind === 'google'}
+                <!-- No account of its own: it rides your Google connection,
+                     connected and disconnected under Google above. -->
+                <span
+                  class="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] {s.needsReconnect ? 'text-warning' : s.connected ? 'text-success' : 'text-muted'}"
+                  title={s.needsReconnect
+                    ? 'Your Google connection needs attention before your assistant can use this server: Google refused it last time, or it was made with an OAuth client declared not marked for AI agents. Reconnect Google above; if that does not clear it, an admin needs a connections client marked for AI agents.'
+                    : s.connected
+                      ? 'Your assistant uses this server through your Google connection.'
+                      : 'Connect Google above, and your assistant can use this server as you.'}
+                >
+                  <StatusDot status={s.needsReconnect ? 'warn' : s.connected ? 'ok' : 'idle'} />
+                  {s.needsReconnect ? 'reconnect google above' : s.connected ? 'via your Google connection' : 'needs your Google connection'}
+                </span>
+              {:else if s.connected}
                 <span class="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-success">
                   <StatusDot status="ok" />
                   connected

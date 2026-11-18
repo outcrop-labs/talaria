@@ -1,0 +1,1078 @@
+{
+ "probedAt": "2026-11-17T08:38:36Z",
+ "method": "GET https://<key>, no credential; every answer HTTP 200",
+ "documents": {
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/create_event": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events"
+   ]
+  },
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/delete_event": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events"
+   ]
+  },
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/get_event": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly"
+   ]
+  },
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/list_calendars": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.calendarlist",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly"
+   ]
+  },
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/list_events": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly"
+   ]
+  },
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.acls",
+    "https://www.googleapis.com/auth/calendar.calendarlist",
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    "https://www.googleapis.com/auth/calendar.calendars",
+    "https://www.googleapis.com/auth/calendar.calendars.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.events.freebusy",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.googleapis.com/auth/calendar.freebusy",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.settings.readonly"
+   ]
+  },
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/respond_to_event": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events"
+   ]
+  },
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/search_events": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly"
+   ]
+  },
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/suggest_time": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.events.freebusy",
+    "https://www.googleapis.com/auth/calendar.freebusy"
+   ]
+  },
+  "calendarmcp.googleapis.com/.well-known/oauth-protected-resource/update_event": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://calendarmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events"
+   ]
+  },
+  "chatmcp.googleapis.com/.well-known/oauth-protected-resource/list_messages": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://chatmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/chat.messages.readonly"
+   ]
+  },
+  "chatmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://chatmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/chat.spaces",
+    "https://www.googleapis.com/auth/chat.spaces.readonly",
+    "https://www.googleapis.com/auth/chat.memberships",
+    "https://www.googleapis.com/auth/chat.memberships.readonly",
+    "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/chat.messages.readonly",
+    "https://www.googleapis.com/auth/chat.messages.create",
+    "https://www.googleapis.com/auth/chat.users.readstate",
+    "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+    "https://www.googleapis.com/auth/chat.users.spacesettings"
+   ]
+  },
+  "chatmcp.googleapis.com/.well-known/oauth-protected-resource/search_conversations": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://chatmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/chat.memberships.readonly",
+    "https://www.googleapis.com/auth/chat.spaces",
+    "https://www.googleapis.com/auth/chat.spaces.readonly"
+   ]
+  },
+  "chatmcp.googleapis.com/.well-known/oauth-protected-resource/search_messages": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://chatmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/chat.messages.readonly",
+    "https://www.googleapis.com/auth/chat.spaces.readonly",
+    "https://www.googleapis.com/auth/chat.memberships.readonly",
+    "https://www.googleapis.com/auth/chat.users.readstate.readonly"
+   ]
+  },
+  "chatmcp.googleapis.com/.well-known/oauth-protected-resource/send_message": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://chatmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/chat.messages.create"
+   ]
+  },
+  "docsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://docsmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/documents.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/documents"
+   ]
+  },
+  "docsmcp.googleapis.com/.well-known/oauth-protected-resource/read_doc": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://docsmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/documents.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/documents"
+   ]
+  },
+  "docsmcp.googleapis.com/.well-known/oauth-protected-resource/update_doc": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://docsmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/documents"
+   ]
+  },
+  "drivemcp.googleapis.com/.well-known/oauth-protected-resource/copy_file": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://drivemcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.appdata",
+    "https://www.googleapis.com/auth/drive.file"
+   ]
+  },
+  "drivemcp.googleapis.com/.well-known/oauth-protected-resource/create_file": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://drivemcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.appdata",
+    "https://www.googleapis.com/auth/drive.file"
+   ]
+  },
+  "drivemcp.googleapis.com/.well-known/oauth-protected-resource/download_file_content": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://drivemcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.readonly"
+   ]
+  },
+  "drivemcp.googleapis.com/.well-known/oauth-protected-resource/get_file_metadata": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://drivemcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.appdata",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.meet.readonly",
+    "https://www.googleapis.com/auth/drive.metadata",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "https://www.googleapis.com/auth/drive.photos.readonly",
+    "https://www.googleapis.com/auth/drive.readonly"
+   ]
+  },
+  "drivemcp.googleapis.com/.well-known/oauth-protected-resource/get_file_permissions": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://drivemcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.appdata",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.meet.readonly",
+    "https://www.googleapis.com/auth/drive.metadata",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "https://www.googleapis.com/auth/drive.photos.readonly",
+    "https://www.googleapis.com/auth/drive.readonly"
+   ]
+  },
+  "drivemcp.googleapis.com/.well-known/oauth-protected-resource/list_recent_files": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://drivemcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.appdata",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.meet.readonly",
+    "https://www.googleapis.com/auth/drive.metadata",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "https://www.googleapis.com/auth/drive.photos.readonly",
+    "https://www.googleapis.com/auth/drive.readonly"
+   ]
+  },
+  "drivemcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://drivemcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.file"
+   ]
+  },
+  "drivemcp.googleapis.com/.well-known/oauth-protected-resource/read_file_content": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://drivemcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.readonly"
+   ]
+  },
+  "drivemcp.googleapis.com/.well-known/oauth-protected-resource/search_files": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://drivemcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.appdata",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.meet.readonly",
+    "https://www.googleapis.com/auth/drive.metadata",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "https://www.googleapis.com/auth/drive.photos.readonly",
+    "https://www.googleapis.com/auth/drive.readonly"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/apply_sensitive_message_label": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/apply_sensitive_thread_label": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/create_draft": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.drafts",
+    "https://www.googleapis.com/auth/gmail.drafts.create",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/create_label": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.labels",
+    "https://www.googleapis.com/auth/gmail.labels.create",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/get_draft": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.drafts",
+    "https://www.googleapis.com/auth/gmail.drafts.readonly"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/get_message": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.readonly"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/get_thread": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.readonly"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/label_message": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.modify",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/label_thread": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.modify",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/list_drafts": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.drafts",
+    "https://www.googleapis.com/auth/gmail.drafts.readonly"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/list_labels": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.labels",
+    "https://www.googleapis.com/auth/gmail.labels.readonly",
+    "https://www.googleapis.com/auth/gmail.metadata",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.readonly"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mark_message_spam": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mark_thread_spam": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.drafts",
+    "https://www.googleapis.com/auth/gmail.drafts.create",
+    "https://www.googleapis.com/auth/gmail.drafts.readonly",
+    "https://www.googleapis.com/auth/gmail.labels",
+    "https://www.googleapis.com/auth/gmail.labels.create",
+    "https://www.googleapis.com/auth/gmail.labels.readonly",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.delete",
+    "https://www.googleapis.com/auth/gmail.messages.modify",
+    "https://www.googleapis.com/auth/gmail.messages.readonly",
+    "https://www.googleapis.com/auth/gmail.metadata",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.send.self",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/gmail.settings.filters",
+    "https://www.googleapis.com/auth/gmail.settings.filters.readonly"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/search_threads": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.readonly"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/trash_message": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.delete",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/trash_thread": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.delete",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/unlabel_message": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.modify",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/unlabel_thread": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.modify",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/unmark_message_spam": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/unmark_thread_spam": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/untrash_message": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.delete",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/untrash_thread": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.delete",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "gmailmcp.googleapis.com/.well-known/oauth-protected-resource/update_message_labels": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://gmailmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.messages",
+    "https://www.googleapis.com/auth/gmail.messages.modify",
+    "https://www.googleapis.com/auth/gmail.modify"
+   ]
+  },
+  "people.googleapis.com/.well-known/oauth-protected-resource/get_user_profile": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://people.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/userinfo.profile"
+   ]
+  },
+  "people.googleapis.com/.well-known/oauth-protected-resource/mcp/v1": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://people.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/directory.readonly",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/contacts.readonly"
+   ]
+  },
+  "people.googleapis.com/.well-known/oauth-protected-resource/search_contacts": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://people.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/contacts.readonly"
+   ]
+  },
+  "people.googleapis.com/.well-known/oauth-protected-resource/search_directory_people": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://people.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/directory.readonly"
+   ]
+  },
+  "sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/get_spreadsheet": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://sheetsmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/spreadsheets"
+   ]
+  },
+  "sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/get_values": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://sheetsmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/spreadsheets"
+   ]
+  },
+  "sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/insert_dimension": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://sheetsmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets"
+   ]
+  },
+  "sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://sheetsmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/spreadsheets"
+   ]
+  },
+  "sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/update_formulas": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://sheetsmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/spreadsheets"
+   ]
+  },
+  "sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/update_spreadsheet": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://sheetsmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/spreadsheets"
+   ]
+  },
+  "sheetsmcp.googleapis.com/.well-known/oauth-protected-resource/update_values": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://sheetsmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/spreadsheets"
+   ]
+  },
+  "slidesmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://slidesmcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/presentations.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/presentations"
+   ]
+  },
+  "slidesmcp.googleapis.com/.well-known/oauth-protected-resource/read_presentation": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://slidesmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/presentations.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/presentations"
+   ]
+  },
+  "slidesmcp.googleapis.com/.well-known/oauth-protected-resource/read_slide_page": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://slidesmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/presentations.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/presentations"
+   ]
+  },
+  "slidesmcp.googleapis.com/.well-known/oauth-protected-resource/read_slide_page_thumbnail": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://slidesmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/presentations.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/presentations"
+   ]
+  },
+  "slidesmcp.googleapis.com/.well-known/oauth-protected-resource/update_presentation": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://slidesmcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/presentations"
+   ]
+  },
+  "workspacemcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://workspacemcp.googleapis.com/mcp/v1",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/chat.messages.readonly",
+    "https://www.googleapis.com/auth/chat.spaces.readonly",
+    "https://www.googleapis.com/auth/chat.memberships.readonly"
+   ]
+  },
+  "workspacemcp.googleapis.com/.well-known/oauth-protected-resource/search_corpus": {
+   "authorization_servers": [
+    "https://accounts.google.com/"
+   ],
+   "bearer_methods_supported": [
+    "header"
+   ],
+   "resource": "https://workspacemcp.googleapis.com/mcp",
+   "scopes_supported": [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/chat.messages",
+    "https://www.googleapis.com/auth/chat.messages.readonly",
+    "https://www.googleapis.com/auth/chat.spaces.readonly",
+    "https://www.googleapis.com/auth/chat.memberships.readonly"
+   ]
+  }
+ }
+}

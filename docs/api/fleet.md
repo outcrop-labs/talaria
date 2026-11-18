@@ -7,11 +7,15 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-28 routes.
+30 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
 | [`/api/fleet`](#apifleet) | GET | `session` + `view:/observability` |
+| [`/api/fleet/agent-design`](#apifleetagent-design) | GET | `session` + `perm:agents.manage` |
+| [`/api/fleet/agent-design`](#apifleetagent-design) | POST | `session` + `perm:agents.manage` |
+| [`/api/fleet/agent-design`](#apifleetagent-design) | PATCH | `session` + `perm:agents.manage` |
+| [`/api/fleet/agent-design`](#apifleetagent-design) | DELETE | `session` + `perm:agents.manage` |
 | [`/api/fleet/agents/{id}/control`](#apifleetagentsidcontrol) | POST | `session` + `agent-manager` |
 | [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | GET | `session` + `agent-reader` |
 | [`/api/fleet/agents/{id}/crons`](#apifleetagentsidcrons) | POST | `session` + `agent-manager` |
@@ -45,6 +49,8 @@
 | [`/api/fleet/endpoints/{id}`](#apifleetendpointsid) | DELETE | `admin` |
 | [`/api/fleet/endpoints/{id}/available`](#apifleetendpointsidavailable) | GET | `admin` |
 | [`/api/fleet/federate`](#apifleetfederate) | POST | `admin` |
+| [`/api/fleet/hermes`](#apifleethermes) | GET | `admin` |
+| [`/api/fleet/hermes`](#apifleethermes) | POST | `admin` |
 | [`/api/fleet/hires`](#apifleethires) | GET | `session` + `perm:agents.manage` |
 | [`/api/fleet/hires/{id}/retry`](#apifleethiresidretry) | POST | `session` + `perm:agents.manage` |
 | [`/api/fleet/reconcile`](#apifleetreconcile) | POST | `admin` |
@@ -64,6 +70,70 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet.rs`](../../api/crates/
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `view:/observability` | — | `…` | 200 | — |
+
+## `/api/fleet/agent-design`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/agent_design.rs`](../../api/crates/talaria-routes-fleet/src/agents/agent_design.rs)
+
+> The caller's agent design — New agent's "describe it", owned by the
+> server (talaria-agent-design). The record lives in Redis for 72 hours;
+> the muse call is an `agent-design` run, so a design survives a reload,
+> a closed tab and a restart. One design per person.
+>
+> /api/fleet/agent-design.
+>   GET    → `{ design, hiring, returned, now }`: the design or null, the
+>            designs the person's hires are spending, any a failed hire handed
+>            back while the slot was taken, and the server's clock so the
+>            elapsed count agrees across tabs. `?watching=1` is the open
+>            modal: a landing in the next few seconds skips the bell.
+>   POST   → start (`{ instruction }`) or refine (`{ instruction, refine:
+>            true, id, current? }`). A start while one generates answers that
+>            one.
+>   PATCH  → the person's own draft (review-step edits, a role template, a
+>            manual start), naming the design (`id`) unless there is none.
+>            409 while a run or a hire holds it, or when `id` is stale.
+>            A start, or a PATCH with no `id`, over a design a failed hire
+>            handed back that nobody has edited or refined since sets that
+>            design aside: it waits in `returned` until the new one is hired
+>            or discarded, instead of being replaced or refusing the start.
+>   DELETE → discard (`{ id? }`); 404 when there is nothing (another tab got
+>            there first). A hire with `designId` claims it, and the design is
+>            consumed once that hire finishes. The record's `chat` stays on
+>            the server; the wire carries `chatLength`.
+> The permission is the hire's (`agents.manage`): the design exists to be
+> hired.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `perm:agents.manage` | — | `{design, hiring, returned, now}` | 200, 409 | — |
+| POST | `session` + `perm:agents.manage` | [body](#post-apifleetagent-design-body) | `{design}` | 200, 400, 409 | — |
+| PATCH | `session` + `perm:agents.manage` | [body](#patch-apifleetagent-design-body) | `{design}` | 200, 400, 409 | — |
+| DELETE | `session` + `perm:agents.manage` | [body](#delete-apifleetagent-design-body) | `{ok}` | 200, 400, 404, 409 | — |
+
+### POST `/api/fleet/agent-design` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `instruction` | `string(1, 8000)` |  |
+| `id` | `uuid?` | The design a refine revises; a start names none. |
+| `refine` | `bool?` |  |
+
+### PATCH `/api/fleet/agent-design` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid?` | The design these edits are for: absent only for a manual start, where the person holds none. Naming another is the stale tab's 409. |
+| `name` | `string(0, 60)` |  |
+| `handle` | `string(0, 30)` |  |
+| `department` | `string(0, 40)` |  |
+| `role` | `string(0, 80)` |  |
+| `soul` | `string(0, 200000)` |  |
+
+### DELETE `/api/fleet/agent-design` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid?` |  |
 
 ## `/api/fleet/agents/{id}/control`
 
@@ -205,6 +275,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_create.rs`](../../api/
 | `templateId` | `uuid?` |  |
 | `soul` | `string?(200000)` |  |
 | `start` | `bool?` |  |
+| `designId` | `uuid?` |  |
 
 ## `/api/fleet/crons`
 
@@ -302,7 +373,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](..
 > /api/fleet/defs/{id}/google — who this agent acts as on Google, and the
 > connect/disconnect control for a per-agent identity.
 >
-> GET    → the registry row (or the legacy fallback) plus connection face
+> GET    → the registry row (or the legacy fallback) plus connection face:
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -324,7 +395,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](..
 > /api/fleet/defs/{id}/google — who this agent acts as on Google, and the
 > connect/disconnect control for a per-agent identity.
 >
-> GET    → the registry row (or the legacy fallback) plus connection face
+> GET    → the registry row (or the legacy fallback) plus connection face:
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -494,6 +565,33 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_federate.rs`](../../ap
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `dir` | `string trimmed(1, 500)` | trim, 1..500 — a server-side path to a Hermes-format directory (admin trust model). |
+
+## `/api/fleet/hermes`
+
+Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_hermes.rs`](../../api/crates/talaria-routes-fleet/src/fleet/fleet_hermes.rs)
+
+> /api/fleet/hermes — the agent image's Hermes stable channel. Admin.
+>   GET   where the channel stands: following stable, pinned to a version,
+>         or off because the operator chose the image (HERMES_IMAGE, or a
+>         chassis image of their own) and why; the Hermes version each agent
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{ok, status}` | 200, 409 | — |
+| POST | `admin` | [body](#post-apifleethermes-body) | `{ok, message, status}` | 200, 400, 409 | audit |
+
+### POST `/api/fleet/hermes` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `action` | `enum(check|roll|rollback|pin|unpin|allow|accept|reset|window)?` |  |
+| `digest` | `string?(80)` |  |
+| `version` | `string?(16)` |  |
+| `digest` | `string?(80)` |  |
+| `digest` | `string?(80)` |  |
+| `start` | `string?(5)` |  |
+| `end` | `string?(5)` |  |
 
 ## `/api/fleet/hires`
 

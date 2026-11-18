@@ -1,6 +1,7 @@
 <script lang="ts">
   import Button from '@/components/ui/Button.svelte'
   import { Bot, Plus } from '@lucide/svelte'
+  import { kbTreeState } from '@/lib/knowledge-tree-state.svelte'
   import { moveDoc, type KbDocMeta } from '@/lib/kb'
   import { toastError } from '@/lib/toast.svelte'
   import KbDocRow from './KbDocRow.svelte'
@@ -43,6 +44,10 @@
     const target = docs.find((d) => d.id === targetId)
     if (!target) return
     if (pos === 'inside') {
+      // Open the new parent so the moved doc is visible where it landed
+      // (TALA-92): a drop into a collapsed folder would otherwise hide it
+      // behind a branch that stays closed.
+      kbTreeState.toggleDoc(targetId, true)
       const kids = byParent.get(targetId) ?? []
       onMove(dragId, targetId, kids.length)
       return

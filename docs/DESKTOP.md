@@ -630,8 +630,8 @@ cost of a web process per hovered row; it is not done.
 
 ## Development: the box builds, the host runs
 
-A devbox has no display, so the split is: **code and gates in the box, GUI on the host** (the
-box's clone is host-visible at `~/Development/devboxes/<name>/talaria`).
+A devbox has no display, so the split is: **code in the box, gates on CI, GUI on the host**
+(the box's clone is host-visible at `~/Development/devboxes/<name>/talaria`).
 
 ```sh
 # host, once: the webkit runtime (Arch; gtk3 rides along)
@@ -639,13 +639,12 @@ sudo pacman -S webkit2gtk-4.1 librsvg
 
 # host: image (carries the tauri build deps) and the box
 bun talaria box build
-bun talaria box new desktop
+bun talaria box new desktop --env GH_TOKEN=…   # gate:remote's token: a box has no gh login
 
-# in the box — the gates (CARGO_TARGET_DIR keeps cargo artifacts OFF the
-# host-shared tree; the host's build uses desktop/src-tauri/target, and two
-# cargo builds into one target dir fight)
+# in the box — the gates run on GitHub, not here: commit, then, in the background
 bun talaria box enter desktop
-CARGO_TARGET_DIR=$HOME/target-desktop bun run desktop:check
+bun run gate:remote          # light: the Linux desktop job
+bun run gate:remote --full   # adds desktop-macos and desktop-windows
 
 # in the box — a live instance to point the shell at (seeded at box creation)
 bun talaria dev          # → http://127.0.0.1:5302
@@ -676,8 +675,11 @@ the binary directly as above.
 ## Gates
 
 `bun run desktop:check` (root) = `cargo fmt --check` + `cargo clippy -D warnings` +
-`cargo test` + `svelte-check`, the same list CI's `desktop` job runs. `bun run verify` is
-unchanged — the desktop surface gates per-surface, exactly like `api:check`.
+`cargo test` + `svelte-check`, the same list CI's `desktop` job runs. Like `api:check`, it
+is CI's job, never local, and `bun run verify` does not include it. The proof is the pull
+request's CI, or `bun run gate:remote` before one exists. A light run (`gate:remote`) has
+only the Linux `desktop` job; `bun run gate:remote --full` adds `desktop-macos` and
+`desktop-windows`, which a change to macOS or Windows `cfg` code needs before a PR.
 
 CI runs clippy and the tests on all three platforms for every desktop pull request:
 `desktop` (Linux), `desktop-macos` and `desktop-windows`, because each OS's `cfg` code is
@@ -722,10 +724,12 @@ every call site to it.
 
 ## Installers
 
-`.github/workflows/desktop-package.yml` builds every installer and attaches it to the
-GitHub Release a version tag opens — `release.yml` calls it after the image push
-(RELEASING.md has the operator's half). A push to main that touches `desktop/` builds the
-same set and leaves it as workflow artifacts.
+`.github/workflows/desktop-package.yml` builds every installer and attaches it to a
+`desktop-vX.Y.Z` release: a push to main that touches `desktop/` mints the next one, and a
+`publish=true` dispatch mints a hand-picked number (RELEASING.md has the operator's half).
+Those are the only releases that carry installers. A server tag (`vX.Y.Z`, `vX.Y.Z-rc.N`)
+builds none: Desktop has its own version line, and an installer stamped with the server's
+0.13.0 beside `desktop-v0.12.0` would never be offered an update until Desktop passed 0.13.
 
 | Platform | Files |
 |---|---|
@@ -857,9 +861,8 @@ to the check and to the whole download.
 `desktop-v` release: `desktop-package.yml` creates its mint with `--latest=false` and marks
 it Latest only after its `latest.json` is uploaded, so the feed never points at a release
 without one. A platform release (`vX.Y.Z`, `release.yml`) is never Latest: it would take the
-flag by default the moment it opened, an hour before its installers are attached, and
-every update check would 404. Its installers are downloads; its `latest.json` is not served.
-RCs do not publish `latest.json` at all. `check-invariants.mjs`
+flag by default the moment it opened, and it carries no installers and no `latest.json`, so
+every update check would 404. `check-invariants.mjs`
 (`release-latest-is-the-desktop-feed`) holds both workflows to this.
 
 **The update chip** (`src-tauri/src/update.rs`). Nobody had to find "Check for updates"
@@ -942,7 +945,9 @@ launcher's Check for updates and Settings → Profile say how to update instead 
 package or `.msi` from the Releases page — and the chip offers Later only; `install_update`
 refuses with the same sentence, for an older instance UI that still shows Install.
 
-Signing uses `TAURI_SIGNING_PRIVATE_KEY` (a GitHub Actions secret). Losing that key
+Signing uses `TAURI_SIGNING_PRIVATE_KEY`, a secret of the `desktop-release` GitHub
+environment, which only `main` reaches. Once the repository-level copy is deleted, a build
+from any other ref is unsigned (RELEASING.md, "The desktop installers"). Losing that key
 means installed copies can no longer verify a new payload. OS code signing
 (Gatekeeper / SmartScreen) is still absent; this signature is the updater's own.
 

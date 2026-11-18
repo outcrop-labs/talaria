@@ -1,25 +1,40 @@
 # Submit the desktop shell to Omapak when a release rolls.
 #
-# desktop-package.yml mints desktop-v* (the live updater feed) and release.yml
-# publishes stable v* tags. Either one is a new desktop source. This opens a
+# desktop-package.yml mints desktop-v* (the live updater feed), and that is the
+# only desktop release: a server v* tag carries no desktop build, so it never
+# moves the store pin. Each desktop-v release is a new desktop source. This opens a
 # pull request on outcrop-labs/omapak that moves apps/app.talaria.desktop to
 # that tag and regenerates the vendored cargo/bun sources the offline build
 # consumes. The judge still scores it — nothing here merges.
 #
 # HOW IT IS STARTED. desktop-package.yml calls this at the end of a packaging
 # run, passing the tag it just finished. It is NOT driven by the
-# `release: published` event alone: both release paths mint their release with
+# `release: published` event alone: the desktop-v mint opens its release with
 # GITHUB_TOKEN, and GitHub deliberately refuses to start workflow runs from
 # events a GITHUB_TOKEN created, so that trigger sat silent through
 # desktop-v0.7.0 .. v0.10.0 and the store pin went four versions stale. The
 # release trigger stays for a release published by hand (a human token does
-# fire it), and workflow_dispatch is the manual door for a tag that missed.
+# fire it). It runs at the release's tag, outside the environment (WHY TWO
+# JOBS), so for a desktop-v release it ends red, naming the dispatch from main
+# that submits it. workflow_dispatch from main is the manual door for any tag
+# that missed.
 #
-# Needs a repository secret OMAPAK_SUBMIT_TOKEN: a fine-grained PAT or GitHub
-# App token with contents:write and pull-requests:write on outcrop-labs/omapak.
-# GITHUB_TOKEN cannot open a pull request on another repository. A missing
-# secret fails the job rather than skipping: a rolled release that never
-# reaches the store is a red run, not a quiet success.
+# Needs OMAPAK_SUBMIT_TOKEN, a secret of the `desktop-release` environment: a
+# fine-grained PAT or GitHub App token with contents:write and
+# pull-requests:write on outcrop-labs/omapak. GITHUB_TOKEN cannot open a pull
+# request on another repository. A missing secret fails the job rather than
+# skipping: a rolled release that never reaches the store is a red run, not a
+# quiet success.
+#
+# WHY TWO JOBS. The token lives in that environment, whose policy admits main
+# only, the one ref desktop-package.yml signs and publishes from. Only
+# `submit` names it, and only after `gate` has decided there is something to
+# submit. So a hand-published server v* release, whose ref the environment
+# refuses, still ends as a quiet skip and not a red run. Any other ref with a
+# desktop-v tag to submit is refused by `gate` with the way through: a
+# hand-published desktop-v release runs at its tag, which the environment
+# does not admit (a tag is not reviewed code; desktop-package.yml's header
+# says why), so it is submitted by a dispatch from main.
 name: omapak-submit
 
 on:
@@ -42,10 +57,13 @@ permissions:
   contents: read
 
 jobs:
-  submit:
-    name: open the omapak submission
+  gate:
+    name: decide what to submit
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.gate.outputs.go }}
+      tag: ${{ steps.gate.outputs.tag }}
     steps:
       # One gate for all three triggers, reading the release itself rather
       # than an event payload that only exists on one of them.
@@ -55,6 +73,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INPUT_TAG: ${{ inputs.tag }}
           EVENT_TAG: ${{ github.event.release.tag_name }}
+          REF: ${{ github.ref }}
         run: |
           set -eu
           tag="${INPUT_TAG:-$EVENT_TAG}"
@@ -63,31 +82,50 @@ jobs:
             exit 1
           fi
           case "$tag" in
-            desktop-v*|v[0-9]*) ;;
+            desktop-v*) ;;
             *)
-              echo "$tag is neither a desktop-v nor a stable v tag — nothing to submit"
+              echo "$tag is not a desktop-v tag — nothing to submit (server v* tags carry no desktop build)"
               echo "go=false" >>"$GITHUB_OUTPUT"
               exit 0
               ;;
           esac
-          # Stable only. desktop-v* is never a prerelease; v* RCs are, and an
-          # RC must not move the store pin.
+          # Stable only. desktop-v* is never a prerelease as minted, but a
+          # hand-published one could be, and a prerelease must not move the pin.
           if [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
                     --json isPrerelease --jq .isPrerelease)" = true ]; then
             echo "$tag is a prerelease — leaving the store pin where it is"
             echo "go=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
+          # The token is in desktop-release, which admits main only.
+          # desktop-package.yml calls this from main. A hand-published
+          # release's event runs at its tag, and a dispatch can run from any
+          # branch; both are refused here with the way through, before GitHub
+          # refuses the environment without one.
+          case "$REF" in
+            refs/heads/main) ;;
+            *)
+              echo "::error::$REF cannot submit: OMAPAK_SUBMIT_TOKEN is in the desktop-release environment, which admits main only. Dispatch this workflow from main with tag=$tag: gh workflow run omapak-submit.yml --ref main -f tag=$tag"
+              exit 1
+              ;;
+          esac
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
           echo "go=true" >>"$GITHUB_OUTPUT"
 
+  submit:
+    name: open the omapak submission
+    needs: [gate]
+    if: needs.gate.outputs.go == 'true'
+    environment: desktop-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
       - name: Require the omapak token
-        if: steps.gate.outputs.go == 'true'
         env:
           TOKEN: ${{ secrets.OMAPAK_SUBMIT_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "::error::OMAPAK_SUBMIT_TOKEN is not set — a fine-grained PAT or GitHub App token with contents and pull-requests write on outcrop-labs/omapak. See RELEASING.md."
+            echo "::error::OMAPAK_SUBMIT_TOKEN is not set in the desktop-release environment — a fine-grained PAT or GitHub App token with contents and pull-requests write on outcrop-labs/omapak. See RELEASING.md."
             exit 1
           fi
           # A token that exists but cannot push is the failure that shipped
@@ -95,21 +133,35 @@ jobs:
           # repo is public), the push answers 403 "Permission … denied", and
           # the sentence names the account rather than the token. Ask GitHub
           # what the token may do BEFORE the work, and say what to regenerate.
-          who=$(GH_TOKEN="$TOKEN" gh api user --jq .login 2>/dev/null || echo '?')
-          push=$(GH_TOKEN="$TOKEN" gh api repos/outcrop-labs/omapak --jq '.permissions.push // false' 2>/dev/null || echo false)
-          if [ "$push" != true ]; then
-            echo "::error::OMAPAK_SUBMIT_TOKEN (account: $who) cannot push to outcrop-labs/omapak. Regenerate it as a fine-grained PAT whose repository access lists outcrop-labs/omapak with Contents: read and write and Pull requests: read and write (an expired or repo-less token reads the public repo fine and fails only at the push), then: gh secret set OMAPAK_SUBMIT_TOKEN --repo $GITHUB_REPOSITORY. Re-run this workflow by dispatch with the tag."
+          #
+          # Ask the git server, not the REST API. `.permissions.push` on
+          # `gh api repos/…` is the ACCOUNT's role on the repo, not what a
+          # fine-grained token was granted, so desktop-v0.12.0's token passed
+          # it and still got the 403 at the push. The push's own first request
+          # — receive-pack's ref advertisement — answers 200 only to a
+          # credential that may push, 403 to one that may not, and 401 to an
+          # expired or unknown token, the same way the push itself would.
+          # (gh prints a refusal's JSON body on stdout, so a failed lookup
+          # assigns '?' rather than appending to whatever it printed.)
+          who=$(GH_TOKEN="$TOKEN" gh api user --jq .login 2>/dev/null) || who='?'
+          code=$(curl -s -o /dev/null -w '%{http_code}' -u "x-access-token:$TOKEN" \
+            'https://github.com/outcrop-labs/omapak.git/info/refs?service=git-receive-pack') || code=000
+          if [ "$code" != 200 ]; then
+            case "$code" in
+              401) why='GitHub does not accept it (expired, revoked or mistyped)' ;;
+              403) why='it is valid but was not granted Contents: write on outcrop-labs/omapak' ;;
+              *) why="GitHub answered $code to the push check" ;;
+            esac
+            echo "::error::OMAPAK_SUBMIT_TOKEN (account: $who) cannot push to outcrop-labs/omapak: $why. Regenerate it as a fine-grained PAT whose repository access lists outcrop-labs/omapak with Contents: read and write and Pull requests: read and write, then: gh secret set OMAPAK_SUBMIT_TOKEN --env desktop-release --repo $GITHUB_REPOSITORY. Re-run this workflow by dispatch with the tag."
             exit 1
           fi
           echo "token for $who may push to outcrop-labs/omapak"
 
       - uses: actions/checkout@v5
-        if: steps.gate.outputs.go == 'true'
         with:
-          ref: ${{ steps.gate.outputs.tag }}
+          ref: ${{ needs.gate.outputs.tag }}
 
       - uses: actions/checkout@v5
-        if: steps.gate.outputs.go == 'true'
         with:
           repository: outcrop-labs/omapak
           token: ${{ secrets.OMAPAK_SUBMIT_TOKEN }}
@@ -117,10 +169,9 @@ jobs:
           ref: main
 
       - name: Open or update the pull request
-        if: steps.gate.outputs.go == 'true'
         env:
           GH_TOKEN: ${{ secrets.OMAPAK_SUBMIT_TOKEN }}
-          TAG: ${{ steps.gate.outputs.tag }}
+          TAG: ${{ needs.gate.outputs.tag }}
         run: |
           set -eu
           # The checkout above is at the tag, so HEAD is the commit omapak
@@ -130,6 +181,11 @@ jobs:
           git -C omapak config user.name "talaria-release"
           git -C omapak config user.email "talaria-release@users.noreply.github.com"
           git -C omapak fetch origin main
+          # The checkout fetched main alone. With no remote-tracking ref for a
+          # branch an earlier attempt already pushed, --force-with-lease below
+          # expects it absent and refuses the re-run as "stale info". A first
+          # attempt has no such branch, so a failed fetch is expected there.
+          git -C omapak fetch origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || true
           # Always from main, so a re-run of the same tag replaces the branch
           # instead of stacking a second edit on the previous attempt.
           git -C omapak checkout -B "$branch" origin/main

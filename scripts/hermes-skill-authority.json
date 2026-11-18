@@ -55,7 +55,7 @@
         "github"
       ],
       "signpost": "github",
-      "why": "No gh CLI; credentials are injected at git time; PRs go through the workbench."
+      "why": "No gh CLI; credentials are injected at git time; PRs go through the workbench; a missing GitHub permission is request_git_permission."
     },
     {
       "path": "productivity/box",

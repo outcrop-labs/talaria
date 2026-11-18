@@ -15,7 +15,11 @@ use talaria_runs_store::{CheckpointKind, RunCheckpoint, RunLineage};
 use talaria_runs_work_session::{AgentStop, WorkSessionInput};
 
 use super::*;
-use crate::world::{AttemptRow, column_move, contained, quiet_from, tail_tool_call};
+use crate::world::{
+    AttemptRow, Slot, column_move, contained, quiet_end, quiet_from, slot_of, tail_tool_call,
+};
+use talaria_fleet_docker::rewind::SessionLease;
+use talaria_gateway::fleet_chat::SessionAt;
 
 const SOURCE: &str = "run-1";
 const ATTEMPT: &str = "run-2";
@@ -25,7 +29,6 @@ const ROOT: &str = "/opt/data/workbench/jobs/job-2";
 struct Session {
     parent: Option<String>,
     rows: Vec<(String, Option<String>)>,
-    cleared: bool,
 }
 
 /// What the world holds between steps. Each method changes it the way the
@@ -51,6 +54,7 @@ struct State {
     restore_tree: String,
     checkout_clean: bool,
     start_err: Option<String>,
+    fork_answer_lost: bool,
 }
 
 struct World(Mutex<State>);
@@ -73,7 +77,6 @@ impl World {
             Session {
                 parent: None,
                 rows: source_rows(),
-                cleared: false,
             },
         );
         World(Mutex::new(State {
@@ -185,10 +188,13 @@ impl RewindWorld for World {
                     Session {
                         parent: Some(src.to_string()),
                         rows,
-                        cleared: false,
                     },
                 );
-                Ok(Fork::Created)
+                if s.fork_answer_lost {
+                    Err("no answer within 30s".to_string())
+                } else {
+                    Ok(Fork::Created)
+                }
             }
         };
         async move { answer }.boxed()
@@ -324,17 +330,20 @@ impl RewindWorld for World {
     }
     fn discard<'a>(
         &'a self,
-        _: &'a RewindInput,
+        input: &'a RewindInput,
         plan: &'a RewindPlan,
-        _: Stage,
+        forked: bool,
     ) -> BoxFuture<'a, ()> {
         self.log("discard");
         let mut s = self.state();
         s.discards += 1;
         s.roots.remove(&plan.root);
-        if let Some(session) = s.sessions.get_mut(&plan.attempt_run_id) {
-            session.cleared = true;
-            session.rows.clear();
+        let ours = s
+            .sessions
+            .get(&plan.attempt_run_id)
+            .is_some_and(|session| session.parent.as_deref() == Some(&input.source_run_id));
+        if forked && ours {
+            s.sessions.remove(&plan.attempt_run_id);
         }
         async move {}.boxed()
     }
@@ -429,12 +438,16 @@ fn input() -> Value {
 }
 
 fn ctx(checkpoint: Value) -> RunStepContext {
+    ctx_of("rw-1", checkpoint)
+}
+
+fn ctx_of(id: &str, checkpoint: Value) -> RunStepContext {
     let (tx, signal) = StepSignal::channel();
     drop(tx);
     RunStepContext {
         activity: StepActivity::new(),
         run: RunRow {
-            id: "rw-1".into(),
+            id: id.into(),
             kind: REWIND_KIND.into(),
             owner_user_id: Some("u-1".into()),
             subject_type: Some("task".into()),
@@ -502,6 +515,20 @@ async fn drive(
     }
 }
 
+async fn drive_as(world: &World, id: &str, mut checkpoint: Value) {
+    loop {
+        match rewind_step(ctx_of(id, checkpoint.clone()), world)
+            .await
+            .unwrap()
+        {
+            StepResult::Next {
+                checkpoint: next, ..
+            } => checkpoint = next,
+            _ => return,
+        }
+    }
+}
+
 fn assert_converged(world: &World, label: &str) {
     let s = world.state();
     assert_eq!(s.attempts.len(), 1, "{label}: one attempt");
@@ -511,7 +538,6 @@ fn assert_converged(world: &World, label: &str) {
         "{label}: the attempt's checkout stands"
     );
     let fork = s.sessions.get(ATTEMPT).expect("the fork exists");
-    assert!(!fork.cleared, "{label}: the fork was not cleared");
     assert_eq!(
         fork.rows.last().and_then(|(_, id)| id.clone()).as_deref(),
         Some(CALL),
@@ -621,7 +647,7 @@ async fn a_retried_start_that_cannot_read_its_attempt_destroys_nothing() {
         "a failure that cannot tell whether the attempt committed discards nothing"
     );
     assert!(s.roots.contains(ROOT));
-    assert!(!s.sessions[ATTEMPT].cleared);
+    assert!(s.sessions.contains_key(ATTEMPT), "the fork stands");
     assert_eq!(s.hold, None);
 }
 
@@ -672,7 +698,122 @@ async fn a_failure_before_start_takes_back_what_the_rewind_placed() {
     assert_eq!(s.discards, 1);
     assert_eq!(s.hold, None);
     assert!(s.attempts.is_empty());
-    assert!(s.sessions[ATTEMPT].cleared);
+    assert!(!s.sessions.contains_key(ATTEMPT), "no session is left");
+}
+
+#[tokio::test]
+async fn a_fork_whose_answer_was_lost_is_taken_back_too() {
+    let world = World::new().with(|s| s.fork_answer_lost = true);
+    let err = drive(&world, Value::Null, None).await.unwrap_err();
+    assert!(err.contains("no answer"), "{err}");
+    assert!(
+        !world.state().sessions.contains_key(ATTEMPT),
+        "the fork Hermes made after the answer was lost is gone"
+    );
+}
+
+#[tokio::test]
+async fn a_session_that_is_not_this_rewinds_fork_survives_its_failure() {
+    let world = World::new().with(|s| {
+        s.sessions.insert(
+            ATTEMPT.to_string(),
+            Session {
+                parent: Some("someone-else".into()),
+                rows: Vec::new(),
+            },
+        );
+    });
+    let err = drive(&world, Value::Null, None).await.unwrap_err();
+    assert!(err.contains("not a fork of this run"), "{err}");
+    assert!(world.state().sessions.contains_key(ATTEMPT));
+}
+
+#[test]
+fn a_slot_a_failed_rewind_left_is_taken_back_and_nothing_else_is() {
+    let pair = vec!["gen-0".to_string(), "gen-1".to_string()];
+    assert_eq!(slot_of(&SessionAt::Absent, &pair), Slot::Free);
+    assert_eq!(
+        slot_of(
+            &SessionAt::Held {
+                parent: Some("gen-0".into())
+            },
+            &pair
+        ),
+        Slot::Leftover {
+            parent: "gen-0".into()
+        }
+    );
+    assert_eq!(
+        slot_of(&SessionAt::Held { parent: None }, &pair),
+        Slot::Spent,
+        "a session of its own is a conversation, not a leftover fork"
+    );
+    assert_eq!(
+        slot_of(
+            &SessionAt::Held {
+                parent: Some("another-ticket".into())
+            },
+            &pair
+        ),
+        Slot::Spent
+    );
+}
+
+#[tokio::test]
+async fn a_lost_turn_says_what_happened_and_when_to_rewind_again() {
+    let world = World::new().with(|s| {
+        s.quiet = Some(Quiet::TurnLost {
+            lease_ends_in_secs: 95,
+        })
+    });
+    let err = drive(&world, Value::Null, None).await.unwrap_err();
+    assert!(err.contains("lost"), "names the lost turn: {err}");
+    assert!(err.contains("restarted"), "says what lost it: {err}");
+    assert!(err.contains("95 seconds"), "says when to retry: {err}");
+    assert!(err.contains("stays stopped"), "{err}");
+    assert!(!err.contains("once its turn has ended"), "{err}");
+}
+
+#[test]
+fn a_run_the_agent_forgot_with_its_lease_still_held_is_a_lost_turn() {
+    let held = Some(SessionLease::Held { ends_in_secs: 95 });
+    assert_eq!(
+        quiet_end("404 run_not_found".into(), held),
+        Quiet::TurnLost {
+            lease_ends_in_secs: 95
+        }
+    );
+    assert_eq!(
+        quiet_end("still running".into(), held),
+        Quiet::Unconfirmed("still running; the agent still holds a turn on the session".into())
+    );
+    assert_eq!(
+        quiet_end("404 run_not_found".into(), None),
+        Quiet::Unconfirmed("404 run_not_found".into()),
+        "an unread lease proves nothing"
+    );
+}
+
+#[tokio::test]
+async fn two_rewinds_past_the_routes_check_get_one_attempt_and_the_loser_touches_nothing() {
+    let world = World::new();
+    let (first, second) = tokio::join!(
+        rewind_step(ctx_of("rewind-a", Value::Null), &world),
+        rewind_step(ctx_of("rewind-b", Value::Null), &world)
+    );
+    let loser = second.unwrap_err();
+    assert!(loser.contains("already in flight"), "{loser}");
+    assert_eq!(
+        world.state().hold.as_deref(),
+        Some("rewind-a"),
+        "the loser's failure lifts no hold but its own"
+    );
+    assert_eq!(world.state().discards, 0);
+    let StepResult::Next { checkpoint, .. } = first.unwrap() else {
+        panic!("the winner goes on");
+    };
+    drive_as(&world, "rewind-a", checkpoint).await;
+    assert_eq!(world.state().attempts.len(), 1);
 }
 
 async fn at_in(world: &World, stage: Stage) -> Value {
@@ -807,7 +948,6 @@ async fn a_retried_fork_is_accepted_and_a_foreign_session_is_not() {
             Session {
                 parent: Some("some-chat".into()),
                 rows: vec![],
-                cleared: false,
             },
         );
     });

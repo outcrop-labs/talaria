@@ -1,0 +1,22 @@
+[
+  {
+    "__typename": "CheckRun",
+    "name": "judge (review)",
+    "workflowName": "judge review",
+    "status": "COMPLETED",
+    "conclusion": "SUCCESS",
+    "startedAt": "2026-11-11T10:00:00Z",
+    "completedAt": "2026-11-11T10:00:00Z",
+    "detailsUrl": "https://github.com/outcrop-labs/talaria/actions/runs/50/job/100"
+  },
+  {
+    "__typename": "CheckRun",
+    "name": "judge (review)",
+    "workflowName": "judge review",
+    "status": "COMPLETED",
+    "conclusion": "SKIPPED",
+    "startedAt": "2026-11-11T10:10:00Z",
+    "completedAt": "2026-11-11T10:10:00Z",
+    "detailsUrl": "https://github.com/outcrop-labs/talaria/actions/runs/150/job/200"
+  }
+]

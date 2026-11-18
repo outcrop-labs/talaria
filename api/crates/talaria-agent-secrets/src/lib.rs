@@ -23,12 +23,15 @@ use std::path::Path;
 use talaria_secretbox::SecretBox;
 
 mod config_seal;
+mod scrub;
+pub use scrub::{REDACTED, scrub_text};
 mod env_file;
 pub use config_seal::{
     CONFIG_SECRET_PREFIX, ConfigLiteral, ConfigSeal, config_secret_handles, config_secret_paths,
-    copy_config_secrets, held_config_secrets, plan_config_seal,
-    plan_config_seal_dropping_undeliverable, seal_config_literals, withhold_config_secret,
-    withhold_config_secrets, withhold_unheld_config_secrets,
+    copy_config_secrets, credential_flag, credential_value, held_config_secrets,
+    may_hold_credential, plan_config_seal, plan_config_seal_dropping_undeliverable,
+    seal_config_literals, withhold_config_secret, withhold_config_secrets,
+    withhold_unheld_config_secrets,
 };
 
 /// Container-env name: UPPER_SNAKE, must not collide with the stamped vars.
@@ -117,14 +120,88 @@ fn hermes_stripped() -> &'static std::collections::HashSet<&'static str> {
     })
 }
 
-/// Every name Hermes strips from the commands an agent runs, at the pinned
-/// image. A command the platform runs in the sandbox on the agent's behalf
-/// (`docker exec`) unsets these first, so it sees the env the agent's own
-/// terminal would — not one that passes where the agent's would fail.
-pub fn hermes_stripped_names() -> impl Iterator<Item = &'static str> {
-    let mut names: Vec<&'static str> = hermes_stripped().iter().copied().collect();
+/// The names the GOOD Hermes images on record strip beyond the compiled
+/// snapshot: the agent image follows Hermes' stable channel, and its
+/// inspection reads each image's own set (talaria-hermes-channel). Every
+/// render replaces this from the records ([`set_image_stripped`]), so every
+/// api process holds the same set, an image counts only once it has run well
+/// here, and an image that goes bad stops counting. The snapshot stays the
+/// floor for the pin every release ships.
+static IMAGE_STRIPPED: std::sync::LazyLock<std::sync::RwLock<std::collections::BTreeSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::BTreeSet::new()));
+
+/// The most names one set holds: a stripped set is a few hundred, and the
+/// list comes out of an image, so it is bounded where it is read.
+const IMAGE_STRIPPED_CAP: usize = 4096;
+
+/// Names Talaria itself hands the sandbox, which no image's list may take
+/// away: a tool that reads one would never see it.
+const MUST_SURVIVE: &[&str] = &[
+    "LLM_API_KEY",
+    "OMP_AUTH_BROKER_TOKEN",
+    "OMP_AUTH_BROKER_URL",
+    "TALARIA_AGENT_KEY",
+    "TALARIA_WORKBENCH_API_KEY",
+];
+
+/// Whether an image's list may add this name: an env name, not one the
+/// snapshot already has, not one Talaria relies on, and not one the
+/// container's own processes or Hermes' runtime read (`PATH`, `HOME`,
+/// `S6_*`, `HERMES_*` …) — the list comes out of an image, and a sandboxed
+/// command that unsets those would not run at all.
+fn image_may_strip(name: &str) -> bool {
+    name_ok(name)
+        && !hermes_stripped().contains(name)
+        && !MUST_SURVIVE.contains(&name)
+        && !TALARIA_STAMPED.contains(&name)
+        && !TALARIA_PREFIXES.iter().any(|p| name.starts_with(p))
+        && !PROCESS_RUNTIME.contains(&name)
+        && !PROCESS_RUNTIME_PREFIXES.iter().any(|p| name.starts_with(p))
+        && !HERMES_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// Replace the image-derived set with `names` (the good images' lists, read
+/// from the records). Answers the names it adds that were not in force
+/// before, for the caller to say so: a per-agent secret stored under one of
+/// them stops being loaded from the next render.
+pub fn set_image_stripped(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let next: std::collections::BTreeSet<String> = names
+        .into_iter()
+        .filter(|n| image_may_strip(n))
+        .take(IMAGE_STRIPPED_CAP)
+        .collect();
+    let mut set = IMAGE_STRIPPED.write().unwrap_or_else(|p| p.into_inner());
+    let added = next.difference(&set).cloned().collect();
+    *set = next;
+    added
+}
+
+fn is_hermes_stripped(name: &str) -> bool {
+    hermes_stripped().contains(name)
+        || IMAGE_STRIPPED
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(name)
+}
+
+/// Every name Hermes strips from the commands an agent runs: the pinned
+/// image's snapshot and every name an image this instance runs adds
+/// ([`set_image_stripped`]). A command the platform runs in the sandbox on
+/// the agent's behalf (`docker exec`) unsets these first, so it sees the env
+/// the agent's own terminal would — not one that passes where the agent's
+/// would fail.
+pub fn hermes_stripped_names() -> Vec<String> {
+    let mut names: Vec<String> = hermes_stripped().iter().map(|n| n.to_string()).collect();
+    names.extend(
+        IMAGE_STRIPPED
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .cloned(),
+    );
     names.sort_unstable();
-    names.into_iter()
+    names.dedup();
+    names
 }
 
 /// Why `name` cannot be a per-agent secret, or `None` when it can.
@@ -155,7 +232,7 @@ pub fn reserved(name: &str) -> Option<String> {
             "{name} is a Hermes setting ({prefix}* configures the agent's runtime), not a secret for its tools"
         ));
     }
-    if hermes_stripped().contains(name) {
+    if is_hermes_stripped(name) {
         return Some(format!(
             "{name} is one of Hermes's own provider, platform or tool names: Hermes strips it from every command the agent runs, so no tool of the agent's would see it, and reads it for itself instead. A key a command of the agent's reads goes under a name of your own; Hermes's own web search takes its key from Admin → Search"
         ));
@@ -701,7 +778,7 @@ mod tests {
 
     #[test]
     fn the_hermes_snapshot_is_loaded_and_clean() {
-        let names: Vec<&str> = hermes_stripped_names().collect();
+        let names: Vec<String> = hermes_stripped_names();
         assert!(names.len() > 400, "the snapshot loaded: {}", names.len());
         for n in &names {
             assert!(name_ok(n), "{n} is an env name");
@@ -714,8 +791,52 @@ mod tests {
             "TALARIA_AGENT_KEY",
             "LLM_API_KEY",
         ] {
-            assert!(!names.contains(&ours), "Hermes strips {ours}");
+            assert!(!names.iter().any(|n| n == ours), "Hermes strips {ours}");
         }
+    }
+
+    #[test]
+    fn a_name_a_good_image_strips_is_refused_until_the_image_stops_counting() {
+        // The stable channel's inspection reads each image's own stripped
+        // set; a name only the newer Hermes strips was a secret Talaria
+        // accepted (and a command it ran kept) before the image ran well.
+        let added = "ZZ_IMAGE_ONLY_PROVIDER_KEY";
+        assert_eq!(reserved(added), None);
+        let new = set_image_stripped([
+            added.to_string(),
+            "OPENAI_API_KEY".to_string(), // the snapshot's already
+            "not an env name".to_string(),
+            // Talaria's own: never taken away, whatever an image lists.
+            "TALARIA_WORKBENCH_API_KEY".to_string(),
+            "LLM_API_KEY".to_string(),
+            "OMP_AUTH_BROKER_TOKEN".to_string(),
+            "TALARIA_ANYTHING".to_string(),
+            // What the container's processes and Hermes' runtime read: a
+            // sandboxed command that unset these would not run at all.
+            "PATH".to_string(),
+            "HOME".to_string(),
+            "S6_KEEP_ENV".to_string(),
+            "HERMES_HOME".to_string(),
+            "API_SERVER_KEY".to_string(),
+        ]);
+        assert_eq!(new, vec![added.to_string()], "only the new, allowed name");
+        assert!(reserved(added).is_some());
+        assert!(hermes_stripped_names().iter().any(|n| n == added));
+        for ours in [
+            "TALARIA_WORKBENCH_API_KEY",
+            "LLM_API_KEY",
+            "OMP_AUTH_BROKER_TOKEN",
+            "PATH",
+            "HOME",
+            "HERMES_HOME",
+        ] {
+            assert!(!hermes_stripped_names().iter().any(|n| n == ours), "{ours}");
+        }
+        // The same set again adds nothing; an empty set (the image went
+        // bad) drops it, and the secret loads again.
+        assert!(set_image_stripped([added.to_string()]).is_empty());
+        set_image_stripped(Vec::<String>::new());
+        assert_eq!(reserved(added), None);
     }
 
     #[test]

@@ -81,7 +81,7 @@ from published prices rather than charged by the provider.
 the catalog or from you, also counts toward every USD ceiling whose window holds those calls.
 After upgrading from a release that left OpenRouter agent turns at $0, that history re-prices at
 once, and an agent already over its ceiling is refused on its next call. Check the ceilings under
-**Admin → Settings** when you upgrade.
+**Admin → Security → LLM budgets** when you upgrade.
 - **Remove provider** — cascades: every agent on it gets new versions and a re-render, and each
   running one restarts onto them (offline for about a minute). An agent someone stopped stays
   stopped and picks the change up when it next starts.

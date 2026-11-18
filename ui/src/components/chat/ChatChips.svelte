@@ -243,7 +243,10 @@
           aria-label={chip.summary || 'Approval required'}
         >
           <div class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-            {chip.status === 'approved' ? 'Approved' : chip.status === 'denied' ? 'Denied' : 'Needs approval'}
+            <!-- A held call to one of Google's Workspace MCP servers: one
+                 generic card, whose summary names the product, the tool and
+                 the start of the arguments as the agent sent them. -->
+            {chip.actionKind === 'mcp_call' ? 'Google tool call · ' : ''}{chip.status === 'approved' ? 'Approved' : chip.status === 'denied' ? 'Denied' : 'Needs approval'}
           </div>
           <p class="mt-1 font-sans text-[13px] text-fg">{chip.summary || 'A protected action is waiting.'}</p>
           {#if error && busy === null}

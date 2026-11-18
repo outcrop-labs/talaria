@@ -10,6 +10,8 @@ dist/
 
 # Rust build output (api/) — Cargo.lock IS committed, target/ is not
 api/target/
+# The api binary CI built, fetched by `talaria dev --api-from-ci` (cli/src/ci-artifact.ts)
+api/.ci-bin/
 
 # Playground
 playground/
@@ -78,6 +80,11 @@ ui/.sdk-doc-examples-*/
 # OMC agent state (never commit)
 .omc/
 ui/.omc/
+
+# The cleanup sweep's hold (scripts/cleanup-sweep.mjs): a `.talaria-keep` in a
+# checkout's root keeps the sweep off it. A local marker, never content — and
+# untracked, it made every held worktree read as dirty.
+.talaria-keep
 
 # Claude Code local state — the tracked parts are the skills and the hooks
 # block in .claude/settings.json; everything personal stays out of history

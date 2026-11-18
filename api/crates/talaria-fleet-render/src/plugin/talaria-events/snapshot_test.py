@@ -159,7 +159,8 @@ try:
 finally:
     os.chmod(os.path.join(workdir, ".git", "objects"), 0o755)
 e3 = snapshots()[2]
-assert e3["reason"].startswith("snapshot failed: RuntimeError: git "), e3
+assert e3["reason"] in ("snapshot failed: git write-tree failed in the job's checkout", "snapshot failed: git add failed in the job's checkout", "snapshot failed: the checkout's object store could not be written"), e3
+assert "fatal" not in e3["reason"] and "Errno" not in e3["reason"], e3
 assert "commit" not in e3 and e3["jobId"] == job_id
 assert not [f for f in os.listdir(tempfile.gettempdir()) if f.startswith("talaria-ckpt-")], "temp index left behind"
 # A git that hangs leaves neither the temp index nor its lock behind.
@@ -180,7 +181,7 @@ try:
 finally:
     mod.subprocess.run = real_run
 e4 = snapshots()[3]
-assert e4["reason"].startswith("snapshot failed: TimeoutExpired"), e4
+assert e4["reason"] == "snapshot failed: git took longer than 10 s and was stopped", e4
 assert not [f for f in os.listdir(tempfile.gettempdir()) if f.startswith("talaria-ckpt-")], "temp index or its lock left behind"
 # A checkout with no index yet, as a clone has before its first add, still snapshots.
 os.unlink(os.path.join(workdir, ".git", "index"))
@@ -259,17 +260,18 @@ e6 = snapshots()[-1]
 assert "commit" not in e6 and e6["reason"].startswith("snapshot skipped: untracked content"), e6
 assert "over the" in e6["reason"] and "budget" in e6["reason"], e6["reason"]
 os.unlink(big)
-# A git killed mid-add leaves no pack garbage behind.
+# A git killed mid-add wrote only into the snapshot's own quarantine, which
+# goes with the failure; the agent's store, and any temp file of a git of
+# its own, is not touched.
 pack = os.path.join(workdir, ".git", "objects", "pack")
 os.makedirs(pack, exist_ok=True)
-stale = os.path.join(pack, "tmp_pack_old")
-open(stale, "w").close()
-os.utime(stale, (1, 1))
+theirs = os.path.join(pack, "tmp_pack_theirs")
+open(theirs, "w").close()
 
 
 def hanging_pack(cmd, *a, **kw):
     if "add" in cmd:
-        open(os.path.join(pack, "tmp_pack_new"), "w").close()
+        open(os.path.join(kw["env"]["GIT_OBJECT_DIRECTORY"], "tmp_pack_ours"), "w").close()
         raise subprocess.TimeoutExpired(cmd, 1)
     return real_run(cmd, *a, **kw)
 
@@ -280,8 +282,101 @@ try:
     pre(history7, req="t1:api:8")
 finally:
     mod.subprocess.run = real_run
-assert snapshots()[-1]["reason"].startswith("snapshot failed: TimeoutExpired"), snapshots()[-1]
-assert not os.path.exists(os.path.join(pack, "tmp_pack_new")), "the killed add's pack garbage stays"
-assert os.path.exists(stale), "another git's older temp file is not ours to remove"
+assert snapshots()[-1]["reason"] == "snapshot failed: git took longer than 10 s and was stopped", snapshots()[-1]
+assert os.path.exists(theirs), "another git's temp file is not ours to remove"
+assert not [d for d in os.listdir(os.path.join(workdir, ".git")) if d.startswith("talaria-ckpt-objects-")], "the quarantine stayed"
+# A snapshot's objects are written to a quarantine of its own and reach the
+# real store only when the snapshot succeeds: a failed one leaves the store
+# untouched, and a git gc running beside the snapshots loses nothing to it.
+import threading
+
+
+def objects_in(root):
+    out = set()
+    for d in os.listdir(os.path.join(root, ".git", "objects")):
+        if len(d) == 2:
+            out.update(d + f for f in os.listdir(os.path.join(root, ".git", "objects", d)))
+    return out
+
+
+w3 = os.path.join(jobs, "4f3b0a6e-1c4d-4e5f-8a9b-0c1d2e3f4a5d")
+third_job = "4f3b0a6e-1c4d-4e5f-8a9b-0c1d2e3f4a5d"
+shutil.copytree(workdir, w3)
+git(w3, "reset", "-q", "--hard")
+fifth = "44444444-5555-4666-8777-888888888888"
+mod._checkouts[fifth] = (third_job, w3)
+open(os.path.join(w3, "fresh.txt"), "w").write("new content\n")
+before = objects_in(w3)
+
+
+def failing_commit(cmd, *a, **kw):
+    if "commit-tree" in cmd:
+        raise RuntimeError("commit-tree refused")
+    return real_run(cmd, *a, **kw)
+
+
+mod.subprocess.run = failing_commit
+try:
+    pre([{"role": "tool", "tool_call_id": "q1", "tool_name": "terminal"}], sid=fifth)
+finally:
+    mod.subprocess.run = real_run
+assert snapshots()[-1]["reason"] == "snapshot failed: an unexpected error in the plugin (RuntimeError)", snapshots()[-1]
+assert objects_in(w3) == before, "a failed snapshot wrote objects into the agent's store"
+assert not [d for d in os.listdir(os.path.join(w3, ".git")) if d.startswith("talaria-ckpt-objects-")], "the quarantine was not removed"
+mod._last_boundary.pop(fifth, None)
+pre([{"role": "tool", "tool_call_id": "q2", "tool_name": "terminal"}], sid=fifth)
+ok = snapshots()[-1]
+assert "commit" in ok, ok
+assert git(w3, "cat-file", "-t", ok["commit"]) == "commit", "a successful snapshot's objects reach the store"
+assert objects_in(w3) > before
+stop = threading.Event()
+
+
+def gc_loop():
+    while not stop.is_set():
+        subprocess.run(["git", "-C", w3, "gc", "--prune=now", "-q"], capture_output=True)
+
+
+t = threading.Thread(target=gc_loop)
+t.start()
+commits = []
+try:
+    for k in range(12):
+        open(os.path.join(w3, "fresh.txt"), "w").write(f"v{k}\n")
+        mod._last_boundary.pop(fifth, None)
+        pre([{"role": "tool", "tool_call_id": f"g{k}", "tool_name": "terminal"}], sid=fifth)
+        e = snapshots()[-1]
+        assert "commit" in e, e
+        commits.append(e["commit"])
+finally:
+    stop.set()
+    t.join()
+for c in commits:
+    assert git(w3, "cat-file", "-t", c) == "commit", f"{c} lost beside a running gc"
+fsck = subprocess.run(["git", "-C", w3, "fsck", "--no-dangling"], capture_output=True, text=True)
+assert fsck.returncode == 0, fsck.stderr
+
+# The binding file: unreadable bytes bind nothing and the step still reports;
+# a symlink in its place is neither read nor written through; a new binding
+# replaces the old one whole, never by a torn write.
+sixth = "55555555-6666-4777-8888-999999999999"
+with open(os.path.join(state_dir, sixth), "wb") as f:
+    f.write(b"\xff\xfe not a job")
+mod._checkouts.pop(sixth, None)
+pre(history, sid=sixth)
+assert snapshots()[-1]["reason"] == "no workbench job known for this session", snapshots()[-1]
+seventh = "66666666-7777-4888-8999-aaaaaaaaaaaa"
+target = os.path.join(base, "elsewhere")
+open(target, "w").write(job_id)
+os.symlink(target, os.path.join(state_dir, seventh))
+mod._checkouts.pop(seventh, None)
+assert mod._checkout_for(seventh) is None, "a symlinked binding is not read"
+post_as(seventh, "mcp__workbench__start_job", {}, answer({"jobId": third_job, "status": "started", "workdir": w3}))
+assert open(target).read() == job_id, "a symlinked binding is not written through"
+assert os.path.islink(os.path.join(state_dir, seventh)), os.listdir(state_dir)
+eighth = "77777777-8888-4999-8aaa-bbbbbbbbbbbb"
+post_as(eighth, "mcp__workbench__start_job", {}, answer({"jobId": job_id, "status": "started", "workdir": workdir}))
+assert open(os.path.join(state_dir, eighth)).read().strip() == job_id
+assert not [n for n in os.listdir(state_dir) if n.endswith(".tmp") or n.startswith(".")], os.listdir(state_dir)
 shutil.rmtree(base)
 print("snapshot_test passed")

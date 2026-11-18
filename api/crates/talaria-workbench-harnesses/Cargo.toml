@@ -13,3 +13,4 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-model-roles = { workspace = true }
+tracing = { workspace = true }

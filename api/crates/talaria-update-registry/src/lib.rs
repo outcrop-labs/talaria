@@ -174,14 +174,34 @@ struct RegistrySession {
     auth: Option<String>,
 }
 
+/// The host a registry's API answers on: Docker Hub's references name
+/// `docker.io`, and its distribution API is `registry-1.docker.io`.
+fn api_host(registry: &str) -> &str {
+    match registry {
+        "docker.io" | "index.docker.io" | "registry.hub.docker.com" => "registry-1.docker.io",
+        other => other,
+    }
+}
+
 impl RegistrySession {
+    /// The update engine's session: anonymous, or basic auth at the token
+    /// endpoint from `TALARIA_UPDATE_REGISTRY_AUTH`.
     async fn open(image: &ImageRef) -> Result<Self, String> {
+        let userpass = std::env::var("TALARIA_UPDATE_REGISTRY_AUTH")
+            .ok()
+            .filter(|v| !v.is_empty());
+        Self::open_with(image, userpass.as_deref()).await
+    }
+
+    /// A session with the given token-endpoint credentials, or none.
+    async fn open_with(image: &ImageRef, userpass: Option<&str>) -> Result<Self, String> {
         let registry = &image.registry;
         let client = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| format!("registry client would not build: {e}"))?;
-        let base = format!("{}://{registry}/v2", scheme_for(registry));
+        let base = format!("{}://{}/v2", scheme_for(registry), api_host(registry));
         // GET, not HEAD: the distribution spec defines GET /v2/ as the
         // endpoint-check, and ghcr answers 405 to a HEAD on it.
         let probe = client
@@ -216,9 +236,7 @@ impl RegistrySession {
         // Private forks: basic auth at the TOKEN endpoint (the spec's shape
         // for password-grant pulls). From the env, never the settings row —
         // see the header.
-        if let Ok(userpass) = std::env::var("TALARIA_UPDATE_REGISTRY_AUTH")
-            && !userpass.is_empty()
-        {
+        if let Some(userpass) = userpass {
             use base64::Engine as _;
             let b64 = base64::engine::general_purpose::STANDARD.encode(userpass);
             req = req.header(reqwest::header::AUTHORIZATION, format!("Basic {b64}"));
@@ -317,6 +335,145 @@ pub async fn resolve_digest(image: &ImageRef) -> Result<String, String> {
         ));
     }
     Ok(digest)
+}
+
+/// An ANONYMOUS reader of one repository: the agent image's channel
+/// (talaria-hermes-channel) reads Hermes' public tags with it, and never
+/// sends the update engine's own registry credentials to another registry.
+///
+/// It only HEADs manifests and lists tags. On Docker Hub neither counts
+/// against the anonymous pull limit — a manifest GET does, which is why
+/// [`fetch_version_label`] is not used for it (measured 2026-11-03: four
+/// HEADs left `ratelimit-remaining` where it was).
+pub struct PublicRepo {
+    image: ImageRef,
+    session: RegistrySession,
+    client: reqwest::Client,
+}
+
+/// The most tag-list pages a reader follows (each up to [`TAGS_PAGE`]).
+const TAGS_PAGES: usize = 20;
+const TAGS_PAGE: usize = 1000;
+/// A tags page bigger than this is not a tags page.
+const TAGS_PAGE_BYTES: usize = 4 << 20;
+
+impl PublicRepo {
+    pub async fn open(image: &ImageRef) -> Result<PublicRepo, String> {
+        let session = RegistrySession::open_with(image, None).await?;
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| format!("registry client would not build: {e}"))?;
+        Ok(PublicRepo {
+            image: image.clone(),
+            session,
+            client,
+        })
+    }
+
+    /// HEAD `tag`'s manifest and take its content digest (the index digest
+    /// for a multi-arch tag).
+    pub async fn digest(&self, tag: &str) -> Result<String, String> {
+        let ImageRef {
+            registry,
+            repository,
+            ..
+        } = &self.image;
+        let head = self
+            .session
+            .head(&self.client, &format!("/{repository}/manifests/{tag}"))
+            .header(reqwest::header::ACCEPT, MANIFEST_ACCEPTS)
+            .send()
+            .await
+            .map_err(|e| format!("could not ask {registry} for {repository}:{tag}: {e}"))?;
+        if !head.status().is_success() {
+            return Err(format!(
+                "{registry}/{repository}:{tag} answered {} — the tag is missing or the registry is unwilling",
+                head.status()
+            ));
+        }
+        let digest = head
+            .headers()
+            .get("docker-content-digest")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .ok_or_else(|| format!("{registry} answered without a content digest"))?;
+        if !is_digest(&digest) {
+            return Err(format!(
+                "{registry} named a digest this engine refuses: {digest:.80}"
+            ));
+        }
+        Ok(digest)
+    }
+
+    /// Every tag the repository lists, following the registry's pages (to a
+    /// bound). Only tags as names: each is checked by the caller.
+    pub async fn tags(&self) -> Result<Vec<String>, String> {
+        let ImageRef {
+            registry,
+            repository,
+            ..
+        } = &self.image;
+        let mut tags: Vec<String> = Vec::new();
+        let mut path = format!("/{repository}/tags/list?n={TAGS_PAGE}");
+        for _ in 0..TAGS_PAGES {
+            let resp = self
+                .session
+                .get(&self.client, &path)
+                .send()
+                .await
+                .map_err(|e| format!("could not list {registry}/{repository}'s tags: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!(
+                    "{registry}/{repository} answered {} to its tag list",
+                    resp.status()
+                ));
+            }
+            let next = resp
+                .headers()
+                .get(reqwest::header::LINK)
+                .and_then(|v| v.to_str().ok())
+                .and_then(next_link);
+            let body = resp
+                .bytes()
+                .await
+                .map_err(|e| format!("the tag list did not arrive: {e}"))?;
+            if body.len() > TAGS_PAGE_BYTES {
+                return Err("the tag list page is too large to be one".into());
+            }
+            let page: TagsPage = serde_json::from_slice(&body)
+                .map_err(|e| format!("the tag list is not one: {e}"))?;
+            tags.extend(page.tags.unwrap_or_default());
+            match next {
+                // Only a path on the same registry is followed.
+                Some(n) if n.starts_with("/v2/") => path = n["/v2".len()..].to_string(),
+                _ => break,
+            }
+        }
+        Ok(tags)
+    }
+}
+
+#[derive(Deserialize)]
+struct TagsPage {
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+}
+
+/// The `rel="next"` target of a `Link` header: `</v2/x/tags/list?n=…&last=…>; rel="next"`.
+fn next_link(value: &str) -> Option<String> {
+    value.split(',').find_map(|part| {
+        let (target, params) = part.trim().split_once(';')?;
+        params.contains("rel=\"next\"").then(|| {
+            target
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string()
+        })
+    })
 }
 
 /// Read `org.opencontainers.image.version` off the image the digest names —
@@ -447,6 +604,26 @@ mod tests {
         );
         assert!(!is_digest(&format!("sha512:{}", "a".repeat(128))));
         assert!(!is_digest("main"));
+    }
+
+    #[test]
+    fn docker_hub_references_are_read_from_its_api_host() {
+        let hub = parse_image_ref("nousresearch/hermes-agent:stable").unwrap();
+        assert_eq!(hub.registry, "docker.io");
+        assert_eq!(hub.repository, "nousresearch/hermes-agent");
+        assert_eq!(hub.tag, "stable");
+        assert_eq!(api_host(&hub.registry), "registry-1.docker.io");
+        assert_eq!(api_host("ghcr.io"), "ghcr.io");
+        assert_eq!(api_host("127.0.0.1:5000"), "127.0.0.1:5000");
+    }
+
+    #[test]
+    fn a_tag_page_names_its_next_page_in_the_link_header() {
+        assert_eq!(
+            next_link(r#"</v2/x/tags/list?n=1000&last=v1>; rel="next""#).as_deref(),
+            Some("/v2/x/tags/list?n=1000&last=v1")
+        );
+        assert_eq!(next_link(r#"</v2/x>; rel="prev""#), None);
     }
 
     #[test]

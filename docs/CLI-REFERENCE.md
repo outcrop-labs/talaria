@@ -272,24 +272,30 @@ talaria setup
 run the dev stack: infra, readiness waits, then the app on :5273
 
 ```
-talaria dev
+talaria dev [--api-from-ci | --api-bin <path>]
 ```
+
+| Flag | Kind | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--api-from-ci` | bool | — | run the talaria-api binary CI built instead of `cargo run`: HEAD's, or the newest earlier commit's whose api is still HEAD's. Needs a GitHub token (gate:remote's: GH_TOKEN, GITHUB_TOKEN or gh's login); refused with uncommitted api changes |
+| `--api-bin` | value | — | run this prebuilt talaria-api binary instead of `cargo run` |
 
 ### `talaria worktree`
 
 spin up an isolated worktree stack (own DB seeded from main)
 
 ```
-talaria worktree <name> [base-ref] [--no-seed] [--seed-from <checkout>] [--desktop]
+talaria worktree <name> [base-ref] [--seed] [--seed-from <checkout>] [--desktop]
 ```
 
-Positional `<name>` (required) (takes the rest of the arguments) — then optionally a base ref (default: HEAD)
+Positional `<name>` (required) — then optionally a base ref (default: HEAD)
 
 | Flag | Kind | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--no-seed` | bool | — | start with an empty api/target (a cold build) instead of reflinking an idle checkout's registry crates |
-| `--seed-from` | value | — | the checkout whose target to seed from (default: the idle one whose Cargo.lock shares the most entries) |
-| `--desktop` | bool | — | seed desktop/src-tauri/target too |
+| `--seed` | bool | — | reflink an idle checkout's registry crates into api/target — only when you will reproduce a CI failure with cargo here; `talaria dev --api-from-ci` needs no target |
+| `--seed-from` | value | — | seed, from this checkout (default: the idle one whose Cargo.lock shares the most entries) |
+| `--desktop` | bool | — | seed desktop/src-tauri/target too (implies --seed) |
+| `--no-seed` | bool | — | deprecated, and does nothing: api/target starts empty unless --seed says otherwise |
 
 ### `talaria seed-target`
 

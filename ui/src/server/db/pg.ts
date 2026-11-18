@@ -3292,8 +3292,8 @@ alter table tasks drop column if exists conversation_id`,
   // is append-only and the ledger is keyed by INDEX, so a statement wedged
   // mid-array renumbers every statement after it and a deployed instance
   // refuses to boot with `migration N changed after it was applied`. A fresh
-  // database cannot see that (no ledger); the upgrade replay in
-  // .github/workflows/migrations.yml is what does.
+  // database cannot see that (no ledger); the upgrade replay in ci.yml's
+  // `migrations (replay + upgrade)` job is what does.
   `alter table workbench_jobs add column if not exists queued_at timestamptz`,
   `alter table workbench_jobs add column if not exists queued_reason text`,
   // Merge-to-testing is gone: the agent verb, the ticket button, the per-repo
@@ -4788,10 +4788,234 @@ alter table tasks drop column if exists conversation_id`,
   `alter table price_lookups drop constraint if exists price_lookups_outcome_check`,
   `alter table price_lookups add constraint price_lookups_outcome_check
      check (outcome in ('priced', 'no_match', 'source_failed', 'variable', 'suggested'))`,
+  //
+  // The agent image follows Hermes' stable channel (talaria-hermes-channel,
+  // docs/ARCHITECTURE.md "The fleet"). One row per image digest this instance
+  // has seen on the channel: the version tag that shares the digest, the
+  // image's own config schema version (read from the image, never assumed),
+  // and whether it ran well here. A digest marked bad is never rolled out
+  // again. Additive only: main never reads either table, so a rollback to it
+  // leaves them unread.
+  `create table if not exists hermes_images (
+     digest text primary key,
+     repository text not null,
+     version text,
+     config_version integer,
+     status text not null default 'candidate'
+       check (status in ('candidate', 'good', 'bad')),
+     reason text,
+     inspect jsonb not null default '{}'::jsonb,
+     pulled_here boolean not null default false,
+     first_seen timestamptz not null default now(),
+     prepared_at timestamptz,
+     good_since timestamptz,
+     updated_at timestamptz not null default now()
+   )`,
+  // Which digest each agent's container was last told to run. An agent with
+  // no row runs the channel's current image (the compiled pin until the
+  // channel has moved). The rollout writes one row per agent it moves.
+  `create table if not exists hermes_agent_images (
+     agent_id uuid primary key references agent_defs(id) on delete cascade,
+     digest text not null,
+     updated_at timestamptz not null default now()
+   )`,
+  // When the agent was last stopped: Talaria's Stop, or a stop the agent image
+  // channel found when it first ran (an agent stopped before it, by hand, or
+  // by compose down). A start clears only a Stop older than its own start.
+  // The channel never starts an agent that is down this way.
+  `alter table agent_defs add column if not exists stopped_at timestamptz`,
   // The Hermes run id of a work session's newest turn. Dropping the stream
   // does not end a turn in the agent; a stop has to name it, and the api
   // process that read the id may be gone by the time a person presses Stop.
   `alter table runs add column if not exists agent_run_id text`,
+  // WHAT ONE PERSON PINNED TO THE TOP OF THEIR COMMS RAIL: a channel (a relay
+  // and a DM are channels too), an agent, or one thread with an agent, keyed
+  // in the rail's own grammar (`channel:<id>`, `agent:<model>`,
+  // `thread:<id>`). It lived in each browser's localStorage, so a pin made on
+  // the laptop never reached the desktop app. Per person; cascade-deleted
+  // with them. A key whose channel or thread is gone simply lists nothing.
+  `create table if not exists comms_pins (
+     user_id uuid not null references users(id) on delete cascade,
+     pin_key text not null,
+     created_at timestamptz not null default now(),
+     primary key (user_id, pin_key)
+   )`,
+  // A person's timed mute of ONE AGENT's direct messages — its replies in
+  // their threads and its own check-ins. The channel mute's twin
+  // (channel_members.muted_until): the rows still land in-app, quiet, and no
+  // toast, push or mail goes out while it holds. An expired row is the same
+  // as none; unmuting deletes it.
+  `create table if not exists agent_dm_mutes (
+     user_id uuid not null references users(id) on delete cascade,
+     agent_model text not null,
+     muted_until timestamptz not null,
+     primary key (user_id, agent_model)
+   )`,
+  // A workbench job's provisioning: Talaria clones the branch, installs the
+  // toolchain and the pinned harness, and preflights it before the agent gets
+  // a single command. One jsonb record (state ready / running / failed, the
+  // steps, the failing step's output, a heartbeat) that the MCP answers, the
+  // ticket strip and the Work view all read. NULL = never provisioned.
+  `alter table workbench_jobs add column if not exists provision jsonb`,
+  // WHAT A GITHUB APP ASKS FOR, AND WHAT EACH INSTALLATION ACCEPTED
+  // (talaria-git-hosts' holdings, docs/WORKBENCH.md "Git hosts"). One row per
+  // installation a GitHub host's App connection uses: the App's ask and the
+  // installation's accepted set at the last good read (`GET /app`,
+  // `GET /app/installations/{id}`), its repository selection, suspension and
+  // settings page, when it was read, and why the last read failed (the last
+  // good answer stays). The mint sizes tokens to `held`, the alerts read it
+  // instead of GitHub, and Admin → Git hosts shows what is still waiting for
+  // an org owner. Refreshed every ten minutes, after a refused mint, on a
+  // host's writes and on an admin's Refresh. A new table, so roll-safe: the
+  // previous release never reads it.
+  `create table if not exists git_host_installations (
+     host_id text not null references git_hosts(id) on delete cascade,
+     installation_id bigint not null,
+     account text not null default '',
+     app_permissions jsonb,
+     held jsonb,
+     repository_selection text,
+     suspended_at timestamptz,
+     html_url text,
+     checked_at timestamptz,
+     error text,
+     primary key (host_id, installation_id)
+   )`,
+  // THE GITHUB PERMISSIONS AN ADMIN SETS FOR AN AGENT ON A HOST
+  // (talaria-git-hosts' permissions, docs/WORKBENCH.md "Git hosts"). Per
+  // agent, per host: the agent's WHOLE set as `{key: level}` — any key
+  // GitHub's App catalog knows, repository and organization keys alike —
+  // applying to every repo the agent is granted on that host (workbench_repos
+  // stays the repo gate and carries none). Written by an admin only, through
+  // a compare-and-set or an approval's one-key merge; the credential door
+  // mints the set, met with what the installation holds, into the agent's
+  // token, and a narrowing revokes the tokens already handed out. No row is
+  // the default (contents and pull requests to write, metadata to read). A
+  // new table, so roll-safe: the previous release never reads it, and an
+  // agent without a row carries what it always did.
+  `create table if not exists agent_github_permissions (
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     host_id text not null references git_hosts(id) on delete cascade,
+     permissions jsonb not null default '{}'::jsonb,
+     updated_by uuid references users(id) on delete set null,
+     updated_at timestamptz not null default now(),
+     primary key (agent_id, host_id)
+   )`,
+  // EVERY GOOGLE CONNECTION REMEMBERS THE CLIENT THAT MINTED IT
+  // (docs/GOOGLE-WORKSPACE.md "Which client a connection refreshes with").
+  // OAuth binds a refresh token to the client it was issued to, so each token
+  // store records that client and refreshes with it wherever it now sits
+  // (talaria-google-connections' vend_grant): an operator may move a client
+  // between the connections and sign-in slots without stranding a grant.
+  // `reconnect_reason` is Google's words from the last time it refused that
+  // client (invalid_client, unauthorized_client) — the grant is kept, never
+  // cleared, and a successful refresh forgets it; `reconnect_flagged_at` is
+  // when that refusal was first seen. Nullable columns, so roll-safe: the
+  // previous release neither reads nor writes them. Its limit: a reconnect
+  // the previous release stores (after a roll-back) keeps whatever stamp the
+  // row had, and a stamped grant is only ever sent to its stamped client — so
+  // if the slots were swapped meanwhile, that grant's stamp names the wrong
+  // client and its next refresh is refused (cleared on invalid_grant, flagged
+  // otherwise) until the person reconnects on this release.
+  `alter table google_connections
+     add column if not exists oauth_client_id text,
+     add column if not exists reconnect_reason text,
+     add column if not exists reconnect_flagged_at timestamptz`,
+  `alter table google_org_connection
+     add column if not exists oauth_client_id text,
+     add column if not exists reconnect_reason text,
+     add column if not exists reconnect_flagged_at timestamptz`,
+  `alter table agent_google_connections
+     add column if not exists oauth_client_id text,
+     add column if not exists reconnect_reason text,
+     add column if not exists reconnect_flagged_at timestamptz`,
+  // The grants stored before this: every refresh so far ran on the Admin
+  // UI's connections record whenever it was complete, so that record's
+  // client is the one they refresh with today. An install configured in
+  // ui/.env has no record to read here; its grants are stamped on their next
+  // refresh, by asking Google which configured client accepts them.
+  // "Complete" here is non-empty clientId and clientSecretEnc; the runtime
+  // also needs the secret to open. A record sealed under a lost key (which
+  // the resolver skips for the env pair) therefore stamps every grant with
+  // the record's client, configured nowhere, although the env pair may be
+  // what refreshed them: each answers the named reconnect instead of
+  // refreshing, until the person reconnects (or an admin re-saves that
+  // client, when it is the one that minted them).
+  `update google_connections set oauth_client_id = s.value->>'clientId'
+     from app_settings s
+    where s.key = 'google_oauth_client'
+      and coalesce(s.value->>'clientId', '') <> ''
+      and coalesce(s.value->>'clientSecretEnc', '') <> ''
+      and google_connections.oauth_client_id is null`,
+  `update google_org_connection set oauth_client_id = s.value->>'clientId'
+     from app_settings s
+    where s.key = 'google_oauth_client'
+      and coalesce(s.value->>'clientId', '') <> ''
+      and coalesce(s.value->>'clientSecretEnc', '') <> ''
+      and google_org_connection.oauth_client_id is null`,
+  `update agent_google_connections set oauth_client_id = s.value->>'clientId'
+     from app_settings s
+    where s.key = 'google_oauth_client'
+      and coalesce(s.value->>'clientId', '') <> ''
+      and coalesce(s.value->>'clientSecretEnc', '') <> ''
+      and agent_google_connections.oauth_client_id is null`,
+  // AN AGENT ASKS FOR A GITHUB PERMISSION (`request_git_permission`), and an
+  // admin decides it (talaria-git-hosts' requests, docs/WORKBENCH.md "Asking
+  // for a permission"). One row per (agent, host, permission) while open: a
+  // second raise appends to `why` and `evidence` (the partial unique index
+  // below). `repo` is where the need arose; an approval merges the key into
+  // the agent's set on the HOST (agent_github_permissions). `status`:
+  // pending → granted (the installation holds it) or awaiting_github (an org
+  // owner has not accepted it yet; a holdings refresh flips it to granted
+  // when it does), denied, or withdrawn (its last grant on the host went).
+  // A new table, so roll-safe: the previous release never reads it.
+  `create table if not exists workbench_permission_requests (
+     id uuid primary key default gen_random_uuid(),
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     agent_model text not null,
+     host_id text not null references git_hosts(id) on delete cascade,
+     repo text not null,
+     permission text not null,
+     level text not null,
+     why text not null default '',
+     evidence jsonb,
+     task_id uuid references tasks(id) on delete set null,
+     status text not null default 'pending',
+     decided_by uuid references users(id) on delete set null,
+     decision_note text,
+     decided_at timestamptz,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create unique index if not exists workbench_permission_requests_one_open
+     on workbench_permission_requests (agent_id, host_id, permission)
+     where status in ('pending', 'awaiting_github')`,
+  // GOOGLE'S WORKSPACE MCP SERVERS' LAST WORD ON A GRANT (docs/
+  // GOOGLE-WORKSPACE.md "Google's Workspace MCP servers"). The MCP gateway
+  // relays an agent's call to Google's Workspace MCP servers with the token
+  // of its principal's own grant; when Google answers 401 or 403, Google's
+  // words land on that grant as `last_mcp_refusal` {status, text, tool, at},
+  // and the admin pack panel lists them. (A 401 that a fresh token does not
+  // cure also sets the grant's `reconnect_reason`; a 403 never does.)
+  // Nullable, so roll-safe: the previous release neither reads nor writes it.
+  `alter table google_connections add column if not exists last_mcp_refusal jsonb`,
+  `alter table google_org_connection add column if not exists last_mcp_refusal jsonb`,
+  `alter table agent_google_connections add column if not exists last_mcp_refusal jsonb`,
+  // AN ADMIN'S WORD ON ONE GOOGLE WORKSPACE MCP TOOL (docs/GOOGLE-WORKSPACE.md
+  // "Holds"). The pack's default per tool is allow (a pinned read Google marks
+  // read-only), deny (the owner's trash/spam/sensitive-label list) or hold (every
+  // other tool: a person approves each call). A row here overrides that default
+  // for one tool on one pack server, by name — so a tool Google adds later never
+  // inherits a row — and the deny list is a floor no row lifts (the admin route
+  // refuses to write one; the gateway ignores one). The row goes with its server.
+  `create table if not exists mcp_tool_policies (
+     server_id uuid not null references mcp_servers(id) on delete cascade,
+     tool text not null,
+     policy text not null check (policy in ('allow', 'hold', 'deny')),
+     set_by uuid references users(id) on delete set null,
+     updated_at timestamptz not null default now(),
+     primary key (server_id, tool)
+   )`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
   `alter table runs add column if not exists checkpoint_seq bigint not null default 0`,
@@ -4841,6 +5065,9 @@ alter table tasks drop column if exists conversation_id`,
    )`,
   `create index if not exists run_pushes_run_idx on run_pushes (run_id, created_at)`,
   `create index if not exists usage_events_ref_idx on usage_events (ref_id) where ref_id is not null`,
+  // One counter per turn, bumped in the statement that takes a step's seq, so
+  // two frames landing at once never share a step number.
+  `alter table runs add column if not exists step_counts jsonb not null default '{}'::jsonb`,
   // A rewind in flight on a (ticket, agent) pair. The dispatcher refuses the
   // pair while the row names a live run-rewind: the ticket move a rewind makes
   // would otherwise open a fresh session before the attempt is inserted. A

@@ -330,6 +330,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_tasks.rs`](../..
 | `estimatedHours` | `number? nullable(0, 999)` |  |
 | `parentId` | `uuid?` |  |
 | `tags` | `string[]?(0, 40, 20)` |  |
+| `status` | `string?(40)` |  |
 
 ## `/api/boards/{id}/templates`
 
@@ -397,7 +398,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_work_sessions.rs
 > GET /api/boards/{id}/work-sessions. The board's LIVE WORK SESSIONS as a
 > taskId → session map — the list view's question ("which cards are being
 > worked right now?") answered in one read instead of one per card. Gated by
-> board visibility exactly like the board read itself; the map carries only
+> board visibility exactly like the board read itself. Each session carries
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

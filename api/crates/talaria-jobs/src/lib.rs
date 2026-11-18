@@ -1,5 +1,5 @@
 // The boot assembly — the one place the job bodies become a running schedule,
-// and the one place the seven armed run steps get their deps.
+// and the one place the eight armed run steps get their deps.
 //
 // Every job module owns its own `register_*_job(deps)`: the deps are runtime
 // values (the pool, the realtime fan-out, the secretbox), so registration
@@ -12,7 +12,7 @@
 //
 // THE OTHER HALF of the assembly is the run kinds. The defs self-register on
 // first getter call, so `try_arm` touches each getter and then REFUSES to arm
-// unless the census's seven kinds are all present. The refusal is a boot list
+// unless the census's eight kinds are all present. The refusal is a boot list
 // made executable: `run-reclaim` is one of the ten jobs, and a sweep that
 // cannot define a kind leaves those rows to an instance that can — no such
 // instance exists, and the rows would sit forever with only a warn line.
@@ -66,6 +66,7 @@ fn live_secretbox(state: &AppState) -> talaria_push::SecretBoxSource {
 /// what the registry keys on. Arming with fewer means the sweep strands rows
 /// of the missing kinds (see the header).
 const BOOT_RUN_KINDS: &[&str] = &[
+    "agent-design",
     "agent-hire",
     "plan-draft",
     "rag-backfill",
@@ -145,8 +146,23 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
             async move { talaria_fleet_reconcile::apply_agent_changes(&pg, &sb, &depts).await },
         )
     }));
-    let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(|pg, sb| {
-        Box::pin(async move { talaria_fleet_reconcile::roll_running_agents(&pg, &sb).await })
+    // The deploy's fleet roll recreates every running agent on the new
+    // render. It waits until the agent image channel has adopted the fleet
+    // (each agent assigned the Hermes it runs), so the roll restarts agents
+    // on their own Hermes and the channel alone moves it, by its rules — or
+    // until the channel's bound, when it goes anyway.
+    let booted = std::time::Instant::now();
+    let _ = talaria_update_job::ROLL_FLEET.set(std::sync::Arc::new(move |pg, sb| {
+        Box::pin(async move {
+            let adopted = talaria_hermes_channel::fleet_adopted(&pg).await;
+            if !talaria_hermes_channel::deploy_roll_may_go(adopted, booted.elapsed()) {
+                return Err("waiting for the agent image channel to keep each agent on the Hermes it runs, so this roll moves no agent's Hermes".to_string());
+            }
+            // Past the wait, an agent the channel still has not recorded is
+            // left exactly as it is, never recreated onto the compiled pin.
+            let skip = talaria_hermes_channel::unadopted_departments(&pg).await;
+            talaria_fleet_reconcile::roll_running_agents_except(&pg, &sb, &skip).await
+        })
     }));
     // THE ANNOUNCE EDGE FOR A QUEUED GOOGLE WRITE. `queue_action` calls this
     // the instant a confirm-send lands, so the person who has to approve it
@@ -298,8 +314,9 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     // live-turn rung read an unset OnceLock and silently fell to the hirer on
     // every install. Nothing noticed for the same reason nothing ever does: an
     // unset optional rung answers SOMEONE, just the wrong one. The live suite's
-    // first CI run (api-integration.yml, attribution's
-    // a_live_turn_outranks_the_hirer) is what caught it.
+    // first CI run (then api-integration.yml, now ci.yml's api job and its
+    // live-DB steps; attribution's a_live_turn_outranks_the_hirer) is what
+    // caught it.
     let _ = talaria_attribution::CONVERSATION_OWNER.set(std::sync::Arc::new(|pg, id| {
         Box::pin(async move { talaria_conversations::conversation_owner(&pg, &id).await })
     }));
@@ -850,6 +867,40 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     talaria_update_job::register_update_reconcile_job(Arc::new(talaria_update_job::UpdateDeps {
         state: state.clone(),
     }));
+    // The agent image follows Hermes' stable channel: the check, the
+    // preparation, the canary and the one-at-a-time rollout, a step a
+    // minute (talaria-hermes-channel). Optional like the update pair: its
+    // absence leaves every agent on the image it runs.
+    talaria_hermes_channel::boot(&state.pg).await;
+    talaria_hermes_channel::register_job(Arc::new(talaria_hermes_channel::ChannelDeps {
+        pg: state.pg.clone(),
+        sb: sb.clone(),
+        notify: talaria_notify::NotifyDeps {
+            pg: state.pg.clone(),
+            realtime: rt.clone(),
+        },
+    }));
+    // The workbench harnesses (Oh My Pi and the harness's bun) follow their
+    // upstream releases: checked, smoke-tested on a workbench, then adopted
+    // for new jobs, a step a minute (talaria-workbench-updates). Optional
+    // like the agent image's: its absence leaves every job on what it runs.
+    talaria_workbench_updates::register_job(Arc::new(talaria_workbench_updates::Live {
+        pg: state.pg.clone(),
+        notify: talaria_notify::NotifyDeps {
+            pg: state.pg.clone(),
+            realtime: rt.clone(),
+        },
+    }));
+    // What each GitHub host's App asks for and what each installation has
+    // accepted, read every ten minutes into the record the mint, the alerts
+    // and Admin → Git hosts read (talaria-git-hosts' holdings). The App key
+    // is opened with the process's current secretbox on each run. Optional:
+    // without it the record goes stale, the mint asks GitHub as it always
+    // did, and the alert says the permissions are unknown.
+    talaria_scheduler::register_job(talaria_git_hosts::holdings::job_spec(
+        state.pg.clone(),
+        live_secretbox(state),
+    ));
 }
 
 /// The census kinds this build cannot define. Empty is arming's
@@ -902,13 +953,16 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
         .await
         .map_err(|e| format!("the secretbox did not load: {e}"))?;
 
-    // The seven armed run steps: their deps are the AppState's edges, and an
+    // The eight armed run steps: their deps are the AppState's edges, and an
     // unarmed step is the loud refusal in the def — reached only by a driver
     // armed before its deps, which this order makes impossible.
     talaria_research_def::arm_research_step(talaria_research_def::real_research_deps(
         state.clone(),
     ));
     talaria_runs_plan_draft::arm_plan_draft_step(talaria_runs_plan_draft::real_plan_draft_deps(
+        state.clone(),
+    ));
+    talaria_agent_design::arm_agent_design_step(talaria_agent_design::real_agent_design_deps(
         state.clone(),
     ));
     talaria_runs_work_session::arm_work_session_step(
@@ -928,6 +982,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     // hold arming to the census's table.
     let _ = talaria_research_def::research_run();
     let _ = talaria_runs_plan_draft::plan_draft_run();
+    let _ = talaria_agent_design::agent_design_run();
     let _ = talaria_runs_work_session::work_session_run();
     let _ = talaria_runs_agent_hire::agent_hire_run();
     let _ = talaria_runs_reindex::backfill_run();
@@ -1097,6 +1152,37 @@ mod tests {
             !REQUIRED_JOBS.contains(&JobName::UpdateReconcile),
             "update-reconcile must stay optional: dormant installs legitimately run it as a no-op"
         );
+        // The agent image's stable channel: out of the table, every agent
+        // stays on the image it runs forever, with nothing to say so.
+        assert!(
+            names.contains(&JobName::HermesChannel),
+            "hermes-channel fell out of the job table — agents would never follow Hermes stable"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::HermesChannel),
+            "hermes-channel must stay optional: an operator's HERMES_IMAGE legitimately turns it off"
+        );
+        // The workbench harness channel: out of the table, every workbench
+        // runs the compiled bootstrap forever, with nothing to say so.
+        assert!(
+            names.contains(&JobName::WorkbenchHarnessChannel),
+            "workbench-harness-channel fell out of the job table — workbenches would never follow Oh My Pi or bun"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::WorkbenchHarnessChannel),
+            "workbench-harness-channel must stay optional: an instance with no Developer Agents runs it as a no-op"
+        );
+        // The GitHub holdings refresh: out of the table, what an org owner
+        // took away or has not yet accepted is learned only on a refused
+        // mint, and the alert reads a record nothing refreshes.
+        assert!(
+            names.contains(&JobName::GitHostHoldings),
+            "git-host-holdings fell out of the job table — an installation's permissions would never be read again"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::GitHostHoldings),
+            "git-host-holdings must stay optional: an instance with no GitHub App host runs it as a no-op"
+        );
 
         // THE ROLL'S EDGE, the same completeness rule one layer down. This
         // OnceLock is how the reconcile crate reaches the renderer, and an
@@ -1219,6 +1305,7 @@ mod tests {
         // a real boot and not whatever earlier tests loaded.
         let _ = talaria_research_def::research_run();
         let _ = talaria_runs_plan_draft::plan_draft_run();
+        let _ = talaria_agent_design::agent_design_run();
         let _ = talaria_runs_work_session::work_session_run();
         let _ = talaria_runs_agent_hire::agent_hire_run();
         let _ = talaria_runs_reindex::backfill_run();

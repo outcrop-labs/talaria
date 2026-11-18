@@ -33,6 +33,9 @@ pub const NOT_CONNECTED_CODE: i64 = -32001;
 pub const CONNECTIONS_PATH: &str = "/settings/connections";
 /// The route an admin connects the org account on (MCP → External).
 pub const MCP_ADMIN_PATH: &str = "/mcp/external";
+/// The route an admin connects the shared org Google account on (Admin →
+/// Org).
+pub const ADMIN_ORG_PATH: &str = "/admin";
 
 /// The name of the stand-in tool listed when the catalog has nothing to show
 /// (a per-user OAuth server has never been discovered: discovery needs the
@@ -51,6 +54,14 @@ pub enum ConnectScope {
     /// A per-user server on an org agent, which has no person to act as —
     /// nothing can be connected; the server is for personal assistants.
     PerUserOnOrgAgent,
+    /// A Google Workspace MCP server (`auth_mode = 'google'`) on an agent
+    /// that acts as its owner, whose own Google connection the door could
+    /// not vend for Google's MCP servers. Never the org account instead.
+    GoogleOwner,
+    /// The same, on an agent that acts with the shared org Google account.
+    GoogleOrg,
+    /// The same, on an agent with its own Google identity.
+    GoogleAgent,
 }
 
 /// The gateway's "allowed, but not connected" verdict: the row (for its
@@ -61,6 +72,11 @@ pub struct NotConnected {
     pub server: McpServer,
     /// None = every tool; otherwise the allowlist.
     pub tools: Option<Vec<String>>,
+    /// The sentence itself, when the cause is more than "nobody connected
+    /// it": the one door's (a grant minted by a client declared not marked
+    /// for AI agents, which names its fix) or a token Google refused, in
+    /// Google's words. None = the scope's own sentence.
+    pub detail: Option<String>,
 }
 
 impl NotConnected {
@@ -81,7 +97,10 @@ impl NotConnected {
 
     /// The sentence the model reads.
     pub fn message(&self, base: &str) -> String {
-        not_connected_message(self.scope, self.label(), base)
+        match &self.detail {
+            Some(d) => d.clone(),
+            None => not_connected_message(self.scope, self.label(), base),
+        }
     }
 }
 
@@ -98,9 +117,13 @@ fn display_label(server: &McpServer) -> &str {
 pub fn connect_url(scope: ConnectScope, base: &str) -> Option<String> {
     let base = base.trim_end_matches('/');
     match scope {
-        ConnectScope::PerUser => Some(format!("{base}{CONNECTIONS_PATH}")),
+        ConnectScope::PerUser | ConnectScope::GoogleOwner => {
+            Some(format!("{base}{CONNECTIONS_PATH}"))
+        }
         ConnectScope::Org => Some(format!("{base}{MCP_ADMIN_PATH}")),
-        ConnectScope::PerUserOnOrgAgent => None,
+        ConnectScope::GoogleOrg => Some(format!("{base}{ADMIN_ORG_PATH}")),
+        // An agent's own identity is connected on that agent's record.
+        ConnectScope::PerUserOnOrgAgent | ConnectScope::GoogleAgent => None,
     }
 }
 
@@ -119,6 +142,15 @@ pub fn not_connected_message(scope: ConnectScope, label: &str, base: &str) -> St
         ConnectScope::PerUserOnOrgAgent => {
             format!("{label} is a per-user server; only a personal assistant can use it.")
         }
+        ConnectScope::GoogleOwner => format!(
+            "{label} acts with your own Google account, and it isn't connected to Talaria. Connect Google at {url}, then try again. (It never uses the workspace's shared Google account instead.)"
+        ),
+        ConnectScope::GoogleOrg => format!(
+            "{label} acts with the workspace's shared Google account, which isn't connected yet. An admin connects it under Admin → Org at {url}."
+        ),
+        ConnectScope::GoogleAgent => format!(
+            "{label} acts with this agent's own Google account, which isn't connected. An admin connects it on the agent's page (Manage → Agents), or sets the agent back to another Google account."
+        ),
     }
 }
 
@@ -315,6 +347,7 @@ mod tests {
             scope,
             server: server("Notion", catalog),
             tools,
+            detail: None,
         }
     }
 
@@ -345,11 +378,51 @@ mod tests {
     }
 
     #[test]
+    fn the_google_sentences_name_whose_account_and_the_door_can_speak_instead() {
+        assert_eq!(
+            connect_url(ConnectScope::GoogleOwner, BASE),
+            Some("https://talaria.example.com/settings/connections".into())
+        );
+        assert_eq!(
+            connect_url(ConnectScope::GoogleOrg, BASE),
+            Some("https://talaria.example.com/admin".into())
+        );
+        assert_eq!(connect_url(ConnectScope::GoogleAgent, BASE), None);
+        let owner = not_connected_message(ConnectScope::GoogleOwner, "Gmail", BASE);
+        assert!(owner.contains("your own Google account"), "{owner}");
+        assert!(owner.contains("https://talaria.example.com/settings/connections"));
+        assert!(owner.contains("never uses the workspace's shared Google account"));
+        assert!(
+            not_connected_message(ConnectScope::GoogleOrg, "Gmail", BASE)
+                .contains("https://talaria.example.com/admin.")
+        );
+        assert!(
+            not_connected_message(ConnectScope::GoogleAgent, "Gmail", BASE)
+                .contains("this agent's own Google account")
+        );
+        // A detail is the whole sentence, everywhere the sentence goes.
+        let mut n = nc(ConnectScope::GoogleOrg, None, json!([]));
+        n.detail = Some("This Google connection was made with OAuth client c, which is declared as not having \u{201c}Use this client for an AI-powered agent\u{201d} ticked.".into());
+        assert_eq!(n.message(BASE), n.detail.clone().unwrap());
+        let (_, body) = house_answer(
+            &n,
+            Some(
+                &json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "list_labels" } }),
+            ),
+            BASE,
+        );
+        let body = body.unwrap();
+        assert_eq!(body["error"]["code"], NOT_CONNECTED_CODE);
+        assert_eq!(body["error"]["message"], json!(n.detail.unwrap()));
+    }
+
+    #[test]
     fn a_blank_label_falls_back_to_the_name() {
         let n = NotConnected {
             scope: ConnectScope::PerUserOnOrgAgent,
             server: server("  ", json!([])),
             tools: None,
+            detail: None,
         };
         assert_eq!(n.label(), "notion");
         assert_eq!(

@@ -12,9 +12,9 @@
 // redis, no router, no state — so the support module's pg() is all this
 // binary needs.
 //
-// House rule: #[ignore]d so the unit CI job skips it; the api-integration
-// workflow runs every it/ module with --ignored against the real rig, so
-// this file must hold up there. The assertions are LEDGER-ANCHORED — every
+// House rule: #[ignore]d so the plain test run skips it; ci.yml's api job
+// runs the it/ modules with --ignored against the real rig (its live-DB
+// steps), so this file must hold up there. The assertions are LEDGER-ANCHORED — every
 // month-cost claim is a comparison against the same priced-view sum
 // cost_overview itself reads, computed from the same SQL — so a sibling
 // module's row landing mid-test moves both sides equally and cannot fake a

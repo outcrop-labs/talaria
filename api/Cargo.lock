@@ -3603,6 +3603,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-agent-design"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "redis",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-config",
+ "talaria-harness",
+ "talaria-harness-defs",
+ "talaria-harness-model",
+ "talaria-notify",
+ "talaria-org",
+ "talaria-realtime",
+ "talaria-runs-decide",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-state",
+ "talaria-tasks-types",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "talaria-agent-managers"
 version = "0.1.0"
 dependencies = [
@@ -3758,6 +3784,7 @@ dependencies = [
  "talaria-fleet-docker",
  "talaria-fleet-preflight",
  "talaria-gateway",
+ "talaria-git-hosts",
  "talaria-host-metrics",
  "talaria-mcp-service",
  "talaria-notify",
@@ -3865,6 +3892,7 @@ dependencies = [
  "talaria-fleet-seal",
  "talaria-gaps",
  "talaria-gateway",
+ "talaria-git-hosts",
  "talaria-github",
  "talaria-google-agent",
  "talaria-google-api-health",
@@ -3887,6 +3915,8 @@ dependencies = [
  "talaria-harness-prompt-rules",
  "talaria-harness-schema",
  "talaria-harness-text",
+ "talaria-hermes-channel",
+ "talaria-hermes-images",
  "talaria-hermes-skills",
  "talaria-home",
  "talaria-inbox-focus",
@@ -4004,11 +4034,13 @@ dependencies = [
  "talaria-users",
  "talaria-web-search",
  "talaria-work-dispatch",
+ "talaria-work-pulse",
  "talaria-work-wait",
  "talaria-workbench",
  "talaria-workbench-harnesses",
  "talaria-workbench-mcp",
  "talaria-workbench-queue",
+ "talaria-workbench-updates",
  "talaria-workchains",
  "talaria-workflows",
  "talaria-workspace-handles",
@@ -4057,6 +4089,7 @@ dependencies = [
  "talaria-google-drive",
  "talaria-google-errors",
  "talaria-google-gmail",
+ "talaria-google-mcp",
  "talaria-google-oauth",
  "talaria-google-org",
  "talaria-google-pending",
@@ -4661,6 +4694,7 @@ dependencies = [
  "talaria-daily-brief-focus",
  "talaria-daily-brief-types",
  "talaria-google-calendar",
+ "talaria-google-connections",
  "talaria-harness",
  "talaria-harness-defs",
  "talaria-me",
@@ -5108,6 +5142,7 @@ dependencies = [
  "talaria-fleet-layout",
  "talaria-gateway",
  "talaria-guard-coaching",
+ "talaria-hermes-images",
  "talaria-mcp",
  "talaria-mcp-service",
  "talaria-model-efforts",
@@ -5229,9 +5264,12 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-audit",
  "talaria-forgejo",
  "talaria-git-host-types",
  "talaria-github",
+ "talaria-realtime",
+ "talaria-scheduler",
  "talaria-secretbox",
  "talaria-workspace-secrets",
  "tokio",
@@ -5272,9 +5310,10 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-google-client",
  "talaria-google-connections",
- "talaria-google-org",
  "talaria-secretbox",
+ "tokio",
  "tracing",
  "url",
 ]
@@ -5332,6 +5371,7 @@ dependencies = [
  "talaria-body",
  "talaria-gateway",
  "talaria-secretbox",
+ "tokio",
  "tracing",
 ]
 
@@ -5348,6 +5388,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-google-client",
  "talaria-secretbox",
+ "tokio",
  "tracing",
  "url",
 ]
@@ -5395,8 +5436,10 @@ name = "talaria-google-errors"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "serde_json",
  "talaria-error",
  "talaria-google-connections",
+ "tokio",
  "tracing",
 ]
 
@@ -5425,6 +5468,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "talaria-google-mcp"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "talaria-gateway",
+ "talaria-google-errors",
+ "talaria-mcp-jsonrpc",
+ "talaria-safe-fetch",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "talaria-google-oauth"
 version = "0.1.0"
 dependencies = [
@@ -5438,6 +5497,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-google-client",
  "talaria-google-connections",
+ "talaria-google-errors",
  "talaria-google-org",
  "talaria-secretbox",
  "talaria-session",
@@ -5451,7 +5511,6 @@ dependencies = [
 name = "talaria-google-org"
 version = "0.1.0"
 dependencies = [
- "axum",
  "base64 0.23.1",
  "reqwest",
  "serde",
@@ -5462,7 +5521,6 @@ dependencies = [
  "talaria-google-connections",
  "talaria-secretbox",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -5470,6 +5528,7 @@ name = "talaria-google-pending"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
@@ -5479,13 +5538,18 @@ dependencies = [
  "talaria-google-connections",
  "talaria-google-docs",
  "talaria-google-drive",
+ "talaria-google-errors",
  "talaria-google-gmail",
+ "talaria-google-mcp",
  "talaria-google-org",
  "talaria-google-sheets",
  "talaria-google-slides",
+ "talaria-mcp",
  "talaria-notify",
  "talaria-realtime",
+ "talaria-safe-fetch",
  "talaria-secretbox",
+ "talaria-workspace-secrets",
  "tokio",
  "tracing",
 ]
@@ -5574,6 +5638,7 @@ dependencies = [
  "talaria-me",
  "talaria-persona",
  "talaria-state",
+ "talaria-work-pulse",
  "tokio",
  "tracing",
  "uuid",
@@ -5663,6 +5728,48 @@ name = "talaria-harness-text"
 version = "0.1.0"
 dependencies = [
  "regex",
+]
+
+[[package]]
+name = "talaria-hermes-channel"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-agent-secrets",
+ "talaria-daily-brief-config",
+ "talaria-fleet-docker",
+ "talaria-fleet-layout",
+ "talaria-fleet-reconcile",
+ "talaria-fleet-render",
+ "talaria-hermes-images",
+ "talaria-host-metrics",
+ "talaria-notify",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "talaria-tz",
+ "talaria-update-registry",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "talaria-hermes-images"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-fleet-layout",
+ "talaria-gateway",
+ "tokio",
 ]
 
 [[package]]
@@ -5810,6 +5917,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-agent-design",
  "talaria-agent-skills",
  "talaria-alerts",
  "talaria-app-triggers",
@@ -5835,9 +5943,11 @@ dependencies = [
  "talaria-fleet-resources",
  "talaria-gaps",
  "talaria-gateway",
+ "talaria-git-hosts",
  "talaria-google-pending",
  "talaria-harness",
  "talaria-harness-defs",
+ "talaria-hermes-channel",
  "talaria-home",
  "talaria-inbox-focus",
  "talaria-kb",
@@ -5883,6 +5993,7 @@ dependencies = [
  "talaria-work-dispatch",
  "talaria-workbench-mcp",
  "talaria-workbench-queue",
+ "talaria-workbench-updates",
  "talaria-workchains",
  "tokio",
  "tracing",
@@ -5974,6 +6085,10 @@ dependencies = [
  "talaria-fleet-docker",
  "talaria-fleet-layout",
  "talaria-gateway",
+ "talaria-google-agent",
+ "talaria-google-connections",
+ "talaria-google-errors",
+ "talaria-google-mcp",
  "talaria-mcp-jsonrpc",
  "talaria-mcp-oauth",
  "talaria-mcp-service",
@@ -6888,6 +7003,7 @@ dependencies = [
  "talaria-templates",
  "talaria-uploads",
  "talaria-users",
+ "talaria-work-pulse",
  "talaria-work-wait",
  "talaria-workchains",
  "talaria-workflows",
@@ -6981,6 +7097,7 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-crons",
  "talaria-agent-defs",
+ "talaria-agent-design",
  "talaria-agent-managers",
  "talaria-agent-mcp",
  "talaria-agent-role-templates",
@@ -7001,8 +7118,11 @@ dependencies = [
  "talaria-cron-output",
  "talaria-error",
  "talaria-gaps",
+ "talaria-git-hosts",
  "talaria-harness-defs",
  "talaria-harness-model",
+ "talaria-hermes-channel",
+ "talaria-hermes-images",
  "talaria-host-metrics",
  "talaria-instance",
  "talaria-llm-keys",
@@ -7031,6 +7151,7 @@ dependencies = [
  "talaria-uploads",
  "talaria-users",
  "talaria-work-dispatch",
+ "talaria-work-pulse",
  "talaria-workspace-secrets",
  "tokio",
  "tracing",
@@ -7134,11 +7255,13 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-managers",
  "talaria-api-facades",
+ "talaria-approvals",
  "talaria-attribution",
  "talaria-audit",
  "talaria-boards",
  "talaria-body",
  "talaria-coding-accounts",
+ "talaria-config",
  "talaria-conversations",
  "talaria-db",
  "talaria-error",
@@ -7157,10 +7280,12 @@ dependencies = [
  "talaria-research-origin",
  "talaria-session",
  "talaria-state",
+ "talaria-statuses",
  "talaria-tasks",
  "talaria-teams",
  "talaria-users",
  "talaria-work-wait",
+ "talaria-workbench-updates",
  "tokio",
  "tracing",
 ]
@@ -7383,6 +7508,7 @@ dependencies = [
  "talaria-state",
  "talaria-statuses",
  "talaria-tasks",
+ "talaria-work-pulse",
  "talaria-workbench-harnesses",
  "talaria-workflows",
  "tokio",
@@ -7967,11 +8093,20 @@ name = "talaria-work-mode"
 version = "0.1.0"
 
 [[package]]
+name = "talaria-work-pulse"
+version = "0.1.0"
+dependencies = [
+ "redis",
+ "serde_json",
+]
+
+[[package]]
 name = "talaria-work-wait"
 version = "0.1.0"
 dependencies = [
  "serde_json",
  "sqlx",
+ "talaria-boards",
  "uuid",
 ]
 
@@ -7991,6 +8126,7 @@ dependencies = [
  "sqlx",
  "talaria-gateway",
  "talaria-model-roles",
+ "tracing",
 ]
 
 [[package]]
@@ -8014,6 +8150,7 @@ dependencies = [
  "talaria-boards",
  "talaria-body",
  "talaria-coding-accounts",
+ "talaria-error",
  "talaria-fleet-budget",
  "talaria-fleet-docker",
  "talaria-fleet-layout",
@@ -8030,6 +8167,7 @@ dependencies = [
  "talaria-secretbox",
  "talaria-statuses",
  "talaria-tasks",
+ "talaria-work-pulse",
  "talaria-work-wait",
  "talaria-workbench",
  "talaria-workbench-harnesses",
@@ -8050,6 +8188,26 @@ dependencies = [
  "talaria-work-wait",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "talaria-workbench-updates"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-fleet-docker",
+ "talaria-notify",
+ "talaria-scheduler",
+ "talaria-workbench-harnesses",
+ "talaria-workbench-mcp",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

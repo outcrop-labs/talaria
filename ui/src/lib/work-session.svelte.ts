@@ -7,6 +7,7 @@ import { createQuery, useQueryClient, type QueryClient } from '@tanstack/svelte-
 import type { LedgerRow, OutsideSummary, RewindRow, RunAttempt, TicketMove } from '@/lib/agent-checkpoints'
 import { stopWorkSession } from '@/lib/boards.svelte'
 import { getJson, postJson } from '@/lib/fetch-json'
+import type { WorkActivity, WorkSpend } from '@/lib/work-pulse'
 
 export interface LiveWorkSession {
   runId: string
@@ -15,6 +16,14 @@ export interface LiveWorkSession {
   agentModel: string | null
   turn: number | null
   lastTail?: string | null
+  /** When the session started (server epoch ms). */
+  startedAt?: number
+  /** What the agent is doing right now — the work pulse (lib/work-pulse.ts). */
+  activity?: WorkActivity
+  /** Tokens and cost booked to this ticket since the session started. */
+  spend?: WorkSpend
+  /** The server's clock when it answered, for ticking the timers. */
+  now?: number
 }
 
 export interface WorkWait {
@@ -23,6 +32,10 @@ export interface WorkWait {
   position: number
   phase: string
   queuedAt: number
+  /** The tickets the agent is working now — what this one waits behind —
+   *  on boards the reader can see; `behindHidden` counts the rest. */
+  behind?: string[]
+  behindHidden?: number
 }
 
 export function useWorkSession(taskId: () => string | null) {
@@ -53,6 +66,8 @@ export interface WorkSessionHistoryRow {
   agentModel: string
   turn: number | null
   finishedAt: string | null
+  /** Why a failed or stopped session ended, from the run row. */
+  error?: string | null
   lineageId: string
   attemptNo: number
   rewoundFromRunId: string | null

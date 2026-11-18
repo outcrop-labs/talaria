@@ -299,9 +299,9 @@ impl Credentials for PlatformCredentials<'_> {
         };
         let host = talaria_git_hosts::connect(self.pg, self.sb, &row).await;
         Ok(host
-            .repo_login(repo, talaria_git_hosts::RepoAccess::Read)
+            .repo_login(repo, &talaria_git_hosts::RepoAccess::Read)
             .await?
-            .map(|l| (l.username, l.password)))
+            .map(|issued| (issued.login.username, issued.login.password)))
     }
 
     async fn secret_login(&self, name: &str, host: &str) -> Result<(String, String), String> {

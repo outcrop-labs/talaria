@@ -49,10 +49,12 @@ pub fn tools_unlocked(kind: &str) -> &'static [&'static str] {
 /// through the confirm-send plane (`decide_action`). The chip approve route
 /// asks this rather than re-listing the kinds: a kind that queues a Google
 /// write but is missing here would be marked approved and never sent.
+/// `mcp_call` is a held call to one of Google's Workspace MCP servers.
 pub fn is_google_action(kind: &str) -> bool {
     matches!(
         kind,
-        "gmail_send"
+        "mcp_call"
+            | "gmail_send"
             | "calendar_create"
             | "calendar_update"
             | "calendar_cancel"
@@ -267,6 +269,15 @@ pub fn document_chip(id: &str, title: Option<&str>, changes: Option<&Value>) -> 
     chip
 }
 
+/// The approval chip for a held Google Workspace MCP call (`mcp_call`): the
+/// one generic "Google tool call" card, whose summary names the product, the
+/// tool and the start of the arguments. The gateway lands it when it queues
+/// the call — an MCP tool's name reaches the tool-events door prefixed by the
+/// agent's MCP client, so `chips_from_tool` would never recognize it.
+pub fn mcp_call_chip(action_id: &str, summary: &str) -> Value {
+    approval_chip(action_id, "mcp_call", summary)
+}
+
 fn approval_chip(action_id: &str, kind: &str, summary: &str) -> Value {
     json!({
         "id": format!("approval:{action_id}"),
@@ -279,12 +290,18 @@ fn approval_chip(action_id: &str, kind: &str, summary: &str) -> Value {
 }
 
 pub fn unlock_chip(approval_id: &str, kind: &str) -> Value {
+    unlock_chip_for(approval_id, kind, tools_unlocked(kind))
+}
+
+/// `unlock_chip` naming the tools the approval actually unlocked — for an
+/// `mcp_call`, the `<server>/<tool>` key its grant was written under.
+pub fn unlock_chip_for<S: AsRef<str>>(approval_id: &str, kind: &str, tools: &[S]) -> Value {
     json!({
         "id": format!("unlock:{approval_id}"),
         "kind": "unlock",
         "approvalId": approval_id,
         "actionKind": kind,
-        "tools": tools_unlocked(kind),
+        "tools": tools.iter().map(AsRef::as_ref).collect::<Vec<&str>>(),
         "status": "approved",
     })
 }
@@ -1636,8 +1653,177 @@ pub fn approval_recipients(kind: &str, payload: &Value) -> Option<Vec<String>> {
                 .map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>())
                 .unwrap_or_default(),
         )),
+        // A held Google Workspace MCP call: the people and the Chat space its
+        // arguments address, so its `<server>/<tool>` grant (D7) covers a
+        // later call to no one else, as `gmail_send`'s does.
+        "mcp_call" => Some(mcp_call_addressees(
+            payload.get("arguments").unwrap_or(&Value::Null),
+        )),
         _ => None,
     }
+}
+
+/// The prefix a Chat space carries among an `mcp_call` grant's addressees.
+/// Compared exactly, never ignoring case: Chat's ids are case-sensitive.
+const CHAT_ADDRESSEE: &str = "chat:";
+
+/// Everyone a Google Workspace MCP call's arguments write to or notify, as
+/// Google's catalogs (fixtures/tools-list, captured 2026-11-17) spell them,
+/// at the top level of the arguments:
+///   · Gmail `create_draft`: `to`, `cc`, `bcc`;
+///   · Calendar `create_event` / `update_event`: `attendees` and
+///     `addedAttendees` (each an Attendee's `email`, or a bare address),
+///     `attendeeEmails`, `addedAttendeeEmails`, `removedAttendeeEmails`;
+///   · Chat `send_message`: the space — `conversationId`, and the one a
+///     `threadId` names — as `chat:spaces/<id>`.
+///
+/// Addresses come back lower-cased and deduped (`normalize_recipients`);
+/// a call that names nobody yields an empty list, so its grant covers a
+/// later call that names nobody either. Pure.
+pub fn mcp_call_addressees(arguments: &Value) -> Vec<String> {
+    let mut emails: Vec<&str> = Vec::new();
+    for key in [
+        "to",
+        "cc",
+        "bcc",
+        "attendees",
+        "addedAttendees",
+        "attendeeEmails",
+        "addedAttendeeEmails",
+        "removedAttendeeEmails",
+    ] {
+        match arguments.get(key) {
+            Some(Value::String(s)) => emails.push(s),
+            // A bare address, or an Attendee object's `email`.
+            Some(Value::Array(items)) => {
+                emails.extend(items.iter().filter_map(|item| match item {
+                    Value::String(s) => Some(s.as_str()),
+                    Value::Object(o) => o.get("email").and_then(Value::as_str),
+                    _ => None,
+                }))
+            }
+            _ => {}
+        }
+    }
+    let mut out = normalize_recipients(emails);
+    for key in ["conversationId", "threadId"] {
+        if let Some(space) = arguments
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(chat_space)
+        {
+            out.push(format!("{CHAT_ADDRESSEE}{space}"));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The space a Chat conversation or thread name sits in: `spaces/<id>` out
+/// of `spaces/<id>` or `spaces/<id>/threads/<id>`; anything else as written,
+/// trimmed. None when empty.
+fn chat_space(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut parts = name.split('/');
+    Some(match (parts.next(), parts.next()) {
+        (Some("spaces"), Some(id)) if !id.is_empty() => format!("spaces/{id}"),
+        _ => name.to_string(),
+    })
+}
+
+/// Is a call's addressee one the person approved? Addresses ignore case; a
+/// Chat space (`chat:…`) matches exactly.
+fn same_addressee(approved: &str, called: &str) -> bool {
+    if approved.starts_with(CHAT_ADDRESSEE) || called.starts_with(CHAT_ADDRESSEE) {
+        approved == called
+    } else {
+        approved.eq_ignore_ascii_case(called)
+    }
+}
+
+/// The key an `mcp_call` approval's unlock is written and spent under: the
+/// server's registry name and the tool, `google-calendar/create_event`. A
+/// grant for one tool never covers another, on that server or any other.
+pub fn mcp_unlock_key(server: &str, tool: &str) -> String {
+    format!("{server}/{tool}")
+}
+
+/// Leave the bounded grant an approved `mcp_call` earns on the conversation:
+/// one more call of the same tool on the same server, within
+/// `UNLOCK_TTL_MS`, to no one the approved call did not address
+/// (`mcp_call_addressees`), runs without a new card (owner decision D7, as
+/// `draft_email`'s grant is bound to its recipients). ONLY for a personal
+/// principal's row — an org-account or agent-identity call needs an admin
+/// every time, and never rides a conversation unlock — and only once the row
+/// really executed. Returns the key granted, or None when nothing was.
+pub async fn merge_mcp_unlock(
+    pg: &PgPool,
+    conversation_id: &str,
+    google_action_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(String, Value, String, String)> = sqlx::query_as(
+        "select kind, payload, principal_kind, status from google_pending_actions \
+         where id::text = $1",
+    )
+    .bind(google_action_id)
+    .fetch_optional(pg)
+    .await?;
+    let Some((key, addressees)) = row.and_then(|(kind, payload, principal, status)| {
+        let key = mcp_unlock_for(&kind, &payload, &principal, &status)?;
+        Some((
+            key,
+            approval_recipients(&kind, &payload).unwrap_or_default(),
+        ))
+    }) else {
+        return Ok(None);
+    };
+    let now_ms = talaria_now_ms();
+    let mut tx = pg.begin().await?;
+    let stored: Option<Value> = sqlx::query_scalar(
+        "select unlocked_tools from conversations where id = $1::uuid for update",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    sqlx::query("update conversations set unlocked_tools = $2 where id = $1::uuid")
+        .bind(conversation_id)
+        .bind(merge_grants(
+            &stored,
+            &[unlock_grant(&key, Some(&addressees), now_ms)],
+            now_ms,
+        ))
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Some(key))
+}
+
+/// The unlock key an approved `mcp_call` row earns, or None: another kind, a
+/// principal that is not the owner's own, a row that did not execute, or a
+/// payload naming no server or tool. Pure.
+pub fn mcp_unlock_for(
+    kind: &str,
+    payload: &Value,
+    principal: &str,
+    status: &str,
+) -> Option<String> {
+    if kind != "mcp_call" || principal != "owner" || status != "executed" {
+        return None;
+    }
+    let s = |k: &str| {
+        payload
+            .get(k)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+    };
+    Some(mcp_unlock_key(s("server")?, s("tool")?))
 }
 
 /// One grant, as stored.
@@ -1674,7 +1860,7 @@ pub fn grant_allows(grant: &Value, tool: &str, recipients: &[String], now_ms: i6
                 .unwrap_or_default();
             recipients
                 .iter()
-                .all(|r| approved.iter().any(|a| a.eq_ignore_ascii_case(r)))
+                .all(|r| approved.iter().any(|a| same_addressee(a, r)))
         }
     }
 }
@@ -1857,6 +2043,27 @@ fn talaria_now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// The person in the agent's live conversation, when one is streaming (an
+/// assistant reply mid-turn in the last fifteen minutes). None when the agent
+/// is not mid-turn — a cron, a finished turn — which is not a mismatch. The
+/// confirm-send doors (the REST drafts, the MCP gateway's hold) refuse a
+/// personal action queued while someone other than its owner is talking.
+pub async fn streaming_conversation_user(
+    pg: &PgPool,
+    agent_model: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select c.user_id::text \
+         from messages m join conversations c on c.id = m.conversation_id \
+         where c.agent_model = $1 and m.role = 'assistant' and m.status = 'streaming' \
+           and m.streamed_at > now() - interval '15 minutes' \
+         order by m.streamed_at desc limit 1",
+    )
+    .bind(agent_model)
+    .fetch_optional(pg)
+    .await
 }
 
 /// The conversation an agent is speaking in, for callers with no id of
@@ -2404,6 +2611,203 @@ mod tests {
         ];
         let merged = merge_chips(&existing, &incoming);
         assert_eq!(merged.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn an_mcp_call_is_a_google_action_and_its_unlock_is_keyed_by_server_and_tool() {
+        assert!(is_google_action("mcp_call"));
+        assert_eq!(
+            tools_unlocked("mcp_call"),
+            [] as [&str; 0],
+            "no static tool list"
+        );
+        let payload = json!({ "server": "google-calendar", "tool": "create_event" });
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "owner", "executed").as_deref(),
+            Some("google-calendar/create_event")
+        );
+        // D7: personal principals only, and only an executed row.
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "org", "executed"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "agent", "executed"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "owner", "failed"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for("mcp_call", &payload, "owner", "pending"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for("gmail_send", &payload, "owner", "executed"),
+            None
+        );
+        assert_eq!(
+            mcp_unlock_for(
+                "mcp_call",
+                &json!({ "server": "google-calendar" }),
+                "owner",
+                "executed"
+            ),
+            None
+        );
+        // The grant covers ONE later call of THAT tool on THAT server, for
+        // half an hour.
+        let now = 1_000;
+        let stored = json!([unlock_grant("google-calendar/create_event", None, now)]);
+        assert!(consume_grant(&stored, "google-calendar/delete_event", &[], now + 1).is_none());
+        assert!(consume_grant(&stored, "google-gmail/create_event", &[], now + 1).is_none());
+        assert!(consume_grant(&stored, "create_event", &[], now + 1).is_none());
+        let spent = consume_grant(&stored, "google-calendar/create_event", &[], now + 1)
+            .expect("the grant covers the same tool");
+        assert!(consume_grant(&spent, "google-calendar/create_event", &[], now + 2).is_none());
+        assert!(
+            consume_grant(
+                &stored,
+                "google-calendar/create_event",
+                &[],
+                now + UNLOCK_TTL_MS
+            )
+            .is_none(),
+            "expired after thirty minutes"
+        );
+        let chip = unlock_chip_for(
+            "a-1",
+            "mcp_call",
+            &["google-calendar/create_event".to_string()],
+        );
+        assert_eq!(chip["tools"][0], "google-calendar/create_event");
+        assert_eq!(
+            mcp_call_chip("p-1", "Google Calendar · create_event {}")["actionKind"],
+            "mcp_call"
+        );
+    }
+
+    /// D7 "as draft_email works today": the grant an approved `mcp_call`
+    /// leaves is bound to the people and the Chat space the approved call
+    /// addressed, read in the argument names Google's catalogs use.
+    #[test]
+    fn an_mcp_call_grant_covers_no_one_the_approved_call_did_not_address() {
+        // Every addressee shape on Google's captured catalogs.
+        assert_eq!(
+            mcp_call_addressees(&json!({
+                "to": ["Bob@X.test"], "cc": ["carol@x.test"], "bcc": ["dan@x.test"],
+                "subject": "eve@x.test is not an addressee",
+            })),
+            ["bob@x.test", "carol@x.test", "dan@x.test"]
+        );
+        assert_eq!(
+            mcp_call_addressees(&json!({
+                "attendees": [{ "email": "a@x.test", "displayName": "A" }, "b@x.test"],
+                "attendeeEmails": ["c@x.test"],
+                "addedAttendees": [{ "email": "D@x.test" }],
+                "addedAttendeeEmails": ["e@x.test"],
+                "removedAttendeeEmails": ["f@x.test"],
+            })),
+            [
+                "a@x.test", "b@x.test", "c@x.test", "d@x.test", "e@x.test", "f@x.test"
+            ]
+        );
+        assert_eq!(
+            mcp_call_addressees(&json!({
+                "conversationId": "spaces/AAAAbc",
+                "threadId": "spaces/AAAAbc/threads/T1",
+                "messageText": "hi",
+            })),
+            ["chat:spaces/AAAAbc"]
+        );
+        assert!(mcp_call_addressees(&json!({ "summary": "Standup" })).is_empty());
+        assert!(mcp_call_addressees(&Value::Null).is_empty());
+        let payload = |args: Value| json!({ "server": "google-calendar", "tool": "create_event", "arguments": args });
+        assert_eq!(
+            approval_recipients(
+                "mcp_call",
+                &payload(json!({ "attendees": [{ "email": "a@x.test" }] }))
+            ),
+            Some(vec!["a@x.test".to_string()])
+        );
+        assert_eq!(
+            approval_recipients("mcp_call", &payload(json!({ "summary": "Solo" }))),
+            Some(vec![])
+        );
+
+        let now = 1_000;
+        let key = "google-calendar/create_event";
+        // Approved: an internal standup with one attendee.
+        let approved = approval_recipients(
+            "mcp_call",
+            &payload(json!({ "attendees": [{ "email": "a@x.test" }] })),
+        )
+        .unwrap();
+        let stored = json!([unlock_grant(key, Some(&approved), now)]);
+        let next = |args: Value| mcp_call_addressees(&args);
+        // The same people, or fewer: covered.
+        assert!(
+            consume_grant(
+                &stored,
+                key,
+                &next(json!({ "attendees": [{ "email": "A@x.test" }] })),
+                now + 1
+            )
+            .is_some()
+        );
+        assert!(consume_grant(&stored, key, &next(json!({ "summary": "x" })), now + 1).is_some());
+        // Anyone else — an outside attendee, a bare address, an added one: held.
+        for args in [
+            json!({ "attendees": [{ "email": "a@x.test" }, { "email": "outsider@y.test" }] }),
+            json!({ "attendeeEmails": ["outsider@y.test"] }),
+            json!({ "addedAttendees": [{ "email": "outsider@y.test" }] }),
+        ] {
+            assert!(
+                consume_grant(&stored, key, &next(args.clone()), now + 1).is_none(),
+                "{args}"
+            );
+        }
+        // A call that named nobody earns a grant for calls that name nobody.
+        let solo = json!([unlock_grant(key, Some(&[]), now)]);
+        assert!(consume_grant(&solo, key, &next(json!({ "summary": "x" })), now + 1).is_some());
+        assert!(
+            consume_grant(
+                &solo,
+                key,
+                &next(json!({ "attendees": ["b@x.test"] })),
+                now + 1
+            )
+            .is_none()
+        );
+        // Chat: one space, exactly — another space, or the same id in
+        // another case, is held.
+        let chat_key = "google-chat/send_message";
+        let space = mcp_call_addressees(&json!({ "conversationId": "spaces/AAAAbc" }));
+        let chat = json!([unlock_grant(chat_key, Some(&space), now)]);
+        assert!(consume_grant(&chat, chat_key, &next(json!({ "conversationId": "spaces/AAAAbc", "threadId": "spaces/AAAAbc/threads/T9" })), now + 1).is_some());
+        for other in ["spaces/BBBB", "spaces/aaaabc"] {
+            assert!(
+                consume_grant(
+                    &chat,
+                    chat_key,
+                    &next(json!({ "conversationId": other })),
+                    now + 1
+                )
+                .is_none(),
+                "{other}"
+            );
+        }
+        assert!(
+            consume_grant(
+                &chat,
+                chat_key,
+                &next(json!({ "conversationId": "spaces/AAAAbc", "threadId": "spaces/BBBB/threads/T1" })),
+                now + 1
+            )
+            .is_none(),
+            "a thread in another space"
+        );
     }
 
     #[test]

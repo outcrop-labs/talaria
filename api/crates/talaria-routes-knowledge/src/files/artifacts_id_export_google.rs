@@ -15,10 +15,11 @@ use serde_json::json;
 use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{AgentSubject, agent_caller, refuse_legacy};
 use talaria_api_facades::google::agent::resolve_agent_google;
-use talaria_api_facades::google::connections::get_connection_status;
+use talaria_api_facades::google::connections::{client_gone_in, get_connection_status};
 use talaria_api_facades::google::drive::{
     ExportError, export_artifact_to_drive, export_artifact_with_token,
 };
+use talaria_api_facades::google::errors::google_token_fail;
 use talaria_api_facades::google::org::get_org_targets;
 use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, can_read_agent, list_editors};
 use talaria_artifacts::{get_artifact, guarded, record_google_export};
@@ -28,7 +29,8 @@ use talaria_session::{actor_of, require_user, who_of};
 use talaria_state::AppState;
 
 /// The three friendly failure answers. `Failed` also logs — the only
-/// consumer of Google's raw sentence is the log.
+/// consumer of Google's raw sentence is the log — except a grant whose
+/// minting client is gone, which answers its named reconnect.
 fn export_failed(e: ExportError) -> Response {
     match e {
         ExportError::NotConnected => {
@@ -48,6 +50,17 @@ fn export_failed(e: ExportError) -> Response {
                 StatusCode::BAD_REQUEST,
                 "not_exportable",
                 "This artifact can’t be exported to Google Drive.",
+            )
+        }
+        // The grant's minting client is configured nowhere: nothing reached
+        // Google, and the named reconnect is the person's whole answer — the
+        // 409 the agent arm and Home give (`google_token_fail`).
+        ExportError::Failed(msg) if client_gone_in(&msg).is_some() => {
+            tracing::warn!("[artifacts/export/google] {msg}");
+            house_error_msg(
+                StatusCode::CONFLICT,
+                "reconnect_needed",
+                &client_gone_in(&msg).unwrap_or_default(),
             )
         }
         ExportError::Failed(msg) => {
@@ -123,14 +136,24 @@ pub async fn post(
         // shared org account for general fleet agents). Pass the CALLER —
         // resolve_agent_google re-checks proof, so this route's guard is a
         // layer rather than the only one.
-        let Some(google) =
-            resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(agent), now_ms()).await
-        else {
-            return Ok(house_error_msg(
-                StatusCode::CONFLICT,
-                "not_connected",
-                "No Google account is connected for this agent (its owner, or the org account).",
-            ));
+        let google = match resolve_agent_google(
+            &state.pg,
+            &sb,
+            &AgentSubject::Caller(agent),
+            now_ms(),
+        )
+        .await
+        {
+            Ok(Some(google)) => google,
+            Ok(None) => {
+                return Ok(house_error_msg(
+                    StatusCode::CONFLICT,
+                    "not_connected",
+                    "No Google account is connected for this agent (its owner, or the org account).",
+                ));
+            }
+            // The token itself failed: Google's words, never "not connected".
+            Err(e) => return Ok(google_token_fail(e, "Drive")),
         };
         // Org files go to the configured Shared Drive/folder (team-owned).
         let folder_id = if google.principal == "org" {
@@ -255,4 +278,37 @@ pub async fn post(
         ))));
     }
     Ok(Json(json!({ "file": file })).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use talaria_api_facades::google::connections::{TokenError, client_gone_sentence};
+
+    async fn answer_of(e: ExportError) -> (StatusCode, serde_json::Value) {
+        let res = export_failed(e);
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, serde_json::from_slice(&bytes).expect("json"))
+    }
+
+    #[tokio::test]
+    async fn a_person_exporting_with_a_gone_client_reads_the_named_reconnect() {
+        let sentence = client_gone_sentence("1234409-rotated.apps.googleusercontent.com");
+        // `export_artifact_to_drive` carries the vend's TokenError as text.
+        let carried = TokenError::ClientGone(sentence.clone()).to_string();
+        let (status, body) = answer_of(ExportError::Failed(carried)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "reconnect_needed");
+        assert_eq!(body["message"], sentence.as_str());
+        // Any other failure keeps the generic 502.
+        let (status, body) = answer_of(ExportError::Failed(
+            "google drive upload failed: 500".into(),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"], "export_failed");
+    }
 }

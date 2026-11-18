@@ -1,0 +1,104 @@
+# CI offload — ci.yml on a plain push to ci/<branch>, with no pull request.
+#
+# WHAT THIS IS. The offload lane `bun run gate:remote` drives: an agent pushes
+#   its commit to `ci/<branch>` (or `ci/full/<branch>`) and GitHub's runners
+#   compile and test it, instead of the agent's own machine. This file is
+#   thin on purpose: it calls ci.yml, so an offload run is exactly the jobs a
+#   pull request gets, planned by the same scripts/surfaces.mjs.
+#     ci/<branch>        light: the surfaces since the merge-base with the
+#                        nearer of origin/testing and origin/rc, Linux jobs
+#                        only (macOS, Windows, iOS and e2e are skipped).
+#     ci/full/<branch>   full: every surface, the platform legs included.
+#   A branch named hotfix/, release/, sync/, promote/ or backflow/ runs full
+#   either way: that work goes straight into rc (surfaces.mjs, FULL_LANES).
+#
+# WHY A SEPARATE WORKFLOW, NOT `ci/**` IN ci.yml's PUSH LIST. Called from
+#   here, ci.yml's check runs are named `offload / <job>`, so they can never
+#   satisfy or shadow a required context — `fmt + clippy + test (api)` on a
+#   sha means a pull request's own run said so, never an offload of the same
+#   sha in light mode. And the workflow is never named `CI`: promote.yml and
+#   flow.yml match their evidence by workflow NAME, so an offload run can
+#   never count as rc's.
+#
+# THE PRUNE. Nothing else deletes a ci/** ref, and gate:remote can be killed
+#   before it cleans up, so once a day the `prune` job deletes every ci/**
+#   ref whose tip commit is more than 24 hours old. A deletion made with the
+#   workflow token starts no workflow. The schedule and dispatch only take
+#   effect from main (GitHub runs a schedule from the default branch's copy
+#   of this file).
+#
+# PERMISSIONS. The call grants `actions: read` because ci.yml's `what
+#   changed` job asks for it, and a called job can request no more than the
+#   calling job grants (check-invariants.mjs, `ci-call-grants`). The prune is
+#   the only job that writes, and it writes refs only.
+
+name: CI offload
+
+on:
+  push:
+    branches: ['ci/**']
+  schedule:
+    # Off the hour, away from release.yml's 03:17.
+    - cron: '23 4 * * *'
+  workflow_dispatch: {}
+
+# A newer push to the same ci/ ref supersedes the run in flight.
+concurrency:
+  group: ci-offload-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  offload:
+    name: offload
+    if: github.event_name == 'push' && github.event.deleted != true
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      # The pushed sha, never the ref: a later push to the same ci/ ref must
+      # not change what this run checks.
+      ref: ${{ github.sha }}
+      mode: ${{ startsWith(github.ref, 'refs/heads/ci/full/') && 'full' || 'light' }}
+
+  prune:
+    name: prune stale ci/** refs
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      # No checkout and no repo script: the ref list, each tip's committer
+      # date, and a delete for the ones older than a day.
+      - name: Delete ci/** refs whose tip is older than 24 hours
+        run: |
+          set -eu
+          now=$(date -u +%s)
+          listing=$(gh api --paginate "repos/$REPO/git/matching-refs/heads/ci/" --jq '.[] | [.ref, .object.sha] | @tsv')
+          kept=0; deleted=0; failed=0
+          while IFS=$'\t' read -r ref sha; do
+            [ -n "$ref" ] || continue
+            if ! when=$(gh api "repos/$REPO/commits/$sha" --jq .commit.committer.date); then
+              echo "::warning::could not read the tip of $ref ($sha); left it"
+              failed=$((failed + 1)); continue
+            fi
+            age=$(( now - $(date -u -d "$when" +%s) ))
+            if [ "$age" -le 86400 ]; then
+              echo "kept    $ref (tip $when)"; kept=$((kept + 1)); continue
+            fi
+            # DELETE /repos/{repo}/git/refs/{ref}: the path is the full ref.
+            if gh api -X DELETE "repos/$REPO/git/$ref" >/dev/null; then
+              echo "deleted $ref (tip $when)"; deleted=$((deleted + 1))
+            else
+              echo "::warning::could not delete $ref"; failed=$((failed + 1))
+            fi
+          done <<< "$listing"
+          echo "ci/** refs: $deleted deleted, $kept kept, $failed failed"
+          [ "$failed" = 0 ]

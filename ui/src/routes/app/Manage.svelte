@@ -8,12 +8,14 @@
   import AppsTile from '@/components/manage/AppsTile.svelte'
   import AttentionPanel from '@/components/manage/AttentionPanel.svelte'
   import FleetControls from '@/components/manage/FleetControls.svelte'
+  import HermesChannelPanel from '@/components/manage/HermesChannelPanel.svelte'
   import McpTile from '@/components/manage/McpTile.svelte'
   import ModelsTile from '@/components/manage/ModelsTile.svelte'
   import SpendTile from '@/components/manage/SpendTile.svelte'
   import StudioTile from '@/components/manage/StudioTile.svelte'
   import TeamsTile from '@/components/manage/TeamsTile.svelte'
   import TemplatesTile from '@/components/manage/TemplatesTile.svelte'
+  import WorkbenchHarnessPanel from '@/components/manage/WorkbenchHarnessPanel.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import { manageArea } from '@/lib/manage-area'
   import { staggerIn } from '@/lib/motion'
@@ -91,7 +93,13 @@
       {/if}
 
       <div class="grid items-start gap-4 lg:grid-cols-2">
-        {#if isAdmin}<FleetControls />{/if}
+        {#if isAdmin}
+          <div class="grid gap-4">
+            <FleetControls />
+            <HermesChannelPanel />
+            <WorkbenchHarnessPanel />
+          </div>
+        {/if}
         <ActivityPanel />
       </div>
     {/if}

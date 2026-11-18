@@ -1500,7 +1500,12 @@ async fn persona_turn(
         std::sync::Arc::new(move |line: &str| {
             let state = state.clone();
             let channel = channel.clone();
-            let line = format!("{line}\n");
+            // Stamped with its arrival, so the work pulse can say how long
+            // a step has run and when the turn last did anything.
+            let line = format!(
+                "{}\n",
+                talaria_work_pulse::stamp(line, talaria_work_pulse::now_ms())
+            );
             tokio::spawn(async move {
                 // PUBLISH for the live watchers, APPEND for the replay tail
                 // (one line per event). Quiet on every error: observability
@@ -1516,6 +1521,9 @@ async fn persona_turn(
                         .arg(&line)
                         .query_async::<()>(&mut conn)
                         .await;
+                    if let Some(run_id) = channel.strip_prefix("run-watch:") {
+                        let _ = talaria_work_pulse::touch(&mut conn, run_id).await;
+                    }
                 }
             });
         }) as std::sync::Arc<dyn Fn(&str) + Send + Sync>

@@ -425,7 +425,7 @@ agent and API key uses. Your code never holds a key, a provider URL or a transpo
   run's `caller` kept inside your app's namespace: `app:<slug>` or `app:<slug>:…` is kept as
   written, and any other caller is prefixed with `app:<slug>:`. The provider's own cost is
   recorded when it reports one; a reply without usage is still booked, from an estimate.
-- **Your app has a budget.** An admin sets it under Admin → Settings → LLM budgets for the caller
+- **Your app has a budget.** An admin sets it under Admin → Security → LLM budgets for the caller
   `app:<slug>`; it counts every row under your app's namespace. Over it, a run fails with the
   gateway's sentence (`"app:<slug>" has reached its LLM budget…`) in `error`, and no call is
   made.

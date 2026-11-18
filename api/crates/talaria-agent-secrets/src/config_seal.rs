@@ -99,6 +99,64 @@ fn credential_key(key: &str) -> bool {
     EXACT.contains(&k.as_str()) || LAST_WORD.iter().any(|w| k.ends_with(w))
 }
 
+/// Whether a config value may carry a credential, wherever it sits: the
+/// seal's own key rule ([`credential_key`]) and the shapes a credential
+/// takes under any name — a URL's userinfo (`postgres://u:p@…`, a
+/// `DATABASE_URL`), a token in its query (`?token=…`), a Slack webhook path,
+/// a `Bearer`/`Basic` value, and the prefixes providers mint (`sk-`,
+/// `ghp_`, `github_pat_`, `xox?-`, `glpat-`, `AKIA…`, a JWT). Names whose
+/// value is a credential by convention (`*_dsn`, `*_webhook`,
+/// `connection_string`, `credentials`) count too. One rule for everything
+/// that must keep a config's secrets out of what it writes or shows (the
+/// agent image inspection's stand-in among them); the seal itself still
+/// seals by [`credential_key`] alone.
+pub fn may_hold_credential(key: &str, value: &str) -> bool {
+    if !is_literal(value) {
+        return false;
+    }
+    let k = key.to_ascii_lowercase().replace('-', "_");
+    let named = credential_key(key)
+        || [
+            "dsn",
+            "webhook",
+            "webhook_url",
+            "connection_string",
+            "credentials",
+            "auth",
+        ]
+        .iter()
+        .any(|w| k == *w || k.ends_with(&format!("_{w}")));
+    named || credential_value(value)
+}
+
+/// Whether a string is shaped like a credential, whatever its key.
+pub fn credential_value(value: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(concat!(
+            r"(?i)(^|\s)(bearer|basic)\s+\S",
+            r"|[a-z][a-z0-9+.-]*://[^/\s@:]+:[^/\s@]+@",
+            r"|[?&](token|access_token|api_key|apikey|key|secret|sig|signature|password|auth)=[^&\s]",
+            r"|hooks\.slack\.com/services/",
+            r"|(^|[^a-z0-9])(sk-[a-z0-9_-]{8,}|sk_live_|rk_live_|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abposr]-|akia[0-9a-z]{12}|hf_[a-z0-9]{16,}|aiza[0-9a-z_-]{20,}|secret_[a-z0-9]{16,}|ntn_[a-z0-9]{16,}|sk_test_|pk_live_|rk_test_)",
+            r"|eyj[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.",
+        ))
+        .unwrap()
+    });
+    re.is_match(value)
+}
+
+/// Whether a command-line word names a credential flag (`--token`,
+/// `--api-key`, `-p` is not one): the word after it in an `args` list is
+/// one, and so is the part after `=` in `--token=…`.
+pub fn credential_flag(word: &str) -> bool {
+    let w = word
+        .trim_start_matches('-')
+        .to_ascii_lowercase()
+        .replace('-', "_");
+    word.starts_with("--") && credential_key(&w)
+}
+
 /// Whether a string is a literal rather than a reference. A `${VAR}`
 /// reference, alone or in a template such as `Bearer ${TOKEN}`, is already a
 /// handle, matched by Hermes's own pattern (v0.22.4 `hermes_cli/config.py`
@@ -623,6 +681,43 @@ fn withhold_where(config: &Value, hit: &dyn Fn(&str) -> bool) -> (Value, Vec<Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_credential_is_found_by_its_name_or_its_shape() {
+        use super::{credential_flag, credential_value, may_hold_credential};
+        for (k, v) in [
+            ("api_key", "abc123"),
+            ("X-Access-Token", "abc123"),
+            ("DATABASE_URL", "postgres://app:hunter2@db:5432/app"),
+            ("url", "https://api.example.com/v1?token=abc123"),
+            ("SENTRY_DSN", "https://abc@o1.ingest.sentry.io/1"),
+            ("ALERTS_WEBHOOK", "https://example.com/in/abc"),
+            ("note", "sk-proj-abcdefghij1234"),
+            ("value", "ghp_abcdefghijklmnop"),
+            ("value", "xoxb-1234-5678"),
+            ("value", "https://hooks.slack.com/services/T0/B0/XYZ"),
+            (
+                "value",
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig",
+            ),
+            ("header", "Bearer abc.def"),
+        ] {
+            assert!(may_hold_credential(k, v), "{k}={v}");
+        }
+        for (k, v) in [
+            ("api_key", "${OPENAI_API_KEY}"),
+            ("model", "gpt-4o-mini"),
+            ("url", "http://host.docker.internal:5304/api/mcp/gw/talaria"),
+            ("max_tokens", "4096"),
+            ("X-Agent-Name", "relbot-relops"),
+            ("command", "npx"),
+        ] {
+            assert!(!may_hold_credential(k, v), "{k}={v}");
+        }
+        assert!(!credential_value("skeleton-key"));
+        assert!(credential_flag("--token") && credential_flag("--api-key"));
+        assert!(!credential_flag("--port") && !credential_flag("token"));
+    }
+
     use super::*;
     use serde_json::json;
 

@@ -224,6 +224,10 @@ pub async fn get(
                 // An org agent has nobody to be on a per-user server.
                 None => json!(true),
             }
+        } else if s.auth_mode == talaria_api_facades::mcp::google::AUTH_MODE {
+            // A Google Workspace MCP server speaks as this agent's own Google
+            // principal (owner, org or its own identity).
+            json!(talaria_api_facades::mcp::google::needs_connection(&state.pg, &def.model).await)
         } else if s.oauth_enabled && s.auth_mode == "org" {
             json!(
                 !has_oauth_tokens(&state.pg, &s.id, "org")
