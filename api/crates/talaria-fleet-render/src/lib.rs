@@ -1056,7 +1056,10 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "# every push is searched for the identity each snapshot is authored with.\n",
     "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>, read\n",
     "# through the same quoted pipeline as the gate below: the first refusal\n",
-    "# is printed, and a ref's text is data and never runs.\n",
+    "# is printed, and a ref's text is data and never runs. The search stops\n",
+    "# at the remote's tip only when this clone holds that tip: a force push\n",
+    "# over a tip it never fetched is searched whole, and a search git\n",
+    "# refuses is a refusal, never a clean push.\n",
     "zero=0000000000000000000000000000000000000000\n",
     "declined=$(printf '%s\\n' \"$input\" | while read -r local_ref local_sha remote_ref remote_sha; do\n",
     "  [ -n \"$local_ref\" ] || continue\n",
@@ -1065,8 +1068,10 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "  case \"$local_ref\" in refs/talaria/*)\n",
     "    printf '%s' \"$local_ref is a checkpoint ref and is never pushed, as $remote_ref or any other name\"; break ;; esac\n",
     "  case \"$local_sha\" in \"$zero\"|\"\") continue ;; esac\n",
-    "  exclude=\"\"; case \"$remote_sha\" in \"$zero\"|\"\") ;; *) exclude=\"^$remote_sha\" ;; esac\n",
-    "  hit=$(git rev-list --max-count=1 --author=checkpoint@talaria.invalid \"$local_sha\" $exclude 2>/dev/null)\n",
+    "  exclude=\"\"; case \"$remote_sha\" in \"$zero\"|\"\") ;; *)\n",
+    "    git cat-file -e \"$remote_sha^{commit}\" 2>/dev/null && exclude=\"^$remote_sha\" ;; esac\n",
+    "  hit=$(git rev-list --max-count=1 --author=checkpoint@talaria.invalid \"$local_sha\" $exclude 2>/dev/null) || {\n",
+    "    printf '%s' \"$remote_ref could not be searched for checkpoint commits, so it is not pushed\"; break; }\n",
     "  if [ -n \"$hit\" ]; then\n",
     "    printf '%s' \"$remote_ref carries checkpoint commit $hit, which is never pushed\"; break\n",
     "  fi\n",
@@ -7561,6 +7566,103 @@ empty_list: []
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(out.status.code(), Some(1), "{stderr}");
         assert!(stderr.contains("checkpoint commit"), "{stderr}");
+    }
+
+    /// A force push over a remote tip this clone never fetched hands the
+    /// hook a remote sha git cannot read. The search excluded it with
+    /// `^<sha>`, git refused the search, and the empty answer read as "no
+    /// checkpoint commit": the snapshot left. The search now runs over the
+    /// whole pushed history when the tip is not here, and a clean commit
+    /// over the same unknown tip still goes through.
+    #[test]
+    fn a_checkpoint_commit_over_an_unfetched_remote_tip_is_refused() {
+        let dir = std::env::temp_dir().join(format!("talaria-hookfar-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
+        std::fs::write(dir.join("repo/pre-push"), GIT_PRE_PUSH_HOOK).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir.join("repo"))
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=a",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ]);
+        let base = git(&["rev-parse", "HEAD"]);
+        let tree = git(&["write-tree"]);
+        let ckpt = git(&[
+            "-c",
+            "user.email=checkpoint@talaria.invalid",
+            "-c",
+            "user.name=Talaria checkpoint",
+            "commit-tree",
+            &tree,
+            "-p",
+            &base,
+            "-m",
+            "talaria checkpoint x",
+        ]);
+        let clean = git(&[
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=a",
+            "commit-tree",
+            &tree,
+            "-p",
+            &base,
+            "-m",
+            "clean",
+        ]);
+        // The remote's tip: a well-formed id no object in this clone has.
+        let far = "1234567890abcdef1234567890abcdef12345678";
+        let push = |local: &str| {
+            let refs_file = dir.join("refs.txt");
+            std::fs::write(
+                &refs_file,
+                format!("refs/heads/main {local} refs/heads/main {far}\n"),
+            )
+            .unwrap();
+            std::process::Command::new("sh")
+                .arg("pre-push")
+                .arg("origin")
+                .current_dir(dir.join("repo"))
+                .env("GIT_DIR", ".git")
+                .stdin(std::fs::File::open(&refs_file).unwrap())
+                .output()
+                .unwrap()
+        };
+        let refused = push(ckpt.as_str());
+        let passed = push(clean.as_str());
+        let _ = std::fs::remove_dir_all(&dir);
+        let stderr = String::from_utf8_lossy(&refused.stderr).into_owned();
+        assert_eq!(refused.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("checkpoint commit"), "{stderr}");
+        // No remote is configured, so a push the guard lets through ends at
+        // the gate's "no remote url" exit.
+        assert_eq!(
+            passed.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&passed.stderr)
+        );
     }
 
     /// The plugin's snapshot half, driven against a real git repository by
