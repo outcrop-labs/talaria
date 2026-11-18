@@ -988,7 +988,11 @@ async fn call_tool(
         }
 
         "start_job" => {
-            if let Some(attempt) = rewind::attempt_of_call(pg, &agent.model, args).await
+            let attempt = match rewind::attempt_of_call(pg, &agent.model, args).await {
+                Ok(attempt) => attempt,
+                Err(e) => return thrown(e),
+            };
+            if let Some(attempt) = attempt
                 && let rewind::RewindStart::Answered(answer) =
                     rewind::start_job(deps, subject, &agent, args, &attempt).await
             {
@@ -1107,7 +1111,10 @@ async fn call_tool(
                 None => None,
             };
             let run_id = match &task_id {
-                Some(task_id) => live_session(pg, &agent.model, task_id).await,
+                Some(task_id) => match live_session(pg, &agent.model, task_id).await {
+                    Ok(run_id) => run_id,
+                    Err(e) => return thrown(format!("work session read: {e}")),
+                },
                 None => None,
             };
             // Mint the branch under the repo's own branch law: a grant with a
@@ -3730,7 +3737,7 @@ async fn wtool_run_for(pg: &PgPool, model: &str, args: &Map<String, Value>) -> O
         _ => None,
     };
     match task_id {
-        Some(task_id) => live_session(pg, model, &task_id).await,
+        Some(task_id) => live_session(pg, model, &task_id).await.ok().flatten(),
         None => sqlx::query_scalar::<_, String>(
             "select id::text from runs \
              where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
@@ -3745,7 +3752,11 @@ async fn wtool_run_for(pg: &PgPool, model: &str, args: &Map<String, Value>) -> O
     }
 }
 
-async fn live_session(pg: &PgPool, model: &str, task_id: &str) -> Option<String> {
+async fn live_session(
+    pg: &PgPool,
+    model: &str,
+    task_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar::<_, String>(
         "select id::text from runs \
          where kind = 'work-session' and state in ('queued', 'running', 'awaiting') \
@@ -3756,8 +3767,6 @@ async fn live_session(pg: &PgPool, model: &str, task_id: &str) -> Option<String>
     .bind(task_id)
     .fetch_optional(pg)
     .await
-    .ok()
-    .flatten()
 }
 
 async fn log_wtool_line(
@@ -4521,6 +4530,26 @@ mod tests {
         );
         assert!(finish_note(&pr(true, true)).contains("posted on it as a comment"));
         assert!(finish_note(&pr(true, false)).contains("could not be posted"));
+    }
+
+    /// `start_job` answers this `Err` with a thrown error. No database here: the
+    /// pool points at a closed port, so the work-session read fails.
+    #[tokio::test]
+    async fn a_rewind_probe_that_cannot_read_is_an_error_never_the_ordinary_path() {
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(300))
+            .connect_lazy("postgres://nobody@127.0.0.1:9/none")
+            .unwrap();
+        let mut args = Map::new();
+        args.insert(
+            "taskId".into(),
+            json!("6113b5bc-6935-46e1-a67c-60bd58daf4f0"),
+        );
+        let probe = rewind::attempt_of_call(&pg, "rewind-probe-test", &args).await;
+        assert!(probe.is_err(), "an unread probe answered Ok");
+        // No ticket named: nothing to probe, so no read to fail.
+        let none = rewind::attempt_of_call(&pg, "rewind-probe-test", &Map::new()).await;
+        assert!(matches!(none, Ok(None)));
     }
 
     // ── Live-DB: a revise round, end to end against a loopback GitHub ───────
