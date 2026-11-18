@@ -32,6 +32,12 @@
   import KbSearch from './KbSearch.svelte'
   import KbSpaceEditor from './KbSpaceEditor.svelte'
   import KbSpaceRow from './KbSpaceRow.svelte'
+  // First touch of the tree state, before any KbDocRow $derived or the
+  // sidebar's {#if} can read it: the first hydrate writes $state, which
+  // Svelte forbids inside those reactive contexts — the live crash we
+  // hit on /knowledge with a stored shape. Idempotent; plain instance
+  // script is a safe place to write state.
+  kbTreeState.hydrate()
 
   // The knowledgebase — an Outline-style markdown drive. A searchable, nestable
   // tree of docs on the left; a WYSIWYG doc with breadcrumb, emoji, table of

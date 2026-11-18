@@ -180,6 +180,8 @@ describe('unlock and invoke', () => {
     expect(toolsUnlockedBy('gmail_send')).toEqual(['draft_email'])
     expect(toolsUnlockedBy('ticket_move')).toEqual(['triage_ticket'])
     expect(toolsUnlockedBy('unknown')).toEqual([])
+    // A held Google Workspace MCP call's unlock is the chip's own <server>/<tool>.
+    expect(toolsUnlockedBy('mcp_call')).toEqual([])
   })
 
   it('builds the run sentence from filled inputs only', () => {

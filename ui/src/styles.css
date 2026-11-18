@@ -91,6 +91,7 @@
   --theme-panel: #141312; /* Panel — panels, cards, composer body */
   --theme-raised: #1e1c1a; /* Raised — active tiles, chips, inputs */
   --theme-hover: #24221f; /* Hover fill on rows/items/buttons */
+  --theme-lane: var(--theme-panel);
   --theme-card: var(--theme-raised);
   --theme-card2: var(--theme-hover);
   --theme-border: #302d29; /* Hairline */
@@ -160,6 +161,7 @@
   --theme-panel: #faf8f4;
   --theme-raised: #ffffff; /* Raised */
   --theme-hover: #ece8e0; /* Hover fill */
+  --theme-lane: #ebe7df;
   --theme-card: var(--theme-raised);
   --theme-card2: var(--theme-hover);
   --theme-border: #dcd6cc; /* Hairline */
@@ -184,7 +186,7 @@
 
   --theme-success: #5e7f4e;
   --theme-warning: #8f7a33;
-  --theme-danger: #c8500f;
+  --theme-danger: #b8480c;
   --theme-chart-1: #3e7a8a;
   --theme-chart-2: #b05a4a;
 
@@ -216,6 +218,94 @@
   --theme-input: #ffffff;
 }
 
+[data-theme='mercury'] [data-inbox-surface] {
+  --theme-panel: #151515;
+  --theme-raised: #232323;
+  --theme-hover: #333333;
+  --theme-border: #363635;
+  --theme-border-strong: #5c5b59;
+  --theme-muted: #a6a39d;
+  --theme-chart-1: #86cddd;
+  --theme-danger: #ff6b6b;
+  --theme-warning: #e3b341;
+  --theme-lane: #171717;
+  --inbox-danger-wash: rgba(255, 107, 107, 0.035);
+  --inbox-done-card: #1d1d1d;
+  --inbox-ink-soft: #c9c5be;
+  --inbox-segment: #4a4a4a;
+  --inbox-chip-danger: rgba(255, 107, 107, 0.14);
+  --inbox-chip-warning: rgba(227, 179, 65, 0.13);
+  --inbox-tint-0: #24364d;
+  --inbox-tint-0-ink: #b9d0ec;
+  --inbox-tint-1: #1d3d3a;
+  --inbox-tint-1-ink: #a5d6cf;
+  --inbox-tint-2: #2e3d24;
+  --inbox-tint-2-ink: #bfd8aa;
+  --inbox-tint-3: #372f55;
+  --inbox-tint-3-ink: #cdc3ef;
+  --inbox-tint-4: #4a2833;
+  --inbox-tint-4-ink: #efbfcc;
+  --inbox-tint-5: #453a22;
+  --inbox-tint-5-ink: #e3cf9f;
+}
+
+[data-theme='mercury-light'] [data-inbox-surface] {
+  --theme-panel: var(--theme-raised);
+  --theme-lane: #e9e8e5;
+  --theme-border: #cdc5b8;
+  --theme-muted: #5f584e;
+  --theme-warning: #996300;
+  --theme-danger: #c5221f;
+  --theme-chart-1: #2c6f82;
+  --inbox-danger-wash: rgba(197, 34, 31, 0.05);
+  --inbox-done-card: var(--theme-lane);
+  --inbox-ink-soft: #47423b;
+  --inbox-segment: var(--theme-raised);
+  --inbox-chip-danger: rgba(197, 34, 31, 0.08);
+  --inbox-chip-warning: rgba(224, 168, 0, 0.16);
+  --inbox-tint-0: #dce6f3;
+  --inbox-tint-0-ink: #2a4d7a;
+  --inbox-tint-1: #d5e9e6;
+  --inbox-tint-1-ink: #1f5952;
+  --inbox-tint-2: #dde9d3;
+  --inbox-tint-2-ink: #3a5a24;
+  --inbox-tint-3: #e4def2;
+  --inbox-tint-3-ink: #4d3b85;
+  --inbox-tint-4: #f2dde2;
+  --inbox-tint-4-ink: #7d3147;
+  --inbox-tint-5: #ece2cd;
+  --inbox-tint-5-ink: #644a14;
+}
+
+[data-inbox-surface] .inbox-person {
+  border-color: transparent;
+  background-color: var(--person-fill);
+  color: var(--person-ink);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1;
+}
+[data-inbox-surface] .inbox-person-sm {
+  width: 16px;
+  height: 16px;
+  font-size: 7.5px;
+}
+[data-inbox-surface] .inbox-person-md {
+  width: 20px;
+  height: 20px;
+  font-size: 9px;
+}
+[data-inbox-surface] .inbox-person-lg {
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+}
+
+[data-inbox-surface] [data-inbox-view][aria-pressed='true'] > span[aria-hidden] {
+  background-color: var(--inbox-segment);
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    Tailwind semantic colours — bound to the Mercury tokens so utilities like
    `bg-surface`, `text-fg`, `border-line`, `text-accent` track the active mode
@@ -232,6 +322,7 @@
   --color-card2: var(--theme-card2);
   --color-raised: var(--theme-raised);
   --color-hover: var(--theme-hover);
+  --color-lane: var(--theme-lane);
   --color-hover-surface: var(--theme-hover);
   --color-line: var(--theme-border);
   --color-line-strong: var(--theme-border-strong);

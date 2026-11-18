@@ -168,6 +168,7 @@ pub async fn approval_items(
             let label = match approval.kind.as_str() {
                 "gmail_send" => "SEND EMAIL",
                 "doc_update" => "UPDATE DOC",
+                "mcp_call" => "GOOGLE TOOL",
                 _ => "CREATE EVENT",
             };
             // The payload's own fields, not a paraphrase: the card recommends
@@ -180,6 +181,7 @@ pub async fn approval_items(
                 "doc_update" | "drive_move" | "drive_rename" => {
                     approval_evidence_file(&approval.payload)
                 }
+                "mcp_call" => approval_evidence_mcp_call(&approval.payload),
                 _ => approval_evidence_event(&approval.payload),
             };
             evidence.push(FocusEvidence {
@@ -201,6 +203,7 @@ pub async fn approval_items(
                     match approval.kind.as_str() {
                         "gmail_send" => "Send",
                         "doc_update" => "Update",
+                        "mcp_call" => "Run",
                         _ => "Create",
                     },
                     approval.summary.clone().unwrap_or_else(|| label.to_lowercase())
@@ -223,7 +226,11 @@ pub async fn approval_items(
                     // confirmation path.
                     focus_action(
                         "approve",
-                        if approval.kind == "gmail_send" { "Approve send" } else { "Approve event" },
+                        match approval.kind.as_str() {
+                            "gmail_send" => "Approve send",
+                            "mcp_call" => "Approve call",
+                            _ => "Approve event",
+                        },
                         "confirmation",
                         None,
                         None,
@@ -235,6 +242,30 @@ pub async fn approval_items(
             })
         })
         .collect())
+}
+
+/// A held Google Workspace MCP call as evidence rows: which server, which
+/// tool, and the arguments exactly as the agent sent them (capped like every
+/// other entry). Pure.
+fn approval_evidence_mcp_call(payload: &Value) -> Vec<FocusEvidence> {
+    let s = |k: &str| {
+        payload
+            .get(k)
+            .and_then(Value::as_str)
+            .filter(|v| !v.is_empty())
+    };
+    let mut out = Vec::new();
+    if let Some(server) = s("productName").or_else(|| s("server")) {
+        out.push(evidence("Server", server));
+    }
+    if let Some(tool) = s("tool") {
+        out.push(evidence("Tool", tool));
+    }
+    if let Some(args) = payload.get("arguments") {
+        let text: String = args.to_string().chars().take(1_000).collect();
+        out.push(evidence("Arguments", &text));
+    }
+    out
 }
 
 /// An email draft as evidence rows: who gets it, what it says.
@@ -497,4 +528,34 @@ pub async fn notification_items(
             })
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_held_google_workspace_call_shows_its_server_tool_and_arguments() {
+        let rows = approval_evidence_mcp_call(&serde_json::json!({
+            "server": "google-calendar",
+            "productName": "Google Calendar",
+            "tool": "create_event",
+            "arguments": { "summary": "Standup" },
+        }));
+        let pairs: Vec<(String, String)> = rows
+            .iter()
+            .map(|e| (e.label.clone(), e.text.clone()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("Server".to_string(), "Google Calendar".to_string()),
+                ("Tool".to_string(), "create_event".to_string()),
+                (
+                    "Arguments".to_string(),
+                    "{\"summary\":\"Standup\"}".to_string()
+                ),
+            ]
+        );
+    }
 }

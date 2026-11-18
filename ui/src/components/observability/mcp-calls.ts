@@ -7,12 +7,13 @@ import type { ChipTone } from '@/components/ui/chip'
 import { getJson } from '@/lib/fetch-json'
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
 
-export const OUTCOMES = ['ok', 'error', 'denied', 'not_connected', 'upstream_error', 'spend_error', 'cancelled'] as const
+export const OUTCOMES = ['ok', 'error', 'denied', 'not_connected', 'upstream_error', 'spend_error', 'cancelled', 'held'] as const
 export type McpCallOutcome = (typeof OUTCOMES)[number]
 
 /** Label + tint per outcome. Orange (danger) is a real failure; a refusal is
  *  attention (warn); a missing connection is setup and a hang-up is the
- *  client's choice — neither is the server failing (neutral). */
+ *  client's choice — neither is the server failing (neutral); a held call
+ *  waits for a person (accent). */
 export const OUTCOME_META: Record<McpCallOutcome, { label: string; tone: ChipTone; blurb: string }> = {
   ok: { label: 'ok', tone: 'success', blurb: 'The tool answered.' },
   error: { label: 'error', tone: 'danger', blurb: 'The tool or server answered with an error.' },
@@ -21,6 +22,7 @@ export const OUTCOME_META: Record<McpCallOutcome, { label: string; tone: ChipTon
   upstream_error: { label: 'upstream', tone: 'danger', blurb: 'The server could not be reached, or failed at HTTP level.' },
   spend_error: { label: 'spend', tone: 'danger', blurb: 'The credential spend boundary failed; nothing was sent.' },
   cancelled: { label: 'cancelled', tone: 'neutral', blurb: 'The caller hung up before the answer finished.' },
+  held: { label: 'held', tone: 'accent', blurb: 'Queued for a person to approve; nothing reached the server yet.' },
 }
 
 export const isOutcome = (v: string | null | undefined): v is McpCallOutcome =>

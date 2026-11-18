@@ -167,6 +167,13 @@ CREATE TABLE public.agent_dm_mutes (
     agent_model text NOT NULL,
     muted_until timestamp with time zone NOT NULL
 );
+CREATE TABLE public.agent_github_permissions (
+    agent_id uuid NOT NULL,
+    host_id text NOT NULL,
+    permissions jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_by uuid,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.agent_google_connections (
     agent_model text NOT NULL,
     google_sub text NOT NULL,
@@ -177,7 +184,11 @@ CREATE TABLE public.agent_google_connections (
     access_expires_at timestamp with time zone,
     connected_by uuid,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    oauth_client_id text,
+    reconnect_reason text,
+    reconnect_flagged_at timestamp with time zone,
+    last_mcp_refusal jsonb
 );
 CREATE TABLE public.agent_google_oauth_states (
     state text NOT NULL,
@@ -741,6 +752,18 @@ CREATE TABLE public.fleet_agents (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.git_host_installations (
+    host_id text NOT NULL,
+    installation_id bigint NOT NULL,
+    account text DEFAULT ''::text NOT NULL,
+    app_permissions jsonb,
+    held jsonb,
+    repository_selection text,
+    suspended_at timestamp with time zone,
+    html_url text,
+    checked_at timestamp with time zone,
+    error text
+);
 CREATE TABLE public.git_hosts (
     id text NOT NULL,
     kind text NOT NULL,
@@ -764,7 +787,11 @@ CREATE TABLE public.google_connections (
     access_token_enc text,
     access_expires_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    oauth_client_id text,
+    reconnect_reason text,
+    reconnect_flagged_at timestamp with time zone,
+    last_mcp_refusal jsonb
 );
 CREATE TABLE public.google_org_connection (
     id integer DEFAULT 1 NOT NULL,
@@ -781,6 +808,10 @@ CREATE TABLE public.google_org_connection (
     calendar_id text,
     send_as text,
     shared_drive_id text,
+    oauth_client_id text,
+    reconnect_reason text,
+    reconnect_flagged_at timestamp with time zone,
+    last_mcp_refusal jsonb,
     CONSTRAINT google_org_connection_id_check CHECK ((id = 1))
 );
 CREATE TABLE public.google_pending_actions (
@@ -1094,6 +1125,14 @@ CREATE SEQUENCE public.mcp_tool_calls_id_seq
     NO MAXVALUE
     CACHE 1;
 ALTER SEQUENCE public.mcp_tool_calls_id_seq OWNED BY public.mcp_tool_calls.id;
+CREATE TABLE public.mcp_tool_policies (
+    server_id uuid NOT NULL,
+    tool text NOT NULL,
+    policy text NOT NULL,
+    set_by uuid,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT mcp_tool_policies_policy_check CHECK ((policy = ANY (ARRAY['allow'::text, 'hold'::text, 'deny'::text])))
+);
 CREATE TABLE public.mcp_user_access (
     server_id uuid NOT NULL,
     user_id uuid NOT NULL,
@@ -1764,6 +1803,24 @@ CREATE TABLE public.workbench_jobs (
     run_id uuid,
     superseded_by uuid
 );
+CREATE TABLE public.workbench_permission_requests (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    agent_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    host_id text NOT NULL,
+    repo text NOT NULL,
+    permission text NOT NULL,
+    level text NOT NULL,
+    why text DEFAULT ''::text NOT NULL,
+    evidence jsonb,
+    task_id uuid,
+    status text DEFAULT 'pending'::text NOT NULL,
+    decided_by uuid,
+    decision_note text,
+    decided_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.workbench_profiles (
     slug text NOT NULL,
     name text NOT NULL,
@@ -1868,6 +1925,8 @@ ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_slug_key UNIQUE (slug);
 ALTER TABLE ONLY public.agent_dm_mutes
     ADD CONSTRAINT agent_dm_mutes_pkey PRIMARY KEY (user_id, agent_model);
+ALTER TABLE ONLY public.agent_github_permissions
+    ADD CONSTRAINT agent_github_permissions_pkey PRIMARY KEY (agent_id, host_id);
 ALTER TABLE ONLY public.agent_google_connections
     ADD CONSTRAINT agent_google_connections_pkey PRIMARY KEY (agent_model);
 ALTER TABLE ONLY public.agent_google_oauth_states
@@ -2000,6 +2059,8 @@ ALTER TABLE ONLY public.fleet_agents
     ADD CONSTRAINT fleet_agents_name_key UNIQUE (name);
 ALTER TABLE ONLY public.fleet_agents
     ADD CONSTRAINT fleet_agents_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.git_host_installations
+    ADD CONSTRAINT git_host_installations_pkey PRIMARY KEY (host_id, installation_id);
 ALTER TABLE ONLY public.git_hosts
     ADD CONSTRAINT git_hosts_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.google_connections
@@ -2066,6 +2127,8 @@ ALTER TABLE ONLY public.mcp_team_access
     ADD CONSTRAINT mcp_team_access_pkey PRIMARY KEY (server_id, team_id);
 ALTER TABLE ONLY public.mcp_tool_calls
     ADD CONSTRAINT mcp_tool_calls_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.mcp_tool_policies
+    ADD CONSTRAINT mcp_tool_policies_pkey PRIMARY KEY (server_id, tool);
 ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_pkey PRIMARY KEY (server_id, user_id);
 ALTER TABLE ONLY public.mcp_user_credentials
@@ -2218,6 +2281,8 @@ ALTER TABLE ONLY public.workbench_harness_defs
     ADD CONSTRAINT workbench_harness_defs_pkey PRIMARY KEY (slug);
 ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.workbench_profiles
     ADD CONSTRAINT workbench_profiles_pkey PRIMARY KEY (slug);
 ALTER TABLE ONLY public.workbench_repo_flow
@@ -2344,6 +2409,7 @@ CREATE INDEX usage_events_task_idx ON public.usage_events USING btree (task_id) 
 CREATE INDEX usage_events_unpriced_generation_idx ON public.usage_events USING btree (generation_id) WHERE ((generation_id IS NOT NULL) AND (provider_cost IS NULL));
 CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, queued_at);
 CREATE INDEX workbench_jobs_run_idx ON public.workbench_jobs USING btree (run_id) WHERE (run_id IS NOT NULL);
+CREATE UNIQUE INDEX workbench_permission_requests_one_open ON public.workbench_permission_requests USING btree (agent_id, host_id, permission) WHERE (status = ANY (ARRAY['pending'::text, 'awaiting_github'::text]));
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
 CREATE TRIGGER agent_coding_accounts_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_accounts FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
 CREATE TRIGGER agent_coding_blocks_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_account_blocks FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
@@ -2367,6 +2433,12 @@ ALTER TABLE ONLY public.agent_defs
     ADD CONSTRAINT agent_defs_ticket_template_id_fkey FOREIGN KEY (ticket_template_id) REFERENCES public.templates(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.agent_dm_mutes
     ADD CONSTRAINT agent_dm_mutes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_github_permissions
+    ADD CONSTRAINT agent_github_permissions_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_github_permissions
+    ADD CONSTRAINT agent_github_permissions_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.agent_github_permissions
+    ADD CONSTRAINT agent_github_permissions_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.agent_google_connections
     ADD CONSTRAINT agent_google_connections_agent_model_fkey FOREIGN KEY (agent_model) REFERENCES public.agent_defs(model) ON DELETE CASCADE;
 ALTER TABLE ONLY public.agent_google_connections
@@ -2527,6 +2599,8 @@ ALTER TABLE ONLY public.daily_briefs
     ADD CONSTRAINT daily_briefs_artifact_id_fkey FOREIGN KEY (artifact_id) REFERENCES public.artifacts(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.daily_briefs
     ADD CONSTRAINT daily_briefs_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.git_host_installations
+    ADD CONSTRAINT git_host_installations_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.google_connections
     ADD CONSTRAINT google_connections_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.google_org_connection
@@ -2585,6 +2659,10 @@ ALTER TABLE ONLY public.mcp_team_access
     ADD CONSTRAINT mcp_team_access_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_team_access
     ADD CONSTRAINT mcp_team_access_team_id_fkey FOREIGN KEY (team_id) REFERENCES public.teams(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.mcp_tool_policies
+    ADD CONSTRAINT mcp_tool_policies_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.mcp_tool_policies
+    ADD CONSTRAINT mcp_tool_policies_set_by_fkey FOREIGN KEY (set_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.mcp_user_access
     ADD CONSTRAINT mcp_user_access_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.mcp_user_access
@@ -2747,6 +2825,14 @@ ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_superseded_by_fkey FOREIGN KEY (superseded_by) REFERENCES public.workbench_jobs(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_jobs
     ADD CONSTRAINT workbench_jobs_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_agent_id_fkey FOREIGN KEY (agent_id) REFERENCES public.agent_defs(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_decided_by_fkey FOREIGN KEY (decided_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.workbench_permission_requests
+    ADD CONSTRAINT workbench_permission_requests_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.workbench_repo_flow
     ADD CONSTRAINT workbench_repo_flow_host_id_fkey FOREIGN KEY (host_id) REFERENCES public.git_hosts(id);
 ALTER TABLE ONLY public.workbench_repo_requests

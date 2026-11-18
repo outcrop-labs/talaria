@@ -94,6 +94,10 @@ pub enum Write<T> {
     /// Replace the record (or create it). Boxed: a record is large and the
     /// other two carry only the answer.
     Put(Box<AgentDesign>, T),
+    /// Replace the record, and put the one it replaces back in the hires to
+    /// wait (`record::set_aside`). One script: the design that steps aside
+    /// is never in both places, nor in neither.
+    Aside(Box<AgentDesign>, Box<Held>, T),
     /// Remove the record.
     Delete(T),
     /// Change nothing.
@@ -104,6 +108,11 @@ impl<T> Write<T> {
     /// `Put`, boxing the record.
     pub fn put(design: AgentDesign, out: T) -> Self {
         Write::Put(Box::new(design), out)
+    }
+
+    /// `Aside`, boxing both.
+    pub fn aside(design: AgentDesign, held: Held, out: T) -> Self {
+        Write::Aside(Box::new(design), Box::new(held), out)
     }
 }
 
@@ -118,16 +127,27 @@ pub async fn update<T>(
         let current = read(conn, user_id).await?;
         let expected = current.as_ref().map(|s| s.rev.clone()).unwrap_or_default();
         let next_rev = uuid::Uuid::new_v4().to_string();
-        let (new_rev, json, out) = match decide(current.as_ref().map(|s| &s.design)) {
+        let (new_rev, json, aside, out) = match decide(current.as_ref().map(|s| &s.design)) {
             Write::Keep(out) => return Ok(out),
-            Write::Delete(out) => (String::new(), String::new(), out),
+            Write::Delete(out) => (String::new(), String::new(), None, out),
             Write::Put(design, out) => (
                 next_rev,
                 serde_json::to_string(&design).expect("a design serializes"),
+                None,
+                out,
+            ),
+            Write::Aside(design, held, out) => (
+                next_rev,
+                serde_json::to_string(&design).expect("a design serializes"),
+                Some(held),
                 out,
             ),
         };
-        if swap_raw(conn, user_id, &expected, &new_rev, &json).await? {
+        let swapped = match aside {
+            None => swap_raw(conn, user_id, &expected, &new_rev, &json).await?,
+            Some(held) => aside_raw(conn, user_id, &expected, &new_rev, &json, &held).await?,
+        };
+        if swapped {
             return Ok(out);
         }
     }
@@ -152,6 +172,30 @@ async fn swap_raw(
         .arg(new_rev)
         .arg(json)
         .arg(DESIGN_TTL_SECS)
+        .invoke_async(conn)
+        .await?;
+    Ok(swapped == 1)
+}
+
+/// The swap plus the set-aside: the slot's record (still at `expected`)
+/// becomes `json`, and `held` waits in the hires under its design's id.
+async fn aside_raw(
+    conn: &mut ConnectionManager,
+    user_id: &str,
+    expected: &str,
+    new_rev: &str,
+    json: &str,
+    held: &Held,
+) -> RedisResult<bool> {
+    let swapped: i32 = ASIDE
+        .key(key(user_id))
+        .key(hires_key(user_id))
+        .arg(expected)
+        .arg(new_rev)
+        .arg(json)
+        .arg(DESIGN_TTL_SECS)
+        .arg(&held.design.id)
+        .arg(held_raw(held))
         .invoke_async(conn)
         .await?;
     Ok(swapped == 1)
@@ -192,7 +236,9 @@ pub async fn watched(conn: &mut ConnectionManager, user_id: &str) -> RedisResult
 // design is consumed when its hire creates the agent, and handed back into
 // the slot when the hire fails before that — but only into an EMPTY slot: a
 // design the person started meanwhile is never overwritten. Until the slot
-// is free the returned design waits here (and the bell says so).
+// is free the returned design waits here (and the bell says so). A hand-back
+// nobody has touched steps back in here (ASIDE) when the person starts a
+// design over it: it came back into a New agent they were already typing in.
 
 pub fn hires_key(user_id: &str) -> String {
     format!("agent-design:{user_id}:hires")
@@ -224,6 +270,24 @@ if redis.call('HGET', KEYS[2], ARGV[1]) ~= ARGV[5] then return 0 end
 redis.call('HSET', KEYS[1], 'rev', ARGV[2], 'json', ARGV[3])
 redis.call('EXPIRE', KEYS[1], ARGV[4])
 redis.call('HDEL', KEYS[2], ARGV[1])
+return 1
+",
+    )
+});
+
+/// A new design over a hand-back nobody touched (`record::set_aside`): the
+/// slot's record, if still at the revision read, goes back into the hires to
+/// wait, and the new one takes the slot — the inverse of RETURN plus the
+/// write, in one step. ARGV: expected rev, new rev, json, ttl, field, held.
+static ASIDE: LazyLock<redis::Script> = LazyLock::new(|| {
+    redis::Script::new(
+        r"
+local rev = redis.call('HGET', KEYS[1], 'rev') or ''
+if rev ~= ARGV[1] then return 0 end
+redis.call('HSET', KEYS[2], ARGV[5], ARGV[6])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+redis.call('HSET', KEYS[1], 'rev', ARGV[2], 'json', ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[4])
 return 1
 ",
     )

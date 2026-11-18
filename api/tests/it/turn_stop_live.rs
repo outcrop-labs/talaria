@@ -17,7 +17,7 @@
 // in the api), so the test stands in for the send with `turn_sent`, exactly
 // the call /api/chat makes once it has checked access and claimed the
 // thread. Nothing here reaches an agent.
-// House rule: #[ignore]d; CI's api-integration job runs it.
+// House rule: #[ignore]d; ci.yml's api job runs it in its live-DB steps.
 //
 //   source ui/.env && cargo test -p talaria-api --test it turn_stop_live:: -- --ignored
 

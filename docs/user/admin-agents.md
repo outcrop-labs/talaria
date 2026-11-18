@@ -33,7 +33,10 @@ design nobody hires or discards is kept for three days. If the server restarts m
 picks up again within about five minutes. New agent is free again as soon as you click Create, so you can design the
 next agent while one boots. If a hire fails before the agent exists, its design comes back on the
 review step with the reason. If another design is open by then, the bell tells you and the design
-waits until that one is hired or discarded. Once the agent exists, a failed download or boot is
+waits until that one is hired or discarded. If you are typing into an empty **New agent** when it
+comes back (a description not yet sent, or a form not yet named), what you typed stays where it
+is: New agent says the design is back, with **Open it** and **Discard it**. Carry on instead, and
+once you describe the agent or name it, the returned design waits for that one the same way. Once the agent exists, a failed download or boot is
 finished with Retry or Start, and the design is used up. **Duplicate** never touches a design that is waiting.
 
 To skip the description, **Configure manually →** opens the same review form empty: type the

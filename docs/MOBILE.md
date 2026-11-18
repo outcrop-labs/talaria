@@ -281,10 +281,11 @@ How it registers:
 
 - Root scripts: `bun run mobile` (build and install the debug APK on a connected device) and
   `bun run mobile:check` (`:shared:jvmTest` + `:androidApp:assembleDebug`) — surface-gated like
-  `desktop:check`, **not** part of the local default.
-- [`scripts/gate.mjs`](../scripts/gate.mjs): a `mobile` surface branch, so a `mobile/`-only diff
-  runs only that. Mirrors how `desktopCargo` / `desktopTypecheck` select, and its `--self-test`
-  covers the selection.
+  `desktop:check`: CI's job, never local.
+- [`scripts/surfaces.mjs`](../scripts/surfaces.mjs): a `mobile` surface, so a `mobile/`-only diff
+  runs only CI's mobile job — on the pull request, or on `bun run gate:remote` before one exists.
+  [`scripts/gate.mjs`](../scripts/gate.mjs) reads the same plan, to reproduce one failure that job
+  reported; gradle is not a local default.
 - The toolchain is **not** in the devbox image — see below.
 - CI: **`test + assemble (mobile)`** on `ubuntu-latest` runs the surface gate, and
   **`compile + link (mobile ios)`** on `macos-latest` is the only place the Apple targets are ever
@@ -429,9 +430,10 @@ from Google's maven or not at all.
 
 ## Gates
 
-`bun run mobile:check` is the surface gate, and the CI `mobile` job will run the same list — the
-per-surface pattern `api:check` and `desktop:check` already establish. `bun run gate` stays the local
-pre-push: `check` always, then only the surfaces the diff touched.
+`bun run mobile:check` is the surface gate, and the CI `mobile` job runs the same list — the
+per-surface pattern `api:check` and `desktop:check` already establish. That job is the proof: the pull
+request's checks, or `bun run gate:remote` before one exists (`--full` adds the macOS iOS link). A local
+gradle run — `bun run gate`, or `mobile:check` itself — is only for reproducing one failure CI reported.
 
 What a Linux box can prove: `:shared:jvmTest` (the shared logic) and `:androidApp:assembleDebug`
 (that the whole Android chain assembles). What it cannot: anything Apple. `iosArm64`,

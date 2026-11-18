@@ -14,8 +14,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-google-client = { workspace = true }
 talaria-google-connections = { workspace = true }
-talaria-google-org = { workspace = true }
 talaria-secretbox = { workspace = true }
 tracing = { workspace = true }
 axum = { workspace = true }
@@ -24,3 +24,7 @@ url = { workspace = true }
 regex = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+# The one door's decision table drives its async glue with stub vends.
+tokio = { workspace = true }

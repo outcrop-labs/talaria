@@ -13,6 +13,9 @@
 //   - the docker stack of such a worktree — containers, volumes, network.
 //     This one runs in --gate too: it frees RAM and CPU the moment the work
 //     is finished, removes nothing from disk, and `talaria dev` undoes it
+//   - with a MERGED worktree's stack or checkout, its offload refs on origin
+//     (`ci/wt/<name>`, `ci/full/wt/<name>`: `bun run gate:remote` keeps one
+//     after a red). Never fatal; ci-offload.yml's daily prune is the backstop
 //   - a side worktree's build dir untouched for POLICY.staleTargetMs
 //   - a devbox the same way (../devboxes/<name>, not the shared tools layer)
 //   - /tmp/talaria-* (or $TMPDIR) older than POLICY.tmpStaleMs
@@ -1195,8 +1198,13 @@ function devboxHome(root) {
  * distinction is not "has this branch got commits in the base" but "did this
  * branch's work land", and that fact lives on the PR.
  *
- * A local prefilter keeps the network call rare: a branch still ahead of the
- * base is obviously unfinished, so it never reaches `gh`. Everything fails
+ * A local prefilter keeps the network call rare: a branch still ahead of
+ * every base it could have merged into is obviously unfinished, so it never
+ * reaches `gh`. The bases are `rc` and `testing` (a feature merges into
+ * either; mergedPrefilter): a worktree merged into `testing` is 0 ahead of
+ * origin/testing and still ahead of origin/rc until the next promotion, and
+ * reading only rc kept it forever. A base whose ref does not resolve here —
+ * no `testing` on this clone — is no answer and is ignored. Everything fails
  * OPEN — no `gh`, no auth, no network, no PR all read as "not merged", so a
  * tree is never reclaimed on a guess.
  *
@@ -1207,8 +1215,11 @@ function devboxHome(root) {
  * earlier), so a stack minutes old was read as finished and torn down.
  */
 function isMerged(dir, branch) {
-  const ahead = tryGit(['rev-list', '--count', 'origin/rc..HEAD'], dir)
-  if (ahead === null || Number(ahead) > 0) return false
+  const ahead = (base) => {
+    const n = tryGit(['rev-list', '--count', `${base}..HEAD`], dir)
+    return n === null ? null : Number(n)
+  }
+  if (!mergedPrefilter(ahead('origin/rc'), ahead('origin/testing'))) return false
   const head = tryGit(['rev-parse', 'HEAD'], dir)
   if (!head) return false
   try {
@@ -1221,6 +1232,14 @@ function isMerged(dir, branch) {
   } catch {
     return false
   }
+}
+
+/** May this branch have merged — is it 0 commits ahead of a base? `aheadRc`
+ *  and `aheadTesting` are `git rev-list --count origin/<base>..HEAD`, or null
+ *  when that ref does not resolve (an unknown base is ignored, not a 0). Only
+ *  a "maybe" reaches `gh`: the PR still decides (mergedAtHead). */
+export function mergedPrefilter(aheadRc, aheadTesting) {
+  return aheadRc === 0 || aheadTesting === 0
 }
 
 /** Did a pull request whose head is `head` merge? `prs` is `gh pr list
@@ -1805,6 +1824,55 @@ function downWorktreeStack(name, roots) {
   dockerByLabel(project)
 }
 
+/**
+ * The offload refs `bun run gate:remote` left on origin for a branch: of the
+ * `git ls-remote origin 'refs/heads/ci/*<branch>'` lines, exactly
+ * `refs/heads/ci/<branch>` and `refs/heads/ci/full/<branch>`. The pattern is a
+ * glob matched against the tail of a ref, `*` crossing `/`, so it also lists
+ * `ci/xwt/<name>` and `ci/full/a/wt/<name>`: other branches' refs, never this
+ * one's. Pure.
+ * @param {string} branch  `wt/<name>`
+ * @param {string[]|string} lsRemoteLines
+ */
+export function offloadRefsFor(branch, lsRemoteLines) {
+  const lines = Array.isArray(lsRemoteLines) ? lsRemoteLines : String(lsRemoteLines ?? '').split('\n')
+  const listed = new Set(lines.map((line) => String(line).trim().split(/\s+/)[1]).filter(Boolean))
+  return [`refs/heads/ci/${branch}`, `refs/heads/ci/full/${branch}`].filter((ref) => listed.has(ref))
+}
+
+function firstLineOf(e) {
+  const text = String(e?.stderr || e?.message || e || '')
+  return text.split('\n').find((l) => l.trim())?.trim() || 'no output'
+}
+
+/**
+ * Delete a merged worktree's offload refs from origin — the `ci/wt/<name>`
+ * and `ci/full/wt/<name>` that `bun run gate:remote` pushes and keeps after a
+ * red. Returns notes for the report. Never fatal: the worktree's own teardown
+ * already happened, and ci-offload.yml's daily prune deletes any `ci/**` ref
+ * whose tip is over a day old. The pre-push hook passes a `ci/` deletion.
+ */
+function deleteOffloadRefs(name, roots) {
+  const branch = `wt/${name}`
+  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }
+  let listing
+  try {
+    listing = execFileSync('git', ['-C', roots.primary, 'ls-remote', 'origin', `refs/heads/ci/*${branch}`], { ...opts, timeout: 20_000 })
+  } catch (e) {
+    return [`could not list the offload refs of ${branch} (the daily prune removes them): ${firstLineOf(e)}`]
+  }
+  const refs = offloadRefsFor(branch, listing)
+  if (!refs.length) return []
+  const names = refs.map((ref) => ref.slice('refs/heads/'.length)).join(', ')
+  try {
+    execFileSync('git', ['-C', roots.primary, 'push', '--quiet', 'origin', ...refs.map((ref) => `:${ref}`)], { ...opts, timeout: 60_000 })
+  } catch (e) {
+    return [`could not delete ${names} (the daily prune removes them): ${firstLineOf(e)}`]
+  }
+  logRemoval(`removed offload refs ${names}`)
+  return [`deleted the offload refs of merged ${branch}: ${names}`]
+}
+
 /** A `.talaria-keep` in the checkout a stack, worktree or box row names. */
 function keptNow(artifact) {
   const dir = artifact.checkout || artifact.path
@@ -1952,7 +2020,9 @@ export function removeArtifact(artifact, roots) {
   }
   if (artifact.kind === 'stack') {
     downWorktreeStack(artifact.id, roots)
-    return
+    // A merged worktree's stack is the first thing the gate takes; its
+    // offload refs go with it. A stale one's are the daily prune's.
+    return artifact.merged ? deleteOffloadRefs(artifact.id, roots) : []
   }
   if (artifact.kind === 'target') {
     dropTarget(artifact.path)
@@ -1973,7 +2043,7 @@ export function removeArtifact(artifact, roots) {
     if (existsSync(artifact.path)) rmSync(artifact.path, { recursive: true, force: true })
     tryExec('git', ['-C', roots.primary, 'worktree', 'prune'])
     tryExec('git', ['-C', roots.primary, 'branch', '-D', `wt/${artifact.id}`])
-    return
+    return artifact.merged ? deleteOffloadRefs(artifact.id, roots) : []
   }
   if (artifact.kind === 'devbox') {
     const project = `devbox-${artifact.id}`
@@ -2138,11 +2208,15 @@ function main() {
   const removing = selectRemoval(classified, mode)
   const removed = []
   const failed = []
+  // What a removal did beyond the row itself (a merged worktree's offload
+  // refs), for the report.
+  const sideNotes = []
   for (const a of removing) {
     try {
-      removeArtifact(a, inventoried.roots)
+      const extra = removeArtifact(a, inventoried.roots)
       removed.push(a)
       logRemoval(`removed ${a.kind} ${a.id} ${a.path || ''}`.trim())
+      if (Array.isArray(extra)) sideNotes.push(...extra)
     } catch (e) {
       failed.push(`${a.kind} ${a.id}: ${e instanceof Error ? e.message : e}`)
     }
@@ -2176,7 +2250,7 @@ function main() {
     pressureNotes.push(...r.notes)
   }
   const v = verdict(classified, pressure)
-  const notes = [...inventoried.notes, ...pressureNotes, ...failed.map((f) => `could not remove ${f}`)]
+  const notes = [...inventoried.notes, ...pressureNotes, ...sideNotes, ...failed.map((f) => `could not remove ${f}`)]
   const report = formatReport({ pressure, remaining: classified, removed, notes })
 
   if (json) {

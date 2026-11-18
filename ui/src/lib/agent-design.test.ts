@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { QueryClient } from '@tanstack/query-core'
+import { QueryClient, QueryObserver } from '@tanstack/query-core'
 
 // The design is the server's (talaria-agent-design); this module is a read,
 // four verbs and pure helpers. svelte-query's barrel pulls .svelte files the
@@ -33,6 +33,10 @@ import {
   takeUnsaved,
   clearUnsavedEdits,
   leftTheSlot,
+  holdsTypedInput,
+  keepsTypedInput,
+  didNotFinish,
+  EMPTY_FIELDS,
 } from './agent-design'
 
 const DRAFT: DraftFields = {
@@ -345,5 +349,84 @@ describe('a design that leaves the slot for a hire (NS11)', () => {
   it('still resets when it went another way, and does nothing for a modal showing none', () => {
     expect(leftTheSlot('d-1', read([]))).toEqual({ hiredAs: null })
     expect(leftTheSlot('', read([]))).toBeNull()
+  })
+})
+
+describe('a design handed back while New agent is being typed into (NN12)', () => {
+  const back = ready({ releasedFrom: 'h-1', error: 'The hire did not finish: the department is taken. Check the fields and create it again.' })
+  it('counts the describe text and every field as typed input, and nothing else', () => {
+    expect(holdsTypedInput(EMPTY_FIELDS, '')).toBe(false)
+    expect(holdsTypedInput(EMPTY_FIELDS, '   ')).toBe(false)
+    expect(holdsTypedInput(EMPTY_FIELDS, 'an incident reviewer')).toBe(true)
+    for (const k of ['name', 'handle', 'department', 'role', 'soul'] as const) {
+      expect(holdsTypedInput({ ...EMPTY_FIELDS, [k]: 'x' }, ''), k).toBe(true)
+    }
+    expect(holdsTypedInput({ ...EMPTY_FIELDS, skills: [{ name: 's', content: '' }] }, '')).toBe(true)
+  })
+  it('keeps the typing when a hand-back arrives over a form that belongs to no design', () => {
+    const typed = { ...EMPTY_FIELDS, role: 'Incident reviewer' }
+    expect(keepsTypedInput(back, '', typed, '')).toBe(true)
+    expect(keepsTypedInput(back, '', EMPTY_FIELDS, 'an incident reviewer')).toBe(true)
+  })
+  it('takes it in as before when nothing is typed, the form is a design’s own, or it is no hand-back', () => {
+    // Nothing typed: the hand-back opens on review, as it always did.
+    expect(keepsTypedInput(back, '', EMPTY_FIELDS, '')).toBe(false)
+    // The form is another design's (a stale tab): the existing reseed rules.
+    expect(keepsTypedInput(back, 'd-0:r-0:5', { ...DRAFT }, '')).toBe(false)
+    // Another tab's design, a design the person already edited, one running.
+    expect(keepsTypedInput(ready(), '', { ...DRAFT }, '')).toBe(false)
+    expect(keepsTypedInput(ready({ releasedFrom: null }), '', { ...DRAFT }, '')).toBe(false)
+    expect(keepsTypedInput(design({ releasedFrom: 'h-1' }), '', { ...DRAFT }, '')).toBe(false)
+  })
+  it('a manual start reads again, so a design it set aside shows as waiting', async () => {
+    const c = new QueryClient()
+    c.setQueryData<DesignRead>(DESIGN_KEY, { design: back, hiring: [], returned: [], skewMs: 0 })
+    answer = () => ({ status: 200, body: { design: ready({ id: 'd-new', releasedFrom: null }) } })
+    await saveDesign(c, DRAFT)
+    expect(c.getQueryState(DESIGN_KEY)?.isInvalidated).toBe(true)
+    // An edit of a design it names, or the save on the way out: no read.
+    const d = new QueryClient()
+    d.setQueryData<DesignRead>(DESIGN_KEY, { design: ready(), hiring: [], returned: [], skewMs: 0 })
+    await saveDesign(d, DRAFT, 'd-1')
+    await saveDesign(d, DRAFT, undefined, { keepalive: true })
+    expect(d.getQueryState(DESIGN_KEY)?.isInvalidated).toBe(false)
+  })
+  it('says why in one sentence, wherever New agent shows it', () => {
+    expect(didNotFinish('Scout', back.error)).toBe(
+      'The hire of Scout did not finish: the department is taken. Check the fields and create it again.',
+    )
+    expect(didNotFinish('Scout', null)).toBe('The hire of Scout did not finish.')
+    // The server's sentence for a hire that gave no reason.
+    expect(didNotFinish('Scout', 'The hire did not finish. Check the fields and create it again.')).toBe(
+      'The hire of Scout did not finish. Check the fields and create it again.',
+    )
+    // A sentence of another shape (an enqueue that failed) rides after a colon.
+    expect(didNotFinish('Scout', 'The design could not start. Try again in a moment.')).toBe(
+      'The hire of Scout did not finish: The design could not start. Try again in a moment.',
+    )
+  })
+  it('a discard returns before the read that brings a waiting design back', async () => {
+    // Awaited, that read landed first and the modal's clear after the
+    // discard went over the design it brought.
+    const c = new QueryClient()
+    c.setQueryData<DesignRead>(DESIGN_KEY, { design: ready({ id: 'd-2' }), hiring: [], returned: [{ designId: 'd-1', hireRunId: 'h-1', name: 'Scout' }], skewMs: 0 })
+    let release: () => void = () => {}
+    const held = new Promise<void>((r) => (release = r))
+    // An open modal's read: active, so the discard's invalidate refetches it.
+    const obs = new QueryObserver(c, {
+      queryKey: DESIGN_KEY,
+      queryFn: async () => (await held, { design: back, hiring: [], returned: [], skewMs: 0 }),
+      staleTime: Infinity,
+    })
+    const unsubscribe = obs.subscribe(() => {})
+    answer = () => ({ status: 200, body: { ok: true } })
+    let done = false
+    const discarding = discardDesign(c, 'd-2').then(() => (done = true))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(done).toBe(true)
+    expect(c.getQueryData<DesignRead>(DESIGN_KEY)?.design).toBeNull()
+    release()
+    await discarding
+    unsubscribe()
   })
 })

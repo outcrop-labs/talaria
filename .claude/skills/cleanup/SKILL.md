@@ -34,6 +34,7 @@ Once the proof line is green, tear it down.
 | `bun talaria box new <name>` | `bun talaria box rm <name>` (it refuses a dirty or unpushed clone; `--force` is a human decision) |
 | a scratch checkout or throwaway download | put it under `/tmp/talaria-<name>` when you create it, and `rm -rf` it when you are done |
 | a one-off `CARGO_TARGET_DIR` or cold build dir | same prefix, `/tmp/talaria-*`, so the sweep can see it. Never point two checkouts at one `CARGO_TARGET_DIR`: their workspace crates share unit hashes, and one runs the other's code |
+| `bun run gate:remote` | nothing on green: it deletes its `ci/<branch>` ref. A red or cancelled one stays for `--rerun` until ci-offload's daily prune (tip older than 24 h) or the sweep (a merged worktree's `ci/wt/<name>`) removes it; by hand: `git push origin :refs/heads/ci/<name>` |
 
 If you are still inside the worktree, the sweep will not delete the checkout it is running in.
 Leave, then run the teardown from the primary. The next stop gate, in any checkout, will
@@ -113,4 +114,3 @@ stderr names the disk reading and the removable set. Run `bun talaria cleanup --
 then claim done. If the block is only pressure and the report's removable set is empty,
 the disk is full of something this sweep does not own (an oversized `target/`, docker
 images). The message says which. Free that, or say so — do not silence the gate.
-}

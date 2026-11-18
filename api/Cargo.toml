@@ -366,6 +366,8 @@ talaria-work-mode = { path = "crates/talaria-work-mode" }
 
 talaria-google-gmail = { path = "crates/talaria-google-gmail" }
 
+talaria-google-mcp = { path = "crates/talaria-google-mcp" }
+
 talaria-google-oauth = { path = "crates/talaria-google-oauth" }
 
 talaria-google-org = { path = "crates/talaria-google-org" }
@@ -762,6 +764,7 @@ talaria-fleet-resources = { workspace = true }
 talaria-fleet-seal = { workspace = true }
 talaria-gaps = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-github = { workspace = true }
 talaria-google-agent = { workspace = true }
 talaria-google-api-health = { workspace = true }

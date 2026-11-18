@@ -54,6 +54,9 @@ export interface AgentDesign {
    *  for the modal meanwhile; it comes back (with the hire's sentence in
    *  `error`) if the hire fails. */
   hireRunId: string | null
+  /** Set on a design a failed hire handed back, until the person edits or
+   *  refines it: the hire it came back from. */
+  releasedFrom?: string | null
 }
 
 /** A design one of the person's hires is spending (out of the slot). */
@@ -153,7 +156,13 @@ export async function refineDesign(qc: QueryClient, id: string, instruction: str
  *  newer design. `init` carries `keepalive` for the save on the way out. */
 export async function saveDesign(qc: QueryClient, fields: DraftFields, id?: string, init?: RequestInit): Promise<AgentDesign> {
   const r = await patchJson<{ design: AgentDesign }>(URL, id ? { ...fields, id } : fields, init)
-  return settle(qc, r.design) as AgentDesign
+  const saved = settle(qc, r.design) as AgentDesign
+  // A manual start over a design a failed hire handed back set that one
+  // aside to wait (talaria-agent-design `set_aside`), which the answer does
+  // not say: read again, so New agent lists it as waiting. Once per manual
+  // start; never on the way out of the page.
+  if (!id && !init?.keepalive) void qc.invalidateQueries({ queryKey: DESIGN_KEY })
+  return saved
 }
 
 /** The server refused a write because the design it named is not the one
@@ -168,8 +177,11 @@ export async function discardDesign(qc: QueryClient, id?: string): Promise<void>
   const waiting = (qc.getQueryData<DesignRead>(DESIGN_KEY)?.returned.length ?? 0) > 0
   settle(qc, null)
   // The slot is free: a design a failed hire handed back meanwhile moves in
-  // on the next read, so ask for it now.
-  if (waiting) await qc.invalidateQueries({ queryKey: DESIGN_KEY })
+  // on the next read, so ask for it now — without waiting for it. The modal
+  // clears its form once this returns; awaited, the returned design landed
+  // first and that clear went over it, leaving an empty describe step on a
+  // slot that held it, and the next save wrote the typed form over it.
+  if (waiting) void qc.invalidateQueries({ queryKey: DESIGN_KEY })
 }
 
 /** Dismiss a design a failed hire handed back while another was open. */
@@ -195,6 +207,40 @@ export function leftTheSlot(prevId: string, read: DesignRead | undefined): { hir
   if (!prevId) return null
   const hire = read?.hiring.find((h) => h.designId === prevId)
   return { hiredAs: hire ? hire.name : null }
+}
+
+/** Anything typed into New agent: the describe text, or any field of the
+ *  form. Saved nowhere while the form belongs to no design (a describe not
+ *  yet sent, a manual form with no name or handle yet). */
+export function holdsTypedInput(form: DraftFields, purpose: string): boolean {
+  if (purpose.trim() || form.skills.length) return true
+  return [form.name, form.handle, form.department, form.role, form.soul].some((v) => v.trim() !== '')
+}
+
+/** A design arriving in the slot must not be taken into the form (NN12): it
+ *  is one a failed hire handed back (`releasedFrom`), and the form is the
+ *  person's own typing, on what was an empty New agent (`seededFrom` is
+ *  `''`: the form belongs to no design). The server put it into the empty
+ *  slot without knowing anything was being typed. The modal offers it
+ *  instead, and a describe or a manual start from what is typed sets it
+ *  aside to wait (talaria-agent-design `set_aside`). */
+export function keepsTypedInput(arriving: AgentDesign, seededFrom: string | null, form: DraftFields, purpose: string): boolean {
+  if (!arriving.releasedFrom || arriving.status === 'generating') return false
+  return seededFrom === '' && holdsTypedInput(form, purpose)
+}
+
+/** "The hire of <name> did not finish: <why>." — the one sentence for a
+ *  design a failed hire handed back, wherever New agent shows it. */
+export function didNotFinish(name: string, reason: string | null | undefined): string {
+  const lead = `The hire of ${name} did not finish`
+  const why = reason?.trim() ?? ''
+  if (!why) return `${lead}.`
+  // The server's sentence leads with "The hire did not finish", then a colon
+  // and the hire's reason, or a period when it had none.
+  const m = /^The hire did not finish([:.]?)\s*([\s\S]*)$/.exec(why)
+  if (!m) return `${lead}: ${why}`
+  if (m[1] === '.') return m[2] ? `${lead}. ${m[2]}` : `${lead}.`
+  return m[2] ? `${lead}: ${m[2]}` : `${lead}.`
 }
 
 // ── The edit that could not leave with the page ──────────────────────────────
