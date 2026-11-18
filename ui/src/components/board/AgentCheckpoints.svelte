@@ -201,12 +201,16 @@
       />
     {/if}
   {:else}
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex -- reason: past MAX_ROWS the list scrolls, and the scroller takes focus so the arrow and page keys move down it without tabbing through every row's button; not every engine focuses a scroller on its own -->
     <div
       bind:this={list}
       class="list"
       style:--ackc-total="{total}px"
       data-scrolls={scrolls ? '' : undefined}
       onscroll={onScroll}
+      tabindex={scrolls ? 0 : undefined}
+      role={scrolls ? 'group' : undefined}
+      aria-labelledby={scrolls ? `${uid}-title` : undefined}
     >
       <svg class="rail" width={x(sum.lanes, pitch)} height={total} aria-hidden="true">
         <defs>
@@ -363,6 +367,9 @@
   }
   .list[data-scrolls] {
     overflow-y: auto;
+  }
+  .list:focus-visible {
+    outline-offset: -2px;
   }
   ol {
     margin: 0;
