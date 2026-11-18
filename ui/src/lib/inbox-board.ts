@@ -204,14 +204,16 @@ function firstPartInSentenceCase(label: string | null): string | null {
 }
 
 const NEED_WORDS: ReadonlyArray<[RegExp, InboxNeed]> = [
-  [/block/i, 'blocked'],
-  [/review|sign-?off|approv/i, 'signoff'],
-  [/triage|unassigned/i, 'triage'],
+  [/\bblocked\b/i, 'blocked'],
+  [/\b(review|sign-?off|approval)\b/i, 'signoff'],
+  [/\b(triage|unassigned)\b/i, 'triage'],
 ]
 
-const needOf = (...words: Array<string | null | undefined>): InboxNeed | null => {
-  const text = words.filter(Boolean).join(' ')
-  return NEED_WORDS.find(([re]) => re.test(text))?.[1] ?? null
+/** The status's own words, never the badge: a p0 line is badged BLOCKING because it
+ *  holds other work up, and an UNBLOCKED or APPROVED status is not waiting on anyone. */
+const needOf = (statusLabel: string | null): InboxNeed | null => {
+  const head = statusLabel?.split('·')[0] ?? ''
+  return NEED_WORDS.find(([re]) => re.test(head))?.[1] ?? null
 }
 
 export function unwrapQuestion(title: string): string {
@@ -273,7 +275,7 @@ const decisions: Adapter = ({ brief, queues, assignees }) => {
     const taskId = e.sourceType === 'task' ? e.sourceId : null
     const ticket = taskId ? tickets.get(taskId) : undefined
     const state: InboxState = line.resolved ? 'done' : e.statusLabel === 'FAILED' ? 'failed' : 'waiting'
-    const need = state === 'waiting' ? needOf(e.badge?.label, e.statusLabel) : null
+    const need = state === 'waiting' ? needOf(e.statusLabel) : null
     return {
       key: `brief:${line.key}`,
       source: 'decision',
@@ -557,10 +559,13 @@ const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' 
 export function alsoToday(notes: readonly BriefLine[], minutesNow: number): { next: string | null; more: string | null } {
   const meetings = notes.filter((n) => n.section === 'schedule')
   const others = notes.length - meetings.length
-  const next = meetings.find((n) => {
+  // The brief lists lines in the order its sweeps found them, so a meeting added at noon
+  // can follow a later one: the next is the soonest still ahead, not the first.
+  const ahead = meetings.flatMap((n) => {
     const at = clockMinutes(n.current.statusLabel ?? '')
-    return at !== null && at >= minutesNow
+    return at !== null && at >= minutesNow ? [{ n, at }] : []
   })
+  const next = ahead.sort((a, b) => a.at - b.at)[0]?.n
   const left = meetings.length - (next ? 1 : 0)
   const more = [left > 0 && `${next ? '+' : ''}${plural(left, 'meeting')}`, others > 0 && plural(others, 'note')].filter(Boolean).join(' · ')
   return { next: next ? `${next.current.statusLabel!.trim()} ${next.current.title}` : null, more: more || null }

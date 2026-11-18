@@ -344,6 +344,30 @@ describe('what a card says', () => {
       'ticket:k': ['blocked', 'Blocked'],
     })
   })
+
+  it('reads the need from the status alone, as whole words — not a p0 badge or a status that is past it', () => {
+    const p0 = { label: 'BLOCKING', tone: 'danger' as const }
+    const cards = buildInboxCards(
+      input({
+        brief: brief([
+          line('task:a', 'action', { sourceId: 'a', statusLabel: 'REVIEW', priority: 'p0', badge: p0 }),
+          line('task:b', 'action', { sourceId: 'b', statusLabel: 'IN PROGRESS', priority: 'p0', badge: p0 }),
+          line('task:c', 'action', { sourceId: 'c', statusLabel: 'UNBLOCKED' }),
+          line('task:d', 'action', { sourceId: 'd', statusLabel: 'APPROVED' }),
+          line('task:e', 'action', { sourceId: 'e', statusLabel: 'IN REVIEW' }),
+          line('approval:f', 'action', { sourceType: 'approval', statusLabel: 'APPROVAL · BLOCK SENDER' }),
+        ]),
+      }),
+    )
+    expect(Object.fromEntries(cards.map((c) => [c.key, glyphOf(c)]))).toEqual({
+      'brief:task:a': 'signoff',
+      'brief:task:b': 'waiting',
+      'brief:task:c': 'waiting',
+      'brief:task:d': 'waiting',
+      'brief:task:e': 'signoff',
+      'brief:approval:f': 'signoff',
+    })
+  })
 })
 
 describe('the one age format', () => {
@@ -673,6 +697,11 @@ describe('Also today', () => {
   it('names the next meeting still ahead, then counts what else the day holds', () => {
     expect(alsoToday(notes, 10 * 60 + 30)).toEqual({ next: '1:30 PM Triage', more: '+2 meetings · 1 note' })
     expect(alsoToday(notes.slice(1, 2), 0)).toEqual({ next: '1:30 PM Triage', more: null })
+  })
+
+  it('names the soonest meeting ahead even when a later sweep listed it last', () => {
+    const added = line('calendar:e', 'schedule', { sourceType: 'calendar', statusLabel: '11:15 AM', title: 'Hiring sync' })
+    expect(alsoToday([...notes, added], 10 * 60 + 30)).toEqual({ next: '11:15 AM Hiring sync', more: '+3 meetings · 1 note' })
   })
 
   it('counts every meeting, with no "+", once none is ahead', () => {
