@@ -137,6 +137,9 @@ enum Job {
     Cleared,
     /// Not this agent's, or no job at all.
     None,
+    /// The lookup failed: whose job it is was never learned, so the step
+    /// says that rather than "not this agent's".
+    Unknown,
 }
 
 async fn own_job(
@@ -218,6 +221,7 @@ fn step_of(frame: &Frame, job: Job) -> StepSnapshot {
         (None, _, Job::Cleared) => (None, Some("the job's checkout was removed".to_string())),
         (None, Some(named), Job::None) => (None, Some(format!("job {named} is not this agent's"))),
         (None, None, Job::None) => (None, None),
+        (None, _, Job::Unknown) => (None, Some("the job lookup failed".to_string())),
     };
     StepSnapshot {
         agent_turn_id: frame.turn_id.clone(),
@@ -300,7 +304,7 @@ pub async fn land_with(
         Ok(job) => job,
         Err(e) => {
             tracing::warn!("[tool-events] snapshot job lookup failed: {e}");
-            Job::None
+            Job::Unknown
         }
     };
     let mut step = step_of(&frame, job);
@@ -413,6 +417,23 @@ mod tests {
         );
     }
 
+    /// A lookup that failed never learned whose job it is: the step is
+    /// unrestorable for that reason, not branded another agent's.
+    #[test]
+    fn a_failed_job_lookup_is_said_as_such_and_never_as_another_agent_s_job() {
+        let f = frame(json!({
+            "calls": [{"id": "call_1", "name": "terminal"}],
+            "jobId": "2f3b0a6e-1c4d-4e5f-8a9b-0c1d2e3f4a5b",
+            "commit": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+        }));
+        let step = step_of(&f, Job::Unknown);
+        assert_eq!(step.job_id, None);
+        assert_eq!(
+            step.unrestorable_reason.as_deref(),
+            Some("the job lookup failed")
+        );
+    }
+
     #[test]
     fn the_plugin_s_own_reason_wins_and_a_frame_with_no_calls_is_refused() {
         let f = frame(json!({
@@ -425,6 +446,10 @@ mod tests {
         );
         let cleared = step_of(&f, Job::Cleared);
         assert_eq!(cleared.job_id, None);
+        assert_eq!(
+            step_of(&f, Job::Unknown).unrestorable_reason.as_deref(),
+            Some("no git checkout under /opt/data/workbench/jobs/x")
+        );
         for body in [
             json!({}),
             json!({"calls": []}),
