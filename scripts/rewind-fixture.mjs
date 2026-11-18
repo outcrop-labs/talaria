@@ -237,16 +237,27 @@ function mintToken(stack, scopes) {
     .pop()
 }
 
-/** Forgejo's token is shown once, so it is minted only when the stack holds none. */
+/**
+ * Forgejo's token is shown once, so it is minted only when the stack holds none
+ * Forgejo still honours. Forgejo's data dies with its container (teardown, or a
+ * stopped one recreated) while the stack's secret lives on in Postgres, so a
+ * Forgejo without the fixture user means the stored token is dead: rotate it,
+ * which for a workspace secret is delete and create.
+ */
 async function ensureForgejoToken(stack, api) {
   const secrets = (await api('GET', '/api/admin/workspace-secrets')).secrets ?? []
-  if (secrets.some((s) => s.name === SECRET_NAME)) return null
-  sh('docker', [
-    'exec', '-u', '1000', stack.forgejoApp, 'forgejo', 'admin', 'user', 'create',
-    '--username', REPO_OWNER, '--random-password',
-    '--email', 'fixture@example.invalid', '--admin', '--must-change-password=false',
-  ])
+  const stored = secrets.some((s) => s.name === SECRET_NAME)
+  const known = await fetch(`${stack.forgejoRest}/api/v1/users/${REPO_OWNER}`).then((r) => r.ok)
+  if (stored && known) return null
+  if (!known) {
+    sh('docker', [
+      'exec', '-u', '1000', stack.forgejoApp, 'forgejo', 'admin', 'user', 'create',
+      '--username', REPO_OWNER, '--random-password',
+      '--email', 'fixture@example.invalid', '--admin', '--must-change-password=false',
+    ])
+  }
   const token = mintToken(stack, 'all')
+  if (stored) await api('POST', '/api/admin/workspace-secrets', { action: 'delete', name: SECRET_NAME })
   await api('POST', '/api/admin/workspace-secrets', {
     action: 'create',
     name: SECRET_NAME,
@@ -316,6 +327,7 @@ async function ensureModel(api, agent, model) {
   })
 }
 
+/** A roll recreates the container under the same compose name, so only its env tells the new one from the old. */
 async function rollAgent(stack, api, agent, model) {
   const onModel = (name) => shOk('docker', ['exec', name, 'printenv', 'PI_SMOL_MODEL'])?.endsWith(model)
   const before = agentContainer(stack)
@@ -325,7 +337,7 @@ async function rollAgent(stack, api, agent, model) {
   for (let i = 0; i < 90; i++) {
     await sleep(2000)
     const name = agentContainer(stack)
-    if (name && name !== before && onModel(name)) return name
+    if (name && onModel(name)) return name
   }
   die(`the agent never came up healthy on ${model}`)
 }
