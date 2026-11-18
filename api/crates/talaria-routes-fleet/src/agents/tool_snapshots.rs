@@ -3,9 +3,10 @@
 // The agent's plugin posts one of these per model step of a work session:
 // the batch of tool calls the model just made, and the git snapshot of the
 // job's checkout taken once the batch had finished. It lands as a `step` row
-// in `run_checkpoints`, keyed by the batch's last tool call id, with the
-// turn Talaria is on as a provisional place; the record stage of the
-// session stamps the transcript's own order later (`place_steps`).
+// in `run_checkpoints`, keyed by the batch's last tool call id, placed in
+// its turn and numbered on arrival (`record_step`); the session's record
+// stage, or this door for a run that has ended, then judges it by the
+// session's own transcript (`verify_steps`).
 //
 // The door trusts the plugin for nothing it can check. The run is the live
 // work session the session id names, as for a tool frame; the job has to be
@@ -311,7 +312,10 @@ pub async fn land_with(
     } else {
         None
     };
-    if settled && judged.is_none() && step.unrestorable_reason.is_none() {
+    // Only a step that would otherwise be restorable waits: the read that
+    // settles a waiting row promotes it, and a row with no job or no commit
+    // has nothing to restore whatever the transcript holds.
+    if settled && judged.is_none() && step.reason().is_none() {
         step.unrestorable_reason = Some(talaria_runs_store::UNVERIFIED_REASON.into());
     }
     let landed = record_step(&state.pg, &run_id, &step).await;

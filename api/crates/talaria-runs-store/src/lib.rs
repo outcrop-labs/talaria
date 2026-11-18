@@ -1023,8 +1023,10 @@ pub struct StepSnapshot {
 
 impl StepSnapshot {
     /// Why the row cannot be restored: the plugin's own reason first, then
-    /// what the door could not confirm. None is a restorable step.
-    fn reason(&self) -> Option<&str> {
+    /// what the door could not confirm. None is a restorable step, and only
+    /// such a step may wait on a transcript read: a promoted row must still
+    /// have a job and a commit to restore from.
+    pub fn reason(&self) -> Option<&str> {
         if let Some(reason) = &self.unrestorable_reason {
             return Some(reason);
         }
@@ -1200,9 +1202,11 @@ pub async fn checkpoint_seq(pg: &PgPool, run_id: &str) -> Result<i64, sqlx::Erro
 }
 
 /// A job's checkout is gone, so every step that pointed into it can no
-/// longer be restored. Rows already unrestorable keep their own reason. Runs
-/// on any executor so the caller can put it in the transaction that marks
-/// the job's workspace cleared.
+/// longer be restored. Rows already unrestorable keep their own reason,
+/// except a row still waiting on a transcript read: the next read would
+/// promote it into a checkout that no longer exists. Runs on any executor
+/// so the caller can put it in the transaction that marks the job's
+/// workspace cleared.
 pub async fn retire_job_steps<'e>(
     ex: impl sqlx::PgExecutor<'e>,
     job_id: &str,
@@ -1210,10 +1214,11 @@ pub async fn retire_job_steps<'e>(
 ) -> Result<u64, sqlx::Error> {
     let done = sqlx::query(
         "update run_checkpoints set restorable = false, unrestorable_reason = $2 \
-         where job_id = $1::uuid and restorable",
+         where job_id = $1::uuid and (restorable or unrestorable_reason = $3)",
     )
     .bind(job_id)
     .bind(reason)
+    .bind(UNVERIFIED_REASON)
     .execute(ex)
     .await?;
     Ok(done.rows_affected())
