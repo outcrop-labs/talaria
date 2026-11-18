@@ -23,16 +23,29 @@ pub(crate) enum RewindStart {
     OrdinaryRevise,
 }
 
+/// The rewind attempt a `start_job` call is made from, if it is one. A read that
+/// fails is an `Err`: answering `None` would send a real attempt down the
+/// ordinary path, whose one-live-job refusal tells the agent to abandon the job
+/// its rewind restored.
 pub(crate) async fn attempt_of_call(
     pg: &PgPool,
     model: &str,
     args: &Map<String, Value>,
-) -> Option<RewindAttempt> {
-    let raw = args.get("taskId").and_then(Value::as_str)?.trim();
-    let Ok(ResolvedTaskId::One(task_id)) = resolve_task_id(pg, raw).await else {
-        return None;
+) -> Result<Option<RewindAttempt>, String> {
+    let Some(raw) = args.get("taskId").and_then(Value::as_str) else {
+        return Ok(None);
     };
-    let run_id = live_session(pg, model, &task_id).await?;
+    let task_id = match resolve_task_id(pg, raw.trim()).await {
+        Ok(ResolvedTaskId::One(task_id)) => task_id,
+        Ok(_) => return Ok(None),
+        Err(e) => return Err(format!("ticket read: {e}")),
+    };
+    let Some(run_id) = live_session(pg, model, &task_id)
+        .await
+        .map_err(|e| format!("work session read: {e}"))?
+    else {
+        return Ok(None);
+    };
     let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "select {LINEAGE_COLS} from runs \
          where id = $1::uuid and rewound_from_run_id is not null"
@@ -40,9 +53,12 @@ pub(crate) async fn attempt_of_call(
     .bind(&run_id)
     .fetch_optional(pg)
     .await
-    .ok()??;
-    let lineage = RunLineage::from_row(&row).ok()?;
-    Some(RewindAttempt { run_id, lineage })
+    .map_err(|e| format!("rewind attempt read: {e}"))?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let lineage = RunLineage::from_row(&row).map_err(|e| format!("rewind attempt read: {e}"))?;
+    Ok(Some(RewindAttempt { run_id, lineage }))
 }
 
 pub(crate) fn superseded_refusal(job_id: &str, current: Option<&str>) -> String {
