@@ -18,7 +18,7 @@
   }
 </script>
 
-<div class="flex flex-wrap items-center gap-1">
+<div class="flex flex-wrap items-center gap-1.5">
   {#each value as t (t)}
     <span in:fade={{ duration: 150 }} out:fade={QUICK}>
       <Chip onRemove={() => onChange(value.filter((x) => x !== t))}>

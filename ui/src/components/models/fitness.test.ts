@@ -21,9 +21,13 @@ import {
   centsPerRun,
   costCaveat,
   estimateSentence,
+  rankTags,
   reasonOf,
   rowSummary,
+  rowSummaryLine,
+  slotHeading,
   suppliedSearchNote,
+  tagLabel,
   tagTitle,
   usd,
   usdRate,
@@ -147,14 +151,29 @@ describe('rowSummary', () => {
   })
 })
 
+describe('the matrix row and column words', () => {
+  it('shortens a slot label to a heading without its family separator', () => {
+    expect(slotHeading('Workbench · Standard effort')).toBe('Workbench standard')
+    expect(slotHeading('Research · Brief')).toBe('Research brief')
+    expect(slotHeading('Personal assistant')).toBe('Personal assistant')
+  })
+
+  it('counts only the bands a model landed in, and folds no-harness into untested', () => {
+    expect(rowSummaryLine({ ready: 5, workable: 0, unfit: 0, untested: 0, unbound: 1 })).toBe('5 ready · 1 untested')
+    expect(rowSummaryLine({ ready: 1, workable: 3, unfit: 1, untested: 1, unbound: 0 })).toBe(
+      '1 ready · 3 workable · 1 not a fit · 1 untested',
+    )
+  })
+})
+
 describe('capability tags', () => {
   it('gives unknown a neutral tone — unknown is not false', () => {
     // capability.ts's cardinal rule, carried into the UI: Talaria has to keep
     // working on a model nobody has benchmarked, and a fresh self-host has
     // benchmarked nothing.
     expect(TAG_TONE.unknown).toBe('neutral')
-    expect(TAG_TONE.no).toBe('danger')
-    expect(TAG_TONE.yes).toBe('success')
+    expect(TAG_TONE.no).toBe('warn')
+    expect(TAG_TONE.yes).toBe('neutral')
   })
 
   it('writes three different sentences for the three states', () => {
@@ -179,9 +198,20 @@ describe('capability tags', () => {
     expect(some.measured.map((c) => c.cap)).toEqual(['search'])
   })
 
+  it('leads with what a model lacks, then what the deployment supplies', () => {
+    const ranked = rankTags([
+      view({ cap: 'json', state: 'yes' }),
+      view({ cap: 'search', state: 'supplied' }),
+      view({ cap: 'vision', state: 'no' }),
+      view({ cap: 'tools', state: 'yes' }),
+    ])
+    expect(ranked.map(tagLabel)).toEqual(['No vision', 'Search via tool', 'Tools', 'JSON'])
+  })
+
   it('has plain words for every capability the tag can carry', () => {
     for (const [cap, words] of Object.entries(CAPABILITY_WORDS)) {
       expect(words.short.length, cap).toBeGreaterThan(0)
+      expect(words.lacks, cap).not.toBe(words.short)
       // The plain form completes "this model cannot ___", which is the sentence
       // an admin reads when their assignment is a bad fit.
       expect(words.plain.length, cap).toBeGreaterThan(0)
@@ -255,6 +285,7 @@ describe('the estimate an admin decides on', () => {
     expect(usd(0)).toBe('$0')
     expect(usd(null)).toBe('unpriced')
     expect(usd(1.2345)).toBe('$1.23')
+    expect(usd(1453.118)).toBe('$1,453.12')
   })
 })
 
@@ -414,7 +445,7 @@ describe('worthRetrying', () => {
 // ── Supplied capabilities ────────────────────────────────────────────────────
 
 describe('a capability the DEPLOYMENT supplies', () => {
-  it('gets its own tone — neither the green of yes nor the red of no', () => {
+  it('gets its own tone, neither that of yes nor that of no', () => {
     // Calling it 'yes' claims a blind model sees; calling it 'no' refuses a
     // deployment that can genuinely do the job. It is a third fact.
     expect(TAG_TONE.supplied).not.toBe(TAG_TONE.yes)

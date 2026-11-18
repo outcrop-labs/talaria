@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cn } from '@/lib/cn'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { DOT_COLOR, type DotStatus } from './chip'
 
   // The one status dot — 6px round (spec §8), status decides the color
@@ -21,7 +22,13 @@
     class: className,
   }: { status?: DotStatus; color?: string; pulse?: boolean; title?: string; class?: string } = $props()
 
-  const background = $derived(color ?? (status != null ? DOT_COLOR[status] : undefined))
+  // The idle dot is the hairline colour, which the mono screens read against
+  // their own chrome. On a settings panel it vanishes, so there a neutral
+  // state takes the quiet text colour.
+  const sans = useUiVoice() === 'sans'
+  const background = $derived(
+    color ?? (status == null ? undefined : sans && status === 'idle' ? 'var(--theme-muted)' : DOT_COLOR[status]),
+  )
 </script>
 
 <span

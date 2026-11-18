@@ -24,10 +24,14 @@
  *  run's compare-across-models number and wrong for a recurring bill, which is
  *  why `usdRate` in `components/models/fitness.ts` exists beside it rather than
  *  on top of it. */
-export function formatUsd(n: number | null, opts?: { unpricedAsWord?: boolean }): string {
+export function formatUsd(n: number | null, opts?: { unpricedAsWord?: boolean; group?: boolean }): string {
   if (n === null) return 'unpriced'
   if (n === 0) return '$0'
   if (n < 0.01) return opts?.unpricedAsWord ? '<$0.01' : `$${n.toFixed(4)}`
+  // `group` separates thousands ("$1,453.12"), which the settings area asks
+  // for. It is an option because the board and work screens print the bare
+  // form and must not change under them.
+  if (opts?.group) return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   return `$${n.toFixed(2)}`
 }
 

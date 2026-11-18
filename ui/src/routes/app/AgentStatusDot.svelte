@@ -1,20 +1,18 @@
 <script lang="ts">
   import StatusDot from '@/components/ui/StatusDot.svelte'
-  import type { AgentContainers, AgentDef } from '@/lib/fleet-defs'
-  import { HEALTH_COLOR, healthOf } from './agents.svelte'
+  import type { AgentBrainHealth, AgentContainers, AgentDef } from '@/lib/fleet-defs'
+  import { HEALTH_LABEL, HEALTH_TONE, shownHealth } from './agents.svelte'
 
-  let { def: d, containers }: { def: AgentDef; containers: AgentContainers | null } = $props()
+  let { def: d, containers, brain }: { def: AgentDef; containers: AgentContainers | null; brain?: AgentBrainHealth } = $props()
 
-  const health = $derived(healthOf(d, containers).health)
+  const health = $derived(shownHealth(d, containers, brain))
 </script>
-<!-- Spec §8 status dot: 6–7px round, signal color carries the meaning. The
-     health hues are data (six fleet states, not six tones), so they ride
-     `color`; the 7px size is this site's own. 'draft' is not a fault — the
-     tooltip says what it is instead of letting a neutral dot read as
-     "unknown". -->
-<StatusDot
-  color={HEALTH_COLOR[health]}
-  pulse={health === 'warming'}
-  title={health === 'warming' ? 'warming up' : health === 'draft' ? 'draft — hired without a container; start it to finish the hire' : health}
-  class="h-[7px] w-[7px]"
-/>
+
+<!-- A draft is not a fault: the title says what it is. -->
+<span
+  class="flex shrink-0 items-center gap-2 font-sans text-[13px] leading-5 text-muted"
+  title={health === 'draft' ? 'Hired without a container. Start it to finish the hire.' : undefined}
+>
+  <StatusDot status={HEALTH_TONE[health]} pulse={health === 'warming'} />
+  {HEALTH_LABEL[health]}
+</span>

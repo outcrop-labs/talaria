@@ -1,8 +1,11 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { AlertTriangle, Eye, EyeOff, Folder, KeyRound, Trash2 } from '@lucide/svelte'
+  import { AlertTriangle, Folder, KeyRound } from '@lucide/svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import EmptyState from '@/components/ui/EmptyState.svelte'
+  import DangerLink from '@/components/ui/DangerLink.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -131,149 +134,124 @@
   }
 </script>
 
-{#snippet keyIcon()}<KeyRound size={22} />{/snippet}
-
-<div class="space-y-4">
+<div class="space-y-8">
   <!-- ── SAFE: spends without seeing ────────────────────────────────────────── -->
-  <div class="space-y-2">
-    <div class="flex items-center gap-2">
-      <EyeOff size={14} class="text-muted" aria-hidden="true" />
-      <p class="font-sans text-sm text-fg">Credentials it can spend, without ever seeing them</p>
-    </div>
-    <p class="font-sans text-xs leading-relaxed text-muted">
-      {agentLabel} is given a handle. Talaria substitutes the real value at the boundary that spends it (a tool call, a push), so the
-      value never enters its context and never reaches a provider. Prefer this whenever the credential only has to be USED.
-    </p>
-
+  <SettingsSection
+    title="Credentials it can use"
+    description="Talaria fills in the real value when a tool spends it, so the agent never sees it."
+    info={`${agentLabel} is given a handle. The value never enters its context and never reaches a model provider. Prefer this whenever a credential only has to be used.`}
+  >
+    {#snippet action()}
+      {#if grantable.length > 0}
+        <Combobox
+          options={grantable.map((v) => ({ value: v.name, label: v.title, sub: v.entries.map((e) => e.label).join(', ') }))}
+          selected={[]}
+          size="sm"
+          placeholder="Grant a credential"
+          disabled={granting}
+          onChange={(v) => v[0] && void setGrant(v[0], true)}
+          class="w-[280px]"
+        />
+      {/if}
+    {/snippet}
     {#if held.data && held.data.length > 0}
-      <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
-        {#each held.data as h (h.name + h.key)}
-          <li class="flex flex-wrap items-center gap-2 px-3.5 py-2.5">
-            <KeyRound size={13} class="shrink-0 text-muted" aria-hidden="true" />
-            <span class="font-sans text-sm text-fg">{h.title}</span>
-            <span class="font-sans text-xs text-muted">{h.label}</span>
-            <code class="font-mono text-[11px] text-accent">«secret:{h.name}»</code>
-            {#if h.via === 'folder'}
-              <!-- REVOKED FROM THE FOLDER, NOT FROM HERE. Offering a button that
-                   cannot do what it says is worse than offering none. -->
-              <span class="inline-flex items-center gap-1 font-mono text-[10px] text-ink-dim">
-                <Folder size={11} aria-hidden="true" />
-                via {h.folder}
-              </span>
-            {:else}
-              <button
-                type="button"
-                title="Revoke"
-                disabled={granting}
-                onclick={() => void setGrant(h.name, false)}
-                class="ml-auto shrink-0 text-muted transition-colors hover:text-danger"
-              >
-                <Trash2 size={14} />
-              </button>
-            {/if}
-          </li>
-        {/each}
-      </ul>
+      <div use:listStagger>
+        <SettingsGroup>
+          {#each held.data as h (h.name + h.key)}
+            <SettingsRow label={h.title} hint={h.label}>
+              {#snippet icon()}<KeyRound size={16} />{/snippet}
+              {#snippet meta()}<code class="truncate font-mono text-xs text-muted">«secret:{h.name}»</code>{/snippet}
+              {#if h.via === 'folder'}
+                <!-- REVOKED FROM THE FOLDER, NOT FROM HERE. Offering a control that
+                     cannot do what it says is worse than offering none. -->
+                <span class="flex items-center gap-1.5 font-sans text-[13px] leading-5 text-muted">
+                  <Folder size={14} aria-hidden="true" />
+                  From the folder {h.folder}
+                </span>
+              {:else}
+                <DangerLink onClick={() => void setGrant(h.name, false)} disabled={granting}>Revoke</DangerLink>
+              {/if}
+            </SettingsRow>
+          {/each}
+        </SettingsGroup>
+      </div>
     {:else}
-      <p class="font-sans text-xs text-muted">None yet.</p>
+      <p class="font-sans text-[13px] leading-5 text-muted">None granted yet.</p>
     {/if}
-
-    {#if grantable.length > 0}
-      <Combobox
-        options={grantable.map((v) => ({ value: v.name, label: v.title, sub: v.entries.map((e) => e.label).join(', ') }))}
-        selected={[]}
-        placeholder="Grant a workspace credential"
-        disabled={granting}
-        onChange={(v) => v[0] && void setGrant(v[0], true)}
-      />
-    {/if}
-  </div>
+  </SettingsSection>
 
   <!-- ── UNSAFE-BY-CONSTRUCTION: plaintext in the container ─────────────────── -->
-  <div class="flex items-center gap-2 border-t border-line pt-4">
-    <Eye size={14} class="text-warning" aria-hidden="true" />
-    <p class="font-sans text-sm text-fg">Environment variables it can read</p>
-  </div>
-  <p class="font-sans text-xs leading-relaxed text-muted">
-    <span class="inline-flex items-center gap-1 text-warning"><AlertTriangle size={12} aria-hidden="true" /> {agentLabel} can read these.</span>
-    They are written into its container as plaintext and loaded as env vars, so anything running in there, including the shell its harness
-    uses, can print them. Use one only when a process inside the container reads the variable itself; if the credential merely needs to be
-    spent through a tool, grant a handle above instead. A <code class="font-mono text-fg">CONFIG_…</code> entry is the exception: a credential
-    sealed out of its own config, which Hermes reads for itself and keeps out of every command it runs.
-  </p>
-  <QueryState {query} errorTitle="Could not load this agent's secrets" errorVariant="compact">
-    {#snippet skeleton()}
-      <ul aria-hidden="true" class="divide-y divide-line rounded-lg border border-line">
-        {#each [0, 1] as i (i)}
-          <li class="flex items-center gap-3 px-3.5 py-3.5">
-            <Skeleton class="h-3 w-32 rounded-full" />
-            <Skeleton class="h-2.5 w-14 rounded-full" />
-            <Skeleton class="ml-auto h-2.5 w-24 rounded-full" />
-          </li>
-        {/each}
-      </ul>
-    {/snippet}
-    {#snippet empty()}
-      <EmptyState icon={keyIcon} title="No secrets" hint="Everything it needs comes from the shared platform env." />
-    {/snippet}
-    {#snippet children(secrets)}
-      <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
-        {#each secrets as s (s.name)}
-          <li class="flex flex-wrap items-center gap-x-3 gap-y-1 px-3.5 py-2.5 transition-colors dither-fill">
-            <code class="font-mono text-sm text-fg">{s.name}</code>
-            <span class="font-mono text-xs text-muted">••••••••</span>
-            <span class="ml-auto shrink-0 font-mono text-[11px] text-muted">
-              {s.updatedBy ?? 'unknown'} · {relativeTime(s.updatedAt)}
-            </span>
-            <button
-              type="button"
-              title="Remove"
-              onclick={() => void remove(s)}
-              class="shrink-0 text-muted transition-colors hover:text-danger"
-            >
-              <Trash2 size={14} />
-            </button>
-            {#if s.refused}
-              <!-- Saved before the rule that refuses this name. The render
-                   leaves it out of the container (no tool of the agent's could
-                   read it, and loading it only reconfigured the agent), so say
-                   why, beside the remove. -->
-              <p class="flex basis-full items-start gap-1 font-sans text-xs text-warning">
-                <AlertTriangle size={12} class="mt-0.5 shrink-0" aria-hidden="true" />
-                <span>Not loaded: {s.refused}.</span>
-              </p>
-            {:else if sealed(s)}
-              <p class="basis-full font-sans text-xs text-muted">
-                {#if s.usedAt?.length}
-                  A config credential, used at <span class="font-mono text-fg">{s.usedAt.join(', ')}</span>. Hermes reads it; the agent's
-                  commands do not see it. Replace the value to rotate it.
+  <SettingsSection
+    title="Environment variables"
+    description={`Written into its container as plain text. ${agentLabel} can read them.`}
+    info="Anything running in the container, including the shell its harness uses, can print these. Use one only when a process in the container reads the variable itself. A CONFIG_ entry is the exception: a credential sealed out of its own config, which Hermes reads and keeps out of every command it runs."
+  >
+    <!-- One card: the variables it has, then the row that adds one. -->
+    <SettingsGroup>
+      <QueryState {query} errorTitle="Could not load this agent's secrets" errorVariant="compact">
+        {#snippet skeleton()}
+          {#each [0, 1] as i (i)}
+            <div aria-hidden="true" class="flex min-h-[52px] items-center gap-3 px-5 py-3">
+              <Skeleton class="h-3.5 w-40 rounded-full" />
+              <Skeleton class="ml-auto h-3 w-24 rounded-full" />
+            </div>
+          {/each}
+        {/snippet}
+        {#snippet empty()}
+          <p class="px-5 py-4 font-sans text-[13px] leading-5 text-muted">None yet. Everything it needs comes from the shared platform environment.</p>
+        {/snippet}
+        {#snippet children(secrets)}
+          {#each secrets as s (s.name)}
+            <SettingsRow>
+              {#snippet label()}<code class="font-mono text-[13px] font-normal">{s.name}</code>{/snippet}
+              {#snippet hint()}
+                {#if s.refused}
+                  <!-- Saved before the rule that refuses this name. The render
+                       leaves it out of the container, so say why, beside the remove. -->
+                  <span class="flex items-start gap-1.5 text-warning">
+                    <AlertTriangle size={14} class="mt-0.5 shrink-0" aria-hidden="true" />
+                    Not loaded: {s.refused}.
+                  </span>
+                {:else if sealed(s)}
+                  {#if s.usedAt?.length}
+                    A config credential, used at <span class="font-mono text-xs text-fg">{s.usedAt.join(', ')}</span>. The agent's commands do not see it.
+                  {:else}
+                    A config credential its current config does not use.
+                  {/if}
                 {:else}
-                  A config credential its current config does not use. The agent's commands do not see it.
+                  Set by {s.updatedBy ?? 'someone'}, {relativeTime(s.updatedAt)}
                 {/if}
-              </p>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/snippet}
-  </QueryState>
-  <div class="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
-    <Input
-      value={name}
-      oninput={(e) => (name = e.currentTarget.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_'))}
-      onkeydown={submitOnEnter(() => !busy && nameOk && value && void save())}
-      placeholder="FIGMA_TOKEN"
-    />
-    <Input
-      bind:value
-      onkeydown={submitOnEnter(() => !busy && nameOk && value && void save())}
-      placeholder="value (write-only)"
-      type="password"
-    />
-    <Button class="whitespace-nowrap" onclick={() => void save()} disabled={busy || !nameOk || !value}>
-      {busy ? 'Saving' : 'Set secret'}
-    </Button>
-  </div>
-  {#if name && !nameOk}<p class="text-xs text-muted">UPPER_SNAKE, 2–64 chars, starts with a letter.</p>{/if}
-  {#if err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{err}</p>{/if}
+              {/snippet}
+              <DangerLink onClick={() => void remove(s)}>Remove</DangerLink>
+            </SettingsRow>
+          {/each}
+        {/snippet}
+      </QueryState>
+      <SettingsRow label="New variable" hint="The value is never shown again." apart>
+        <Input
+          size="sm"
+          value={name}
+          oninput={(e) => (name = e.currentTarget.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_'))}
+          onkeydown={submitOnEnter(() => !busy && nameOk && value && void save())}
+          placeholder="FIGMA_TOKEN"
+          aria-label="Variable name"
+          class="w-48 font-mono"
+        />
+        <Input
+          size="sm"
+          bind:value
+          onkeydown={submitOnEnter(() => !busy && nameOk && value && void save())}
+          placeholder="Value"
+          aria-label="Variable value"
+          type="password"
+          class="w-48"
+        />
+        <Button size="md" variant="outline" class="shrink-0" onclick={() => void save()} disabled={busy || !nameOk || !value}>
+          {busy ? 'Saving' : 'Set variable'}
+        </Button>
+      </SettingsRow>
+    </SettingsGroup>
+    {#if name && !nameOk}<p class="mt-3 font-sans text-[13px] leading-5 text-muted">Capital letters, digits and underscores, 2 to 64 characters, starting with a letter.</p>{/if}
+    {#if err}<p transition:slide={{ duration: 150 }} class="mt-2 font-sans text-[13px] leading-5 text-danger" role="alert">{err}</p>{/if}
+  </SettingsSection>
 </div>

@@ -32,6 +32,8 @@
     onChange({ ...filters, categories: next, kind: keepKind ? filters.kind : null })
   }
 
+  const CLEAR = 'font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg' // voice-ok: the inbox page, outside the settings area
+
   let kindValue = $state('')
   $effect(() => {
     kindValue = filters.kind ?? ''
@@ -62,12 +64,6 @@
     </Select>
   {/if}
   {#if filtersActive(filters)}
-    <button
-      type="button"
-      class="font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg"
-      onclick={() => onChange({ unread: false, categories: [], kind: null })}
-    >
-      Clear
-    </button>
+    <button type="button" class={CLEAR} onclick={() => onChange({ unread: false, categories: [], kind: null })}>Clear</button>
   {/if}
 </div>
