@@ -97,7 +97,10 @@ export interface McpServerRow {
   timeoutSecs: number | null
   enabled: boolean
   allAgents: boolean
-  authMode: 'org' | 'per-user'
+  /** `google`: a Google Workspace MCP server from the pack (Admin → Org →
+   *  Google Workspace MCP). Each agent speaks with its own Google principal;
+   *  the row's address, credentials and mode are the pack's. */
+  authMode: 'org' | 'per-user' | 'google'
   builtin: boolean
   appSlug: string | null
   /** App servers: why the app is not serving — turned off, failed its build,

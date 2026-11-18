@@ -21,7 +21,7 @@
 // one, and the second delete of it is the 404.
 //
 // The agent is unmanaged, so nothing here renders or touches a container.
-// House rule: #[ignore]d; CI's api-integration job runs it.
+// House rule: #[ignore]d; ci.yml's api job runs it in its live-DB steps.
 //
 //   source ui/.env && cargo test -p talaria-api --test it absent_path_ids:: -- --ignored
 

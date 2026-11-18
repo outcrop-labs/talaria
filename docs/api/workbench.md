@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-21 routes.
+24 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -39,11 +39,16 @@
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | GET | `admin` |
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | PUT | `admin` |
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | DELETE | `admin` |
+| [`/api/workbench/git-hosts/{id}/refresh`](#apiworkbenchgit-hostsidrefresh) | POST | `admin` |
 | [`/api/workbench/git-hosts/{id}/test`](#apiworkbenchgit-hostsidtest) | POST | `admin` |
+| [`/api/workbench/github-permissions/{agentId}`](#apiworkbenchgithub-permissionsagentid) | GET | `session` + `agent-reader` |
+| [`/api/workbench/github-permissions/{agentId}`](#apiworkbenchgithub-permissionsagentid) | PUT | `admin` |
 | [`/api/workbench/harnesses`](#apiworkbenchharnesses) | GET | `admin` |
 | [`/api/workbench/harnesses`](#apiworkbenchharnesses) | POST | `admin` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | GET | `session` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | PUT | `session` |
+| [`/api/workbench/permission-requests`](#apiworkbenchpermission-requests) | GET | `admin` |
+| [`/api/workbench/permission-requests`](#apiworkbenchpermission-requests) | PUT | `admin` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | GET | `admin` |
 | [`/api/workbench/repo-requests`](#apiworkbenchrepo-requests) | PUT | `admin` |
 | [`/api/workbench/repos/{agentId}`](#apiworkbenchreposagentid) | GET | `session` + `agent-reader` |
@@ -388,9 +393,9 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts.
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id.rs)
 
 > /api/workbench/git-hosts/{id}. One git host. GET → the redacted row with a
-> live status (who the connection acts as, or why it cannot connect);
-> `?installations=1` on a GitHub host lists where its App is installed (the
-> easy-setup picker). PUT → change it (secrets sealed; a Forgejo host's
+> live status (who the connection acts as, or why it cannot connect; for a
+> GitHub App, what the App asks for) and each installation the connection
+> uses as the holdings record last read it (what it accepted, what is still
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -409,6 +414,20 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_
 | `repoCreationOrgs` | `string[]?(0, 100, 20)` |  |
 | `secret` | `string?(200)` |  |
 
+## `/api/workbench/git-hosts/{id}/refresh`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_refresh.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_refresh.rs)
+
+> /api/workbench/git-hosts/{id}/refresh. The host card's "Refresh": POST
+> reads the host's GitHub App (what it asks for) and each installation its
+> connection uses (what the installation accepted) again, now, instead of at
+> the next ten-minute pass, and answers the host as GET does. A permission an
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | — | `{host}` | 200, 404 | — |
+
 ## `/api/workbench/git-hosts/{id}/test`
 
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_test.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_test.rs)
@@ -421,6 +440,29 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | POST | `admin` | — | `{ok, status, repoCount, repos, reposError}` | 200, 404 | — |
+
+## `/api/workbench/github-permissions/{agentId}`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_github_permissions_agent_id.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_github_permissions_agent_id.rs)
+
+> /api/workbench/github-permissions/{agentId}. The GitHub permissions one
+> agent's token carries on each git host (talaria-git-hosts' permissions:
+> `agent_github_permissions`). Per agent, per host, the agent's WHOLE set:
+> any key GitHub knows, repository and organization keys, administration
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` + `agent-reader` | — | `{agentId, canEdit, default, catalog, hosts}` | 200, 404 | — |
+| PUT | `admin` | [body](#put-apiworkbenchgithub-permissionsagentid-body) | `{ok, host, permissions, isDefault, notes}` | 200, 400, 404, 409 | — |
+
+### PUT `/api/workbench/github-permissions/{agentId}` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `host` | `string(1, 40)` |  |
+| `from` | `permissions_or_default` | What the editor read: the agent's set, or null when it is on the default. |
+| `to` | `permissions_or_default` | The whole new set, or null to put the agent back on the default. |
 
 ## `/api/workbench/harnesses`
 
@@ -468,6 +510,30 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_jobs.rs`](
 | `action` | `enum(approve|reject)` |  |
 | `note` | `string?(500)` |  |
 
+## `/api/workbench/permission-requests`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_permission_requests.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_permission_requests.rs)
+
+> /api/workbench/permission-requests. The GitHub permissions agents asked
+> for (`request_git_permission`; talaria-git-hosts' requests). GET → every
+> open request (pending, or approved and waiting on GitHub), each with what
+> GitHub's side holds, every repo the agent holds on that host (an approval
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{requests}` | 200 | — |
+| PUT | `admin` | [body](#put-apiworkbenchpermission-requests-body) | `{ok, status, permissions, appliesTo}` | 200, 400, 403, 404, 409 | — |
+
+### PUT `/api/workbench/permission-requests` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `id` | `uuid` |  |
+| `action` | `enum(approve|deny)` |  |
+| `level` | `enum(read|write|admin)?` | The level the decider was shown, required to approve: a raise since is a 409, never a grant nobody confirmed. A denial checks it when sent. |
+| `note` | `string?(500)` | Why the decider decided: on the ticket, and in list_repos for the agent. |
+
 ## `/api/workbench/repo-requests`
 
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repo_requests.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_repo_requests.rs)
@@ -506,7 +572,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repos_agen
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `{hosts, available, granted, rules, branches}` | 200, 404 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | — |
+| PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | audit |
 
 ### PUT `/api/workbench/repos/{agentId}` body
 

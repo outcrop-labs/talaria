@@ -48,6 +48,7 @@ use talaria_fleet_layout::describe_agent;
 use talaria_gateway::usage as gw_usage;
 use talaria_git_hosts as hosts;
 use talaria_git_hosts::GitHost;
+use talaria_git_hosts::token_view;
 use talaria_mcp_jsonrpc::{ListedTool, ToolOutcome, dispatch_jsonrpc};
 use talaria_realtime::RealtimeDeps;
 use talaria_runs_define::run_definition;
@@ -284,7 +285,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "list_repos",
-            "description": "The repositories YOUR workbench is granted, and the git host each lives on (`grants`: {host, repo}). Work only these — anything else is out of bounds. When the same owner/name is granted on two hosts, pass `host` to start_job and request_app_install.",
+            "description": "The repositories YOUR workbench is granted, and the git host each lives on (`grants`: {host, repo, github}). Work only these — anything else is out of bounds. When the same owner/name is granted on two hosts, pass `host` to start_job and request_app_install. On a GitHub host, each grant's `github` says what the token git pushes with carries for that one repo (`carries`, and `shortfall`: what your set names that the GitHub App's installation does not hold yet). That token is also your GitHub API token for the repo; `githubApi` says how to read it for one command.",
             "inputSchema": { "type": "object", "properties": {} },
         }),
         json!({
@@ -326,6 +327,32 @@ pub fn workbench_tools() -> Vec<Value> {
                     "taskId": { "type": "string", "description": "The ticket that motivated it — same rule as start_job: a ticket you may not work (board not yours, closed, archived, archived board, a workchain step still waiting its turn) is refused, so omit it rather than guessing." },
                 },
                 "required": ["org", "name", "why"],
+            },
+        }),
+        json!({
+            "name": "request_git_permission",
+            "description": "Ask an admin for a GitHub permission your git token lacks — when GitHub refused something you did on a granted repo for want of one (a 403 \"Resource not accessible by integration\", a push refused \"without workflows permission\", an X-Accepted-GitHub-Permissions header naming what it needed). Name the repo where it happened and each permission GitHub wanted, by GitHub's App permission name (contents, pull_requests, workflows, secrets, actions, administration, organization_secrets, …) at the level it wanted. Approval adds it to your permissions on that repo's git host, for every repo you hold there, and your next git credential for those repos carries it. Refused only for a name or level GitHub does not know, a repo you are not granted, or a host whose own token decides (no per-agent permissions there). Asking again while one is open adds your words to it. An admin decides in Admin → Git hosts; the outcome shows in list_repos (permissionRequests), and on the ticket the request was first asked from when you name one (taskId). Do not retry the GitHub call or ask again until it is decided — continue other work. awaiting_github means approved in Talaria and waiting for an owner of the GitHub account to accept the permission for the App; no token carries it until they do.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "repo": { "type": "string", "description": "owner/name — the granted repo (list_repos) where GitHub refused" },
+                    "host": { "type": "string", "description": "The git host the repo is on (list_repos' grants[].host). Needed only when the same owner/name is granted to you on more than one host." },
+                    "permissions": {
+                        "type": "array",
+                        "description": "Each permission GitHub wanted, at the level it wanted",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "GitHub's App permission name, like workflows or pull_requests" },
+                                "level": { "type": "string", "enum": ["read", "write", "admin"] },
+                            },
+                            "required": ["name", "level"],
+                        },
+                    },
+                    "why": { "type": "string", "description": "What you were doing, and what GitHub answered, verbatim — the admin decides on it" },
+                    "taskId": { "type": "string", "description": "The ticket you were working — same rule as start_job: a ticket you may not work (board not yours, closed, archived, archived board, a workchain step still waiting its turn) is refused, so omit it rather than guessing." },
+                },
+                "required": ["repo", "permissions", "why"],
             },
         }),
         json!({
@@ -622,8 +649,9 @@ async fn ticket_still_ours(pg: &PgPool, subject: &AgentSubject, task_id: &str) -
 
 /// THE ONLY way this file tells anybody an approval was raised. Not one of
 /// the three ticket doors at the top of the file — a door onto somebody's
-/// inbox — but it is one for exactly the same reason: three verbs here park
-/// work on a human (`workbench_plan`, `repo_request`, `app_install`), each declared in
+/// inbox — but it is one for exactly the same reason: four verbs here park
+/// work on a human (`workbench_plan`, `repo_request`, `app_install`,
+/// `git_permission`), each declared in
 /// approvals.rs with the AUTHORITY their decision route enforces, and that
 /// declaration is what decides who may be told and how much of it.
 ///
@@ -820,6 +848,15 @@ async fn call_tool(
             } else {
                 format!("repos: {}", repos_line(&repos))
             });
+            // One line per granted repo: where git's credential comes from
+            // there and what it carries, the token the agent pushes and calls
+            // the host's API with.
+            match token_view::grant_credentials(pg, &agent.id, &agent_model, &repos).await {
+                Ok(tokens) => checks.extend(tokens.iter().map(|t| t.doctor_line())),
+                Err(e) => checks.push(format!(
+                    "git tokens: what your token carries on each repo could not be read — {e}"
+                )),
+            }
             let models = roles.wire();
             // A coding account changes which models a job actually runs on, so
             // the self-diagnosis has to say so — otherwise `models` above
@@ -897,9 +934,14 @@ async fn call_tool(
             .bind(&agent.id)
             .fetch_all(pg)
             .await;
+            // What git's credential carries on each grant, from the record
+            // (talaria-git-hosts' token_view): the agent spends that token
+            // itself, on git and on the host's API.
+            let tokens = token_view::grant_credentials(pg, &agent.id, &agent_model, &grants).await;
             let mut out = json!({
                 "repos": grants.iter().map(|g| g.repo.clone()).collect::<Vec<_>>(),
-                "grants": grants,
+                "grants": grants_wire(&grants, tokens.as_deref().unwrap_or_default()),
+                "githubApi": GITHUB_API_NOTE,
                 "models": models,
                 "note": "Pick effort by the size of the work: light = quick fixes, standard = regular features (plan required), heavy = hard cross-cutting work (plan required, waits for human approval, used sparingly). Effort decides planning and how much room the job reserves; Oh My Pi picks its own models from the roles above as it works.",
             });
@@ -913,6 +955,25 @@ async fn call_tool(
                 Err(e) => {
                     out["repoRequestsError"] = json!(format!("repo requests unreadable: {e}"))
                 }
+            }
+            // The GitHub permissions it asked for, and what became of each:
+            // where request_git_permission tells the agent to look. Every
+            // open one however old, and what was decided in 30 days.
+            match hosts::requests::agent_requests(pg, &agent.id, 30).await {
+                Ok(rows) => {
+                    out["permissionRequests"] =
+                        Value::Array(rows.iter().map(permission_request_wire).collect());
+                }
+                Err(e) => {
+                    out["permissionRequestsError"] =
+                        json!(format!("permission requests unreadable: {e}"))
+                }
+            }
+            // Likewise: a grant without `github` because the read failed
+            // says so, rather than reading as a host that is not GitHub.
+            if let Err(e) = &tokens {
+                out["githubError"] =
+                    json!(format!("what your git token carries is unreadable: {e}"));
             }
             CallOutcome::Ok(out)
         }
@@ -1805,6 +1866,100 @@ async fn call_tool(
                 "appSlug": app_slug,
                 "note": "Request filed — a human decides. Continue other work; the repo appears in list_repos if approved, and list_repos shows the decision (a rejection's reason also lands on the ticket).",
             }))
+        }
+
+        "request_git_permission" => {
+            let repo = arg_str(args, "repo").trim().to_string();
+            if repo.is_empty() {
+                return CallOutcome::Fail(
+                    "repo is required: the granted repo (list_repos) where GitHub refused".into(),
+                );
+            }
+            let asked = match permission_args(args.get("permissions")) {
+                Ok(p) => p,
+                Err(why) => return CallOutcome::Fail(why),
+            };
+            // The same ticket door as start_job: the taskId is stored on the
+            // request and gets a line, so it is authorised, not believed.
+            let task_id = match ticket_arg(pg, subject, args).await {
+                Ok(id) => id,
+                Err(error) => return CallOutcome::Fail(error),
+            };
+            let why = arg_str(args, "why");
+            let filing = match hosts::requests::file_git_permission_request(
+                pg,
+                &hosts::requests::Ask {
+                    agent_id: &agent.id,
+                    agent_model: &agent.model,
+                    repo: &repo,
+                    host: args.get("host").and_then(Value::as_str),
+                    permissions: &asked,
+                    why: &why,
+                    task_id: task_id.as_deref(),
+                },
+            )
+            .await
+            {
+                Ok(f) => f,
+                Err(why) => return CallOutcome::Fail(why),
+            };
+            // The ticket's lines: what was filed, worded by what it waits
+            // on, and a request already open from ANOTHER ticket, which
+            // keeps that ticket — its decision lands there, so this one says
+            // where. A repeat ask from the same ticket adds no line.
+            let mut pending = Vec::new();
+            let mut waiting = Vec::new();
+            let mut elsewhere = Vec::new();
+            for p in &filing.permissions {
+                let asked = format!("{} {}", p.permission, p.level);
+                match &p.raised {
+                    hosts::requests::Raised::Filed { id, status } => {
+                        announce_raised(deps, hosts::requests::approval_key(id));
+                        if status == "awaiting_github" {
+                            waiting.push(asked);
+                        } else {
+                            pending.push(asked);
+                        }
+                    }
+                    hosts::requests::Raised::AlreadyOpen { .. } => {
+                        if let (Some(here), Some(on)) = (task_id.as_deref(), &p.ticket)
+                            && on.id != here
+                        {
+                            elsewhere.push(format!("{asked} (asked from {})", on.label()));
+                        }
+                    }
+                    hosts::requests::Raised::Carried => {}
+                }
+            }
+            for (asked, outcome) in [
+                (pending, "awaiting an admin's decision in Admin → Git hosts"),
+                (
+                    waiting,
+                    "already in its permissions there, and waiting on GitHub: an owner of the account accepts it for the App's installation",
+                ),
+                (
+                    elsewhere,
+                    "already open, and its decision lands on the ticket it was first asked from",
+                ),
+            ] {
+                if asked.is_empty() {
+                    continue;
+                }
+                log_ticket(
+                    pg,
+                    task_id.as_deref(),
+                    &WorkbenchActor::Agent(subject.clone()),
+                    &format!(
+                        "asked for the GitHub permission{} {} on {} (where {} needed it) — {outcome}",
+                        if asked.len() == 1 { "" } else { "s" },
+                        asked.join(", "),
+                        filing.host_name,
+                        filing.repo,
+                    ),
+                )
+                .await;
+            }
+            CallOutcome::Ok(filing_wire(&filing, task_id.as_deref()))
         }
 
         "finish_job" => {
@@ -2879,6 +3034,32 @@ fn repos_line(grants: &[hosts::RepoRef]) -> String {
         .join(", ")
 }
 
+/// How the agent reads its GitHub token for one API call: list_repos'
+/// `githubApi`. The call is the one the talaria-toolkit skill's "The GitHub
+/// API" and the workspace AGENTS.md teach (talaria-fleet-render's
+/// `api_call_example`, whose test runs it through git and the rendered
+/// helper); a test here holds the skill to it.
+pub const GITHUB_API_NOTE: &str = "The credential git gets for a GitHub repo is also your GitHub API token for that one repository, carrying what its grant's `github.carries` says. Read it and spend it in ONE command, in a subshell, so it is gone when the command ends; never print, echo, export or store it, and never run the call with -v, --trace or set -x, which print it: ( TOKEN=$(printf 'protocol=https\\nhost=github.com\\npath=OWNER/REPO.git\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill | sed -n 's/^password=//p'); [ -n \"$TOKEN\" ] || { echo 'no GitHub token for OWNER/REPO' >&2; exit 1; }; curl -sS -H \"Authorization: Bearer $TOKEN\" https://api.github.com/repos/OWNER/REPO/pulls ). Run it as one tool call: a TOKEN set in one is gone in the next. host= is the host in the repo's clone URL, and the API answers at the grant's `github.api` (https://api.github.com for github.com). `GH_TOKEN=\"$TOKEN\" gh api repos/OWNER/REPO/...` in place of curl works the same where gh is installed. An empty token stops at the guard: the repo is not granted, or its token would carry nothing (doctor says which). A 403 or 404 for a permission your set does not name is an admin's to give: ask for it with request_git_permission. An organization key in `github.carries` rides only where GitHub takes it on a token for one repository, so a 403 on one of those is GitHub's limit, not a permission to ask for again.";
+
+/// list_repos' `grants`: each `{host, repo}`, with `github` (talaria-git-hosts'
+/// token_view: null on a host that is not GitHub) when what its credential
+/// carries was read.
+fn grants_wire(grants: &[hosts::RepoRef], tokens: &[token_view::GrantCredential]) -> Vec<Value> {
+    grants
+        .iter()
+        .map(|g| {
+            let mut wire = json!({ "host": g.host_id, "repo": g.repo });
+            if let Some(t) = tokens
+                .iter()
+                .find(|t| t.host_id == g.host_id && t.repo == g.repo)
+            {
+                wire["github"] = t.github_wire();
+            }
+            wire
+        })
+        .collect()
+}
+
 /// The host `request_repo` files on: the one named, else the one whose
 /// approved orgs include `org`. Err is the refusal the agent reads — the
 /// same allowlist the approval enforces.
@@ -3017,6 +3198,130 @@ fn repo_request_wire(r: &RepoRequestRow) -> Value {
     if r.2 != "pending" {
         out["decidedAt"] = json!(epoch_ms_to_iso(r.7));
         out["note"] = json!(r.3);
+    }
+    out
+}
+
+/// request_git_permission's `permissions`: each `{name, level}`, as the
+/// agent spelled it (the filing checks them against GitHub's catalog).
+fn permission_args(v: Option<&Value>) -> Result<Vec<(String, String)>, String> {
+    let shape = "permissions must be a list of {name, level}, like [{\"name\": \"workflows\", \"level\": \"write\"}]";
+    let Some(items) = v.and_then(Value::as_array) else {
+        return Err(shape.into());
+    };
+    if items.is_empty() || items.len() > 20 {
+        return Err(format!("{shape} — between 1 and 20 of them"));
+    }
+    items
+        .iter()
+        .map(|item| {
+            let name = item.get("name").and_then(Value::as_str);
+            let level = item.get("level").and_then(Value::as_str);
+            match (name, level) {
+                (Some(n), Some(l)) if !n.trim().is_empty() => Ok((n.to_string(), l.to_string())),
+                _ => Err(shape.to_string()),
+            }
+        })
+        .collect()
+}
+
+/// The agent's answer to a filing: what became of each permission, and
+/// where the outcome will show — list_repos always, and the ticket the
+/// request is attached to only when there is one, which is the ticket it was
+/// first asked from, not necessarily `here`.
+fn filing_wire(filing: &hosts::requests::Filing, here: Option<&str>) -> Value {
+    use hosts::requests::Raised;
+    let mut open = false;
+    let mut waiting = false;
+    let mut carried = false;
+    let mut tickets: Vec<&str> = Vec::new();
+    let mut untracked = false;
+    let mut moved = false;
+    let requests: Vec<Value> = filing
+        .permissions
+        .iter()
+        .map(|p| {
+            let (id, status, again) = match &p.raised {
+                Raised::Filed { id, status } => (Some(id.as_str()), status.as_str(), false),
+                Raised::AlreadyOpen { id, status } => (Some(id.as_str()), status.as_str(), true),
+                Raised::Carried => (None, "granted", false),
+            };
+            match status {
+                "granted" => carried = true,
+                "awaiting_github" => waiting = true,
+                _ => open = true,
+            }
+            if id.is_some() {
+                match &p.ticket {
+                    Some(t) => {
+                        if !tickets.contains(&t.label()) {
+                            tickets.push(t.label());
+                        }
+                        moved |= here.is_some_and(|h| h != t.id);
+                    }
+                    None => untracked = true,
+                }
+            }
+            json!({
+                "permission": p.permission,
+                "level": p.level.as_str(),
+                "requestId": id,
+                "status": status,
+                "alreadyPending": again,
+                "ticket": p.ticket.as_ref().map(|t| t.label()),
+            })
+        })
+        .collect();
+    let mut note: Vec<String> = Vec::new();
+    if open || waiting {
+        note.push("An admin decides in Admin → Git hosts.".into());
+        note.push(match (tickets.is_empty(), untracked) {
+            (true, _) => "The outcome shows only in list_repos (permissionRequests): no ticket was named.".into(),
+            (false, false) => format!(
+                "The outcome shows in list_repos (permissionRequests) and on {}.",
+                tickets.join(" and ")
+            ),
+            (false, true) => format!(
+                "The outcome shows in list_repos (permissionRequests), and on {} for the requests that name it (see each request's ticket).",
+                tickets.join(" and ")
+            ),
+        });
+        if moved {
+            note.push("A request already open from another ticket stays on that ticket: its decision lands there, not on this one.".into());
+        }
+        note.push(
+            "Do not retry the GitHub call or ask again until it is decided; continue other work."
+                .into(),
+        );
+    }
+    if waiting {
+        note.push("awaiting_github: your permissions on this host already include it, and GitHub has not accepted it for the App's installation — an owner of the GitHub account does. No token carries it until then.".into());
+    }
+    if carried {
+        note.push("granted: your permissions on this host include it and the installation holds it, so a fresh git credential for the repo carries it. If GitHub still refused, the cause is something else — say what GitHub answered in report_problem.".into());
+    }
+    json!({
+        "host": filing.host_id,
+        "repo": filing.repo,
+        "requests": requests,
+        "note": note.join(" "),
+    })
+}
+
+/// One of the agent's permission requests, as list_repos shows it.
+fn permission_request_wire(r: &hosts::requests::PermissionRequest) -> Value {
+    let mut out = json!({
+        "id": r.id,
+        "host": r.host_id,
+        "repo": r.repo,
+        "permission": r.permission,
+        "level": r.level,
+        "status": r.status,
+        "requestedAt": epoch_ms_to_iso(r.created_ms),
+    });
+    if !r.is_open() {
+        out["decidedAt"] = json!(epoch_ms_to_iso(r.decided_ms.unwrap_or(r.updated_ms)));
+        out["note"] = json!(r.decision_note);
     }
     out
 }
@@ -3464,6 +3769,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_filing_says_where_its_outcome_shows_and_only_where_it_does() {
+        use hosts::requests::{Filing, Raised, RaisedPermission, RequestTicket};
+        let filing = |ticket: Option<&str>, raised: Raised| Filing {
+            host_id: "github".into(),
+            host_name: "GitHub".into(),
+            repo: "acme/site".into(),
+            permissions: vec![RaisedPermission {
+                permission: "workflows".into(),
+                level: hosts::Level::Write,
+                raised,
+                ticket: ticket.map(|id| RequestTicket {
+                    id: id.into(),
+                    ticket_ref: Some(format!("WEB-{id}")),
+                }),
+            }],
+        };
+        let filed = || Raised::Filed {
+            id: "r1".into(),
+            status: "pending".into(),
+        };
+        // No ticket named: list_repos alone, and the answer says so.
+        let none = filing_wire(&filing(None, filed()), None);
+        let note = none["note"].as_str().unwrap();
+        assert!(note.contains("only in list_repos"), "{note}");
+        assert_eq!(none["requests"][0]["ticket"], Value::Null);
+        // Its own ticket.
+        let here = filing_wire(&filing(Some("1"), filed()), Some("1"));
+        let note = here["note"].as_str().unwrap();
+        assert!(note.contains("and on WEB-1."), "{note}");
+        assert!(!note.contains("another ticket"), "{note}");
+        // Asked again from a second ticket: the request keeps the first,
+        // where its decision lands, and the answer says that.
+        let again = Raised::AlreadyOpen {
+            id: "r1".into(),
+            status: "pending".into(),
+        };
+        let moved = filing_wire(&filing(Some("1"), again), Some("2"));
+        let note = moved["note"].as_str().unwrap();
+        assert!(
+            note.contains("and on WEB-1.") && note.contains("stays on that ticket"),
+            "{note}"
+        );
+        assert_eq!(moved["requests"][0]["ticket"], "WEB-1");
+        // Carried: nothing to decide, so nothing about where.
+        let carried = filing_wire(&filing(None, Raised::Carried), Some("1"));
+        let note = carried["note"].as_str().unwrap();
+        assert!(!note.contains("list_repos"), "{note}");
+    }
+
+    #[test]
     fn the_probe_shell_unsets_every_sealed_config_name() {
         // Real bash, as the probe runs: the prefix expansion must clear every
         // CONFIG_* the container holds and nothing else.
@@ -3490,6 +3845,23 @@ mod tests {
             .output()
             .expect("bash runs");
         assert_eq!(String::from_utf8_lossy(&none.stdout).trim(), "ok");
+    }
+
+    #[test]
+    fn the_github_api_note_teaches_the_skills_call_verbatim() {
+        // The call between "( TOKEN=" and its closing " )": the one the
+        // skill teaches, and fleet-render's test runs.
+        let from = GITHUB_API_NOTE
+            .find("( TOKEN=")
+            .expect("the note teaches the call");
+        let to = from + GITHUB_API_NOTE[from..].find(" )").expect("closed") + 2;
+        let call = &GITHUB_API_NOTE[from..to];
+        assert!(call.contains("[ -n \"$TOKEN\" ] || {"), "{call}");
+        let skill = include_str!("../../../../scripts/skills/talaria-toolkit/SKILL.md");
+        assert!(
+            skill.contains(call),
+            "scripts/skills/talaria-toolkit/SKILL.md must teach list_repos' githubApi call verbatim:\n{call}"
+        );
     }
 
     #[test]
@@ -3744,6 +4116,7 @@ mod tests {
                 "start_job",
                 "job_status",
                 "request_repo",
+                "request_git_permission",
                 "finish_job",
                 "prepare_env",
                 "pr_status",
@@ -3784,6 +4157,25 @@ mod tests {
         assert_eq!(
             tool("request_repo")["inputSchema"]["properties"]["visibility"]["enum"],
             json!(["private", "public"])
+        );
+        // request_git_permission names the repo, each permission and why;
+        // the answer's promise (where to look, not to retry) is in its words.
+        assert_eq!(
+            tool("request_git_permission")["inputSchema"]["required"],
+            json!(["repo", "permissions", "why"])
+        );
+        assert_eq!(
+            tool("request_git_permission")["inputSchema"]["properties"]["permissions"]["items"]["required"],
+            json!(["name", "level"])
+        );
+        let ask = tool("request_git_permission")["description"]
+            .as_str()
+            .unwrap();
+        assert!(
+            ask.contains("list_repos (permissionRequests)")
+                && ask.contains("Do not retry")
+                && ask.contains("Admin → Git hosts"),
+            "{ask}"
         );
         assert_eq!(
             tool("pr_status")["inputSchema"]["required"],
@@ -4061,8 +4453,8 @@ mod tests {
     // ── Live-DB: a revise round, end to end against a loopback GitHub ───────
     //
     // #[ignore]d (house rule: no service-dependent tests in the default run;
-    // api-integration.yml sweeps ignored lib tests against its scratch
-    // database). The verbs run exactly as the gateway calls them — call_tool
+    // ci.yml's api job sweeps ignored lib tests in its live-DB steps, against
+    // its scratch database). The verbs run exactly as the gateway calls them — call_tool
     // with the agent's subject — and every GitHub call goes to a stub this
     // test binds, via talaria_github::with_api_base.
     //
@@ -4191,6 +4583,16 @@ mod tests {
         }
 
         async fn reset(pg: &PgPool) {
+            sqlx::query("delete from workspace_secrets where name = 'wbrevise-github'")
+                .execute(pg)
+                .await
+                .unwrap();
+            sqlx::query(
+                "delete from git_host_installations where host_id = 'github' and installation_id = 70001",
+            )
+            .execute(pg)
+            .await
+            .unwrap();
             sqlx::query("delete from agent_defs where department = $1")
                 .bind(DEPT)
                 .execute(pg)
@@ -4516,15 +4918,97 @@ mod tests {
                 .execute(&pg)
                 .await
                 .unwrap();
+                // What the installation holds, as a refresh would record it.
+                sqlx::query(
+                    "insert into git_host_installations (host_id, installation_id, account, held, checked_at) \
+                     values ('github', 70001, 'acme', $1, now()) \
+                     on conflict (host_id, installation_id) do update set held = excluded.held, \
+                       checked_at = excluded.checked_at, error = null",
+                )
+                .bind(json!({ "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write" }))
+                .execute(&pg)
+                .await
+                .unwrap();
                 let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
                 assert_eq!(listed["repos"], json!([REPO]));
-                assert_eq!(
-                    listed["grants"],
-                    json!([{ "host": "github", "repo": REPO }])
+                let default = json!({ "contents": "write", "metadata": "read", "pull_requests": "write" });
+                let grant = &listed["grants"][0];
+                assert_eq!(grant["host"], "github");
+                assert_eq!(grant["repo"], REPO);
+                assert_eq!(grant["github"]["narrowing"], "perRepo", "{grant}");
+                assert_eq!(grant["github"]["isDefault"], true);
+                assert_eq!(grant["github"]["set"], default);
+                assert_eq!(grant["github"]["carries"], default);
+                assert_eq!(grant["github"]["shortfall"], json!({}));
+                assert_eq!(grant["github"]["installation"], "70001");
+                assert!(grant["github"]["api"].is_string(), "{grant}");
+                assert!(
+                    listed["githubApi"].as_str().unwrap().contains("git credential fill"),
+                    "{listed}"
                 );
+                assert!(listed.get("githubError").is_none(), "{listed}");
                 assert_eq!(listed["repoRequests"][0]["repo"], "acme/talaria-app-notes");
                 assert_eq!(listed["repoRequests"][0]["status"], "rejected");
                 assert_eq!(listed["repoRequests"][0]["note"], "use acme/wiki instead");
+
+                // An admin's set: the token carries what the installation
+                // holds of it, metadata always, and the rest is shortfall.
+                sqlx::query(
+                    "insert into agent_github_permissions (agent_id, host_id, permissions) \
+                     values ($1::uuid, 'github', $2)",
+                )
+                .bind(&agent_id)
+                .bind(json!({ "contents": "write", "workflows": "write" }))
+                .execute(&pg)
+                .await
+                .unwrap();
+                let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
+                let github = &listed["grants"][0]["github"];
+                assert_eq!(github["isDefault"], false);
+                assert_eq!(github["carries"], json!({ "contents": "write", "metadata": "read" }));
+                assert_eq!(github["shortfall"], json!({ "workflows": "write" }));
+
+                // A workspace secret granted to the agent and spendable at
+                // github.com, with nothing sealed in it: the door passes
+                // over it to the App's token, and so does what the agent
+                // is told.
+                let secret: String = sqlx::query_scalar(
+                    "insert into workspace_secrets (name, title, allowed_hosts) \
+                     values ('wbrevise-github', 'WB Revise GitHub', '{github.com}') returning id::text",
+                )
+                .fetch_one(&pg)
+                .await
+                .unwrap();
+                sqlx::query(
+                    "insert into workspace_secret_grants (secret_id, agent_model) values ($1::uuid, $2)",
+                )
+                .bind(&secret)
+                .bind(MODEL)
+                .execute(&pg)
+                .await
+                .unwrap();
+                let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
+                let github = &listed["grants"][0]["github"];
+                assert_eq!(github["narrowing"], "perRepo", "{github}");
+                assert_eq!(github["carries"], json!({ "contents": "write", "metadata": "read" }));
+
+                // With a sealed token in it, it answers git first: the
+                // token is that secret, and nothing is claimed about what
+                // it carries. Read by name, never opened: the cipher here
+                // would not open.
+                sqlx::query(
+                    "insert into workspace_secret_entries (secret_id, key, label, value_cipher) \
+                     values ($1::uuid, 'token', 'Token', 'sealed')",
+                )
+                .bind(&secret)
+                .execute(&pg)
+                .await
+                .unwrap();
+                let listed = ok(call_tool(&deps, &me, "list_repos", &Map::new()).await);
+                let github = &listed["grants"][0]["github"];
+                assert_eq!(github["narrowing"], "workspaceSecret", "{github}");
+                assert_eq!(github["secret"], "wbrevise-github");
+                assert_eq!(github["carries"], Value::Null);
             })
             .await;
 

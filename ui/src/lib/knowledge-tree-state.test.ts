@@ -1,9 +1,17 @@
-import assert from 'node:assert/strict'
-import { beforeEach, test, vi } from 'vitest'
-import { kbTreeState, resetKbTreeState } from './knowledge-tree-state.svelte'
+// @vitest-environment runes
+//
+import { mountHarness } from './kb-tree-derive-harness.svelte'
 
 // These helpers are the view-memory.test.ts pattern, copied in — they are
 // test plumbing, not a module worth exporting.
+//
+// Whole-file note: this suite runs in the runes environment (Svelte's client
+// runtime, no DOM) so the $effect.root/$derived harness test below observes
+// real reactivity; the earlier tests are plain reads/writes, unaffected.
+
+import assert from 'node:assert/strict'
+import { beforeEach, test, vi } from 'vitest'
+import { kbTreeState, resetKbTreeState } from './knowledge-tree-state.svelte'
 
 function installStorage(initial: Record<string, string> = {}) {
   const map = new Map(Object.entries(initial))
@@ -118,4 +126,36 @@ test('resetKbTreeState clears both the memory and the reactive store', () => {
   assert.equal(kbTreeState.sectionExpanded('s-1'), false)
   kbTreeState.toggleDoc('d-2', true)
   assert.equal(map.get('talaria:knowledge-tree-state'), JSON.stringify({ docs: { 'd-2': true }, spaces: {} }))
+})
+
+test('THE $DERIVED CRASH: a stored shape read first inside a derived/template context hydrates without state_unsafe_mutation', () => {
+  // The live crash this branch's fix is for: with a stored key, hydrate()'s
+  // first call wrote $state (`store.docs = saved.docs`), and on /knowledge
+  // that first call was KbDocRow's `$derived(kbTreeState.docExpanded(...))`
+  // and the sidebar's `{#if ... sectionExpanded(...)}` — Svelte forbids a
+  // state write inside either, and loading /knowledge threw
+  // state_unsafe_mutation and took the whole view down. Knowledge.svelte now
+  // calls `kbTreeState.hydrate()` eagerly in its instance script, so every
+  // derived/template read is a pure read. This suite has no DOM to mount a
+  // component with, so the harness is the compiled shape of that row: a
+  // class whose $derived reads are the crash site, evaluated inside
+  // $effect.root the way a mounted component's deriveds run. See
+  // kb-tree-derive-harness.svelte.ts.
+  installStorage({ 'talaria:knowledge-tree-state': JSON.stringify({ docs: { 'd-1': true }, spaces: { 's-1': true } }) })
+  // WITHOUT the eager hydrate, the mount below throws the live crash —
+  // `state_unsafe_mutation: Updating state inside $derived(...)` — because
+  // the derived's first read is the hydrate, and hydrate writes $state.
+  // Knowledge.svelte's instance script now makes this exact call first, so
+  // the deriveds evaluate against an already-hydrated store, as pure reads.
+  kbTreeState.hydrate()
+  const mounted = mountHarness() // throws state_unsafe_mutation if a derived read ever hydrates again
+  // The restored shape, not the collapsed default: the deriveds follow the
+  // hydrated store, and the crash they replaced never threw.
+  assert.equal(mounted.row.expanded, true)
+  assert.equal(mounted.row.sectionOpen, true)
+  mounted.stop()
+  // And that eager hydrate is idempotent: a second call (the read paths'
+  // internal one) is a no-op, not a re-write.
+  kbTreeState.hydrate()
+  assert.equal(kbTreeState.docExpanded('d-1'), true)
 })

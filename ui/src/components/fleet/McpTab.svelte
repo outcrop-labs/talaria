@@ -46,7 +46,7 @@
     package: boolean
     workbench: boolean
     allAgents: boolean
-    authMode: 'org' | 'per-user'
+    authMode: 'org' | 'per-user' | 'google'
     oauthEnabled: boolean
     needsConnection: boolean
     probe: ProbeRow | null
@@ -178,13 +178,15 @@
         {#if s.needsConnection}
           <span
             class="rounded border border-warning/40 px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-warning"
-            title={s.authMode === 'per-user'
+            title={s.authMode === 'google'
+              ? "A Google Workspace MCP server: it acts with this agent's own Google principal (its owner's connection, the org account, or its own identity), and that account is not connected, or was connected with an OAuth client declared not marked for AI agents. Until that changes, the agent is told who fixes it."
+              : s.authMode === 'per-user'
               ? 'A per-user server: the agent carries it now, and its calls work once its owner connects their account under Settings → Connections. Until then the agent is told where to connect.'
               : s.probe?.state === 'reconnect'
                 ? 'The provider refused to refresh the org account, so the grant is gone. Reconnect on the MCP page; until then the agent is told an admin must connect it.'
                 : 'The org account is not connected yet — Connect on the MCP page. Until then the agent is told an admin must connect it.'}
           >
-            {s.authMode === 'per-user' ? 'owner must connect' : s.probe?.state === 'reconnect' ? 'reconnect needed' : 'not connected'}
+            {s.authMode === 'google' ? 'google not connected' : s.authMode === 'per-user' ? 'owner must connect' : s.probe?.state === 'reconnect' ? 'reconnect needed' : 'not connected'}
           </span>
         {:else if s.probe && s.probe.state !== 'ok'}
           <span class="rounded border border-danger/40 px-1.5 font-mono text-[10px] uppercase tracking-[0.05em] text-danger" title={s.probe.detail}>

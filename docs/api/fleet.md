@@ -92,6 +92,10 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_design.rs`](../../api
 >   PATCH  → the person's own draft (review-step edits, a role template, a
 >            manual start), naming the design (`id`) unless there is none.
 >            409 while a run or a hire holds it, or when `id` is stale.
+>            A start, or a PATCH with no `id`, over a design a failed hire
+>            handed back that nobody has edited or refined since sets that
+>            design aside: it waits in `returned` until the new one is hired
+>            or discarded, instead of being replaced or refusing the start.
 >   DELETE → discard (`{ id? }`); 404 when there is nothing (another tab got
 >            there first). A hire with `designId` claims it, and the design is
 >            consumed once that hire finishes. The record's `chat` stays on
@@ -369,7 +373,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](..
 > /api/fleet/defs/{id}/google — who this agent acts as on Google, and the
 > connect/disconnect control for a per-agent identity.
 >
-> GET    → the registry row (or the legacy fallback) plus connection face
+> GET    → the registry row (or the legacy fallback) plus connection face:
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -391,7 +395,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](..
 > /api/fleet/defs/{id}/google — who this agent acts as on Google, and the
 > connect/disconnect control for a per-agent identity.
 >
-> GET    → the registry row (or the legacy fallback) plus connection face
+> GET    → the registry row (or the legacy fallback) plus connection face:
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

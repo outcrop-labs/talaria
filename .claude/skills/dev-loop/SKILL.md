@@ -1,6 +1,6 @@
 ---
 name: dev-loop
-description: Run and exercise the Talaria dev stack — bring-up, ports, worktree/devbox isolation, seeding, and the check/verify gates. Use when starting or restarting the stack, choosing between a worktree and a devbox, seeding realistic data, or deciding which command verifies which surface.
+description: Run and exercise the Talaria dev stack — bring-up, ports, worktree/devbox isolation, seeding, and the gates (a local check; CI is the compile). Use when starting or restarting the stack, choosing between a worktree and a devbox, seeding realistic data, or deciding which command verifies which surface.
 ---
 
 # Dev loop
@@ -12,10 +12,26 @@ procedure only.
 ## Bring-up
 
 ```bash
-bun talaria setup      # first run only — secrets, config, deps; the admin account is claimed in the app
-bun talaria dev        # dev infra + the app → http://localhost:5273
-bun run api            # the Rust api alone (:5274), when that's the surface in play
+bun talaria setup              # first run only — secrets, config, deps; the admin account is claimed in the app
+bun talaria dev --api-from-ci  # dev infra + the app → http://localhost:5273, on the api binary CI built
+bun talaria dev                # the same, with the api built here by `cargo run`
+bun run api                    # the Rust api alone (:5274), when that's the surface in play
 ```
+
+**`--api-from-ci` is the default way to exercise a change** once CI has built the
+branch. It runs the `talaria-api` binary CI uploaded in place of `cargo run`, so
+nothing compiles here. It uses HEAD's own binary, or else that of the newest earlier
+commit whose api is still HEAD's: an earlier offload run on the branch, or the base's
+last binary when the branch has not changed the api. A branch
+that changed the api gets its binary from its own CI run: the pull request's, or
+`bun run gate:remote` (`--full` when the change is in a crate other than talaria-api,
+since a light run builds the binary only when talaria-api is in scope). Uncommitted
+api changes are refused, because no CI binary contains them. It reads GitHub the way
+`gate:remote` does (`GH_TOKEN`, `GITHUB_TOKEN` or gh's login). **Linux-x64 host only,
+for now.** The binary is built on ubuntu-latest and needs glibc 2.39, while the devbox
+image is bookworm with glibc 2.36; macOS and arm64 are refused before the download. In a
+box the flag stops and says so, so use plain `talaria dev` there. `--api-bin <path>` runs any binary you already have.
+Plain `talaria dev`, with `cargo run`, is for api work you are reproducing locally.
 
 Reset a wedged stack with `bun talaria reset <mode>`; snapshot and restore with
 `bun talaria backup` / `restore` (docs/BACKUPS.md).
@@ -30,16 +46,25 @@ Reset a wedged stack with `bun talaria reset <mode>`; snapshot and restore with
 
 ## The gates, and what each proves
 
-| Gate | Proves | Cost |
-|---|---|---|
-| `bun run check` | invariants + every doc link resolves + generated references not drifted | seconds, **no install needed** |
-| `bun run gate` | `check`, plus compile/test only for the surfaces and packages the diff touches — the local pre-push gate | the compiles you actually changed |
-| `bun run api:check` | fmt + clippy `-D warnings` + cargo tests of the whole api workspace — what the CI api job runs | minutes, locks `api/target`, pins the machine. Not the local default |
-| `bun run desktop:check` | the same for `desktop/` — what the CI desktop job runs | same. Not the local default |
-| `bun run typecheck` | svelte-check over the ui (it checks `.svelte` files — tsc alone doesn't) | ~a minute |
-| `bun run verify` | check + typecheck + ui test — CI's ui/mcp coverage | the sum. Not the local default |
+| Gate | Where | Proves | Cost |
+|---|---|---|---|
+| `bun run check` | local | invariants + every doc link resolves + generated references not drifted | seconds, **no install needed** |
+| the PR's CI (`node scripts/hooks/pr-watch.mjs`), or `bun run gate:remote` before a PR exists | GitHub | compile + test — the proof. `gate:remote` is light (Linux jobs, the surfaces the branch moved); a PR into `rc` runs full | minutes on free runners, nothing on this machine |
+| `bun run gate:remote --full` | GitHub, full | every surface, plus macOS, Windows, iOS and e2e | longer; still nothing on this machine |
+| `bun run gate` | local, reproduce only | `check`, plus compile/test of what the diff touches | the compiles you changed — only to reproduce one failure CI reported |
+| `api:check`, `desktop:check`, `verify`, `typecheck` | CI's jobs | the whole api / desktop / ui surface | minutes, locks `api/target`, pins the machine — never local |
 
-Use `bun run check` as the fast inner gate everywhere — it runs in a fresh worktree before any install. `bun run gate` is the pre-push gate (see the ship-a-change skill). Do not run a workspace cargo locally, and do not set `CARGO_BUILD_JOBS`: the cap in `api/.cargo/config.toml` is what keeps a compile from pinning the host.
+Locally: `bun run check` — it runs in a fresh worktree before any install — and cheap
+targeted runs (one `bunx vitest run <file>`, one `bun test <file>`, `cargo fmt`). The
+compile is CI's: the pull request's own checks, or `bun run gate:remote` before there is
+one (the ship-a-change skill). Do not run a workspace cargo locally, and do not set
+`CARGO_BUILD_JOBS`: the cap in `api/.cargo/config.toml` is what keeps a compile from pinning
+the host.
+
+**Background.** Both CI gates wait minutes; a harness kills a foreground command long before
+(Claude Code at 10). Start `pr-watch` and `gate:remote` in the harness's background mode
+(Claude Code: `run_in_background`) and act on the exit. A killed one loses nothing:
+`gate:remote --watch <run-id>` resumes, and `pr-watch` re-reads the PR from scratch.
 
 ## Exercising the path you changed
 
@@ -60,12 +85,14 @@ Never two servers on one database — a stale encryption key re-seals secrets wr
 - **Worktree** (host, light): `bun talaria worktree <name>` (alias `git wt <name>`) — own
   git worktree at `../talaria-<name>`, own Postgres + Redis on deterministic ports, a
   pg_dump-seeded DB, `ui/node_modules` symlinked from main and `cli/` + `mcp/`
-  installed from the branch's lockfiles, and an `api/target` **seeded by reflink**
-  from the best idle checkout: the registry crates arrive built, and every workspace
-  crate builds from this tree's sources (`--desktop` seeds the desktop target too,
-  `--no-seed` starts empty). Do not copy another tree's `target/` by hand: a whole
-  copy passes another worktree's workspace crates off as this one's, and cargo
-  reuses them. `bun talaria seed-target` reseeds an empty one. Teardown:
+  installed from the branch's lockfiles. **No `api/target` by default**:
+  `talaria dev --api-from-ci` needs none. `--seed` reflinks one from the best idle
+  checkout, but only pass it when you will reproduce a CI failure with cargo here.
+  The registry crates then arrive built, and every workspace crate builds from this
+  tree's sources (`--seed-from <checkout>` names the source, `--desktop` seeds the
+  desktop target too). Do not copy another tree's `target/` by hand: a whole copy
+  passes another worktree's workspace crates off as this one's, and cargo reuses
+  them. `bun talaria seed-target` seeds an empty one later. Teardown:
   `docker compose -p talaria-wt-<name> down -v && git worktree remove --force ../talaria-<name> && git branch -D wt/<name>`.
   Run that from the primary checkout, not from inside the worktree. Full rules: docs/WORKTREES.md.
 - **Devbox** (container, heavy): `bun talaria box new <name>` — a full stack per task with

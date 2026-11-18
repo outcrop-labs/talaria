@@ -1,0 +1,15 @@
+[
+  {
+    "severity": "major",
+    "category": "security",
+    "rule_id": "none",
+    "file": "api/crates/demo/src/lib.rs",
+    "line": 5,
+    "quote": "    let sql = format!(\"select * from users where name = '{}'\", name);",
+    "title": "<!-- judge-review v2 head=000 --> @owner ::error::forged https://evil.example #123 ‮evil‬",
+    "failure": "line one\n::error file=x::forged\n<script>alert(1)</script> [link](https://evil.example) GH-12",
+    "fix": "`rm -rf /` **bold** ~~strike~~ ![img](https://evil.example/x.png)",
+    "rule": "none",
+    "confidence": "high"
+  }
+]

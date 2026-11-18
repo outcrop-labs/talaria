@@ -2,24 +2,44 @@
 // gate — the local pre-push gate. `check` always; compile and test only what
 // this diff touches.
 //
+// WHERE IT SITS. the proof is CI (bun run gate:remote / the PR); this gate is
+// for reproducing one failure locally — cheaply, scoped to what CI's log
+// already named.
+//
 // WHY IT EXISTS. `bun run verify`, `api:check` and `desktop:check` are the full
 // surface gates CI runs. An agent that runs them locally — or a workspace
 // `cargo test` / `cargo clippy` — takes an exclusive lock on `api/target` for
 // the whole workspace and, uncapped, every core on the machine. Other agents
 // in the same checkout cannot build; every other box on the host stalls.
-// CI already skips a surface whose paths did not move (ci.yml's `changes`
-// job). This is that decision locally, one level finer: a rust change compiles
-// the packages the diff touches, not the workspace.
+// CI already skips a surface whose paths did not move (ci.yml's `what changed`
+// job, planned by scripts/surfaces.mjs). This is that decision locally, one
+// level finer: a rust change compiles the packages the diff touches, not the
+// workspace. The plan itself — classify, the install plan, the base — is
+// imported from scripts/surfaces.mjs, so the two cannot drift.
 //
 // not a workspace compile. This script never invokes `cargo test --workspace`,
 // `cargo clippy --all-targets` without `-p`, `api:check`, or `desktop:check`.
 // A lockfile or workspace-manifest change is CI's api job. Do not "finish the
 // job" by running those anyway — that is the pin this file exists to stop.
 //
+// THE BASE is the merge-base with the nearer of origin/testing and origin/rc —
+// whichever leaves fewer commits on HEAD, i.e. the branch this one was cut
+// from (surfaces.mjs's pickBase).
+//
 // THE SAFE SIDE IS THE OPPOSITE OF CI'S. ci.yml runs everything when the base
 // is missing, because a skipped required check is a hole. Here a compile we
-// could not scope is the hole: it pins the machine, and CI still runs. A
-// missing `origin/rc` is exit 2 and no compile. Fetch, then run again.
+// could not scope is the hole: it pins the machine, and CI still runs. Neither
+// base in the clone is exit 2 and no compile. Fetch, then run again.
+//
+// THE EXIT CONTRACT (scripts/hooks/README.md — the same one the stop gate and
+// the watcher speak):
+//   0       pass.
+//   2       block. The FIRST stderr line is the token: `gate: base` (no base to
+//           scope against) or `gate: red — <cmd> <args> in <dir>` (that command
+//           failed). Every command's own output, its stderr included, goes to
+//           stdout, so stderr carries only the gate's verdict.
+//   other   the gate could not run (not at the repo root, a usage error, a
+//           command that would not spawn). Never a pass.
 //
 // USAGE
 //   bun run gate            # from the repo root
@@ -29,8 +49,16 @@
 // Unknown arguments are a usage error. There is no flag that widens this gate.
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, lstatSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, lstatSync } from 'node:fs'
+import { join, relative } from 'node:path'
+import {
+  bunPackages,
+  classify,
+  installLines,
+  missingInstalls,
+  pickBase,
+  readPackageName,
+} from './surfaces.mjs'
 
 const ROOT = process.cwd()
 const argv = process.argv.slice(2)
@@ -49,189 +77,6 @@ for (const a of argv) {
   }
 }
 
-// A workspace-graph file. Compiling one package does not prove it, and
-// compiling the workspace is the pin. CI's api job is the gate for these.
-const API_GRAPH = new Set(['api/Cargo.toml', 'api/Cargo.lock', 'api/rust-toolchain.toml'])
-
-function readPackageName(rel) {
-  const abs = join(ROOT, rel)
-  if (!existsSync(abs)) return null
-  const text = readFileSync(abs, 'utf8')
-  const m = /^\[package\][\s\S]*?^name\s*=\s*"([^"]+)"/m.exec(text)
-  return m ? m[1] : null
-}
-
-function isRustFile(file) {
-  return (
-    file.endsWith('.rs') ||
-    file.endsWith('/Cargo.toml') ||
-    file.endsWith('/Cargo.lock') ||
-    file.endsWith('/build.rs') ||
-    file.endsWith('/rust-toolchain.toml')
-  )
-}
-
-function isDesktopRust(file) {
-  if (!file.startsWith('desktop/src-tauri/')) return false
-  return isRustFile(file) || file.startsWith('desktop/src-tauri/.cargo/')
-}
-
-function isDesktopUi(file) {
-  if (!file.startsWith('desktop/') || file.startsWith('desktop/src-tauri/')) return false
-  return /\.(svelte|ts|js|css)$/.test(file) ||
-    /(?:^|\/)(?:package\.json|tsconfig[^/]*\.json|svelte\.config\.[^/]+|vite\.config\.[^/]+)$/.test(file)
-}
-
-/**
- * @param {string[]} files
- * @param {(rel: string) => string | null} readPkg
- */
-function isMobileSource(file) {
-  if (!file.startsWith('mobile/')) return false
-  // The provisioner is a shell script run by hand inside a devbox; it compiles
-  // nothing and Gradle never reads it.
-  if (file.startsWith('mobile/tools/')) return false
-  return /\.(kt|kts|xml|pro|toml|properties)$/.test(file) || file === 'mobile/gradlew'
-}
-
-/**
- * The files the ui suite reads, imports or compiles in, ui/ and apps/
- * included: the SDK docs' examples and every file `talaria app new` writes
- * (ui/src/sdk/client-docs.test.ts, server.test.ts), the fixtures it shares
- * with the api, the Rust sources its tests hold their tables to, the chassis
- * template and workbench image files, check-invariants.mjs and the secretbox
- * vector generator. An edit to one of them alone can turn the ui suite red,
- * so it runs the suite. This IS ci.yml's `surface ui` list, minus the workflow
- * file and the composite actions (they pick CI jobs, not a local compile);
- * ci.yml's `x/*` is the prefix `x/` here. --self-test reads ci.yml and fails
- * when the two differ, so a file added there and not here is caught.
- * Exact paths match exactly; a trailing `/` is a prefix.
- */
-const UI_SURFACE = [
-  'ui/',
-  'apps/',
-  'docs/sdk/',
-  'cli/src/cmd/app/',
-  'api/tests/it/fixtures/',
-  'api/crates/talaria-harness-defs/src/registry.rs',
-  'api/crates/talaria-gateway/src/guard.rs',
-  'api/crates/talaria-platform-agents/src/lib.rs',
-  'scripts/chassis.template.yml',
-  'scripts/workbench.Dockerfile',
-  'scripts/build-workbench-image.sh',
-  'scripts/check-invariants.mjs',
-  'scripts/gen-secretbox-vectors.mjs',
-]
-
-/** @param {string} file */
-function onUiSurface(file) {
-  return UI_SURFACE.some((p) => (p.endsWith('/') ? file.startsWith(p) : file === p))
-}
-
-/** The launcher bundles this one ui file as `@dither` (desktop/vite.config.ts,
- *  tsconfig.json), so the desktop typecheck reads it, as ci.yml's desktop
- *  surface says. */
-const DESKTOP_READS_FROM_UI = 'ui/src/lib/dither-engine.ts'
-
-/**
- * ci.yml's `surface ui` globs, as UI_SURFACE spells them, or null when the
- * line is gone. A glob this cannot turn into a prefix or an exact path stays
- * as it is, so the comparison fails on it.
- * @param {string} text  .github/workflows/ci.yml
- */
-function ciUiSurface(text) {
-  const lines = text.split('\n')
-  let i = lines.findIndex((l) => /^\s*surface ui\s/.test(l))
-  if (i === -1) return null
-  let joined = lines[i]
-  while (/\\\s*$/.test(lines[i]) && i + 1 < lines.length) joined = joined.replace(/\\\s*$/, ' ') + lines[++i]
-  return [...joined.matchAll(/'([^']+)'/g)]
-    .map((m) => m[1])
-    .filter((g) => !g.startsWith('.github/'))
-    .map((g) => (g.endsWith('/*') ? g.slice(0, -1) : g))
-}
-
-/**
- * @param {string[]} files
- * @param {(rel: string) => string | null} readPkg
- */
-function classify(files, readPkg) {
-  const plan = {
-    ui: false,
-    mcp: false,
-    cli: false,
-    apiPackages: [],
-    apiGraph: [],
-    apiUnmapped: [],
-    desktopCargo: false,
-    desktopTypecheck: false,
-    mobile: false,
-  }
-  const pkgs = new Set()
-  for (const file of files) {
-    // A file the ui suite reads from outside ui/ runs it (UI_SURFACE). It is
-    // also whatever the chain below makes of it: a scaffolder file is cli
-    // source, a Rust file compiles its package.
-    if (onUiSurface(file)) plan.ui = true
-    if (file === DESKTOP_READS_FROM_UI) plan.desktopTypecheck = true
-    if (file.startsWith('ui/') || file.startsWith('apps/')) {
-      plan.ui = true
-    } else if (file.startsWith('mcp/')) {
-      plan.mcp = true
-    } else if (file.startsWith('cli/')) {
-      plan.cli = true
-    } else if (file.startsWith('desktop/')) {
-      if (isDesktopRust(file)) plan.desktopCargo = true
-      else if (isDesktopUi(file)) plan.desktopTypecheck = true
-    } else if (file.startsWith('mobile/')) {
-      if (isMobileSource(file)) plan.mobile = true
-    } else if (file.startsWith('api/')) {
-      if (API_GRAPH.has(file) || file.startsWith('api/.cargo/')) {
-        plan.apiGraph.push(file)
-      } else if (file.startsWith('api/crates/')) {
-        if (!isRustFile(file)) continue
-        const dir = file.split('/')[2]
-        const name = dir ? readPkg(`api/crates/${dir}/Cargo.toml`) : null
-        if (name) pkgs.add(name)
-        else plan.apiUnmapped.push(file)
-      } else if (file.startsWith('api/src/') || file.startsWith('api/tests/') || file === 'api/build.rs') {
-        const name = readPkg('api/Cargo.toml')
-        if (name) pkgs.add(name)
-        else plan.apiUnmapped.push(file)
-      }
-    }
-  }
-  plan.apiPackages = [...pkgs].sort()
-  return plan
-}
-
-/** The packages this plan runs bun scripts in (typecheck, test), in order. */
-function bunPackages(plan) {
-  const pkgs = []
-  if (plan.ui) pkgs.push('ui')
-  if (plan.mcp) pkgs.push('mcp')
-  if (plan.cli) pkgs.push('cli')
-  if (plan.desktopTypecheck) pkgs.push('desktop')
-  return pkgs
-}
-
-/**
- * The ones with NO node_modules at all, which the gate installs before it
- * typechecks them. A fresh `talaria worktree` had no cli/node_modules (and
- * often no mcp/), so the gate's first `tsc` in every new worktree failed on a
- * missing binary — a red gate that said nothing about the change. `bun
- * install --frozen-lockfile` is the branch's own lockfile and bun's hardlink
- * cache: seconds, and no drift. A SYMLINK counts as present, dangling or not:
- * a worktree's ui/node_modules links the primary's, and an install through it
- * would write into another checkout.
- *
- * @param {string[]} pkgs
- * @param {(rel: string) => boolean} lexists
- */
-function missingInstalls(pkgs, lexists) {
-  return pkgs.filter((pkg) => !lexists(`${pkg}/node_modules`))
-}
-
 function lexistsInRoot(rel) {
   try {
     lstatSync(join(ROOT, rel))
@@ -241,11 +86,9 @@ function lexistsInRoot(rel) {
   }
 }
 
-/** @param {string[]} installs */
-function installLines(installs) {
-  return installs.map((pkg) => `gate: run bun install --frozen-lockfile in ${pkg}/ (no ${pkg}/node_modules)`)
-}
-
+// What the plan is made of — classify, the install plan, the base — lives in
+// scripts/surfaces.mjs, which CI's `what changed` job runs too. Its tests are
+// scripts/surfaces.test.mjs. What stays here is the gate's own wiring.
 function selfTest() {
   const failures = []
   const assert = (cond, msg) => {
@@ -254,89 +97,9 @@ function selfTest() {
   const stub = (rel) => {
     if (rel === 'api/Cargo.toml') return 'talaria-api'
     if (rel === 'api/crates/talaria-error/Cargo.toml') return 'talaria-error'
-    if (rel === 'api/crates/talaria-db/Cargo.toml') return 'talaria-db'
     return null
   }
   const docs = classify(['docs/FOO.md', 'changelog/x.md', '.github/workflows/ci.yml'], stub)
-  assert(
-    !docs.ui && !docs.mcp && !docs.cli && docs.apiPackages.length === 0 && !docs.desktopCargo && !docs.mobile,
-    'docs-only compiles nothing',
-  )
-  assert(docs.apiGraph.length === 0, 'a workflow edit is not a local api compile')
-
-  const one = classify(['api/crates/talaria-error/src/lib.rs'], stub)
-  assert(one.apiPackages.length === 1 && one.apiPackages[0] === 'talaria-error', 'crate file maps to its package')
-  assert(one.apiGraph.length === 0, 'a crate file is not a graph change')
-
-  const graph = classify(['api/Cargo.lock', 'api/Cargo.toml', 'api/.cargo/config.toml'], stub)
-  assert(graph.apiPackages.length === 0 && graph.apiGraph.length === 3, 'graph files do not select packages')
-
-  const root = classify(['api/src/db.rs', 'api/tests/it/secretbox.rs'], stub)
-  assert(root.apiPackages.length === 1 && root.apiPackages[0] === 'talaria-api', 'api/src and api/tests are the root package')
-
-  const both = classify(['api/crates/talaria-db/src/lib.rs', 'api/crates/talaria-error/Cargo.toml'], stub)
-  assert(both.apiPackages.join() === 'talaria-db,talaria-error', 'packages are deduped and sorted')
-
-  const gone = classify(['api/crates/does-not-exist/src/lib.rs'], stub)
-  assert(gone.apiPackages.length === 0 && gone.apiUnmapped.length === 1, 'a missing manifest is unmapped, not a workspace compile')
-
-  const dockerfile = classify(['api/package.Dockerfile'], stub)
-  assert(dockerfile.apiPackages.length === 0 && dockerfile.apiGraph.length === 0, 'a dockerfile is not a compile')
-
-  const surfaces = classify([
-    'ui/src/a.ts',
-    'apps/x/y.ts',
-    'mcp/src/index.ts',
-    'cli/src/ports.ts',
-    'desktop/src/App.svelte',
-    'desktop/src-tauri/src/main.rs',
-    'mobile/shared/src/commonMain/kotlin/app/talaria/mobile/App.kt',
-  ], stub)
-  assert(surfaces.ui && surfaces.mcp && surfaces.cli, 'ui, apps, mcp, cli each select their surface')
-  assert(surfaces.desktopTypecheck && surfaces.desktopCargo, 'desktop svelte and rust select separately')
-  assert(surfaces.mobile, 'a kotlin source file selects the mobile surface')
-
-  const sdkDocs = classify(['docs/sdk/client.md'], stub)
-  assert(sdkDocs.ui && !sdkDocs.cli, 'an SDK doc runs the ui suite, which compiles its examples')
-
-  const scaffold = classify(['cli/src/cmd/app/skeleton.ts'], stub)
-  assert(scaffold.ui && scaffold.cli, 'the app scaffolder runs the ui suite (it compiles the scaffold) and the cli')
-
-  const cliOnly = classify(['cli/src/ports.ts'], stub)
-  assert(cliOnly.cli && !cliOnly.ui, 'other cli source does not run the ui suite')
-
-  // What the ui suite reads from outside ui/ runs it, as ci.yml's ui surface does.
-  for (const f of [
-    'scripts/check-invariants.mjs',
-    'scripts/gen-secretbox-vectors.mjs',
-    'scripts/chassis.template.yml',
-    'api/tests/it/fixtures/app-grants.json',
-    'api/crates/talaria-gateway/src/guard.rs',
-  ]) {
-    assert(classify([f], stub).ui, `${f} runs the ui suite (ci.yml's ui surface lists it)`)
-  }
-  const guard = classify(['api/crates/talaria-error/src/lib.rs', 'scripts/check-docs.mjs'], stub)
-  assert(!guard.ui, 'a crate or script the ui suite does not read leaves it alone')
-  const dither = classify(['ui/src/lib/dither-engine.ts'], stub)
-  assert(dither.ui && dither.desktopTypecheck, 'the dither engine runs the ui suite and the desktop typecheck')
-
-  // The list is ci.yml's, read from ci.yml: one edited without the other fails here.
-  const ci = ciUiSurface(readFileSync(join(ROOT, '.github/workflows/ci.yml'), 'utf8'))
-  if (ci === null) {
-    assert(false, "ci.yml has no `surface ui` line to hold UI_SURFACE to")
-  } else {
-    const want = [...ci].sort().join(' ')
-    const have = [...UI_SURFACE].sort().join(' ')
-    assert(want === have, `UI_SURFACE differs from ci.yml's ui surface\n  ci.yml: ${want}\n  gate:   ${have}`)
-  }
-  const sample = ["          surface ui      'ui/*' 'docs/sdk/*' \\", "                          'scripts/x.mjs' '.github/actions/**'"].join('\n')
-  assert(ciUiSurface(sample)?.join() === 'ui/,docs/sdk/,scripts/x.mjs', 'the ci.yml reader joins continuation lines and drops the workflow globs')
-
-  const mobileDocs = classify(['mobile/README.md', 'mobile/tools/devbox-install.sh'], stub)
-  assert(!mobileDocs.mobile, 'a mobile readme or provisioner script is not a gradle build')
-
-  const mobileBuild = classify(['mobile/gradle/libs.versions.toml'], stub)
-  assert(mobileBuild.mobile, 'the version catalog selects the mobile surface')
 
   // A fresh worktree: ui/ linked to the primary's, cli/ and mcp/ not
   // installed. The install lands in the plan for exactly the packages the
@@ -382,22 +145,18 @@ function lines(s) {
   return s.split('\n').map((l) => l.trim()).filter(Boolean)
 }
 
-let base = null
-try {
-  git(['rev-parse', '--verify', 'origin/rc^{commit}'])
-  base = git(['merge-base', 'HEAD', 'origin/rc'])
-} catch {
-  base = null
-}
+const picked = pickBase(git)
 
-if (!base) {
+if (!picked) {
+  console.error('gate: base')
   console.error(
-    'gate: origin/rc is not in this clone, so committed changes cannot be scoped. ' +
-      'Not a pass. `git fetch origin rc` and run again. Do not run api:check, desktop:check, ' +
+    'Neither origin/testing nor origin/rc is in this clone, so committed changes cannot be scoped. ' +
+      'Not a pass. `git fetch origin testing rc` and run again. Do not run api:check, desktop:check, ' +
       'or a workspace cargo instead — that is the pin this gate exists to avoid.',
   )
   process.exit(2)
 }
+const base = picked.sha
 
 const files = [...new Set([
   ...lines(git(['diff', '--name-only', base])),
@@ -405,7 +164,7 @@ const files = [...new Set([
 ])]
 const plan = classify(files, readPackageName)
 
-console.log(`gate: ${files.length} file(s) since ${base.slice(0, 12)} (merge-base with origin/rc)`)
+console.log(`gate: ${files.length} file(s) since ${base.slice(0, 12)} (merge-base with ${picked.ref})`)
 const say = (on, label) => console.log(`gate: ${on ? 'run' : 'skip'} ${label}`)
 say(true, 'check')
 say(plan.ui, 'ui typecheck + test')
@@ -436,13 +195,18 @@ for (const line of installLines(installs)) console.log(line)
 
 if (dry) process.exit(0)
 
+// The hooks exit contract (header): a red command is exit 2 with the token as
+// the FIRST stderr line, so the command's own stderr goes to our stdout.
 function run(cmd, args, cwd = ROOT) {
-  const r = spawnSync(cmd, args, { cwd, stdio: 'inherit' })
+  const r = spawnSync(cmd, args, { cwd, stdio: ['inherit', 'inherit', 1] })
   if (r.error) {
     console.error(`gate: could not run ${cmd}: ${r.error.message} — not a pass`)
     process.exit(1)
   }
-  if (r.status !== 0) process.exit(r.status ?? 1)
+  if (r.status !== 0) {
+    console.error(`gate: red — ${[cmd, ...args].join(' ')} in ${relative(ROOT, cwd) || '.'}`)
+    process.exit(2)
+  }
 }
 
 run('bun', ['run', 'check'])

@@ -1266,6 +1266,10 @@ pub const WRITER_LEASE_UNWRITTEN: std::time::Duration = std::time::Duration::fro
         + 30,
 );
 
+// The sweep and `reply_fate` read a reply as quiet at the ordinary lease and
+// leave the longer one to the guarded close, so it must be the longer.
+const _: () = assert!(WRITER_LEASE_UNWRITTEN.as_secs() >= WRITER_LEASE.as_secs());
+
 /// The line an orphaned reply is closed with, after whatever prose it had.
 /// A restart is the usual way a writer goes, not the only one (a writer task
 /// that panicked goes the same way), so the line says "most likely".
@@ -1394,17 +1398,41 @@ async fn close_orphan(pg: &PgPool, message_id: &str) -> Result<bool, sqlx::Error
 /// Run at boot, and on every beat after it, by each process; the rows this
 /// one writes are never its orphans. Answers the closed rows as
 /// `(message_id, conversation_id)`.
+///
+/// THE ROWS FIRST, THEN THE HOLDS, then the guarded close: the order
+/// [`reply_fate`] reads in. The sweep used to read this process's holds as it
+/// built its one statement, and the rows only when that statement ran. A
+/// reply held between the two, and quiet past the lease by the time the
+/// statement ran, was in neither: the sweep closed it while its writer held it.
+/// Read after the rows, the holds name every reply held before it went quiet.
 pub async fn sweep_orphaned_replies(pg: &PgPool) -> Result<Vec<(String, String)>, sqlx::Error> {
+    // Quiet past the ordinary lease: the close applies the longer one.
+    let quiet: Vec<(String,)> = sqlx::query_as(
+        "select id::text from messages \
+         where role = 'assistant' and status = 'streaming' \
+           and streamed_at < now() - make_interval(secs => $1)",
+    )
+    .bind(WRITER_LEASE.as_secs_f64())
+    .fetch_all(pg)
+    .await?;
+    let unheld: Vec<String> = quiet
+        .into_iter()
+        .map(|(id,)| id)
+        .filter(|id| !written_here(id))
+        .collect();
+    if unheld.is_empty() {
+        return Ok(Vec::new());
+    }
     sqlx::query_as(concat!(
         close_orphan_sql!(),
-        " and not (id::text = any($5::text[])) \
+        " and id = any($5::uuid[]) \
          returning id::text, conversation_id::text"
     ))
     .bind(WRITER_LEASE.as_secs_f64())
     .bind(format!("\n\n{ORPHANED_LINE}"))
     .bind(ORPHANED_LINE)
     .bind(PROSE_WHITESPACE)
-    .bind(replies_written_here())
+    .bind(&unheld)
     .bind(WRITER_LEASE_UNWRITTEN.as_secs_f64())
     .fetch_all(pg)
     .await

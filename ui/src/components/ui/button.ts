@@ -21,6 +21,11 @@ export type ButtonSize = ControlSize | 'xs'
 
 export type ButtonVariant = 'primary' | 'outline' | 'ghost' | 'danger' | 'danger-outline' | 'accent-soft' | 'link'
 
+/** `sans` is Home's Inbox's sentence-case voice; `mono`, the default, is the house chrome voice. */
+export type ButtonVoice = 'mono' | 'sans'
+
+export const sansVoice = 'font-sans normal-case tracking-normal text-[13px]'
+
 const base = cn(
   // whitespace-nowrap: a button label NEVER line-breaks — if space is tight the
   // layout should shrink something else, not fold the label.
@@ -71,10 +76,15 @@ const sizes: Record<ButtonSize, string> = {
 
 /** Shared button styling — reuse this on <a>/<label> etc. so links match buttons
  *  without duplicating the classes (see the Google sign-in anchor). */
-export function buttonClasses(opts?: { variant?: ButtonVariant; size?: ButtonSize; className?: string | null }): string {
-  const { variant = 'primary', size = 'md', className } = opts ?? {}
+export function buttonClasses(opts?: {
+  variant?: ButtonVariant
+  size?: ButtonSize
+  voice?: ButtonVoice
+  className?: string | null
+}): string {
+  const { variant = 'primary', size = 'md', voice = 'mono', className } = opts ?? {}
   // Variant AFTER size so `link` can restore the sans prose voice.
-  return cn(base, sizes[size], variants[variant], className)
+  return cn(base, sizes[size], voice === 'sans' && sansVoice, variants[variant], className)
 }
 
 /**

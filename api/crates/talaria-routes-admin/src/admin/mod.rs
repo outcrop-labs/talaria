@@ -11,6 +11,7 @@ pub mod admin_domains;
 pub mod admin_email;
 pub mod admin_encryption;
 pub mod admin_google_client;
+pub mod admin_google_mcp;
 pub mod admin_guardrails;
 pub mod admin_instance;
 pub mod admin_invites;

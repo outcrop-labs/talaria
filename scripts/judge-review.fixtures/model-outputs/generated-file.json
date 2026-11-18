@@ -1,0 +1,15 @@
+[
+  {
+    "severity": "major",
+    "category": "correctness",
+    "rule_id": "none",
+    "file": "docs/api/demo.md",
+    "line": 1,
+    "quote": "# demo — generated reference page",
+    "title": "a title",
+    "failure": "an input reaches the quoted line and the wrong row comes back to the caller",
+    "fix": "the smallest fix",
+    "rule": "none",
+    "confidence": "high"
+  }
+]

@@ -35,7 +35,11 @@
 //   finish. A hire that fails before the agent exists hands the design back
 //   with its sentence, into the slot only when the slot is free; while the
 //   person has another design open it waits, the bell says so, and it can
-//   be dismissed. All of it is settled on read.
+//   be dismissed. All of it is settled on read. A design handed back into
+//   an empty slot may land under a New agent the person is typing into: a
+//   describe or a manual start over it, before anyone touched it, sets it
+//   aside to wait the same way, so neither the design nor the typing is
+//   lost (`record::set_aside`).
 //
 // The transitions are pure (record.rs); this file is the service the routes
 // call and the real edges the run is armed with.
@@ -494,7 +498,12 @@ pub async fn start_design(
     let (design, fresh, replaced) = store::update(&mut conn, user_id, |d| {
         match record::start(d, purpose, now, (design_id.clone(), run_id.clone()), seen) {
             Start::Existing(e) => Write::Keep(Ok((e, false, None))),
-            Start::Fresh(f) => Write::put(f.clone(), Ok((f, true, d.map(|d| d.id.clone())))),
+            // Over a hand-back nobody touched, the describe takes the slot
+            // and that design waits for it, never replaced (`set_aside`).
+            Start::Fresh(f) => match d.and_then(|d| record::set_aside(d, now)) {
+                Some(held) => Write::aside(f.clone(), held, Ok((f, true, None))),
+                None => Write::put(f.clone(), Ok((f, true, d.map(|d| d.id.clone())))),
+            },
         }
     })
     .await?
@@ -617,7 +626,9 @@ async fn launch(
 }
 
 /// The person's edits on the review step, a role template, or a manual
-/// start: the draft is theirs. Refused while a run is writing it.
+/// start: the draft is theirs. Refused while a run is writing it. A manual
+/// start over a hand-back nobody touched sets that design aside to wait
+/// (`record::edit_over`).
 pub async fn edit_design(
     state: &AppState,
     user_id: &str,
@@ -628,8 +639,9 @@ pub async fn edit_design(
     let now = now_ms();
     let id = Uuid::new_v4().to_string();
     store::update(&mut conn, user_id, |d| {
-        match record::edit(d, want, fields.clone(), now, id.clone()) {
-            Ok(next) => Write::put(next.clone(), Ok(next)),
+        match record::edit_over(d, want, fields.clone(), now, id.clone()) {
+            Ok((next, None)) => Write::put(next.clone(), Ok(next)),
+            Ok((next, Some(held))) => Write::aside(next.clone(), held, Ok(next)),
             Err(r) => Write::Keep(Err(r)),
         }
     })

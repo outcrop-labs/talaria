@@ -170,9 +170,9 @@ template, or the workflow itself. It:
 1. writes the run's directories under `$RUNNER_TEMP` into `$GITHUB_ENV` (job-level `env:`
    cannot use the `runner` context) and seeds the fleet tree (`chassis.yml` from
    `scripts/chassis.template.yml`, plus an `.env`);
-2. boots `postgres:16-alpine` and `redis:7-alpine` the way `api-integration.yml` does,
-   and replays the migrations (`bun run migrations:check`, which doubles as the snapshot
-   check);
+2. boots `postgres:16-alpine` and `redis:7-alpine` the way ci.yml's api job does in its
+   live-DB steps, and replays the migrations (`bun run migrations:check`, which doubles as
+   the snapshot check);
 3. builds the api in debug mode, reading the api job's cargo cache, and builds the ui;
 4. starts the stubs, with `--init` writing the three settings into `$GITHUB_ENV`;
 5. starts the app with `bun run start`, which spawns the api binary with that env, with

@@ -33,15 +33,17 @@ name: Mobile package
 on:
   # A mobile push to main: build it and mint its tag. Paths are safe here for
   # the reason desktop-package.yml gives — nothing in this file is a required
-  # check — and they keep the trunk build meaningful.
+  # check — and they keep the trunk build meaningful. Only what the APK SHIPS
+  # is listed: a main push here mints mobile-vX.Y.0, so an edit to this file
+  # promoted to main must not mint a release that ships nothing new. The pull
+  # request paths below still list this file, so its edits are exercised there.
   push:
     branches: [main]
     paths:
       - 'mobile/**'
-      - '.github/workflows/mobile-package.yml'
-  # Every pull request touching mobile/ leaves an installable build attached to
-  # the run. Nothing is minted: a version that exists only on a branch is a
-  # version nobody can reconstruct.
+  # Every pull request touching mobile/ or this file leaves an installable
+  # build attached to the run. Nothing is minted: a version that exists only on
+  # a branch is a version nobody can reconstruct.
   pull_request:
     paths:
       - 'mobile/**'

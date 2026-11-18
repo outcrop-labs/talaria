@@ -43,7 +43,8 @@ ticket.
    TUI. `--auto-approve` is already on the line so tool calls do not hang.
 6. Hash-anchored edits, LSP, subagents, and a browser live *inside* omp.
    Do not reimplement them.
-7. Git over https:// just works. Never `gh`, never a token in a URL.
+7. Git over https:// just works. Never a token in a URL; a GitHub API call
+   reads the repo's token for one command (talaria-toolkit, "The GitHub API").
 8. `git diff`, verify, `finish_job`.
 
 `doctor` is for when something about the workbench looks wrong outside a job;

@@ -1,0 +1,15 @@
+[
+  {
+    "severity": "blocker",
+    "category": "repo-rule",
+    "rule_id": "none",
+    "file": "api/crates/demo/src/lib.rs",
+    "line": 5,
+    "quote": "    let sql = format!(\"select * from users where name = '{}'\", name);",
+    "title": "a title",
+    "failure": "an input reaches the quoted line and the wrong row comes back to the caller",
+    "fix": "the smallest fix",
+    "rule": "the general vibe of the repo",
+    "confidence": "high"
+  }
+]
