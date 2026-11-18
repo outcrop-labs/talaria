@@ -4,9 +4,10 @@
 
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { Ctx } from '../ctx'
-import type { Leaf } from '../cli'
+import type { Leaf, ParsedArgs } from '../cli'
+import { apiFromCi } from '../ci-artifact'
 import { compose, stackComposeFiles, waitFor, waitForPostgres, worktreeComposeFiles } from '../compose'
 import { envValue } from '../envfile'
 import { anyNewer } from '../paths'
@@ -257,8 +258,12 @@ export function apiEnv(shell: Record<string, string | undefined>, uiEnv: string)
  *
  *  Non-fatal at every step, on purpose: a box without cargo, or one whose
  *  api fails to build, still gets the UI — but the app is API-DARK without
- *  the sidecar now, so every skip says so at full volume. */
-export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
+ *  the sidecar now, so every skip says so at full volume.
+ *
+ *  `bin` is a prebuilt binary to run in cargo's place (`--api-bin`, or the
+ *  one `--api-from-ci` fetched — prebuiltApi): same cwd (api/), same env,
+ *  same signal handling, and no cargo needed on PATH. */
+export async function rustApi(ctx: Ctx, uiEnv: string, bin?: string): Promise<void> {
   if (ctx.env.TALARIA_API === 'off') return
 
   // ui/.env is read here too, not just the shell. A worktree writes its own
@@ -279,10 +284,10 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   if (await probe(url) !== null) {
     // Already up — a hand-started instance, or a second `talaria dev`. Adopt
     // it: double-binding would just die loudly at the Rust end.
-    ctx.log.say(`rust api → already listening on :${port}; adopting it`)
+    ctx.log.say(`rust api → already listening on :${port}; adopting it${bin ? ` (${bin} is not started)` : ''}`)
     return
   }
-  if (!await hasCargo(ctx)) {
+  if (!bin && !await hasCargo(ctx)) {
     ctx.log.warn(
       'no cargo on PATH — skipping the Rust api. The UI will serve, but every /api/* request fails:' +
         ' the api is the whole product surface, not a side feature.',
@@ -291,20 +296,55 @@ export async function rustApi(ctx: Ctx, uiEnv: string): Promise<void> {
   }
 
   const env = apiEnv(ctx.env, uiEnv)
-  const child = spawn('cargo', ['run', '--quiet'], {
+  const [cmd, args]: [string, string[]] = bin ? [bin, []] : ['cargo', ['run', '--quiet']]
+  const child = spawn(cmd, args, {
     cwd: join(ctx.root, 'api'),
     env: { ...process.env, ...env },
     stdio: 'inherit',
   })
   child.on('error', () => ctx.log.warn('rust api failed to start — the app has no api until it does; every /api/* request fails.'))
   child.on('close', (code) => { if (code) ctx.log.warn(`rust api exited ${code} — the app has no api until it is restarted.`) })
-  // Ctrl-C reaches cargo through the tty's process group; the handlers are
+  // Ctrl-C reaches the api through the tty's process group; the handlers are
   // the belt-and-braces path, because a LEAKED api holds :5274 and an open
   // pool against the dev DB until the box dies.
   for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => child.kill(sig))
   process.on('exit', () => child.kill('SIGTERM'))
-  ctx.log.say(`rust api → cargo run in api/ (a cold build takes minutes); binding :${port}`)
-  void pollReady(ctx, url)
+  ctx.log.say(
+    bin
+      ? `rust api → ${bin} (prebuilt); binding :${port}`
+      : `rust api → cargo run in api/ (a cold build takes minutes); binding :${port}`,
+  )
+  void pollReady(ctx, url, bin ? 'api' : 'cargo')
+}
+
+/** The flags that swap `cargo run` for a prebuilt api binary. */
+export type DevOpts = { apiBin?: string; apiFromCi?: boolean }
+
+/** The binary the api sidecar runs instead of `cargo run`, or undefined for
+ *  cargo. Resolved before any infra starts: a missing CI binary should stop
+ *  the command in seconds, not after a minute of containers. `--api-from-ci`
+ *  is src/ci-artifact.ts (which commit's binary, and why it is trusted). */
+export async function prebuiltApi(ctx: Ctx, opts: DevOpts, fromCi: (ctx: Ctx) => Promise<string> = apiFromCi): Promise<string | undefined> {
+  const named = opts.apiBin !== undefined
+  if (named && opts.apiFromCi) ctx.log.die('--api-bin and --api-from-ci contradict each other: one names the binary, the other fetches it')
+  if (!named && !opts.apiFromCi) return undefined
+  const flag = named ? '--api-bin' : '--api-from-ci'
+  if (ctx.env.TALARIA_API === 'off') ctx.log.die(`TALARIA_API=off starts no api, and ${flag} names one to start — drop one of them`)
+  if (named) {
+    const bin = resolve(ctx.cwd ?? ctx.root, opts.apiBin!)
+    if (!isExecutableFile(bin)) ctx.log.die(`--api-bin ${bin}: not an executable file`)
+    return bin
+  }
+  return await fromCi(ctx)
+}
+
+function isExecutableFile(p: string): boolean {
+  try {
+    const st = statSync(p)
+    return st.isFile() && (st.mode & 0o111) !== 0
+  } catch {
+    return false
+  }
 }
 
 /** Is something answering HTTP at `url`? The status — whatever it is — or
@@ -322,8 +362,8 @@ async function probe(url: string): Promise<number | null> {
 /** Say something exactly once, whenever the api is actually serving: a cold
  *  cargo build is minutes, so this must never hold up the app — it runs
  *  alongside vite and speaks when the proxy's target goes live (or 5 minutes
- *  say it never did — the cargo output above holds the reason). */
-async function pollReady(ctx: Ctx, url: string): Promise<void> {
+ *  say it never did — the cargo or api output above holds the reason). */
+async function pollReady(ctx: Ctx, url: string, source: 'cargo' | 'api'): Promise<void> {
   for (let i = 0; i < 300; i++) {
     await new Promise((r) => setTimeout(r, 1000))
     if (await probe(url) === 200) {
@@ -331,7 +371,7 @@ async function pollReady(ctx: Ctx, url: string): Promise<void> {
       return
     }
   }
-  ctx.log.warn('rust api never became ready — check the cargo output above.')
+  ctx.log.warn(`rust api never became ready — check the ${source} output above.`)
 }
 
 async function hasCargo(ctx: Ctx): Promise<boolean> {
@@ -436,7 +476,7 @@ async function assertAppPortFree(ctx: Ctx, port: string, whence: string): Promis
   )
 }
 
-export async function runDev(ctx: Ctx): Promise<number> {
+export async function runDev(ctx: Ctx, opts: DevOpts = {}): Promise<number> {
   // The shim always runs the primary's CLI: from inside a worktree this would
   // bring up the PRIMARY's stack, so a run from another checkout stops here.
   refuseForeignCheckout(ctx, 'dev')
@@ -466,6 +506,8 @@ export async function runDev(ctx: Ctx): Promise<number> {
 
   await warnDiskPressure(ctx)
 
+  const apiBin = await prebuiltApi(ctx, opts)
+
   // Inside a devbox (docs/DEVBOX.md): the box compose owns the infra —
   // sidecars are up, healthy, and reachable by service DNS, and ui/.env
   // already points at them. Bringing up docker/dev-compose.yml through the
@@ -479,7 +521,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
     }
     await mcpToolkit(ctx, { quietWhenFresh: true })
     await ompAuthBridge(ctx, { quietWhenFresh: true })
-    await rustApi(ctx, uiEnv)
+    await rustApi(ctx, uiEnv, apiBin)
     ctx.log.say(`app → http://127.0.0.1:${ctx.env.PORT ?? VITE_SCRIPT_PORT} (published to the host by the box compose)`)
     // Strict here too: the box compose publishes the container's 5273, so a
     // vite that moved to 5274 would serve nothing the host can reach.
@@ -539,7 +581,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
     const code = await compose(ctx, { files: worktreeComposeFiles(ctx.root), project: `talaria-wt-${worktree}` }, ['up', '-d', 'postgres', 'redis'])
     if (code !== 0) ctx.log.die('worktree infra failed to start (run `bun talaria worktree` again? it was torn down?)')
     await releaseLegacyNetwork(ctx, worktree)
-    return await waitThenRunApp(ctx, uiEnv, stack)
+    return await waitThenRunApp(ctx, uiEnv, stack, apiBin)
   }
 
   // The primary: the shell's TALARIA_*_CONTAINER is its override point, but
@@ -599,7 +641,7 @@ export async function runDev(ctx: Ctx): Promise<number> {
     ctx.log.warn('Continuing without it; see docker/dev-compose.yml + issue #151.')
   }
 
-  return await waitThenRunApp(ctx, uiEnv, stack)
+  return await waitThenRunApp(ctx, uiEnv, stack, apiBin)
 }
 
 /** The network a worktree's postgres + redis sat on before
@@ -642,7 +684,7 @@ async function releaseLegacyNetwork(ctx: Ctx, worktree: string): Promise<void> {
  *  into the containers devStack named: a worktree's own, or main's as
  *  compose reads the shell (an empty TALARIA_PG_CONTAINER is the default
  *  there, so `?? PG_CONTAINER` would have probed a container named ''). */
-async function waitThenRunApp(ctx: Ctx, uiEnv: string, stack: DevStack): Promise<number> {
+async function waitThenRunApp(ctx: Ctx, uiEnv: string, stack: DevStack, apiBin?: string): Promise<number> {
   ctx.log.say('waiting for postgres…')
   const pg = stack.pgContainer
   // A real query over TCP, not the socket pg_isready this was: on a fresh
@@ -675,7 +717,7 @@ async function waitThenRunApp(ctx: Ctx, uiEnv: string, stack: DevStack): Promise
 
   await mcpToolkit(ctx)
   await ompAuthBridge(ctx)
-  await rustApi(ctx, uiEnv)
+  await rustApi(ctx, uiEnv, apiBin)
 
   // A worktree's ui/.env carries its own PORT (the allocated slot), and
   // vite's dev script hardcodes 5273, so the worktree's is forwarded — and
@@ -704,10 +746,29 @@ function isFile(p: string): boolean {
   }
 }
 
+/** The command line as runDev's options. */
+export function devOpts(args: ParsedArgs): DevOpts {
+  const apiBin = args.flags['api-bin']
+  return {
+    apiBin: typeof apiBin === 'string' ? apiBin : undefined,
+    apiFromCi: args.flags['api-from-ci'] === true,
+  }
+}
+
 export const devCommand: Leaf = {
   kind: 'leaf',
   name: 'dev',
   summary: 'run the dev stack: infra, readiness waits, then the app on :5273',
-  usage: 'talaria dev',
-  run: runDev,
+  usage: 'talaria dev [--api-from-ci | --api-bin <path>]',
+  flags: [
+    {
+      name: 'api-from-ci',
+      kind: 'bool',
+      desc:
+        "run the talaria-api binary CI built instead of `cargo run`: HEAD's, or the newest earlier commit's whose api is still HEAD's. " +
+        "Needs a GitHub token (gate:remote's: GH_TOKEN, GITHUB_TOKEN or gh's login); refused with uncommitted api changes",
+    },
+    { name: 'api-bin', kind: 'value', desc: 'run this prebuilt talaria-api binary instead of `cargo run`' },
+  ],
+  run: (ctx, args) => runDev(ctx, devOpts(args)),
 }

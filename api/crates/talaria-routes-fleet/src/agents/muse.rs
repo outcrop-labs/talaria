@@ -93,9 +93,8 @@ fn unusable(kind: &str) -> &'static str {
         "cron" => {
             "Muse could not turn that into a scheduled job — try saying when it should run and what it should do each time."
         }
-        "agent" => {
-            "Muse could not design an agent from that — try adding a sentence about what it should do."
-        }
+        // The design run (talaria-agent-design) answers the same sentence.
+        "agent" => talaria_agent_design::UNUSABLE_AGENT,
         "ticket" => {
             "Muse could not turn that into a ticket edit — try naming the fields to change."
         }
@@ -108,7 +107,7 @@ fn unusable(kind: &str) -> &'static str {
     }
 }
 
-const NO_MODEL: &str = "no routable model found — add an endpoint with models on /models first";
+use talaria_agent_design::NO_MODEL;
 
 /// How long a structured draft may buffer before its answer must open the
 /// body — well inside Cloudflare's 100s idle ceiling, far past any honest

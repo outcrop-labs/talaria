@@ -3,8 +3,8 @@
 // out with a handle in EVERY version, one per-agent secret holding the
 // current value, an `agent.config_sealed` audit row with names and paths
 // only, and a second run that finds nothing to do. The dry run writes
-// nothing. House rule: #[ignore]d; CI's api-integration job runs it against a
-// scratch database.
+// nothing. House rule: #[ignore]d; ci.yml's api job runs it in its live-DB
+// steps, against a scratch database.
 //
 //   DATABASE_URL=postgres://… cargo test -p talaria-api --test it seal_configs_live:: -- --ignored
 

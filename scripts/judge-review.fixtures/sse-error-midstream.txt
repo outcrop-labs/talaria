@@ -1,0 +1,19 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"Reading the diff first. "},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"","reasoning_details":[{"type":"reasoning.text","text":"the quoted line formats input into SQL"}]},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"{\"su"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"mmar"},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"y\":\""},"finish_reason":null}]}
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"choices":[{"index":0,"delta":{"content":"part"},"finish_reason":null}]}
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-fixture-1","provider":"ExampleProvider","model":"z-ai/glm-5.3-flash","object":"chat.completion.chunk","created":1762819200,"error":{"code":502,"message":"Provider returned error","metadata":{"error_type":"provider_overloaded"}},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}
+
+data: [DONE]

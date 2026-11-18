@@ -28,6 +28,9 @@ fn me_scope_refusal(server: &McpServer) -> Option<&'static str> {
     }
 }
 
+/// Why a start on a Google Workspace MCP server is refused.
+const GOOGLE_PACK_REFUSAL: &str = "this is a Google Workspace MCP server: it acts with each agent's own Google connection — connect Google in Settings → Connections (your assistant), Admin → Org (the org account) or on an agent's page — and has no OAuth flow of its own";
+
 #[derive(Deserialize)]
 pub struct StartQuery {
     server: Option<String>,
@@ -54,6 +57,12 @@ pub async fn get(
     let Some(server) = server else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
+    // A Google Workspace MCP server has no OAuth flow of its own: it acts
+    // with each agent's Google principal, connected through Talaria's own
+    // Google connect (Settings → Connections, Admin → Org, the agent's page).
+    if server.auth_mode == talaria_api_facades::mcp::google::AUTH_MODE {
+        return Ok(house_error(StatusCode::BAD_REQUEST, GOOGLE_PACK_REFUSAL));
+    }
     if scope == "org"
         && !talaria_users::has_perm(&state.pg, &user.id, &user.role, "agents.manage")
             .await

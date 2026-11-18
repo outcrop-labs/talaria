@@ -35,4 +35,5 @@ pub use talaria_tasks as tasks;
 pub use talaria_ticket_chat as ticket_chat;
 pub use talaria_uploads as uploads;
 pub use talaria_users as users;
+pub use talaria_work_wait as work_wait;
 pub use talaria_yaml as yaml_string;

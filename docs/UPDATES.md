@@ -448,6 +448,141 @@ contract check proved that release's migration from the compiled schema leaves e
 agent's config, as Hermes reads it, unchanged. The next apply recreates the agent on the older pin. A
 later upgrade picks the channel up from its row.
 
+## The workbench harnesses — Oh My Pi and its bun, current by default
+
+Every harness Talaria installs into a Developer Agent's workbench follows its own upstream
+releases, on every instance, with no Talaria release per upstream release — the agent image's
+pattern, applied to the workbench. `talaria-workbench-updates` drives it; its state is one
+`app_settings` row (`workbench_harness_channel`). The harnesses:
+
+| Harness | Upstream | Bootstrap fallback |
+|---|---|---|
+| **Oh My Pi** (`@oh-my-pi/pi-coding-agent`), the coding harness | npm: the package's `latest` version document | `OMP_VERSION` |
+| **bun**, the harness's *own* runtime (never the repo's — a repo's `mise.toml` decides that one) | bun's GitHub releases (what mise installs it from) | `HARNESS_BUN` |
+
+mise, the volume's toolchain manager, is installed once when missing and is not moved: every
+repo toolchain's shims run through it and are shared by every job on the volume, so it cannot
+change under one job and not another. It is the **pinned** release binary
+(`MISE_VERSION` in `talaria-workbench-harnesses`, the workbench image's `ARG` too), checked
+against its published SHA-256 before it runs — never `curl https://mise.run | sh` — and a
+volume that still has an unpinned one (an older Talaria's) gets the pinned one at its next
+provision. The agents'
+`agent-browser` follows the Hermes image's own lock, so the agent image channel moves it.
+
+**A job never resolves a version.** Provisioning installs the pair the channel last verified on a
+workbench, else the compiled bootstrap, and asks no registry
+(`talaria_workbench_harnesses::attempts_from`). Before the pin (#706), every job ran
+`npx …@latest`, and Oh My Pi's 28 Oct release raised its bun floor to 1.4.4, above the
+harness's bun, so every job broke at start.
+
+**Every install is the tree that was tested.** The smoke test's install writes a `bun.lock`;
+it must name the tarball integrity npm documents (`dist.integrity`), and it is kept with the
+release (`app_settings` `workbench_harness_lock:<version>`). Every later install of that
+release — on any volume, a reinstall after a prune, a new department — is
+`bun install --frozen-lockfile` from it, and an install whose lockfile differs is replaced, so
+no transitive dependency moves after the smoke test. The bun binary itself is mise's download
+of bun's GitHub release, as checked as mise checks it. The per-volume bun download cache
+(`harness/bun-cache`) is trusted the way the volume is: a frozen install verifies each
+tarball's integrity when it downloads it, but takes one already in that cache as it is — the
+cache is the agent user's, written by the same jobs that run on the volume, so it carries
+exactly a job's trust and no more. A fresh instance's first move is to
+smoke-test the compiled pair once, so its lockfile is kept too; until then (no Developer Agent
+running yet) a provision installs the compiled pair unfrozen.
+
+What a release goes through:
+
+- **Check**, every ~6 h with ±30 min of jitter (the first within 10 min of the api's first
+  step): one small document per harness — npm's version document for `latest` (~16 kB, never
+  the whole packument) and bun's `releases/latest` — plus, **every time**, the documents of
+  what the instance runs, falls back to and pins. A version must be a plain `x.y.z`; a bun
+  release must be tagged `bun-v<x.y.z>` and be neither a draft nor a prerelease; an npm release
+  marked deprecated is never adopted or pinned. A release newer than what upstream now calls
+  newest was withdrawn, and is forgotten; a document that answers 404 is withdrawn only on the
+  second 404 in a row (one is a blip). The documents are read all at once under one 30 s bound,
+  so **Check now** answers well inside a proxy's limit. A release jobs run that upstream deprecates or
+  withdraws later is said to the admins once, and new jobs move off it: to a newer release once
+  one has soaked, else to the previous verified pair, else to the compiled one.
+- **Soak**: each release waits `TALARIA_HARNESS_MIN_AGE_HOURS` (default 24; `0` turns it off)
+  from the first check that saw it — its own clock, so a project that ships daily is adopted a
+  day behind, never starved. **Update now** skips it for the newest release seen. Just before
+  its smoke test the candidate's own document is read again: one deprecated or withdrawn while
+  it soaked is never run.
+- **Compatibility**: an Oh My Pi candidate's `engines.bun` must be met by the harness's bun.
+  When it is not, the **bun moves first** — to the newest soaked bun release that meets it,
+  smoke-tested with the Oh My Pi jobs run now — and Oh My Pi follows on the next step. A bun
+  move on its own must still meet the running Oh My Pi's range, so a bun pinned under its floor
+  waits and says why. A range Talaria cannot read is never a yes. With no bun that meets the
+  floor, the release waits and the panel says so.
+- **Smoke test, then swap**: on one running Developer Agent's workbench (the one whose host
+  fails least), the pair is installed beside whatever the volume runs (#706's
+  `omp/.<version>.<stamp>` dir, swapped in by renaming the `omp/<version>` symlink; bun through
+  mise, side by side) **by its own versioned paths only**, then started (`--version` on its
+  bun), laid out in a job-shaped slot (`harness/jobs/update-check`) with the same launcher a job
+  gets, and put through the provisioning preflight in the agent's terminal shell: the launcher
+  there, omp answering exactly the candidate, the agent dir writable. No model is called. Only
+  then is the pair what every new job runs; the pair before it is kept as the fallback. The
+  volume's shell `bun` (`mise use -g`, the `~/.local/bin/bun` link) is not touched until a
+  provision promotes a verified pair, and a candidate bun is installed under a mise data dir of
+  its own (`harness/smoke-mise`), never the shared one every job's mise resolves from: a repo
+  pinning `bun = "1.4"` resolves the newest *installed* 1.4.x, and would otherwise switch to an
+  unverified bun mid-job. A provision of the adopted pair installs it into the shared dir. A Pin
+  or Unpin an admin makes while the smoke test runs wins: the pair is not adopted.
+- **Bounded, so a hang never wedges anything**: every step that runs or downloads a release —
+  each `--version` (the preflight's through the launcher too), `bun install`,
+  `mise install bun@…`, `mise where` and mise's own download — runs under `timeout` (60 s a
+  start, 240 s an install, 180 s for mise), with the install lock's fd closed for it, so
+  nothing a hung step leaves behind can keep the volume's lock. A step past its bound (124) is a
+  **strike** against the release, not a hold: a slow or stalled host times out too, so it is
+  tried again 15 min later, on another workbench when there is one, and held only when it times
+  out twice in a row. A step killed (137 — the OOM killer, or the bound's kill of a step that
+  ignored TERM) is the host's. The whole run sits
+  under an in-container bound just inside the exec's own limit (18 min), and when the client's
+  limit hits anyway, the run's process group in the container is killed.
+- **Running jobs keep their install.** A job's launcher names the version link it was
+  provisioned on, a ready job is never re-provisioned because a newer release was adopted, and
+  the runtime script's prune keeps any install a job's launcher names — however long ago it was
+  retired — until the job's teardown removes the launcher. The current and fallback installs are
+  never pruned, and an install that is current again loses any `.retired` stamp an earlier run
+  left on it. doctor's slot and the smoke-test slot hold nothing.
+- **Hold and tell — only a release's own fault**: a candidate that is not there to install (a
+  404, no matching version), whose tarball is not the documented one, that installed and would
+  not start, that timed out twice in a row, or whose launcher fails the preflight is **held**, every admin is told (`workbench_harness_update_failed`, once a day per
+  release), and every job keeps running what it runs. **Allow again** lifts it. The runtime
+  script names the failing step on its last line (`talaria-fault: start|timeout|install|host`).
+  A failure that is the host's or the network's — docker refusing or timing out, another
+  provision holding the install lock, mise's own download, DNS, a refused or reset connection,
+  TLS, a full disk, a 5xx or 429 from npm or GitHub, the agent dir not writable — is never
+  held, including bun's own names for them (`DNSResolveFailed`, `FailedToOpenSocket`,
+  `ConnectionClosed`, … `downloading package manifest|tarball`): the `… failed to resolve`
+  line bun prints after any manifest error says nothing about the release. A move of both bun
+  and Oh My Pi that fails holds the bun when the failure names the new bun, else the Oh My Pi.
+  A host failure is tried again in 15 min, then twice as long each time to 6 h, and the third in a row
+  tells the admins.
+- **Prewarm**: with nothing to move, one other running workbench a step is given the verified
+  pair, so a job does not pay the install. Each volume backs off on its own when its host fails
+  it (15 min doubling to 6 h, the third in a row said), so it is not retried first every step
+  and the channel's own moves are not delayed; a success resets it. A volume that will not take
+  the pair is recorded as refusing it, the admins told, and **its provisions go straight to the
+  previous verified pair** without trying the refused one (tried again every 6 h). A provision
+  that meets the refusal itself records it the same way. The compiled pair is the last resort
+  after both.
+- **No running Developer Agent, no move**: nothing is adopted unverified. The panel says the
+  release is ready and waits for one.
+
+The panel is **Manage → Workbench harnesses** (admins), beside the agent image: per harness the
+version every new job runs (verified here, or the bootstrap), the fallback, the pin, the
+candidate and when its soak ends, what is held and why, and the last check; each workbench's
+verified pair; and Check now, Update now, Pin (up or down, smoke-tested first), Unpin and Allow
+again, with Reset for a state row this release cannot read. `GET/POST /api/workbench/harnesses`
+is the same surface. A step a minute carries an action out.
+
+**The knobs.** `TALARIA_HARNESS_MIN_AGE_HOURS` (default 24), `TALARIA_HARNESS_NPM_REGISTRY`
+(default `https://registry.npmjs.org`; a mirror or private registry — the workbench's
+`bun install` resolves from it too) and `TALARIA_HARNESS_BUN_RELEASES` (default
+`https://api.github.com/repos/oven-sh/bun/releases`) pass through `docker/compose.yml` to the
+api. The installs themselves fetch from inside the workbench, as every provision does (npm, or
+that registry, for Oh My Pi; mise's GitHub download for bun).
+
 ## The local proof — the devbox E2E
 
 The whole engine, adoption included, proves out on one docker host with a

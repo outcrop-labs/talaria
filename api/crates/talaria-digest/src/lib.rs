@@ -1004,8 +1004,13 @@ fn why_unreachable(approval: &PendingApproval) -> &'static str {
             "Only its owner can decide it, and that account no longer exists. It will never be answered as it stands."
         }
         Authority::Admin { on_board: None } => "It needs an admin, and this workspace has none.",
+        // A GitHub permission's decide route asks the content half: only an
+        // admin who may read what the agent wrote may decide it.
+        Authority::Admin { on_board: Some(_) } if approval.kind == ApprovalKind::GitPermission => {
+            "Only an admin who is a member of the board it quotes can decide it, and none of this workspace\u{2019}s admins is. Add an admin to that board; they decide it in Admin \u{2192} Git hosts."
+        }
         Authority::Admin { on_board: Some(_) } => {
-            "Any admin can decide it, but it quotes work on a board none of this workspace\u{2019}s admins is a member of, so it cannot be shown to anybody as it stands. Add an admin to that board to read it, or decide it from Admin \u{2192} Agents, where admin-only queues live."
+            "Any admin can decide it, but it quotes work on a board none of this workspace\u{2019}s admins is a member of, so it cannot be shown to anybody as it stands. Add an admin to that board to read it, or decide it where its queue lives: Admin \u{2192} Git hosts for a repository, Manage \u{2192} Apps for an app."
         }
         // `Nobody` is reached from TWO different shapes and one sentence
         // cannot be true of both — the same defect as the admin branch above,

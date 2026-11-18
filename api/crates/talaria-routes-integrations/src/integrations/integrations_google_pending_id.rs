@@ -52,11 +52,25 @@ pub async fn post(
     let Some(outcome) = outcome else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
+    // The released statuses (nothing ran, the row waits again) answer with
+    // the codes the agent routes use for the same token fault: a refused
+    // grant is the 409 a reconnect fixes; a refused client or refresh is
+    // Google's 502, never read as a connection state.
     Ok(match outcome.status.as_str() {
         "forbidden" => house_error(StatusCode::FORBIDDEN, "forbidden"),
         "not_connected" => house_error_msg(
             StatusCode::CONFLICT,
             "not_connected",
+            outcome.message.as_deref().unwrap_or_default(),
+        ),
+        "client_rejected" => house_error_msg(
+            StatusCode::BAD_GATEWAY,
+            "client_rejected",
+            outcome.message.as_deref().unwrap_or_default(),
+        ),
+        "token_refused" => house_error_msg(
+            StatusCode::BAD_GATEWAY,
+            "google_error",
             outcome.message.as_deref().unwrap_or_default(),
         ),
         "failed" => house_error_msg(

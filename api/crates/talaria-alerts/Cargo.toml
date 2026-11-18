@@ -20,6 +20,7 @@ talaria-fleet-agents = { workspace = true }
 talaria-fleet-docker = { workspace = true }
 talaria-fleet-preflight = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-host-metrics = { workspace = true }
 talaria-mcp-service = { workspace = true }
 talaria-notify = { workspace = true }

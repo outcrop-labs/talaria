@@ -18,6 +18,8 @@
 // position leaves a row carrying the defaults every conversation already has,
 // and a table of those is a table that grows for ever and answers nothing.
 
+pub mod pins;
+
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 use talaria_body::{optional_boolean_member, trimmed_string_member};

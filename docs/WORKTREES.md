@@ -6,8 +6,8 @@ main dev environment.
 ## TL;DR
 
 ```bash
-git wt <name>                         # = bun talaria worktree <name> (alias set by setup)
-cd ../talaria-<name> && bun talaria dev
+git wt <name> origin/testing          # = bun talaria worktree <name> origin/testing — a feature starts from testing
+cd ../talaria-<name> && bun talaria dev --api-from-ci   # CI's api binary; plain `dev` builds it with cargo
 # … hack away …
 docker compose -p talaria-wt-<name> down -v   # tear down when done
 git worktree remove ../talaria-<name> && git branch -D wt/<name>
@@ -151,23 +151,29 @@ data so you still have realistic agents/boards/tickets to work against.
    It also **installs**
    `cli/` and `mcp/` with `bun install --frozen-lockfile` from the branch's own
    lockfiles. Those two used to be missing in every fresh worktree, so its first
-   `bun run gate` failed on a missing `tsc` before it read a line of the change;
-   they are small, bun hardlinks from its cache, and a link would tie the branch
-   to main's lockfile. (`bun run gate` installs any missing `node_modules` of a
-   package it typechecks itself, too — never through a symlink.)
+   targeted run (one `bun test <file>` in `cli/`) failed on a missing package
+   before it read a line of the change; they are small, bun hardlinks from its
+   cache, and a link would tie the branch to main's lockfile. The compile itself
+   is CI's — the pull request's checks, or `bun run gate:remote` before one
+   exists. (`bun run gate`, for reproducing one failure CI reported, installs any
+   missing `node_modules` of a package it typechecks itself — never through a
+   symlink.)
 
-7. **Seeds the Rust build cache** (`api/target`, and `desktop/src-tauri/target` with
-   `--desktop`) from an idle checkout's, by reflink — see
-   [The Rust build cache](#the-rust-build-cache). `--no-seed` starts it empty;
-   `--seed-from <checkout>` names the source.
+7. **Leaves the Rust build cache empty** unless you pass `--seed`. `talaria dev
+   --api-from-ci` runs the api binary CI built, and compile and test are CI's, so
+   most worktrees never build the api. `--seed` reflinks `api/target` from an idle
+   checkout's (and `desktop/src-tauri/target` with `--desktop`), for when you will
+   reproduce a CI failure with cargo here. See
+   [The Rust build cache](#the-rust-build-cache). `--seed-from <checkout>` seeds from
+   the checkout it names. `--no-seed` is accepted and does nothing.
 
 It prints the exact `talaria dev` command and the teardown steps.
 
 **The setup is the invoking checkout's, not the base ref's.** `bun talaria worktree`
 runs the CLI of the checkout you call it from, and the `talaria` shim always runs the
 primary's, wherever you call it. That is usually the primary, on `main`, so
-`talaria worktree <name> origin/rc` writes `ui/.env` and picks ports by `main`'s
-rules, however far `rc` has moved. A stack cut that way on
+`talaria worktree <name> origin/testing` writes `ui/.env` and picks ports by `main`'s
+rules, however far `testing` has moved. A stack cut that way on
 2026-10-22 got no `TALARIA_FLEET_PROJECT`, because the primary's CLI predated it.
 When the running `cli/src/cmd/worktree.ts` differs from the base ref's, the command
 ends with a warning that says so: bring the invoking checkout up to the base ref and
@@ -291,8 +297,11 @@ recut, or check the new `ui/.env` against step 4.
   without that explicit apply, and `talaria dev` restarts a stack that was stopped too
   early. This is why a worktree costs RAM and two containers only while its work is
   live — five stale stacks quietly running Postgres was the thing this fixed.
-- **Each worktree builds into its own `api/target`**, which is what keeps two stacks
-  from locking each other out of cargo, and starts with a seeded one (next section).
+- **Each worktree builds into its own `api/target`**, when it builds at all, which is
+  what keeps two stacks from locking each other out of cargo. It starts with none:
+  `talaria dev --api-from-ci` keeps CI's binary in the git-ignored `api/.ci-bin/`
+  instead (one binary per checkout), and `--seed` gives it a seeded target (next
+  section).
   `mise.toml` puts every cargo behind a shared **sccache** as well, which saves the
   CPU of a crate another tree compiled, though not the disk. A side worktree's build
   dir goes when its pull request finishes, or after 14 idle days, or when the disk is
@@ -305,7 +314,12 @@ wrote its own full copy of the same third-party artifacts. On 2026-11-03 four ag
 worktrees held 15, 15, 91 and 107 GiB of target between them, beside the primary's
 34 GiB, and the disk reached the stop gate's 85% line.
 
-**What `talaria worktree` does now.** After the stack is up it **reflink-copies the
+**Since 2026-11-10 a worktree starts with no target at all.** Exercising a change
+runs the binary CI built (`talaria dev --api-from-ci`), and compile and test run on
+GitHub, so a target here is only for reproducing a CI failure with cargo, and the
+seed below runs only with `--seed` (or `--seed-from`, or `--desktop`).
+
+**What `talaria worktree --seed` does.** After the stack is up it **reflink-copies the
 registry crates' build units** from the best idle checkout's `api/target`: the one
 whose `Cargo.lock` shares the most `name version source` entries with the new
 worktree's, most recently built first. `bun talaria seed-target [--from <checkout>]

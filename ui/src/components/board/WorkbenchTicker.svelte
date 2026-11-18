@@ -4,7 +4,9 @@
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { Square } from '@lucide/svelte'
   import { useStopWorkSession, useWorkSession } from '@/lib/work-session.svelte'
+  import { agentName, behindLine } from '@/lib/work-pulse'
   import RunDetailModal from './RunDetailModal.svelte'
+  import WorkPulse from './WorkPulse.svelte'
 
   // The ticket's live-work treatment: while an agent's work session is on
   // this ticket, the strip carries the dither field (the same material the
@@ -29,11 +31,7 @@
     if (live?.runId) watchedRunId = live.runId
   })
 
-  const agentLabel = $derived.by(() => {
-    const m = live?.agentModel ?? wait?.agentModel ?? ''
-    const head = m.split('-')[0] ?? ''
-    return head ? head[0]!.toUpperCase() + head.slice(1) : 'An agent'
-  })
+  const agentLabel = $derived(agentName(live?.agentModel ?? wait?.agentModel))
 
   const stop = async () => {
     stopping = true
@@ -69,12 +67,16 @@
       <span class="min-w-0 flex-1 truncate text-sm text-fg">
         {#if live}
           {agentLabel} is working this ticket
-          {#if live.turn}<span class="text-muted"> · turn {live.turn}</span>{/if}
-          {#if live.phase}<span class="text-muted"> · {live.phase}</span>{/if}
+          <!-- The phase line only when there is no pulse to say it better:
+               "turn 2 of 12 — waiting on doug" reads the same for a turn the
+               agent has not taken and one forty minutes into a build. -->
+          {#if !live.activity && live.phase}<span class="text-muted"> · {live.phase}</span>{/if}
         {:else if wait}
           {agentLabel} is queued
           {#if wait.phase}<span class="text-muted"> · {wait.phase}</span>{/if}
-          <span class="block truncate text-xs text-muted">{wait.reason}</span>
+          <span class="block truncate text-xs text-muted">
+            {wait.reason}{#if behindLine(wait.behind, wait.behindHidden)} · {behindLine(wait.behind, wait.behindHidden)}{/if}
+          </span>
         {/if}
       </span>
       {#if live}
@@ -91,6 +93,9 @@
         </Button>
       {/if}
     </div>
+    {#if live?.activity}
+      <WorkPulse session={live} receivedAt={session.dataUpdatedAt} class="relative border-t border-line-subtle px-3 py-2" />
+    {/if}
   </div>
 
 {/if}

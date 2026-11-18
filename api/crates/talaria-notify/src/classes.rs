@@ -78,10 +78,20 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
     ),
     // Outcomes.
     ("research", "work_complete", "Research ready"),
+    // An agent design finished (or failed) while its modal was closed.
+    ("agent-design", "work_complete", "Agent design ready"),
     ("task-status", "work_complete", "Status changed"),
     // An access request's outcome — the request was yours, but the
     // notification is news, not a door.
     ("board_access", "work_complete", "Access decided"),
+    // A GitHub permission an agent you manage asked for was decided (or
+    // GitHub started to hold one an admin approved): news about the agent,
+    // not a door — the decision is made.
+    (
+        "git_permission_decided",
+        "work_complete",
+        "GitHub permission decided",
+    ),
     // A Google principal for an agent was provisioned: an agent now reads
     // your mail, calendar and Drive. A security notice about YOUR account,
     // never the quiet outcome bucket the fall-through used to put it in
@@ -109,6 +119,15 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
         "hermes_channel_stuck",
         "gap_reported",
         "Agent image updates stuck",
+    ),
+    // The workbench harness channel held a release (Oh My Pi or the
+    // harness's bun would not install or start on a workbench), or cannot
+    // verify one for days. Every job keeps the version it runs. The
+    // workspace's own health, for admins, like the agent image's.
+    (
+        "workbench_harness_update_failed",
+        "gap_reported",
+        "Workbench harness update held",
     ),
 ];
 
@@ -271,7 +290,7 @@ pub const CLASSES: &[ClassDef] = &[
     ClassDef {
         id: "work_complete",
         label: "Work finished",
-        blurb: "A ticket moved, or research you asked for is ready.",
+        blurb: "A ticket moved, or research or an agent design you asked for is ready.",
         category: Category::Following,
         defaults: ch(false, false, false),
         breaks_through: false,
@@ -471,10 +490,13 @@ mod tests {
             ("agent-problem", "agent_blocked"),
             ("workbench-repo-request", "agent_blocked"),
             ("research", "work_complete"),
+            ("agent-design", "work_complete"),
             ("task-status", "work_complete"),
             // An access request's outcome — news, not a door. Explicit so the
             // quiet bucket is a decision here, not the fall-through's default.
             ("board_access", "work_complete"),
+            // A GitHub permission decided for an agent you manage: news too.
+            ("git_permission_decided", "work_complete"),
             // A security notice about your own account (SE-14), never the
             // quiet outcome bucket wave 1's fall-through put it in.
             ("agent_google_principal", "account"),
@@ -484,6 +506,8 @@ mod tests {
             // The stable channel's stopped rollout: the workspace's health.
             ("hermes_update_failed", "gap_reported"),
             ("hermes_channel_stuck", "gap_reported"),
+            // The workbench harness channel's held release: the same health.
+            ("workbench_harness_update_failed", "gap_reported"),
             // Every class id is its own kind.
             ("judge_escalation", "judge_escalation"),
             ("gap_reported", "gap_reported"),

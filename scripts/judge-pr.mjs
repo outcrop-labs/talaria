@@ -2,36 +2,70 @@
 // judge-pr — measure a change against this repo's standards, from the diff.
 //
 // WHY IT EXISTS. The gates answer "does it pass". They cannot answer "is this
-// the change this repository asked for": that the changelog claims a
-// verification the diff does not support, that a behaviour change arrived with
-// no test, that the pull request is aimed at `main`, that a generated file moved
-// with nothing regenerating it, that a commit subject broke the house style.
-// Those are decidable from the diff, and that is this file. The half that is NOT
-// decidable — "does this actually work in Talaria" — is the skill beside it
-// (`.claude/skills/judge-pr/SKILL.md`), because it needs someone to read the
-// change against the app.
+// the change this repository asked for": that the pull request is aimed at
+// `main` (or a feature at `rc`), that a hotfix adds a migration, that a
+// promoted changelog entry is rewritten, that a user-visible change carries no
+// entry, that a do-not-touch tree moved. Those are decidable from git alone,
+// and that is this file. The half that is NOT decidable — "does this actually
+// work in Talaria" — is a reading: scripts/judge-review.mjs (`judge (review)`)
+// and the skill beside it (`.claude/skills/judge-pr/SKILL.md`).
 //
 // WHAT IT IS NOT. It does not run the gates (that is `bun run verify`, and CI),
 // and it does not replace a reviewer. Its findings are graded:
 //
-//   must    the repo states this about itself — branch flow, do-not-touch trees,
-//           a user-visible change with no changelog entry, generated drift.
-//   should  a convention with a reason behind it (commit subjects, a gate claim
-//           that misses the surface it covers).
-//   ask     a question for the human. NEVER a reason to hold a change.
+//   must    the repo states this about itself — branch flow (targets-main,
+//           feature-targets-rc, hotfix-adds-migration, changelog-entry-rewritten),
+//           do-not-touch trees (off-limits), a user-visible change with no
+//           changelog entry (no-changelog), an entry appended into CHANGELOG.md
+//           (changelog-not-a-file).
+//   should  a convention with a reason behind it: an entry with no bold lead
+//           (changelog-no-lead) or no word on verification
+//           (changelog-no-verification), a skill off its documented shape
+//           (skill-shape).
+//   ask     a question for the human. NEVER a reason to hold a change: an
+//           empty or unfilled pull-request body, and a change to the reviewer
+//           with no calibration scorecard (reviewer-changed-no-scorecard).
+//
+// WHAT LEFT, AND WHY. The track record (#669–#725: 59 findings, none a defect)
+// cut commit-subject, claim-misses-surface, cli-suite-not-covered-by-verify,
+// no-test, product-skills and generated-drift/changed. `bun run check` already
+// fails generated drift; the rest were noise. The reading moved to
+// scripts/judge-review.mjs.
+//
+// TRUST. In CI this runs from the trusted branch's tree (judge.yml), so a pull
+// request cannot loosen its own musts. It reads the pull request as git objects
+// only — never its working tree.
 //
 // The exit code speaks the contract in scripts/hooks/README.md: 0 when nothing
 // is a `must`, 2 when something is, 1 when the judge could not run at all.
 //
+// THE LANES. Some pull requests carry changes that were each judged in their
+// own pull request already, and judging them again only re-finds the
+// promotion's own shape: the `rc` → `main` promotion, a `promote/*` snapshot
+// of `testing` into `rc`, the `backflow/*` → `testing` back-flow and a
+// `sync/*` merge into `rc` get a report with no findings and exit 0. A
+// `release/*` head into `rc` is the changelog roll, which writes CHANGELOG.md
+// by design, so the CHANGELOG.md checks skip it. A `hotfix/*` head into `rc`
+// may not add a migration; a pull request into `testing` may not rewrite an
+// entry `rc` already has. Anything else into `rc` is a feature aimed at the
+// wrong branch: feature pull requests target `testing`.
+//
 // USAGE
-//   node scripts/judge-pr.mjs [--base <ref>] [--head <ref>] [--pr-body <file>]
+//   node scripts/judge-pr.mjs [--base <ref>] [--head <ref>] [--target <branch>]
+//                             [--source <branch>] [--pr-body <file>]
 //                             [--summary] [--json]
 //
-//   --base defaults to GITHUB_BASE_REF (CI) or origin/rc (the integration
-//   branch, i.e. what a pull request would be measured against locally). The
-//   range is `merge-base(base, head)..head` — three dots, so the report is about
-//   this change and not about everything the base gained meanwhile (ci.yml's
-//   `changes` job makes the same choice).
+//   --base defaults to origin/<GITHUB_BASE_REF> (CI: the pull request's base),
+//   else origin/testing when this clone has it (where a feature pull request
+//   goes), else origin/rc. The range is `merge-base(base, head)..head` — three
+//   dots, so the report is about this change and not about everything the base
+//   gained meanwhile (ci.yml's `changes` job makes the same choice).
+//
+//   --target is the pull request's base branch (GITHUB_BASE_REF in CI);
+//   --source is its head branch (GITHUB_HEAD_REF in CI). Both are only what
+//   is said — never guessed from the diff — and the lane checks need both.
+//   judge.yml passes a fork's head qualified (`owner/repo:branch`), so a fork
+//   never matches a lane. `--head` stays the diff head, a ref in this clone.
 //
 //   --pr-body reads a pull request body (the workflow pipes
 //   `github.event.pull_request.body` to a file) and checks the parts of the
@@ -57,7 +91,21 @@ const arg = (name) => {
 }
 const flag = (name) => argv.includes(name)
 
-const baseArg = arg('--base') ?? 'origin/rc'
+/** Does `ref` name a commit in this clone? */
+const resolves = (ref) => {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], { cwd: ROOT, stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The diff base: what was said, else the pull request's own base (CI), else
+// where a feature pull request goes — testing, when this clone has it.
+const baseArg =
+  arg('--base') ??
+  (process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : resolves('origin/testing') ? 'origin/testing' : 'origin/rc')
 const headArg = arg('--head') ?? 'HEAD'
 const prBodyPath = arg('--pr-body')
 // The pull request's TARGET branch, when something actually knows it: CI does
@@ -66,11 +114,19 @@ const prBodyPath = arg('--pr-body')
 // branch forked off `main` as "aimed at main" would be the judge inventing a
 // finding, which is the one thing a judge must never do.
 const targetArg = arg('--target') ?? process.env.GITHUB_BASE_REF ?? null
+// The pull request's HEAD branch, the same way: CI knows it (GITHUB_HEAD_REF,
+// empty outside a pull_request event), `--source` says it by hand. It is a
+// name, not the diff head — `--head` stays a ref in this clone.
+const sourceArg = arg('--source') ?? (process.env.GITHUB_HEAD_REF || null)
 
 // ── git ─────────────────────────────────────────────────────────────────────
 
+// 256 MiB: a roll's CHANGELOG.md diff once overflowed the default buffer
+// (ENOBUFS) and the judge crashed instead of judging.
 const git = (...args) =>
-  execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024 }).trim()
+/** Diffs as git objects, never through a filter the tree under judgement could name. */
+const DIFF = ['diff', '--text', '--no-textconv', '--no-ext-diff']
 
 const couldNotRun = (why) => {
   console.error(`judge-pr could not run — not a pass: ${why}`)
@@ -85,16 +141,68 @@ try {
   execFileSync('git', ['rev-parse', '--verify', `${baseArg}^{commit}`], { cwd: ROOT, stdio: 'ignore' })
   const mergeBase = git('merge-base', baseArg, headArg)
   range = `${mergeBase}..${headArg}`
-  changed = git('diff', '--name-only', range).split('\n').filter(Boolean)
+  changed = git(...DIFF, '--name-only', range).split('\n').filter(Boolean)
 } catch (e) {
   couldNotRun(
-    `cannot diff ${baseArg}...${headArg} — fetch the base first (\`git fetch origin rc main\`). ${e instanceof Error ? e.message : String(e)}`
+    `cannot diff ${baseArg}...${headArg} — fetch the base first (\`git fetch origin testing rc main\`). ${e instanceof Error ? e.message : String(e)}`
   )
 }
 
 const headSha = git('rev-parse', '--short=12', headArg)
 const baseBranch = baseArg.replace(/^origin\//, '')
 const targetBranch = targetArg ? targetArg.replace(/^refs\/heads\//, '') : null
+const sourceBranch = sourceArg ? sourceArg.replace(/^refs\/heads\//, '') : null
+
+// ── output ──────────────────────────────────────────────────────────────────
+
+/** Print the report (or the JSON), and append it to the job summary when asked. */
+function publish(report, payload) {
+  if (flag('--json')) console.log(JSON.stringify(payload, null, 2))
+  else console.log(report)
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY
+  if (flag('--summary') && summaryPath) writeFileSync(summaryPath, `${report}\n`, { flag: 'a' })
+}
+
+// ── 0. the lanes whose changes were judged one by one ──────────────────────
+//
+// A promotion, a snapshot, a back-flow or a sync carries pull requests that
+// were each judged on their own. Judged again whole, it only re-finds its own
+// shape: promotion #722 drew `targets-main` and `changelog-not-a-file` for
+// being the promotion and for carrying the roll. Same-repository is judge.yml's
+// to say: it hands a fork's head over qualified, so no lane matches one.
+
+/** The lane that skips the judge, in words, or null. */
+function laneSkipOf(target, source) {
+  if (!target || !source) return null
+  if (target === 'main' && source === 'rc') return 'the promotion of `rc` into `main`'
+  if (target === 'rc' && source.startsWith('promote/')) return `a snapshot of \`testing\` promoted into \`rc\` (\`${source}\`)`
+  if (target === 'testing' && source.startsWith('backflow/')) return `the \`rc\` → \`testing\` back-flow (\`${source}\`)`
+  if (target === 'rc' && source.startsWith('sync/')) return `a sync into \`rc\` (\`${source}\`)`
+  return null
+}
+
+const laneSkip = laneSkipOf(targetBranch, sourceBranch)
+if (laneSkip) {
+  const report = [
+    `## judge-pr — ${headSha} vs \`${baseBranch}\``,
+    '',
+    `${changed.length} file(s) changed. 0 must · 0 should · 0 ask.`,
+    '',
+    `${laneSkip} — each change was judged in its own pull request.`,
+  ].join('\n')
+  publish(report, {
+    head: headSha,
+    base: baseBranch,
+    files: changed.length,
+    lane: laneSkip,
+    counts: { must: 0, should: 0, ask: 0 },
+    findings: [],
+  })
+  process.exit(0)
+}
+
+// The changelog roll (`release/*` into `rc`) writes CHANGELOG.md by design.
+const isRoll = targetBranch === 'rc' && sourceBranch !== null && sourceBranch.startsWith('release/')
 
 // ── findings ────────────────────────────────────────────────────────────────
 
@@ -111,16 +219,17 @@ const anyTouched = (...res) => res.some((re) => changed.some((f) => re.test(f)))
  *  pre-cutover history this judge no longer expects — lines in CHANGELOG.md. */
 const changelogAdditions = (() => {
   const additions = []
-  if (changed.includes('CHANGELOG.md'))
+  // The roll rewrites CHANGELOG.md whole by design; its diff is not read.
+  if (changed.includes('CHANGELOG.md') && !isRoll)
     additions.push(
-      ...git('diff', '-U0', range, '--', 'CHANGELOG.md')
+      ...git(...DIFF, '-U0', range, '--', 'CHANGELOG.md')
         .split('\n')
         .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
         .map((l) => l.slice(1)),
     )
   if (changed.some((f) => f.startsWith('changelog/')))
     additions.push(
-      ...git('diff', '-U0', range, '--', 'changelog')
+      ...git(...DIFF, '-U0', range, '--', 'changelog')
         .split('\n')
         .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
         .map((l) => l.slice(1)),
@@ -129,8 +238,10 @@ const changelogAdditions = (() => {
 })()
 const changelogText = changelogAdditions ? changelogAdditions.join('\n') : ''
 // Bullets appended straight into CHANGELOG.md after the entry-file cutover:
-// the exact conflict surface the files exist to end.
-const appendedToChangelog = changelogAdditions !== null &&
+// the exact conflict surface the files exist to end. Not on the roll: writing
+// CHANGELOG.md is the roll's whole job.
+const appendedToChangelog = !isRoll &&
+  changelogAdditions !== null &&
   changed.includes('CHANGELOG.md') &&
   changelogAdditions.some((l) => /^-\s+\*\*/.test(l))
 
@@ -139,28 +250,194 @@ const appendedToChangelog = changelogAdditions !== null &&
 // Only when the target is actually known (CI passes it; `--target` says it).
 // A local run's diff base is not a claim about where the change is going.
 
-if (targetBranch === 'main') {
+// The promotion of `rc` itself skipped the judge above; a `--source` that is
+// not `rc` (or no source at all) into `main` is the wrong door.
+if (targetBranch === 'main' && sourceBranch !== 'rc') {
   finding(
     'must',
     'targets-main',
     `this change is aimed at \`main\``,
     ['main takes one input: the promotion of `rc`, whole, once its staging deploy is green.'],
     [
-      'Retarget the pull request at `rc` — review, CI and the staging deploy all happen there,',
-      'and the promotion follows on its own. `flow.yml` refuses a pull request to main from',
-      'anywhere but rc, so this is a red check as well as a wrong door: docs/BRANCHES.md.',
+      'Retarget the pull request at `testing` — it lands there at green and is exercised on the',
+      'testing instance; rc takes a snapshot of testing, and main takes rc. `flow.yml` refuses a',
+      'pull request to main from anywhere but rc, so this is a red check as well as a wrong door:',
+      'docs/BRANCHES.md.',
     ]
   )
 }
 
-if (targetBranch === 'testing') {
+// rc takes the lanes and nothing else: a snapshot of testing (`promote/*`,
+// which skipped the judge above), a hotfix, the roll, a sync. A source that is
+// none of them — or no source at all, or a fork's (judge.yml qualifies it) —
+// is a feature aimed at the wrong branch.
+//
+// Once rc enforces it. The judge raises no `must` the target's own policy does
+// not hold: the change that brings this rule to rc is judged by rc's previous
+// flow-guard in `pr target (flow)` (flow.yml reads the policy from the base),
+// and the judge follows the same revision. So the rule wakes when origin/rc's
+// flow-guard.mjs has its rc-head rule (`decideRcHead`, anchored by
+// check-invariants.mjs); a clone with no such file at origin/rc is judged by it.
+const RC_LANES = ['promote/', 'hotfix/', 'release/', 'sync/']
+const rcRefusesFeatures = (() => {
+  try {
+    return git('show', 'origin/rc:scripts/flow-guard.mjs').includes('decideRcHead')
+  } catch {
+    return true
+  }
+})()
+if (targetBranch === 'rc' && rcRefusesFeatures && !RC_LANES.some((p) => sourceBranch?.startsWith(p))) {
   finding(
     'must',
-    'targets-testing',
-    'this change is aimed at `testing`, which is retired',
-    [],
-    ['The nightly channel is built from `rc` now. Retarget the pull request at `rc`.']
+    'feature-targets-rc',
+    'this change is aimed at `rc`, and feature pull requests target `testing`',
+    [
+      `rc takes a snapshot of testing (\`promote/*\`) and the \`hotfix/\`, \`release/\`, \`sync/\` lanes cut from rc${sourceBranch ? `; \`${sourceBranch}\` is none of them` : ''}.`,
+    ],
+    [
+      'Retarget the pull request at `testing`: `gh pr edit <n> --base testing`. It lands there at',
+      'green and is exercised on the testing instance; the next snapshot carries it to rc.',
+      '`flow.yml` refuses it into rc too, so this is a red check as well as a wrong door:',
+      'docs/BRANCHES.md.',
+    ]
   )
+}
+
+// A hotfix into `rc` may not add a migration. MIGRATIONS is append-only and an
+// entry's INDEX is its identity (ui/src/server/db/pg.ts), so a migration that
+// lands on `rc` first takes an index `testing` has already given to another,
+// and the two arrays diverge for good. Other pg.ts code is fine in a hotfix.
+
+const PG = 'ui/src/server/db/pg.ts'
+const MIGRATIONS_DECL = 'const MIGRATIONS: string[] = ['
+
+/** The index past the string literal that opens at `i` (a quote or a
+ *  backtick; a template's `${…}` may hold strings and braces of its own). */
+function skipString(text, i) {
+  const q = text[i]
+  for (let j = i + 1; j < text.length; j++) {
+    const c = text[j]
+    if (c === '\\') j++
+    else if (c === q) return j
+    else if (q === '`' && c === '$' && text[j + 1] === '{') j = skipExpr(text, j + 2)
+    else if (q !== '`' && c === '\n') return j
+  }
+  return text.length
+}
+
+/** The index of the `}` that closes a template expression opened before `j`. */
+function skipExpr(text, j) {
+  let depth = 1
+  for (; j < text.length; j++) {
+    const c = text[j]
+    if (c === '`' || c === "'" || c === '"') j = skipString(text, j)
+    else if (c === '{') depth++
+    else if (c === '}' && --depth === 0) return j
+  }
+  return j
+}
+
+/** The MIGRATIONS array's lines in `text` — 1-based, the declaration line to
+ *  its matching `];` — found by bracket depth outside strings and comments, so
+ *  a `[` inside a SQL string does not move the end. null when it is absent. */
+function migrationsSpan(text) {
+  const decl = text.indexOf(MIGRATIONS_DECL)
+  if (decl === -1) return null
+  let depth = 0
+  let i = decl + MIGRATIONS_DECL.length - 1
+  for (; i < text.length; i++) {
+    const c = text[i]
+    if (c === '/' && text[i + 1] === '/') {
+      const nl = text.indexOf('\n', i)
+      if (nl === -1) break
+      i = nl
+    } else if (c === '/' && text[i + 1] === '*') {
+      const close = text.indexOf('*/', i + 2)
+      if (close === -1) break
+      i = close + 1
+    } else if (c === '`' || c === "'" || c === '"') i = skipString(text, i)
+    else if (c === '[') depth++
+    else if (c === ']' && --depth === 0) break
+  }
+  if (depth !== 0) return null
+  const lineOf = (at) => text.slice(0, at).split('\n').length
+  return { start: lineOf(decl), end: lineOf(i) }
+}
+
+/** The new-file line numbers a `git diff -U0` of one file adds. */
+function addedLineNumbers(diff) {
+  const added = []
+  let line = 0
+  let inHunk = false
+  for (const l of diff.split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l)
+    if (hunk) {
+      line = Number(hunk[1])
+      inHunk = true
+    } else if (!inHunk) continue
+    else if (l.startsWith('+')) added.push(line++)
+    else if (l.startsWith(' ')) line++
+  }
+  return added
+}
+
+if (targetBranch === 'rc' && sourceBranch?.startsWith('hotfix/') && changed.includes(PG)) {
+  let span = null
+  try {
+    span = migrationsSpan(git('show', `${headArg}:${PG}`))
+  } catch {
+    /* pg.ts deleted at the head: no array to add to */
+  }
+  const inside = span
+    ? addedLineNumbers(git(...DIFF, '-U0', range, '--', PG)).filter((n) => n >= span.start && n <= span.end)
+    : []
+  if (inside.length) {
+    finding(
+      'must',
+      'hotfix-adds-migration',
+      'a hotfix may not add migrations: the array index is a migration\'s identity and testing\'s array would diverge. Land it through testing.',
+      [`  ${PG}: line(s) ${inside.slice(0, 8).join(', ')} inside MIGRATIONS (lines ${span.start}–${span.end})`],
+      [
+        'Take the migration out of the hotfix and land it through `testing` (a pull request into',
+        'testing, then the next promotion). Code elsewhere in pg.ts may stay in the hotfix.',
+      ]
+    )
+  }
+}
+
+// A pull request into `testing` may not rewrite an entry `rc` already has. Once
+// an entry is promoted, rc's roll owns it (it folds and deletes the file), so an
+// edit on testing makes the rc → testing back-flow conflict.
+
+/** Does `path` exist at `ref`? false when the ref does not resolve. */
+function existsAt(ref, path) {
+  try {
+    execFileSync('git', ['cat-file', '-e', `${ref}:${path}`], { cwd: ROOT, stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+if (targetBranch === 'testing') {
+  const rewritten = git(...DIFF, '--name-status', range)
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => l.split('\t'))
+    // M and D name the entry; a rename (R…) moves the old path away, which is a delete.
+    .filter(([status]) => /^[MDR]/.test(status))
+    .map(([, path]) => path)
+    .filter((f) => /^changelog\/[^/]+\.md$/.test(f) && f !== 'changelog/README.md')
+    .filter((f) => existsAt('origin/rc', f))
+  if (rewritten.length) {
+    finding(
+      'must',
+      'changelog-entry-rewritten',
+      "this entry is already promoted; rc's roll owns it from here. Add a new entry instead — an edit makes the rc → testing back-flow conflict.",
+      rewritten.slice(0, 8).map((f) => `  ${f} (on origin/rc)`),
+      ['Restore the entry as it is on `origin/rc` and add changelog/YYYY-MM-DD-<slug>.md for the change.']
+    )
+  }
 }
 
 // ── 2. trees the repo says not to touch ────────────────────────────────────
@@ -181,47 +458,7 @@ for (const [re, what] of OFF_LIMITS) {
   }
 }
 
-const productSkills = touched(/^scripts\/skills\//)
-if (productSkills.length) {
-  finding(
-    'ask',
-    'product-skills',
-    '`scripts/skills/` is product surface — those skills ship into Hermes agent containers',
-    productSkills.slice(0, 8),
-    ['If this is REPO TOOLING rather than product, it belongs in `.claude/skills/` (AGENTS.md).']
-  )
-}
-
-// ── 3. generated references must be generated, not edited ──────────────────
-
-const generatedDocs = touched(/^(docs\/(api\/|CLI-REFERENCE\.md)|scripts\/skills\/talaria-apps\/references\/skeleton\.md)/)
-if (generatedDocs.length) {
-  let drift = ''
-  try {
-    execFileSync('bun', ['scripts/gen-docs.mjs', '--check'], { cwd: ROOT, encoding: 'utf8' })
-  } catch (e) {
-    drift = `${e.stdout ?? ''}${e.stderr ?? ''}`.trim().split('\n').slice(-6).join('\n')
-  }
-  if (drift) {
-    finding(
-      'must',
-      'generated-drift',
-      'generated documentation changed and the generator disagrees',
-      drift.split('\n'),
-      [
-        'These files are regenerated, never hand-edited: run `bun run docs:api` and commit the',
-        'result. `bun run check` fails on the same drift, so this is also a red CI job.',
-      ]
-    )
-  } else {
-    finding('ask', 'generated-changed', 'generated documentation moved', generatedDocs.slice(0, 8), [
-      'The generator is clean, so this is its output — good. Worth a sentence in the pull request',
-      'on what changed in the reference, since reviewers read that page.',
-    ])
-  }
-}
-
-// ── 4. the changelog: an entry, and a verification that matches the diff ──
+// ── 3. the changelog: an entry for a user-visible change ──────────────────
 
 const USER_VISIBLE = [
   [/^ui\/src\//, 'the app'],
@@ -231,11 +468,15 @@ const USER_VISIBLE = [
   [/^desktop\/(src|src-tauri)\//, 'the desktop shell'],
   [/^scripts\/skills\//, 'the shipped agent skills'],
   [/^(Dockerfile|docker\/)/, 'the container'],
-  [/^RELEASING\.md$/, 'the release contract'],
 ]
-const userVisible = USER_VISIBLE.filter(([re]) => anyTouched(re))
+// A test is not something a user sees: a diff whose user-visible paths are all
+// tests needs no entry (#717 drew a false `no-changelog` for one).
+const isTestFile = (f) => /\.(test|spec)\.[cm]?[jt]s$|\.test\.svelte$|(^|\/)tests\//.test(f)
+const userVisible = USER_VISIBLE.filter(([re]) => changed.some((f) => re.test(f) && !isTestFile(f)))
 
-if (userVisible.length) {
+// The roll is the changelog: it folds the entries into CHANGELOG.md and asks
+// for none of its own.
+if (userVisible.length && !isRoll) {
   if (changelogAdditions === null) {
     finding(
       'must',
@@ -286,98 +527,7 @@ if (userVisible.length) {
   }
 }
 
-// ── 5. does the claimed verification cover the surfaces the diff touches? ──
-
-/** What a change to each surface has to have named, and where that comes from:
- *  CONTRIBUTING.md's "Before you send a PR" and the dev-loop skill's gate table.
- *  The local command is `bun run gate` — it runs the surface's compile only when
- *  the diff touches it. The full CI commands (`verify`, `api:check`,
- *  `desktop:check`) still count if someone actually ran them. The judge holds
- *  the claim to those commands, never to a second opinion. */
-const CLAIMS = [
-  { re: /^ui\//, needs: /bun run (gate|verify|typecheck|test)|svelte-check/i, what: 'ui/', gate: 'bun run gate' },
-  { re: /^mcp\//, needs: /bun run (gate|verify|typecheck)|mcp/i, what: 'mcp/', gate: 'bun run gate' },
-  { re: /^api\//, needs: /bun run gate|api:check/i, what: 'api/', gate: 'bun run gate' },
-  { re: /^desktop\//, needs: /bun run gate|desktop:check/i, what: 'desktop/', gate: 'bun run gate' },
-]
-
-if (changelogAdditions !== null) {
-  for (const { re, needs, what, gate } of CLAIMS) {
-    if (!anyTouched(re)) continue
-    if (!needs.test(changelogText)) {
-      finding(
-        'should',
-        'claim-misses-surface',
-        `this change touches \`${what}\` and the verification does not name \`${gate}\``,
-        [],
-        [`Run it and name it: \`${gate}\`.`],
-      )
-    }
-  }
-
-  // `bun run verify` does not run the cli suite (check + ui/mcp typecheck + the
-  // ui suite). `bun run gate` does, when the diff touches cli/. A cli change
-  // whose only stated evidence is `verify` is an unverified change.
-  if (anyTouched(/^cli\//) && !/bun run gate|cli|bun test/i.test(changelogText)) {
-    finding(
-      'ask',
-      'cli-suite-not-covered-by-verify',
-      'this change touches `cli/`, which `bun run verify` does not test',
-      [],
-      [
-        '`bun run gate` runs the cli typecheck and `bun test` when `cli/` moved.',
-        '`bun run verify` does not. Name `gate` (or the cli suite) so the claim matches the command.',
-      ]
-    )
-  }
-}
-
-// ── 6. a behaviour change with no test ────────────────────────────────────
-
-const isTest = (f) => /\.(test|spec)\.[cm]?[jt]s$/.test(f) || /\.test\.svelte$/.test(f)
-const BEHAVIOUR = [/^ui\/src\/.*\.(ts|svelte)$/, /^cli\/src\/.*\.ts$/, /^mcp\/src\/.*\.ts$/]
-const behaviour = changed.filter((f) => BEHAVIOUR.some((re) => re.test(f)) && !isTest(f))
-const tests = changed.filter(isTest)
-if (behaviour.length && tests.length === 0) {
-  finding(
-    'ask',
-    'no-test',
-    'behaviour changed and no test moved with it',
-    behaviour.slice(0, 8),
-    [
-      'Not every change needs one — a test earns its place only where a plausible bug would fail',
-      'it (CONTRIBUTING.md, "Before you send a PR"). So this is a question, not a verdict: either',
-      'the change is covered by an existing test (name it), or it is the kind that cannot be',
-      '(say how you exercised it instead).',
-    ]
-  )
-}
-
-// ── 7. commit subjects, in the house style ────────────────────────────────
-
-let subjects = []
-try {
-  subjects = git('log', '--no-merges', '--format=%s', range).split('\n').filter(Boolean)
-} catch {
-  /* an empty range is fine */
-}
-const SUBJECT = /^[a-z][a-z0-9/-]*: [a-z]/
-const odd = subjects.filter((s) => !SUBJECT.test(s) || s.length > 88 || s.endsWith('.'))
-if (odd.length) {
-  finding(
-    'should',
-    'commit-subject',
-    'a commit subject is not in the house style',
-    odd.map((s) => `  ${s}`),
-    [
-      'The shape is `area: lowercase sentence — explanation`: an area prefix, a lowercase',
-      'sentence, and an em-dash clause that says WHY rather than what (CONTRIBUTING.md step 4, and',
-      '`git log` carries the voice). No trailing period.',
-    ]
-  )
-}
-
-// ── 8. the pull request body, when CI handed us one ───────────────────────
+// ── 4. the pull request body, when CI handed us one ───────────────────────
 
 if (prBodyPath && existsSync(prBodyPath)) {
   const body = readFileSync(prBodyPath, 'utf8')
@@ -388,6 +538,17 @@ if (prBodyPath && existsSync(prBodyPath)) {
   const template = existsSync(templatePath) ? readFileSync(templatePath, 'utf8') : ''
   const verified = answer(body, 'Verified', template)
   const entry = answer(body, 'CHANGELOG entry', template)
+  // CI reviews a pull request with the TRUSTED branch's reviewer, not the one
+  // the pull request carries, so a change to the reviewer is measured by the
+  // calibration it ran instead: the scorecard belongs in the body.
+  const REVIEWER = ['scripts/judge-review.mjs', 'scripts/judge-review-wire.mjs', 'scripts/judge-review.prompt.md', 'scripts/judge-review.calibration.json']
+  const reviewerFiles = changed.filter((f) => REVIEWER.includes(f))
+  if (reviewerFiles.length && !/scorecard/i.test(body)) {
+    finding('ask', 'reviewer-changed-no-scorecard', 'this change edits the model reviewer and the body carries no calibration scorecard', reviewerFiles.map((f) => `  ${f}`), [
+      'attach the scorecard from a `judge-calibrate/<name>` push — CI reviews this PR with the trusted',
+      "branch's reviewer, not yours (docs/AGENT-TOOLING.md → Calibrating the reviewer).",
+    ])
+  }
   if (!body.trim()) {
     finding('ask', 'empty-pr-body', 'the pull request has no body', [], [
       'The body mirrors the changelog entry: what changed, and what was verified.',
@@ -408,13 +569,20 @@ if (prBodyPath && existsSync(prBodyPath)) {
   }
 }
 
-// ── 9. the skill half, for changes that touch the tooling ─────────────────
+// ── 5. the skill half, for changes that touch the tooling ─────────────────
 
 if (anyTouched(/^\.claude\/skills\//, /^AGENTS\.md$/)) {
   const newSkills = changed.filter((f) => /^\.claude\/skills\/[^/]+\/SKILL\.md$/.test(f))
   const problems = []
   for (const f of newSkills) {
-    const text = readFileSync(join(ROOT, f), 'utf8')
+    // The head's copy, as an object: in CI the working tree is the trusted
+    // branch's, which may not have this skill at all.
+    let text = ''
+    try {
+      text = git('show', `${headArg}:${f}`)
+    } catch {
+      continue // deleted at the head
+    }
     const name = f.split('/')[2]
     // The frontmatter block, folded lines and all: a description may be wrapped,
     // and requiring the trigger on its first line would fail a correctly written
@@ -455,7 +623,7 @@ lines.push('')
 lines.push(`${changed.length} file(s) changed. ${counts.must} must · ${counts.should} should · ${counts.ask} ask.`)
 if (findings.length === 0) {
   lines.push('')
-  lines.push('Nothing to say: the flow, the changelog claim, the surfaces and the generated trees all match.')
+  lines.push('Nothing to say: the flow, the changelog entry, the do-not-touch trees and the body all match.')
 } else {
   for (const f of findings) {
     lines.push('')
@@ -472,22 +640,10 @@ if (findings.length === 0) {
       ? 'A `must` is something this repository says about itself — fix it, or argue it in the pull request.'
       : 'Nothing here blocks the change. `should` and `ask` are for the author and the reviewer to settle.'
   )
-  lines.push(
-    'This judge reads the diff; it cannot tell whether the change WORKS. That half is a reader: ' +
-      '`.claude/skills/judge-pr/SKILL.md`.'
-  )
 }
+lines.push('')
+lines.push("This judge reads the diff. Whether the change works is judge (review)'s reading and a person's.")
 
-const report = lines.join('\n')
-if (flag('--json')) {
-  console.log(JSON.stringify({ head: headSha, base: baseBranch, files: changed.length, counts, findings }, null, 2))
-} else {
-  console.log(report)
-}
-
-const summaryPath = process.env.GITHUB_STEP_SUMMARY
-if (flag('--summary') && summaryPath) {
-  writeFileSync(summaryPath, `${report}\n`, { flag: 'a' })
-}
+publish(lines.join('\n'), { head: headSha, base: baseBranch, files: changed.length, lane: null, counts, findings })
 
 process.exit(counts.must > 0 ? 2 : 0)

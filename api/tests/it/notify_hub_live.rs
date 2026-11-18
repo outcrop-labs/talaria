@@ -3,7 +3,7 @@
 // a real Redis: the subscriber count, PUBSUB NUMSUB, CLIENT KILL and the
 // order of a subscribe against a commit are facts only Redis and Postgres
 // can confirm. #[ignore]d, so the plain `cargo test` never needs either;
-// CI's api-integration job runs them with --ignored.
+// ci.yml's api job runs them with --ignored (its live-DB steps).
 //
 //   DATABASE_URL=postgres://… REDIS_URL=redis://… \
 //     cargo test -p talaria-api --test it notify_hub_live:: -- --ignored

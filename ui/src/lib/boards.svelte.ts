@@ -369,6 +369,9 @@ export const createTask = (
     estimatedHours?: number | null
     parentId?: string | null
     tags?: string[]
+    /** The column to create it in (the board's intake when omitted). Its
+     *  assignees never pick it: assigning moves nothing. */
+    status?: string
   },
 ) => postJson<{ task: Task }>(`/api/boards/${boardId}/tasks`, input)
 

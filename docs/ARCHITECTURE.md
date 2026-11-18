@@ -139,8 +139,9 @@ are a 13-entry catalog resolved user-override → org default → shipped defaul
   editing an applied statement trips a checksum and the boot refuses. The Rust api owns
   zero DDL by law (`api/src/db.rs`). CI replays the whole array against a scratch
   postgres:16 and diffs the result against the committed schema snapshot
-  (`migrations.yml`; `ui/src/server/db/schema.snapshot.sql`), and the invariant check
-  demands a `-- deliberate:` marker on any statement that can destroy or rewrite data.
+  (ci.yml's `migrations (replay + upgrade)` job; `ui/src/server/db/schema.snapshot.sql`),
+  and the invariant check demands a `-- deliberate:` marker on any statement that can
+  destroy or rewrite data.
   Running psql by hand on a customer database is never part of a release. Bring the
   containers up before the app.
 - **Wire numerics arrive as strings** (`numeric`, `int8`) — read them through `PgNumeric` /

@@ -15,6 +15,7 @@
   import StudioTile from '@/components/manage/StudioTile.svelte'
   import TeamsTile from '@/components/manage/TeamsTile.svelte'
   import TemplatesTile from '@/components/manage/TemplatesTile.svelte'
+  import WorkbenchHarnessPanel from '@/components/manage/WorkbenchHarnessPanel.svelte'
   import { useEnabledApps } from '@/lib/apps'
   import { manageArea } from '@/lib/manage-area'
   import { staggerIn } from '@/lib/motion'
@@ -96,6 +97,7 @@
           <div class="grid gap-4">
             <FleetControls />
             <HermesChannelPanel />
+            <WorkbenchHarnessPanel />
           </div>
         {/if}
         <ActivityPanel />

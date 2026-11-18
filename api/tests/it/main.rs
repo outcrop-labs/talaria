@@ -9,9 +9,9 @@
 //     cargo test -p talaria-api --test it runs_run::
 //     cargo test -p talaria-api --test it plan_row_live:: -- --ignored
 //
-// CI's live suite (api-integration.yml) still runs module by module, so tests
-// from different files never share the scratch database concurrently, exactly
-// as when they were separate binaries.
+// CI's live suite (ci.yml's api job, its live-DB steps) still runs module by
+// module, so tests from different files never share the scratch database
+// concurrently, exactly as when they were separate binaries.
 
 mod support;
 
@@ -31,6 +31,7 @@ mod browser_toolsets_live;
 mod channel_thread_reads;
 mod chips_landing_live;
 mod code_probe_child;
+mod comms_rail_live;
 mod conversation_audience_live;
 mod conversation_layout_live;
 mod conversation_reactions_live;
@@ -44,6 +45,7 @@ mod fitness_transcripts_live;
 mod gateway_hot_caches;
 mod github_jwt;
 mod github_pem_repair;
+mod google_mcp_holds_live;
 mod group_dm_live;
 mod hermes_channel_live;
 mod internal_routes;
@@ -58,6 +60,7 @@ mod notify_producers_live;
 mod office_export_live;
 mod pending_dedupe_live;
 mod plan_row_live;
+mod plugin_tickets_live;
 mod price_rig_live;
 mod profile_drawer_live;
 mod profile_live;
@@ -90,6 +93,8 @@ mod unreads;
 mod update_live;
 mod uploads_live;
 mod users_link;
+mod work_wait_behind_live;
+mod workbench_provision_live;
 mod workbench_queue;
 mod workchains_live;
 mod yaml_stringify;

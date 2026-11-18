@@ -750,6 +750,17 @@ pub async fn open_notice(
             .unwrap_or_default(),
         p.maintainer_model.as_deref().unwrap_or("nobody"),
     );
+    // THE PLUGIN'S OWN MAINTENANCE LOOP hands its maintainer the work, so a
+    // ticket with a maintainer is born in the board's pickup column and the
+    // maintainer starts on it — as it always did. With no maintainer it lands
+    // in intake for a person.
+    let pickup = if assignees.is_empty() {
+        None
+    } else {
+        talaria_tasks::pickup_column(&deps.pg, board_id)
+            .await
+            .map_err(|e| format!("ticket create: {e}"))?
+    };
     let task = create_task(
         &deps.tasks(),
         &NewTask {
@@ -766,6 +777,7 @@ pub async fn open_notice(
             parent_id: None,
             tags: &[],
             created_by: UPKEEP_ACTOR,
+            status: pickup.as_deref(),
         },
     )
     .await

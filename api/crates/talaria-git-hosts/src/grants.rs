@@ -94,13 +94,32 @@ pub async fn resolve_grant(
     }
 }
 
+/// What a grant write changed: the grants it added and the ones it removed.
+/// The caller audits both (`workbench.repo_grant`) and takes back the tokens
+/// a removed grant's agent holds for that repo ([`crate::revoke`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GrantChange {
+    pub added: Vec<RepoRef>,
+    pub removed: Vec<RepoRef>,
+    /// The agent's open GitHub permission requests the write withdrew: on a
+    /// host where it no longer holds any repo ([`crate::requests`]). The
+    /// caller settles their approvals.
+    pub withdrawn: Vec<String>,
+}
+
+impl GrantChange {
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty()
+    }
+}
+
 /// Atomic grant replace — a crash can never leave the agent grantless by
-/// accident. `keep` is capped at 100.
+/// accident. `keep` is capped at 100. Answers what it added and removed.
 pub async fn set_granted_repos(
     pg: &PgPool,
     agent_id: &str,
     keep: &[RepoRef],
-) -> Result<(), String> {
+) -> Result<GrantChange, String> {
     let keep = &keep[..keep.len().min(100)];
     let hosts: Vec<String> = keep.iter().map(|g| g.host_id.clone()).collect();
     let repos: Vec<String> = keep.iter().map(|g| g.repo.clone()).collect();
@@ -112,33 +131,80 @@ pub async fn set_granted_repos(
     // hygiene rules, rows that leave go away, rows that arrive start at the
     // defaults. A delete-everything write would wipe an admin's branch rules
     // on every chip toggle.
-    sqlx::query(
+    let removed: Vec<(String, String)> = sqlx::query_as(
         "delete from workbench_repos w where w.agent_id = $1::uuid \
          and not exists (select 1 from unnest($2::text[], $3::text[]) k(host_id, repo) \
-                         where k.host_id = w.host_id and k.repo = w.repo)",
+                         where k.host_id = w.host_id and k.repo = w.repo) \
+         returning w.host_id, w.repo",
     )
     .bind(agent_id)
     .bind(&hosts)
     .bind(&repos)
-    .execute(&mut *tx)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| format!("workbench grant clear: {e}"))?;
-    if !keep.is_empty() {
-        sqlx::query(
+    let added: Vec<(String, String)> = if keep.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as(
             "insert into workbench_repos (agent_id, host_id, repo) \
              select $1::uuid, k.host_id, k.repo from unnest($2::text[], $3::text[]) k(host_id, repo) \
-             on conflict do nothing",
+             on conflict do nothing \
+             returning host_id, repo",
         )
         .bind(agent_id)
         .bind(&hosts)
         .bind(&repos)
-        .execute(&mut *tx)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|e| format!("workbench grant write: {e}"))?;
-    }
+        .map_err(|e| format!("workbench grant write: {e}"))?
+    };
+    // A permission request is the host's, not one repo's: it is withdrawn
+    // with the agent's LAST grant on its host, in the same transaction, so an
+    // approval can never land on a host the agent just left.
+    let mut emptied: Vec<String> = removed.iter().map(|(h, _)| h.clone()).collect();
+    emptied.sort();
+    emptied.dedup();
+    let withdrawn = crate::requests::withdraw_without_grants(&mut tx, agent_id, &emptied).await?;
     tx.commit()
         .await
-        .map_err(|e| format!("workbench grant commit: {e}"))
+        .map_err(|e| format!("workbench grant commit: {e}"))?;
+    let refs = |rows: Vec<(String, String)>| {
+        let mut out: Vec<RepoRef> = rows
+            .into_iter()
+            .map(|(host_id, repo)| RepoRef { host_id, repo })
+            .collect();
+        out.sort_by(|a, b| a.host_id.cmp(&b.host_id).then_with(|| a.repo.cmp(&b.repo)));
+        out
+    };
+    Ok(GrantChange {
+        added: refs(added),
+        removed: refs(removed),
+        withdrawn,
+    })
+}
+
+/// Grant `agent_id` one repo on one host, leaving every other grant as it
+/// is. True when the grant is new. An approval's write (a repo created for
+/// the agent): it never reads the grant set and writes it back, which would
+/// drop a grant an admin added in between.
+pub async fn add_grant(
+    pg: &PgPool,
+    agent_id: &str,
+    host_id: &str,
+    repo: &str,
+) -> Result<bool, String> {
+    sqlx::query(
+        "insert into workbench_repos (agent_id, host_id, repo) values ($1::uuid, $2, $3) \
+         on conflict do nothing",
+    )
+    .bind(agent_id)
+    .bind(host_id)
+    .bind(repo)
+    .execute(pg)
+    .await
+    .map(|r| r.rows_affected() > 0)
+    .map_err(|e| format!("workbench grant write: {e}"))
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
