@@ -47,6 +47,8 @@ struct State {
     moved: Vec<String>,
     discards: usize,
     quiet: Option<Quiet>,
+    /// (agent, session) each quiet stage asked.
+    quiet_asked: Vec<(String, String)>,
     reach_err: Option<String>,
     reserve_err: Option<String>,
     attempt_read_fails: bool,
@@ -160,9 +162,12 @@ impl RewindWorld for World {
         self.log("cancel");
         async move { Ok(()) }.boxed()
     }
-    fn quiet<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Quiet> {
+    fn quiet<'a>(&'a self, agent_model: &'a str, run_id: &'a str) -> BoxFuture<'a, Quiet> {
         self.log("quiet");
-        let answer = self.state().quiet.clone().unwrap_or(Quiet::Confirmed);
+        let mut s = self.state();
+        s.quiet_asked
+            .push((agent_model.to_string(), run_id.to_string()));
+        let answer = s.quiet.clone().unwrap_or(Quiet::Confirmed);
         async move { answer }.boxed()
     }
     fn fork<'a>(
@@ -772,6 +777,19 @@ async fn a_lost_turn_says_what_happened_and_when_to_rewind_again() {
     assert!(err.contains("95 seconds"), "says when to retry: {err}");
     assert!(err.contains("stays stopped"), "{err}");
     assert!(!err.contains("once its turn has ended"), "{err}");
+}
+
+#[tokio::test]
+async fn quiet_asks_the_agent_the_rewind_names_for_the_source_session() {
+    // The agent comes from the rewind's own input, as every other stage's
+    // does: no second read of the source row that could fail and leave the
+    // turn lease unasked for the whole stop window.
+    let world = World::new();
+    drive(&world, Value::Null, None).await.unwrap();
+    assert_eq!(
+        world.state().quiet_asked,
+        vec![("atlas".to_string(), SOURCE.to_string())]
+    );
 }
 
 #[test]
