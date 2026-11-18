@@ -79,6 +79,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 talaria-fleet-create = { workspace = true }
 talaria-gaps = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-home = { workspace = true }
 talaria-titler = { workspace = true }
 talaria-refs = { workspace = true }

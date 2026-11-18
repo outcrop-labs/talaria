@@ -349,6 +349,19 @@ and attaches nothing. That is how to exercise an edit to the workflow, which no
 longer mints a release when it reaches main (only `desktop/` and the dither file
 do).
 
+The key has no second copy on GitHub: a secret cannot be read back. Keep the
+key file and its password in the password manager. Rotating it strands every
+install, because an install trusts only the pubkey it was built with, and
+the plugin has no second key to fall back on. The first release signed by a
+new key fails Update on every older copy ("The download did not match
+Talaria's signature"), and each of those copies is reinstalled once by hand
+from the Releases page. It happened once: on 2026-11-12 the key moved from
+`A7E4E3180ED0F727` to `183E3397DE42EB98`, after the only copy had been
+deleted. So the new pubkey reaches main before, or with, the first release
+the new key signs. `write-latest-json.py` refuses a feed whose signatures
+carry any key ID but the one in `tauri.conf.json`, so a release can never pair
+one key's signatures with another key's pubkey.
+
 A trunk build that touches `desktop/` IS a desktop release — the auto-minor channel: once
 every platform job is green, `desktop-package.yml` mints `desktop-vX.Y.0`
 (highest suffix-free X.Y.Z across the `v*` and `desktop-v*` tags, minor+1,

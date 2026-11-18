@@ -890,6 +890,16 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
             realtime: rt.clone(),
         },
     }));
+    // What each GitHub host's App asks for and what each installation has
+    // accepted, read every ten minutes into the record the mint, the alerts
+    // and Admin → Git hosts read (talaria-git-hosts' holdings). The App key
+    // is opened with the process's current secretbox on each run. Optional:
+    // without it the record goes stale, the mint asks GitHub as it always
+    // did, and the alert says the permissions are unknown.
+    talaria_scheduler::register_job(talaria_git_hosts::holdings::job_spec(
+        state.pg.clone(),
+        live_secretbox(state),
+    ));
 }
 
 /// The census kinds this build cannot define. Empty is arming's
@@ -1156,6 +1166,17 @@ mod tests {
         assert!(
             !REQUIRED_JOBS.contains(&JobName::WorkbenchHarnessChannel),
             "workbench-harness-channel must stay optional: an instance with no Developer Agents runs it as a no-op"
+        );
+        // The GitHub holdings refresh: out of the table, what an org owner
+        // took away or has not yet accepted is learned only on a refused
+        // mint, and the alert reads a record nothing refreshes.
+        assert!(
+            names.contains(&JobName::GitHostHoldings),
+            "git-host-holdings fell out of the job table — an installation's permissions would never be read again"
+        );
+        assert!(
+            !REQUIRED_JOBS.contains(&JobName::GitHostHoldings),
+            "git-host-holdings must stay optional: an instance with no GitHub App host runs it as a no-op"
         );
 
         // THE ROLL'S EDGE, the same completeness rule one layer down. This

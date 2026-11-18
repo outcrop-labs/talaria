@@ -3784,6 +3784,7 @@ dependencies = [
  "talaria-fleet-docker",
  "talaria-fleet-preflight",
  "talaria-gateway",
+ "talaria-git-hosts",
  "talaria-host-metrics",
  "talaria-mcp-service",
  "talaria-notify",
@@ -3891,6 +3892,7 @@ dependencies = [
  "talaria-fleet-seal",
  "talaria-gaps",
  "talaria-gateway",
+ "talaria-git-hosts",
  "talaria-github",
  "talaria-google-agent",
  "talaria-google-api-health",
@@ -4690,6 +4692,7 @@ dependencies = [
  "talaria-daily-brief-focus",
  "talaria-daily-brief-types",
  "talaria-google-calendar",
+ "talaria-google-connections",
  "talaria-harness",
  "talaria-harness-defs",
  "talaria-me",
@@ -5259,9 +5262,12 @@ dependencies = [
  "serde_json",
  "sqlx",
  "talaria-agent-auth",
+ "talaria-audit",
  "talaria-forgejo",
  "talaria-git-host-types",
  "talaria-github",
+ "talaria-realtime",
+ "talaria-scheduler",
  "talaria-secretbox",
  "talaria-workspace-secrets",
  "tokio",
@@ -5362,6 +5368,7 @@ dependencies = [
  "talaria-body",
  "talaria-gateway",
  "talaria-secretbox",
+ "tokio",
  "tracing",
 ]
 
@@ -5378,6 +5385,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-google-client",
  "talaria-secretbox",
+ "tokio",
  "tracing",
  "url",
 ]
@@ -5425,8 +5433,10 @@ name = "talaria-google-errors"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "serde_json",
  "talaria-error",
  "talaria-google-connections",
+ "tokio",
  "tracing",
 ]
 
@@ -5468,6 +5478,7 @@ dependencies = [
  "talaria-gateway",
  "talaria-google-client",
  "talaria-google-connections",
+ "talaria-google-errors",
  "talaria-google-org",
  "talaria-secretbox",
  "talaria-session",
@@ -5481,7 +5492,6 @@ dependencies = [
 name = "talaria-google-org"
 version = "0.1.0"
 dependencies = [
- "axum",
  "base64 0.23.1",
  "reqwest",
  "serde",
@@ -5492,7 +5502,6 @@ dependencies = [
  "talaria-google-connections",
  "talaria-secretbox",
  "tracing",
- "url",
 ]
 
 [[package]]
@@ -5509,6 +5518,7 @@ dependencies = [
  "talaria-google-connections",
  "talaria-google-docs",
  "talaria-google-drive",
+ "talaria-google-errors",
  "talaria-google-gmail",
  "talaria-google-org",
  "talaria-google-sheets",
@@ -5909,6 +5919,7 @@ dependencies = [
  "talaria-fleet-resources",
  "talaria-gaps",
  "talaria-gateway",
+ "talaria-git-hosts",
  "talaria-google-pending",
  "talaria-harness",
  "talaria-harness-defs",
@@ -7077,6 +7088,7 @@ dependencies = [
  "talaria-cron-output",
  "talaria-error",
  "talaria-gaps",
+ "talaria-git-hosts",
  "talaria-harness-defs",
  "talaria-harness-model",
  "talaria-hermes-channel",
@@ -7211,11 +7223,13 @@ dependencies = [
  "talaria-agent-auth",
  "talaria-agent-managers",
  "talaria-api-facades",
+ "talaria-approvals",
  "talaria-attribution",
  "talaria-audit",
  "talaria-boards",
  "talaria-body",
  "talaria-coding-accounts",
+ "talaria-config",
  "talaria-conversations",
  "talaria-db",
  "talaria-error",
@@ -7234,6 +7248,7 @@ dependencies = [
  "talaria-research-origin",
  "talaria-session",
  "talaria-state",
+ "talaria-statuses",
  "talaria-tasks",
  "talaria-teams",
  "talaria-users",

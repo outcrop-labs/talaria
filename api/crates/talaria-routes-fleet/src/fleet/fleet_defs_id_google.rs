@@ -1,11 +1,18 @@
 // /api/fleet/defs/{id}/google — who this agent acts as on Google, and the
 // connect/disconnect control for a per-agent identity.
 //
-// GET    → the registry row (or the legacy fallback) plus connection face
+// GET    → the registry row (or the legacy fallback) plus connection face:
+//          whether the identity this kind uses is connected, as whom, the
+//          OAuth client that minted it (`clientId`) and, when it needs a
+//          person, why (`reconnectReason`)
 // PUT    → set principal_kind. The whole body validates before any write.
 //          `owner` for someone other than the caller is admin-only, and the
 //          person it names is notified either way.
-// DELETE → drop the agent's own Google connection
+// DELETE → drop the agent's own Google connection, revoking its grant at
+//          Google unless another stored connection uses the same Google
+//          account (an identity connected with its manager's own account
+//          shares the manager's grant). The identity, plus `revoked` and
+//          `revokeNote` as on DELETE /api/integrations/google.
 // GET …/connect → begin the OAuth dance that stores that connection
 
 use axum::Json;
@@ -18,7 +25,8 @@ use talaria_api_facades::google::agent::{
     AgentGoogleIdentity, PrincipalKind, agent_google_identity, disconnect_agent_google,
     remember_agent_oauth_state, upsert_principal,
 };
-use talaria_api_facades::google::client::resolve_google_client;
+use talaria_api_facades::google::client::{configured_google_clients, resolve_google_client};
+use talaria_api_facades::google::connections::{reconnect_reason, revoke_note};
 use talaria_api_facades::google::oauth::{
     WORKSPACE_SCOPES, google_agent_connect_redirect_uri, google_connect_url,
     google_integration_enabled, oauth_relocation,
@@ -71,13 +79,24 @@ pub fn parse_principal_put(
     }
 }
 
-fn identity_json(id: &AgentGoogleIdentity) -> Value {
+/// The identity's wire. `clientId` is the OAuth client that minted the
+/// connection this kind uses (null for the org account, and until recorded);
+/// `reconnectReason` is why that connection needs a person, or null.
+async fn identity_json(state: &AppState, id: &AgentGoogleIdentity) -> Value {
+    let sb = state.secretbox().await.unwrap_or_default();
+    let configured = configured_google_clients(&state.pg, &sb).await;
     json!({
         "principalKind": id.kind.as_str(),
         "principalUserId": id.principal_user_id,
         "connected": id.connected,
         "email": id.email,
         "legacyOwnerUserId": id.legacy_owner_user_id,
+        "clientId": id.client_id,
+        "reconnectReason": reconnect_reason(
+            id.client_id.as_deref(),
+            id.flagged.as_deref(),
+            &configured,
+        ),
     })
 }
 
@@ -108,7 +127,7 @@ pub async fn get(
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
     match agent_google_identity(&state.pg, &model).await {
-        Ok(id) => Ok(Json(identity_json(&id)).into_response()),
+        Ok(id) => Ok(Json(identity_json(&state, &id).await).into_response()),
         Err(e) => Ok(internal("[fleet/defs/google] identity read failed", e)),
     }
 }
@@ -215,7 +234,7 @@ pub async fn put(
     )
     .await;
     match agent_google_identity(&state.pg, &model).await {
-        Ok(id) => Ok(Json(identity_json(&id)).into_response()),
+        Ok(id) => Ok(Json(identity_json(&state, &id).await).into_response()),
         Err(e) => Ok(internal("[fleet/defs/google] identity read failed", e)),
     }
 }
@@ -232,8 +251,9 @@ pub async fn delete(
     let Some((def_id, model, display_name)) = agent_model(&state, &id).await? else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
-    let restored = match disconnect_agent_google(&state.pg, &model).await {
-        Ok(p) => p,
+    let sb = state.secretbox().await.unwrap_or_default();
+    let (restored, revoke) = match disconnect_agent_google(&state.pg, &sb, &model).await {
+        Ok(done) => done,
         Err(e) => return Ok(internal("[fleet/defs/google] disconnect failed", e)),
     };
     log_audit(
@@ -245,12 +265,20 @@ pub async fn delete(
             target_id: Some(&def_id),
             target_label: Some(&display_name),
             before: None,
-            after: Some(json!({ "principalKind": restored.kind.as_str() })),
+            after: Some(json!({
+                "principalKind": restored.kind.as_str(),
+                "revoked": revoke.revoked(),
+            })),
         },
     )
     .await;
     match agent_google_identity(&state.pg, &model).await {
-        Ok(id) => Ok(Json(identity_json(&id)).into_response()),
+        Ok(id) => {
+            let mut body = identity_json(&state, &id).await;
+            body["revoked"] = json!(revoke.revoked());
+            body["revokeNote"] = json!(revoke_note(&revoke, Some(user.id.as_str())));
+            Ok(Json(body).into_response())
+        }
         Err(e) => Ok(internal("[fleet/defs/google] identity read failed", e)),
     }
 }

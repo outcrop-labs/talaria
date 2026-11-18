@@ -12,7 +12,7 @@ use serde_json::json;
 use talaria_agent_auth::now_ms;
 use talaria_agent_auth::{AgentSubject, refuse_legacy, require_agent};
 use talaria_api_facades::google::agent::resolve_agent_google;
-use talaria_api_facades::google::errors::google_fail;
+use talaria_api_facades::google::errors::{google_fail, google_token_fail};
 use talaria_api_facades::google::gmail::get_message_with_token;
 use talaria_error::{house_error, house_error_msg};
 use talaria_state::AppState;
@@ -30,14 +30,19 @@ pub async fn get(
         return Ok(denied);
     }
     let sb = state.secretbox().await.unwrap_or_default();
-    let Some(google) =
-        resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms()).await
-    else {
-        return Ok(house_error_msg(
-            StatusCode::CONFLICT,
-            "not_connected",
-            "No Google account is connected for this agent (its owner, or the org account).",
-        ));
+    let google = match resolve_agent_google(&state.pg, &sb, &AgentSubject::Caller(caller), now_ms())
+        .await
+    {
+        Ok(Some(google)) => google,
+        Ok(None) => {
+            return Ok(house_error_msg(
+                StatusCode::CONFLICT,
+                "not_connected",
+                "No Google account is connected for this agent (its owner, or the org account).",
+            ));
+        }
+        // The token itself failed: Google's words, never "not connected".
+        Err(e) => return Ok(google_token_fail(e, "Gmail")),
     };
     // Hand-checked (not a path param constraint) so the shape of the refusal
     // stays this route's own 400, not the router's.

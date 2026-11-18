@@ -6,7 +6,7 @@
 // no remote, and stop before anything would leave the machine. Run by
 // `bun run check`.
 import { execFileSync, spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -25,6 +25,11 @@ import {
   tokenFrom,
   trimLog,
   verdictOf,
+  pickReviewRun,
+  reviewClause,
+  reviewFindingLines,
+  reviewFromAnnotations,
+  REVIEW_WAIT_MS,
 } from './remote-gate.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -63,10 +68,11 @@ check('parseArgs: the defaults, every flag, and both value forms', () => {
     timeoutMin: 60,
     keepRef: false,
     noCheck: false,
+    noReview: false,
     help: false,
   })
-  const all = parseArgs(['--full', '--detach', '--rerun', '--json', '--keep-ref', '--no-check', '--timeout', '15'])
-  eq([all.full, all.detach, all.rerun, all.json, all.keepRef, all.noCheck, all.timeoutMin], [true, true, true, true, true, true, 15])
+  const all = parseArgs(['--full', '--detach', '--rerun', '--json', '--keep-ref', '--no-check', '--no-review', '--timeout', '15'])
+  eq([all.full, all.detach, all.rerun, all.json, all.keepRef, all.noCheck, all.noReview, all.timeoutMin], [true, true, true, true, true, true, true, 15])
   eq(parseArgs(['--watch', '42951152974']).watch, 42951152974)
   eq(parseArgs(['--watch=42951152974']).watch, 42951152974)
   eq(parseArgs(['--timeout=1.5']).timeoutMin, 1.5)
@@ -361,7 +367,7 @@ function withScratchRepo(fn) {
     })
   try {
     mkdirSync(join(dir, 'scripts', 'hooks'), { recursive: true })
-    for (const rel of ['scripts/hooks/remote-gate.mjs', 'scripts/hooks/pr-watch.mjs', 'scripts/surfaces.mjs']) {
+    for (const rel of ['scripts/hooks/remote-gate.mjs', 'scripts/hooks/pr-watch.mjs', 'scripts/surfaces.mjs', 'scripts/judge-review-wire.mjs']) {
       copyFileSync(join(HERE, '..', '..', rel), join(dir, rel))
     }
     writeFileSync(join(dir, 'README'), 'one\n')
@@ -374,6 +380,43 @@ function withScratchRepo(fn) {
     rmSync(dir, { recursive: true, force: true })
   }
 }
+
+
+// ── the model review of the same push ──────────────────────────────────────
+
+const reviewRun = (id, o = {}) => ({ id, head_sha: SHA, event: 'push', path: '.github/workflows/judge-review.yml', status: 'completed', html_url: `https://github.com/o/r/actions/runs/${id}`, ...o })
+check('review: the newest judge-review push run of this sha that the snapshot did not have', () => {
+  const runs = [reviewRun(10), reviewRun(12), reviewRun(11), reviewRun(13, { head_sha: 'f'.repeat(40) }), reviewRun(14, { path: '.github/workflows/ci-offload.yml' }), reviewRun(15, { event: 'pull_request' })]
+  eq(pickReviewRun(runs, SHA, [])?.id, 12)
+  eq(pickReviewRun(runs, SHA, [12, 11])?.id, 10)
+  eq(pickReviewRun(runs, SHA, [10, 11, 12]), null)
+  eq(REVIEW_WAIT_MS, 12 * 60_000)
+})
+
+const ann = (gate, findings) => [
+  { title: 'judge-review verdict', message: `status=reviewed head=${SHA.slice(0, 12)} base=na target=testing listed=${findings.length} more=2 gating=0 would=0 gate=${gate} cost=0.0123 model=m provider=p reason=none reused=none partial=no — x` },
+  ...findings.map((id, i) => ({ title: `judge-review ${id} major correctness`, path: 'ui/src/a.ts', start_line: i + 1, end_line: i + 1, message: `a \u001b[31mtitle\u001b[0m ${i} — the failure text (the PR comment has the fix)` })),
+]
+check('review: the proof clause and the finding lines; no failure text reaches the terminal', () => {
+  const r = reviewFromAnnotations(ann('report', ['jr-00000001']))
+  eq(reviewClause(r), 'review: 1 to read (2 more) $0.0123')
+  eq(reviewFindingLines(r), ['remote-gate: review — jr-00000001 major correctness ui/src/a.ts:1 — a title 0'])
+  eq(reviewClause(reviewFromAnnotations([{ title: 'judge-review verdict', message: 'status=not-reviewed head=abcdef012345 reason=no-reviewer-on-trusted — x' }])), 'review: not reviewed (no-reviewer-on-trusted)')
+  eq(reviewClause(null), 'review: none')
+  eq(reviewClause({ status: 'unread', reason: 'HTTP 502' }), 'review: not read (HTTP 502)')
+  const line = proofLine({ run: runRow(42, { status: 'completed', conclusion: 'success' }), ref: 'ci/wt/x', sha: SHA, mode: 'light', verdict: { ran: ['a'], skipped: [] }, review: r })
+  ok(line.endsWith(' · review: 1 to read (2 more) $0.0123'), line)
+})
+
+check('review: the exit never depends on it, and the ref is deleted only after the wait', () => {
+  const src = readFileSync(join(HERE, 'remote-gate.mjs'), 'utf8')
+  const green = src.slice(src.indexOf("if (verdict.kind === 'green') {"))
+  const wait = green.indexOf('await awaitReview(')
+  const del = green.indexOf('--force-with-lease')
+  ok(wait > 0 && del > wait, `awaitReview at ${wait}, the deletion at ${del}`)
+  ok(!/block\([^)]*review/.test(src) && !/Exit\(2\)[^\n]*review/.test(src), 'a review result reaches an exit')
+  ok(green.slice(0, green.indexOf('throw new Exit(0)')).includes('awaitReview'), 'the review is read on the green path')
+})
 
 check('a tracked edit is `dirty` at once, staged or not; an untracked file only warns', () => {
   withScratchRepo(({ dir, g, gate }) => {

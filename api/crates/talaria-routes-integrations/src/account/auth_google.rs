@@ -1,6 +1,8 @@
 // GET /api/auth/google. Begin the OAuth dance: set the one-shot state cookie
 // and 302 to Google's consent screen. The state cookie is double-submit CSRF
 // proof — random in, random back, compared constant-time at the callback.
+// The client is LOGIN's: the sign-in client when one is set, else the
+// connections client — with the connections side's domain either way.
 //
 // A pinned public origin (AUTH_PUBLIC_URL) owns the dance: when the request
 // arrived at a different origin (a LAN URL, a probe host), the state cookie
@@ -11,7 +13,7 @@
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use talaria_api_facades::google::client::{google_login_enabled, resolve_google_client};
+use talaria_api_facades::google::client::{google_login_enabled, resolve_google_signin_client};
 use talaria_api_facades::google::oauth::{google_auth_url, google_redirect_uri, oauth_relocation};
 use talaria_error::{house_error, internal};
 use talaria_session::{random_token, state_cookie_for};
@@ -22,7 +24,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap, uri: Uri) ->
     if !google_login_enabled(&state.pg, &sb).await {
         return house_error(StatusCode::BAD_REQUEST, "Google login is disabled");
     }
-    let Some(cfg) = resolve_google_client(&state.pg, &sb).await else {
+    let Some(cfg) = resolve_google_signin_client(&state.pg, &sb).await else {
         // The toggle and the client are gated together in google_login_enabled;
         // reaching here without a client is not a state either runtime built.
         return internal("[auth/google]", "login enabled but no client resolved");

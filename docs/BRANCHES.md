@@ -82,6 +82,8 @@ graph LR
    run *and* a green `rc-deploy` run for the head commit, made on `rc`, and no
    unrolled `changelog/` entries. It waits for both runs rather than failing
    ahead of its own evidence: a failed required check is never re-evaluated.
+   The pull request's own CI runs in [promotion mode](#ci-modes): its merge
+   tree is rc's tip, so the battery is not run a second time on it.
 10. **A person merges it**, as a merge commit, and the release follows:
     `tag-release.yml` tags `main` `vX.Y.Z` when the promotion lands a section
     no tag names yet, and `release.yml` does the rest
@@ -173,13 +175,17 @@ refuses boot. So:
 
 `scripts/surfaces.mjs` chooses the mode; job `name:`s never change with it, so
 the required checks match in every mode. A missing or unknown mode counts as
-full, and a missing surface counts as on.
+full, and a missing surface counts as on. A pull request is planned by its
+base's copy of the planner, so a mode reaches a branch's pull requests once the
+planner is on that branch: the promotion that carries promotion mode to `main`
+still runs full, and the ones after it do not.
 
 | Mode | When | What runs |
 | :--- | :--- | :--- |
 | light | a pull request into `testing` (or a stacked branch); a push to `ci/<branch>` | the surfaces the diff touched, Linux only. The api: fmt, workspace clippy, `cargo test -p` for the touched crates and the live tests they reach. No macOS, Windows, iOS or e2e. |
 | integration | a push to `testing` | every touched Linux surface since testing's last green push run; the api workspace-wide with every live test |
-| full | a pull request into `rc` or `main`; a push to `rc` or `main` (since the last green run); `ci/full/<branch>` and an offload of a `hotfix/`, `release/`, `sync/`, `promote/` or `backflow/` branch; `release.yml`; the daily full battery of testing | every touched surface, including macOS, Windows, iOS and e2e |
+| full | a pull request into `rc`, or into `main` when promotion mode does not take it; a push to `rc` or `main` (since the last green run); `ci/full/<branch>` and an offload of a `hotfix/`, `release/`, `sync/`, `promote/` or `backflow/` branch; `release.yml`; the daily full battery of testing | every touched surface, including macOS, Windows, iOS and e2e |
+| promotion | the `rc → main` pull request, when its head is this repository's `rc` and the merge ref's tree equals rc's tip tree | `what changed` and `invariants (no deps)` only; every surface job skips. The tree is the one rc's push CI checked and `rc-deploy` deployed, and the promotion gate requires exactly those runs. A fork's `rc`, or a merge tree that differs, runs full and the run's summary says why |
 
 A push to a long-lived branch checks everything since that branch's last green
 push run (falling back to the merge-base with the branch below it), and those
@@ -194,14 +200,17 @@ unchecked, and a burst of merges is covered by the run that finishes.
 | `bun run gate:remote` | before a pull request exists, in the background | `ci.yml` on a `ci/<branch>` push (`CI offload`): light, or every platform with `--full` — the same jobs a pull request gets |
 | `ci.yml`, light | pull requests into `testing` | the touched surfaces build and test on Linux — enough to land in the lane |
 | `ci.yml`, integration | every push to `testing` | the lane as merged: everything since its last green run, the api workspace-wide |
-| `ci.yml`, full | pull requests into `rc`/`main`, pushes to them, every publish | every surface on every platform — the battery a release carries |
+| `ci.yml`, full | pull requests into `rc` (and into `main` when not a promotion), pushes to `rc`/`main`, every publish | every surface on every platform — the battery a release carries |
+| `ci.yml`, promotion | the `rc → main` pull request whose merge tree is rc's tip | nothing new, on purpose: the tree is byte for byte rc's, so the evidence is rc's push CI and `rc-deploy`, which `promotion-gate` requires. Only `what changed` and the invariants run |
+| `app image builds (docker)` (ci.yml) | changes to the image's build context (`Dockerfile`, `.dockerignore`, `docker/`, `ui/`, `cli/`, `mcp/`, `omp-auth/`, `apps/`, the SDK schema, the shipped skills, the chassis template), in every mode but promotion | the app image builds from the context `.dockerignore` leaves, as `rc-deploy` and `release.yml` build it — on the pull request, not after the merge. Every `rc-deploy` failure from Sep 29 to Nov 10 was this build. Against main's published api package: it proves the context, not this commit's api |
 | daily full battery (`promote-testing.yml`) | weekdays, on testing's tip | macOS, Windows, iOS and e2e on the lane, which no testing push runs; red opens the `testing-red` issue. Never promotion evidence |
 | `migrations (replay + upgrade)` (ci.yml) | migration-touching changes | the array replays from zero *and* upgrades the base branch's array, with the schema snapshot undrifted; a `hotfix/*` appends nothing |
 | `testing-deploy.yml` | every push to `testing` | the commit's dev-profile image boots and answers, and becomes `:testing`; the VM follows. Not a required check: a red deploy blocks no merge, and testing-watch reports it |
 | `rc-deploy.yml` | every push to `rc` | the commit's own image boots as a fresh instance and answers — the staging deploy |
 | `pr-target` (flow.yml) | pull requests into `main`, `rc`, `testing` | `main` takes only this repository's `rc`; `rc` takes only the lanes, checked from the commits; no title or body that would skip the merge's own push checks; no retarget into `rc` or `main` until a push re-runs the checks |
 | `promotion-gate` (flow.yml) | the promotion pull request | the commit was verified in `rc` (CI green, deploy green, in runs made on `rc`) and carries no unrolled `changelog/` entries |
-| `judge.yml` | every pull request | the standards half: the flow (a feature aimed at `rc` or `main` is a `must`), the changelog claim against the surfaces touched, tests, generated trees, commit subjects — plus one sticky comment. Not a required check yet, on purpose |
+| `judge.yml` | every pull request | the exact rules (branch flow, changelog entry for user-visible paths, do-not-touch trees, PR-body asks), from the trusted branch's copy; one sticky comment from a job with no checkout; red on a deterministic `must` only |
+| `judge-review.yml` | same-repository non-draft pull requests; `ci/**` pushes as `offload / judge (review)` | a model's review (OpenRouter; model pinned in `scripts/judge-review.mjs`) run from the trusted branch: at most 3 line annotations, one sticky comment only when there is one to read, cost in the summary. Never fails, never approves, never required |
 | `branch-push` (flow.yml) | pushes to `main`, `rc`, `testing` | content provenance: what a push introduces came from where it is allowed to come from |
 | `pre-push` (git hook) | a push from a wired clone | the same provenance rule, before the network |
 | `mobile-package.yml` | pull requests touching `mobile/`, pushes to rc/main, and on demand | a debug-signed Android APK attached to the run — an `adb install` artifact, not distributable |
@@ -319,7 +328,7 @@ EOF
 
 ```bash
 gh api -X POST repos/outcrop-labs/talaria/rulesets --input - <<'EOF'
-{"name":"testing-checks","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/testing"],"exclude":[]}},"bypass_actors":[],"rules":[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"do_not_enforce_on_create":false,"required_status_checks":[{"context":"what changed","integration_id":15368},{"context":"invariants (no deps)","integration_id":15368},{"context":"test + typecheck (ui)","integration_id":15368},{"context":"typecheck + build (mcp)","integration_id":15368},{"context":"typecheck + test (cli)","integration_id":15368},{"context":"fmt + clippy + test (api)","integration_id":15368},{"context":"fmt + clippy + test + typecheck (desktop)","integration_id":15368},{"context":"test + assemble (mobile)","integration_id":15368},{"context":"migrations (replay + upgrade)","integration_id":15368},{"context":"pr target (flow)","integration_id":15368}]}}]}
+{"name":"testing-checks","target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["refs/heads/testing"],"exclude":[]}},"bypass_actors":[],"rules":[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"do_not_enforce_on_create":false,"required_status_checks":[{"context":"what changed","integration_id":15368},{"context":"invariants (no deps)","integration_id":15368},{"context":"test + typecheck (ui)","integration_id":15368},{"context":"typecheck + build (mcp)","integration_id":15368},{"context":"typecheck + test (cli)","integration_id":15368},{"context":"fmt + clippy + test (api)","integration_id":15368},{"context":"fmt + clippy + test + typecheck (desktop)","integration_id":15368},{"context":"test + assemble (mobile)","integration_id":15368},{"context":"migrations (replay + upgrade)","integration_id":15368},{"context":"app image builds (docker)","integration_id":15368},{"context":"pr target (flow)","integration_id":15368}]}}]}
 EOF
 ```
 
@@ -368,13 +377,17 @@ Things about those lists that are easy to get wrong:
   promotion should merge itself; auto-merge is armed only when main's required
   checks name `promotion gate (rc verified)` — today they name nothing, so a
   person merges every promotion.
-- **The judge is deliberately NOT on any list.** `judge.yml` fails on a `must`,
-  and it stays advisory because a judge with a false positive that blocks a
-  merge teaches everyone to route around it. `pr target (flow)` already flags
-  the wrong door; add `judge (standards)` once its findings have earned it.
-- **`app image builds (docker)` joins `testing-checks`** once the change that
-  adds it lands on testing — appended to the ruleset, the same way every other
-  check here was.
+- **Neither judge is on any list.** `judge (standards)` fails only on a
+  deterministic `must`. `judge (review)` never fails; with
+  `JUDGE_REVIEW_GATE=blockers`, pr-watch holds an agent's done on an
+  unanswered, high-confidence blocker — never a person's merge. The
+  testing-review approval stays a person's: the judges post comments, never
+  reviews, and Actions may not approve pull requests.
+- **A new context joins a ruleset only once its branch reports it.** A required
+  context that the branch's own `ci.yml` never reports holds every pull request
+  into it pending for ever. So `app image builds (docker)`, in the
+  `testing-checks` list above, is appended to that ruleset after the change that
+  adds it merges into testing.
 
 ## What the guard can see, and what it cannot
 

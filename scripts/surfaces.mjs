@@ -26,18 +26,32 @@
 //                Linux jobs only: macOS, Windows, iOS and e2e are skipped.
 //   integration  a push to testing. Linux jobs, on everything since testing's
 //                last green push run.
-//   full         a pull request into rc or main, a push to rc or main,
-//                release.yml's call, a push to ci/full/<branch>, and an offload
-//                of a hotfix/, release/, sync/, promote/ or backflow/ branch
-//                (those lanes go straight into rc). The platform jobs run with
-//                their surface.
+//   full         a pull request into rc, one into main that is not a
+//                promotion (below), a push to rc or main, release.yml's call,
+//                a push to ci/full/<branch>, and an offload of a hotfix/,
+//                release/, sync/, promote/ or backflow/ branch (those lanes go
+//                straight into rc). The platform jobs run with their surface.
+//   promotion    the rc → main pull request, when its head is THIS
+//                repository's rc and the merge ref's tree is rc's tip tree
+//                (HEAD^{tree} == HEAD^2^{tree}). Every surface is off: the
+//                tree is byte for byte the one rc's push CI checked and
+//                rc-deploy deployed, and flow.yml's promotion gate requires
+//                exactly those runs. A fork's rc, or a merge tree that differs,
+//                is full, and the reason says why (isPromotion). Never
+//                callable: only a pull request's own facts pick it.
 //   none         the push deleted the branch. Nothing runs.
+//
+// A pull request is planned by its BASE's copy of this file (ci.yml), so a mode
+// added here applies to pull requests into a branch once this file is on that
+// branch: promotion mode starts with the first promotion AFTER the one that
+// carries it to main.
 //
 // THE RANGES. The safe side of every unknown is "every surface runs": a missing
 // base, a rewritten history, a diff that will not resolve. A skipped check is
 // cheap; a check nobody ran is the thing this repo keeps paying for.
 //   pull request     HEAD^1..HEAD on the merge ref (built against the exact
-//                    base tip), else <base sha>...HEAD.
+//                    base tip), else <base sha>...HEAD. A promotion keeps the
+//                    range for the log; it plans no surface from it.
 //   push main        since main's last green push run of ci.yml, else the
 //                    push's `before`, else everything.
 //   push rc          since rc's last green push run, else the merge-base
@@ -129,6 +143,16 @@ import { fileURLToPath } from 'node:url'
 // Dockerfile: neither goes into the binary. The cost is that job on every Rust
 // pull request; it runs beside the api job, which takes longer, so the wait for
 // a green run does not grow.
+//
+// The app image (ci.yml's `app image builds (docker)`) is the root Dockerfile
+// over the context .dockerignore leaves: the build stage installs and builds
+// ui/, mcp/ and omp-auth/ over `COPY . .`, and the ui build reads
+// cli/src/cmd/app/skeleton.ts, docs/sdk/talaria.schema.json and apps/ from
+// outside ui/; the runtime stage copies docker/'s entrypoint files, the shipped
+// skills and the chassis template. So the surface is those, the two files that
+// shape the context, and all of cli/ (the skeleton can import a sibling the
+// ignore file leaves out — exactly the break the job exists for). Not api/:
+// the image takes the api as a published package and never compiles it.
 
 /** The files that define what the CI jobs are. In every surface. */
 export const JOB_FILES = [
@@ -171,8 +195,14 @@ export const SURFACES = {
     'ui/scripts/check-git-hosts-mirror.sql', 'ui/package.json',
     ...JOB_FILES,
   ],
+  image: [
+    'Dockerfile', '.dockerignore', 'docker/*', 'ui/*', 'cli/*', 'mcp/*', 'omp-auth/*', 'apps/*',
+    'docs/sdk/talaria.schema.json', 'scripts/skills/*', 'scripts/chassis.template.yml',
+    ...JOB_FILES,
+  ],
 }
 
+/** In the order ci.yml's "Normalize the plan" loop lists them; a new one goes last. */
 export const SURFACE_NAMES = Object.keys(SURFACES)
 
 /**
@@ -190,7 +220,14 @@ export const API_KEYS = ['api_scope', 'api_packages', 'api_lib_packages', 'api_i
 /** Every key `ci` writes to $GITHUB_OUTPUT, always, in this order. */
 export const OUTPUT_KEYS = ['mode', 'base', 'range', 'reason', ...SURFACE_NAMES, ...API_KEYS, 'migration_baseline']
 
+/** The modes a caller may ask for (ci.yml's `mode` input). Not `promotion`:
+ *  only a pull request's own facts pick it (isPromotion), and a call that
+ *  names it is an unknown mode, so full. */
 export const MODES = ['light', 'integration', 'full']
+
+/** Why a promotion runs no surface job: the summary's reason, verbatim. */
+export const PROMOTION_REASON =
+  "the merge tree is rc's tip; its evidence is rc's push CI and rc-deploy, which the promotion gate requires"
 
 /** Branch prefixes whose work goes straight into rc: offloaded, they run full. */
 export const FULL_LANES = ['hotfix/', 'release/', 'sync/', 'promote/', 'backflow/']
@@ -1241,6 +1278,43 @@ export function migrationBaseline(ctx, git) {
   return 'origin/main'
 }
 
+/**
+ * Is this pull request the rc → main promotion whose merge commit is rc's tip,
+ * tree for tree? Every condition has to hold, and each one that fails is the
+ * reason the run is full instead:
+ *   - a pull request from `rc` into `main`;
+ *   - the head is this repository's rc (HEAD_REPO == REPO, both known): a
+ *     fork's branch named rc carries no evidence rc's runs are about;
+ *   - the checkout is the merge ref (HEAD^2 exists, the caller says);
+ *   - HEAD^{tree} == HEAD^2^{tree}: merging rc into main changes nothing rc
+ *     does not already hold. flow-guard holds main to that only AFTER the
+ *     merge, on the push; this is the same claim, made before anything skips.
+ * @param {{event?: string, baseRef?: string, headRef?: string, headRepo?: string, repo?: string}} ctx
+ * @param {(args: string[]) => string} git
+ * @param {boolean} merge  whether HEAD^2 resolved
+ * @returns {{ok: true} | {ok: false, why: string}}
+ */
+export function isPromotion(ctx, git, merge) {
+  if (ctx.event !== 'pull_request' || ctx.baseRef !== 'main' || ctx.headRef !== 'rc') {
+    return { ok: false, why: 'not a pull request from rc into main' }
+  }
+  if (!ctx.repo || !ctx.headRepo) return { ok: false, why: "the head repository is unknown, so the head may not be this repository's rc" }
+  if (ctx.headRepo !== ctx.repo) return { ok: false, why: `the head is ${ctx.headRepo}'s rc, not ${ctx.repo}'s` }
+  if (!merge) return { ok: false, why: 'the checkout is not the merge ref, so its tree cannot be compared with rc\'s' }
+  let merged
+  let tip
+  try {
+    merged = git(['rev-parse', 'HEAD^{tree}'])
+    tip = git(['rev-parse', 'HEAD^2^{tree}'])
+  } catch (e) {
+    return { ok: false, why: `git could not read the trees (${oneLine(e)})` }
+  }
+  if (!merged || merged !== tip) {
+    return { ok: false, why: `the merge tree ${String(merged).slice(0, 12)} is not rc's tip tree ${String(tip).slice(0, 12)}: main holds something rc does not` }
+  }
+  return { ok: true }
+}
+
 /** One line for the log and the summary. */
 export function describeApi(api) {
   if (api.scope === 'workspace') return `the workspace, every live module (${api.why})`
@@ -1340,6 +1414,15 @@ export async function planCi(ctx, git, fetchImpl = globalThis.fetch) {
       } else {
         widen(`pull request into ${into} with no merge ref and no base sha: every surface runs`)
       }
+      if (ctx.baseRef === 'main' && ctx.headRef === 'rc') {
+        const promo = isPromotion(ctx, git, merge)
+        if (promo.ok) {
+          mode = 'promotion'
+          reason = PROMOTION_REASON
+        } else {
+          reason = `${reason}; full, not promotion mode: ${promo.why}`
+        }
+      }
     } else if (ctx.event === 'push') {
       const branch = (ctx.ref || '').startsWith('refs/heads/') ? ctx.ref.slice('refs/heads/'.length) : ''
       if (branch === 'main') {
@@ -1372,6 +1455,24 @@ export async function planCi(ctx, git, fetchImpl = globalThis.fetch) {
   } catch (e) {
     if (!mode) mode = 'full'
     widen(`git could not compute a range (${oneLine(e)}): every surface runs`)
+  }
+
+  // Every surface off. The files are listed for the log only — what main
+  // gains — and a diff that will not resolve lists none: the tree comparison,
+  // not the diff, is what decided the mode.
+  if (mode === 'promotion') {
+    let files = []
+    try {
+      files = changedFiles(git, range)
+    } catch {
+      files = []
+    }
+    return {
+      mode, base, range, all: false, reason,
+      surfaces: everySurface(false), files,
+      api: { scope: 'packages', packages: [], libPackages: [], itModules: [], live: false, bin: false, why: 'promotion: rc already tested this tree' },
+      migrationBaseline: migrationBaseline(ctx, git),
+    }
   }
 
   let files = []

@@ -212,6 +212,14 @@ pub fn host_allowed(host: &str, allowed: &[String]) -> bool {
     })
 }
 
+/// May a secret whose Spendable-at list is `allowed` answer git's ask for
+/// `host`? Its list must cover the host, and must cover none of `withheld`:
+/// hosts whose own grant check is the only way a secret spendable there may
+/// answer (see [`credential_for_host`]). Both are lowercase.
+fn answers_git_at(host: &str, allowed: &[String], withheld: &[String]) -> bool {
+    host_allowed(host, allowed) && !withheld.iter().any(|w| host_allowed(w, allowed))
+}
+
 /// Why a handle did not resolve — reported to the operator, never the model: a
 /// caller that learns which names exist has been handed a map of the
 /// workspace's credentials.
@@ -1596,22 +1604,29 @@ pub async fn list_secrets_for_user(pg: &PgPool, user_id: &str) -> Result<Vec<Sec
 // Here nobody wrote anything: git names a host and we answer, so without the
 // allowlist requirement one grant would hand every credential an agent holds
 // to any host it could be pointed at.
+//
+// `WITHHELD` IS WHAT THE CALLER'S GRANT CHECK OWNS. The allowlist covers
+// subdomains, so a secret for `github.com` also answers `api.github.com` —
+// and the value it hands out works at github.com all the same. A secret whose
+// list covers any host in `withheld` (the registered git hosts this ask is not
+// on, talaria-git-hosts' `CredentialScope`) is passed over before it is
+// opened or spent: it answers only through that host's own grant check.
 pub struct HostCredential {
     pub username: String,
     pub password: String,
     pub name: String,
 }
 
-pub async fn credential_for_host(
+/// The secret git's ask at `host` is answered from for `agent_model`, as
+/// `(id, name)`, chosen before anything is opened or spent: granted to the
+/// agent (directly or through its folder), a non-empty Spendable-at list
+/// that covers `host` and no host in `withheld`, not expired, not used up.
+async fn host_secret(
     pg: &PgPool,
-    sb: &SecretBox,
     agent_model: &str,
-    host: &str,
-) -> Result<Option<HostCredential>, String> {
-    let lower = host.trim().to_lowercase();
-    if lower.is_empty() {
-        return Ok(None);
-    }
+    lower: &str,
+    withheld: &[String],
+) -> Result<Option<(String, String)>, String> {
     let rows = sqlx::query(
         "select s.id::text, s.name, s.title, coalesce(s.allowed_hosts, '{}') as allowed_hosts \
            from workspace_secrets s \
@@ -1627,14 +1642,56 @@ pub async fn credential_for_host(
     .fetch_all(pg)
     .await
     .map_err(|e| format!("credential read: {e}"))?;
-    let Some(doc) = rows
+    Ok(rows
         .iter()
-        .find(|r| host_allowed(&lower, &cell_hosts(r, "allowed_hosts")))
-    else {
+        .find(|r| answers_git_at(lower, &cell_hosts(r, "allowed_hosts"), withheld))
+        .map(|doc| (cell_str(doc, "id"), cell_str(doc, "name"))))
+}
+
+/// The name of the workspace secret [`credential_for_host`] would answer
+/// git's ask at `host` from, read without opening or spending it: what the
+/// agent's own diagnosis says its credential there is (talaria-git-hosts'
+/// `token_view`). None when the host's own login answers instead, which
+/// includes the chosen secret having no sealed password or token entry: the
+/// door passes over that one to the host's login, and so does this. What it
+/// cannot see without opening (a seal that fails, a spend refused) it does
+/// not guess at.
+pub async fn secret_answering_git_at(
+    pg: &PgPool,
+    agent_model: &str,
+    host: &str,
+    withheld: &[String],
+) -> Result<Option<String>, String> {
+    let lower = host.trim().to_lowercase();
+    if lower.is_empty() {
+        return Ok(None);
+    }
+    let Some((doc_id, doc_name)) = host_secret(pg, agent_model, &lower, withheld).await? else {
+        return Ok(None);
+    };
+    let entries = cipher_entries(pg, &doc_id).await?;
+    let (_, pass_entry) = login_entries(&entries);
+    Ok(pass_entry
+        .filter(|e| !e.cipher.is_empty())
+        .map(|_| doc_name))
+}
+
+pub async fn credential_for_host(
+    pg: &PgPool,
+    sb: &SecretBox,
+    agent_model: &str,
+    host: &str,
+    withheld: &[String],
+) -> Result<Option<HostCredential>, String> {
+    let lower = host.trim().to_lowercase();
+    if lower.is_empty() {
+        return Ok(None);
+    }
+    let Some((doc_id, doc_name)) = host_secret(pg, agent_model, &lower, withheld).await? else {
         return Ok(None);
     };
 
-    let entries = cipher_entries(pg, &cell_str(doc, "id")).await?;
+    let entries = cipher_entries(pg, &doc_id).await?;
 
     let (user_entry, pass_entry) = login_entries(&entries);
     let Some(pass_entry) = pass_entry else {
@@ -1667,7 +1724,6 @@ pub async fn credential_for_host(
     // the substitution itself. And it is the QUALIFIED handle: a
     // username/password doc has two entries, and the bare form refuses as
     // AMBIGUOUS by design.
-    let doc_name = cell_str(doc, "name");
     let spent = resolve_handles(
         pg,
         sb,
@@ -1890,6 +1946,41 @@ mod tests {
         assert!(host_allowed("x.dev", &[" .x.dev ".to_string()]));
         // An empty entry covers nothing.
         assert!(!host_allowed("x.dev", &["".to_string()]));
+    }
+
+    #[test]
+    fn a_secret_spendable_at_a_withheld_host_answers_git_under_no_other_name() {
+        let hosts = |l: &[&str]| l.iter().map(|h| h.to_string()).collect::<Vec<_>>();
+        let github = hosts(&["github.com"]);
+        // Nothing withheld: the allowlist alone decides, subdomains included.
+        assert!(answers_git_at("github.com", &github, &[]));
+        assert!(answers_git_at("api.github.com", &github, &[]));
+        // github.com registered: the PAT pinned there answers no other name
+        // for it, and nothing for another host on its list either.
+        let registered = hosts(&["github.com"]);
+        assert!(!answers_git_at("api.github.com", &github, &registered));
+        assert!(!answers_git_at("github.com", &github, &registered));
+        let both = hosts(&["github.com", "gitlab.example.com"]);
+        assert!(!answers_git_at("gitlab.example.com", &both, &registered));
+        // A registered origin with a port is withheld by its bare hostname
+        // too, which is what a Spendable-at list names.
+        let forge = hosts(&["git.example.com"]);
+        let registered = hosts(&["git.example.com", "git.example.com:3000"]);
+        assert!(!answers_git_at("git.example.com", &forge, &registered));
+        assert!(!answers_git_at("ci.git.example.com", &forge, &registered));
+        // A secret for a host nobody registered still answers it.
+        let gitlab = hosts(&["gitlab.example.com"]);
+        assert!(answers_git_at("gitlab.example.com", &gitlab, &registered));
+        // The relation is coverage, one way: a list naming only a subdomain
+        // of a registered host does not cover the host, so it still answers
+        // that subdomain. (A host registered at an apex domain must not take
+        // the credentials of every other host under it.)
+        let api_only = hosts(&["api.github.com"]);
+        assert!(answers_git_at(
+            "api.github.com",
+            &api_only,
+            &hosts(&["github.com"])
+        ));
     }
 
     #[test]

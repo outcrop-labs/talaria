@@ -33,6 +33,7 @@
   import AdminEmailPanel from './AdminEmailPanel.svelte'
   import AdminEncryptionPanel from './AdminEncryptionPanel.svelte'
   import AdminGitHostsPanel from './AdminGitHostsPanel.svelte'
+  import AdminGitPermissionsSection from './AdminGitPermissionsSection.svelte'
   import AdminRepoCreationSection from './AdminRepoCreationSection.svelte'
   import AdminRepoFlowSection from './AdminRepoFlowSection.svelte'
   import AdminGoogleClientPanel from './AdminGoogleClientPanel.svelte'
@@ -142,9 +143,11 @@
         <AdminOutreachPanel />
       {/if}
       {#if tab === 'git'}
-        <!-- The hosts first: requests and PR bases are about repos on them. -->
+        <!-- The hosts first: requests and PR bases are about repos on them.
+             What agents asked for leads the panel: an agent waits on it. -->
         <AdminGitHostsPanel />
         <Panel class="mt-4 space-y-5 p-3 sm:p-4">
+          <AdminGitPermissionsSection />
           <AdminRepoCreationSection />
           <AdminRepoFlowSection />
         </Panel>

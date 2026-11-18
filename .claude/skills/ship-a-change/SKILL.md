@@ -105,16 +105,24 @@ bullet. The changelog is the record reviewers and release-notes readers actually
   PR — another session's mid-edit file, verified, not silently absorbed.
 - If a check match was a false positive, the argument lives in the PR where a reviewer
   can veto it.
+- `bun run gate:remote` also reviews the branch (`offload / judge (review)`, the model
+  reading — [judge-pr](../judge-pr/SKILL.md) §2). Read what it prints; fix what is real.
+- A body edit re-runs `judge (standards)` only. A retarget makes `judge (review)` stale:
+  `gh run rerun <id>` (pr-watch prints it) reviews against the new base.
 
-CI comes in three weights, planned by `scripts/surfaces.mjs`. **Light** — Linux jobs for the
-surfaces the branch moved — runs on a `ci/<branch>` offload and a pull request into
-`testing`. **Integration** — the Linux jobs for everything since testing's last green run —
-runs on the push to `testing` your merge makes, beside `testing-deploy.yml`. **Full** — the
-surfaces the change moved, each with its macOS, Windows, iOS and e2e legs — runs on a pull
-request into `rc` or `main` (the snapshot, a hotfix) and a push to either; the daily battery
-of testing and `ci/full/<branch>` (`gate:remote --full`) run every surface that way. A
-platform break your light run could not see turns up there, and comes back to you as a fix
-into testing.
+CI comes in three weights, and one mode for the promotion, all planned by
+`scripts/surfaces.mjs`. **Light** — Linux jobs for the surfaces the branch moved — runs on
+a `ci/<branch>` offload and a pull request into `testing`. **Integration** — the Linux jobs
+for everything since testing's last green run — runs on the push to `testing` your merge
+makes, beside `testing-deploy.yml`. **Full** — the surfaces the change moved, each with its
+macOS, Windows, iOS and e2e legs — runs on a pull request into `rc` (the snapshot, a hotfix)
+and a push to `rc` or `main`; the daily battery of testing and `ci/full/<branch>`
+(`gate:remote --full`) run every surface that way. A platform break your light run could
+not see turns up there, and comes back to you as a fix into testing.
+The `rc → main` pull request runs in **promotion** mode — `what changed` and the
+invariants only — because its tree is rc's tip, which rc's push CI and `rc-deploy` already
+verified. A pull request that touches the app image's build context also builds the image
+(`app image builds (docker)`), so a broken `.dockerignore` fails before the merge.
 
 **A hotfix** is the one change that goes to `rc` directly: a fix rc needs before the next
 snapshot. Cut it from `origin/rc` (`git switch -c hotfix/<name> origin/rc`), never from
@@ -160,7 +168,8 @@ that no longer contains the HEAD you pushed (the branch moved on GitHub without 
 
 | Exit | First line | What you do |
 |---|---|---|
-| 0 | `pr-watch: green` | Checks passed and GitHub reports the PR mergeable (no conflict with its base). Cite the proof line. Into `testing`: merge it and watch it go live (section 7). Into `rc` or `main`: a person reviews and merges — exit 0 does not mean a human approved, and you do not merge. |
+| 0 | `pr-watch: green` | Checks passed and GitHub reports the PR mergeable (no conflict with its base). Cite the proof line. Into `testing`: merge it and watch it go live (section 7). Into `rc` or `main`: a person reviews and merges — exit 0 does not mean a human approved, and you do not merge. The proof line may list findings to read (`judge (review)`, one model's reading). Fix the real ones; name the others in your report with one sentence each. No PR comment is needed. |
+| 2 | `pr-watch: review` | Only when JUDGE_REVIEW_GATE=blockers: a high-confidence blocker nobody answered. Read it against the code. Real → fix, push, re-watch. Wrong → `gh pr comment <n> --body 'judge-review answer <id>: <evidence>'`, re-watch. Still holding after one fix attempt → answer it, or stop and report to a person. |
 | 2 | `pr-watch: red` | Read the log tail and the job URL. Diagnose. Reproduce only that failure locally, if you must: `cargo test -p <crate> <test>` (clippy the same way), `bunx vitest run <file>` — never `api:check`, never a workspace cargo. Fix, `bun run check`, commit, push to this same branch; re-run the watcher (it is in the background). On the `rc` → `main` promotion, the fix is a `hotfix/` branch from `origin/rc` and a pull request against `rc`; on a snapshot into `rc`, a pull request into `testing`, then a fresh snapshot. |
 | 2 | `pr-watch: conflict` | `git fetch origin <base> && git merge origin/<base>` — `testing` for a feature, `rc` for a hotfix. Resolve. `bun run check`, commit, push to this same branch; re-run the watcher (it is in the background). On a promotion nobody pushes the head: a snapshot is replaced by a fresh one once the back-flow merges; for `rc` → `main`, bring `main` into `rc` through a `sync/` pull request against `rc`, as the body says. |
 | 2 | `pr-watch: timeout` | Still pending when the wall clock ran out. Not done, and not a pass. Report the PR URL. Do not claim done. |

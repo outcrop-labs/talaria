@@ -2,8 +2,8 @@
 // in one shape, with the person who owes the answer attached.
 //
 // WHY THIS FILE EXISTS
-//   "Approvals" is not one queue in Talaria. It is eight, and they were written
-//   at eight different times by eight different features:
+//   "Approvals" is not one queue in Talaria. It is nine, and they were written
+//   at nine different times by nine different features:
 //
 //     google_action    google_pending_actions — an agent drafted something that
 //                      LEAVES the building (an email, an invite).
@@ -26,6 +26,12 @@
 //     app_update       app_update_requests — a plugin's branch moved past the
 //                      commit installed (a PR merged) and the new version
 //                      waits for an admin. Admin-only, for the same reason.
+//     git_permission   workbench_permission_requests — a Developer Agent
+//                      asked for a GitHub permission its token lacks.
+//                      Admin-only: what a GitHub token may do is the git-host
+//                      plane's. Open while pending AND while approved but
+//                      waiting on GitHub (`awaiting_github`), so a block on
+//                      GitHub's side is never invisible.
 //
 //   Each of those has its own table, its own surface and its own idea of who
 //   decides. None of them had an idea of how OLD it was, which is the whole
@@ -93,7 +99,7 @@ use talaria_tasks_types::human_assignee_ids;
 
 const LOG: &str = "[approvals]";
 
-/// The eight queues. Serialized as its snake_case strings (`google_action`, …),
+/// The nine queues. Serialized as its snake_case strings (`google_action`, …),
 /// which is what the announce marks' failed-kind log lines and the digest's
 /// counters are written in terms of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -107,6 +113,7 @@ pub enum ApprovalKind {
     BoardAccess,
     AppInstall,
     AppUpdate,
+    GitPermission,
 }
 
 impl ApprovalKind {
@@ -120,6 +127,7 @@ impl ApprovalKind {
             ApprovalKind::BoardAccess => "board_access",
             ApprovalKind::AppInstall => "app_install",
             ApprovalKind::AppUpdate => "app_update",
+            ApprovalKind::GitPermission => "git_permission",
         }
     }
 }
@@ -136,7 +144,7 @@ pub struct Disclosure {
     pub fact: Vec<String>,
 }
 
-/// The census row — the same shape for all eight kinds, so the digest and the
+/// The census row — the same shape for all nine kinds, so the digest and the
 /// SLA are looking at exactly what the decision route authorizes against.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -471,7 +479,8 @@ async fn repo_request_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sql
                 id: id.clone(),
                 title: format!("{agent_model} asked for a new repo: {org}/{name}"),
                 detail: why_line,
-                href: "/admin/agents".into(),
+                // Decided in Admin → Git hosts, beside the host it is created on.
+                href: "/admin/git".into(),
                 waiting_since: epoch_ms_to_iso(created_ms),
                 owner_user_ids: Vec::new(),
                 authority: Authority::Admin { on_board: board_id },
@@ -657,6 +666,86 @@ async fn app_update_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx:
         .collect())
 }
 
+/// Who decides a GitHub permission an agent asked for: an ADMIN (what a
+/// GitHub token may do is the git-host plane's, and the decide route is
+/// admin-gated), bounded to the board of the ticket it was raised on, because
+/// the agent's `why` quotes that board's work. The census reader below and
+/// the decide route (talaria-routes-workbench) both ask this function, so
+/// there is one answer to "may this person decide it".
+pub fn git_permission_authority(board_id: Option<String>) -> Authority {
+    Authority::Admin { on_board: board_id }
+}
+
+/// One open `workbench_permission_requests` row, in column order — the
+/// agent's display name and the ticket's board are nullable.
+type GitPermissionRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+);
+
+/// What a census row says about one GitHub permission request. Pure: the
+/// title is typed fields only, never the agent's words; the detail is the
+/// agent's `why`, which the authority bounds.
+fn git_permission_approval(row: GitPermissionRow) -> PendingApproval {
+    let (id, agent_model, agent_name, repo, permission, level, status, why, created_ms, board_id) =
+        row;
+    let agent = agent_name.unwrap_or(agent_model);
+    let waiting = status == "awaiting_github";
+    let title = if waiting {
+        format!("Approved in Talaria — waiting on GitHub: {agent}'s {permission} {level} on {repo}")
+    } else {
+        format!("{agent} needs {permission} {level} on {repo}")
+    };
+    let detail = if waiting {
+        "The installation that mints this repo's token has not accepted it: an owner of the account accepts it on GitHub, and no token carries it until then.".to_string()
+    } else {
+        let trimmed = why.trim();
+        if trimmed.is_empty() {
+            "The agent's GitHub token lacks it. Approving adds it to the agent's set on this host."
+                .to_string()
+        } else {
+            format!("the agent says: {}", clamp_text(trimmed, 240))
+        }
+    };
+    PendingApproval {
+        kind: ApprovalKind::GitPermission,
+        key: format!("git_permission:{id}"),
+        id,
+        title,
+        detail,
+        href: "/admin/git".into(),
+        waiting_since: epoch_ms_to_iso(created_ms),
+        owner_user_ids: Vec::new(),
+        authority: git_permission_authority(board_id),
+    }
+}
+
+/// `workbench_permission_requests`: an agent asked for a GitHub permission,
+/// open while an admin has not decided (`pending`) and while it is approved
+/// and GitHub does not hold it yet (`awaiting_github`).
+async fn git_permission_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
+    let rows: Vec<GitPermissionRow> = sqlx::query_as(
+        "select r.id::text, r.agent_model, d.display_name, r.repo, r.permission, r.level, \
+                r.status, r.why, (trunc(extract(epoch from r.created_at) * 1000))::bigint, \
+                t.board_id::text \
+         from workbench_permission_requests r \
+         left join agent_defs d on d.id = r.agent_id \
+         left join tasks t on t.id = r.task_id \
+         where r.status in ('pending', 'awaiting_github')",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows.into_iter().map(git_permission_approval).collect())
+}
+
 /// ONE description of what a parked run is as an approval — the census reader
 /// below and the decide route's authorization check both go through this
 /// function, because the only correct way to answer "may this person decide
@@ -815,7 +904,7 @@ pub async fn pending_approvals(pg: &PgPool, definition_for: &DefinitionForFn) ->
     // not migrated yet (no `runs` table at all), which is precisely what
     // `failed_kinds` is for: a workspace mid-deploy still gets its other
     // queues, and the sweep knows not to prune marks it could not see.
-    let reads: [(ApprovalKind, Result<Vec<PendingApproval>, sqlx::Error>); 8] = [
+    let reads: [(ApprovalKind, Result<Vec<PendingApproval>, sqlx::Error>); 9] = [
         (
             ApprovalKind::GoogleAction,
             google_action_approvals(pg).await,
@@ -831,6 +920,10 @@ pub async fn pending_approvals(pg: &PgPool, definition_for: &DefinitionForFn) ->
             ticket_review_approvals(pg).await,
         ),
         (ApprovalKind::RepoRequest, repo_request_approvals(pg).await),
+        (
+            ApprovalKind::GitPermission,
+            git_permission_approvals(pg).await,
+        ),
         (ApprovalKind::BoardAccess, board_access_approvals(pg).await),
         (
             ApprovalKind::RunDecision,
@@ -1249,6 +1342,7 @@ pub fn kind_label(kind: ApprovalKind) -> &'static str {
         ApprovalKind::BoardAccess => "a board a personal assistant asked to join",
         ApprovalKind::AppInstall => "an app an agent asked to install",
         ApprovalKind::AppUpdate => "an update to an app an agent maintains",
+        ApprovalKind::GitPermission => "a GitHub permission an agent asked for",
     }
 }
 
@@ -1327,6 +1421,9 @@ fn announce_to_named_only(kind: ApprovalKind) -> bool {
         ApprovalKind::AppInstall => false,
         // Same: admin-only and ownerless, and a merged fix waits behind it.
         ApprovalKind::AppUpdate => false,
+        // Admin-only and ownerless, like repo_request: narrowing would
+        // silence it, and an agent's work waits behind the permission.
+        ApprovalKind::GitPermission => false,
     }
 }
 
@@ -1927,6 +2024,88 @@ mod tests {
             serde_json::to_value(ApprovalKind::TicketReview).unwrap(),
             serde_json::json!("ticket_review")
         );
+        // Every kind: its `as_str` is its serde spelling, and no two share
+        // one. The nine are the census's nine reads (`pending_approvals`'
+        // array is typed `[_; 9]`, so a tenth kind fails to compile there
+        // until it is read).
+        let all = [
+            ApprovalKind::GoogleAction,
+            ApprovalKind::WorkbenchPlan,
+            ApprovalKind::TicketReview,
+            ApprovalKind::RepoRequest,
+            ApprovalKind::RunDecision,
+            ApprovalKind::BoardAccess,
+            ApprovalKind::AppInstall,
+            ApprovalKind::AppUpdate,
+            ApprovalKind::GitPermission,
+        ];
+        let wire: Vec<&str> = all.iter().map(|k| k.as_str()).collect();
+        assert_eq!(
+            wire,
+            [
+                "google_action",
+                "workbench_plan",
+                "ticket_review",
+                "repo_request",
+                "run_decision",
+                "board_access",
+                "app_install",
+                "app_update",
+                "git_permission",
+            ]
+        );
+        for k in all {
+            assert_eq!(
+                serde_json::to_value(k).unwrap(),
+                serde_json::json!(k.as_str())
+            );
+            assert!(!kind_label(k).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_git_permission_is_titled_from_its_fields_and_bounded_to_its_board() {
+        let row = |status: &str, why: &str, board: Option<&str>| {
+            (
+                "r1".to_string(),
+                "dev-billy".to_string(),
+                Some("Billy".to_string()),
+                "acme/site".to_string(),
+                "workflows".to_string(),
+                "write".to_string(),
+                status.to_string(),
+                why.to_string(),
+                0i64,
+                board.map(str::to_string),
+            )
+        };
+        let pending = git_permission_approval(row("pending", "CI must change", Some("b1")));
+        assert_eq!(pending.kind, ApprovalKind::GitPermission);
+        assert_eq!(pending.key, "git_permission:r1");
+        assert_eq!(pending.title, "Billy needs workflows write on acme/site");
+        assert_eq!(pending.detail, "the agent says: CI must change");
+        assert_eq!(pending.href, "/admin/git");
+        assert_eq!(
+            pending.authority,
+            Authority::Admin {
+                on_board: Some("b1".into())
+            }
+        );
+        assert!(pending.owner_user_ids.is_empty());
+        let waiting = git_permission_approval(row("awaiting_github", "CI must change", None));
+        assert!(
+            waiting
+                .title
+                .starts_with("Approved in Talaria — waiting on GitHub"),
+            "{}",
+            waiting.title
+        );
+        assert!(
+            !waiting.detail.contains("CI must change"),
+            "the agent's words are the pending row's, not the wait's"
+        );
+        assert_eq!(waiting.authority, Authority::Admin { on_board: None });
+        assert!(!announce_to_named_only(ApprovalKind::GitPermission));
     }
 
     #[test]

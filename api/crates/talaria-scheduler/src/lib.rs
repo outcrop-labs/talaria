@@ -129,6 +129,9 @@ pub enum JobName {
     /// and the harness's bun checked upstream, smoke-tested on a workbench,
     /// then adopted for new jobs, one step a minute.
     WorkbenchHarnessChannel,
+    /// What each GitHub host's App asks for and what each installation has
+    /// accepted (talaria-git-hosts' holdings record), read every ten minutes.
+    GitHostHoldings,
 }
 
 impl JobName {
@@ -163,6 +166,7 @@ impl JobName {
             JobName::PushPrune => "push-prune",
             JobName::HermesChannel => "hermes-channel",
             JobName::WorkbenchHarnessChannel => "workbench-harness-channel",
+            JobName::GitHostHoldings => "git-host-holdings",
         }
     }
 }
