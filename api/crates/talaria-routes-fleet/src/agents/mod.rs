@@ -11,6 +11,7 @@ pub mod cron_output;
 pub mod gaps;
 pub mod gaps_id;
 pub mod muse;
+pub mod runs_checkpoints;
 pub mod runs_events;
 pub mod runs_transcript;
 pub mod runs_watch;

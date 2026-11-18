@@ -6,7 +6,7 @@
 // refusal, the park/answer/stale-key path, the deferral wait, and
 // cancel-from-anywhere. House rule: #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test it runs_store:: -- --ignored
+//   DATABASE_URL=postgres://… cargo test -p talaria-api --test it runs_store:: -- --ignored
 
 use crate::support::pg;
 use serde_json::json;
@@ -15,13 +15,14 @@ use talaria_api::runs::define::{
     DecisionAnswer, DecisionOption, DecisionRequest, RunDecision, RunState,
 };
 use talaria_api::runs::store::{
-    AnswerOutcome, CancelOutcome, ClaimOutcome, NewRun, PgRunStore, RunStore, WriteFailure,
-    agent_turn_of, set_agent_run_id,
+    AnswerOutcome, CancelOutcome, CheckpointKind, ClaimOutcome, NewRun, PgRunStore, RunStore,
+    WriteFailure, agent_turn_of, run_checkpoints, set_agent_run_id,
 };
-/// One run of the test kind; earlier crashed runs of this suite are swept so
-/// the unique approval_key index never bites the next attempt.
-async fn cleanup(pg: &PgPool) {
-    sqlx::query("delete from runs where kind = 'rust-store-test'")
+/// Every test passes its own kind: the suite runs in parallel, and this deletes
+/// all of a kind's runs.
+async fn cleanup(pg: &PgPool, kind: &str) {
+    sqlx::query("delete from runs where kind = $1")
+        .bind(kind)
         .execute(pg)
         .await
         .unwrap();
@@ -31,14 +32,15 @@ async fn cleanup(pg: &PgPool) {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_cas_lifecycle_refuses_every_wrong_writer() {
     let pg = pg().await;
-    cleanup(&pg).await;
+    let kind = "rust-store-test-cas";
+    cleanup(&pg, kind).await;
     let store = PgRunStore::new(pg.clone());
 
     let id = uuid::Uuid::new_v4().to_string();
     let run = store
         .insert(NewRun {
             id: id.clone(),
-            kind: "rust-store-test".into(),
+            kind: kind.into(),
             owner_user_id: None,
             subject_type: None,
             subject_id: None,
@@ -235,7 +237,7 @@ async fn the_cas_lifecycle_refuses_every_wrong_writer() {
         CancelOutcome::Terminal { .. }
     ));
 
-    cleanup(&pg).await;
+    cleanup(&pg, kind).await;
 }
 
 #[tokio::test]
@@ -303,12 +305,8 @@ async fn due_finds_the_unleased_and_kind_views_read_the_latest() {
     use talaria_api::runs::store::{active_run_of_kind, latest_run_of_kind};
 
     let pg = pg().await;
-    let kind = "rust-store-test-due"; // own kind: this suite runs its tests in parallel
-    sqlx::query("delete from runs where kind = $1")
-        .bind(kind)
-        .execute(&pg)
-        .await
-        .unwrap();
+    let kind = "rust-store-test-due";
+    cleanup(&pg, kind).await;
     let store = PgRunStore::new(pg.clone());
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -382,4 +380,124 @@ impl ClaimAssert for ClaimOutcome {
             "expected Claimed, got {self:?}"
         );
     }
+}
+
+async fn claimed_run(store: &PgRunStore, kind: &str) -> (String, String) {
+    let id = uuid::Uuid::new_v4().to_string();
+    store
+        .insert(NewRun {
+            id: id.clone(),
+            kind: kind.into(),
+            owner_user_id: None,
+            subject_type: None,
+            subject_id: None,
+            input: json!({}),
+            phase: "starting".into(),
+        })
+        .await
+        .unwrap();
+    let token = format!("driver:{}", uuid::Uuid::new_v4());
+    match store.claim(&id, &token, 60_000).await.unwrap() {
+        ClaimOutcome::Claimed { .. } => (id, token),
+        other => panic!("a fresh run must be claimable, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn n_checkpoints_yield_n_ledger_rows_and_the_run_holds_the_last() {
+    let pg = pg().await;
+    let kind = "rust-store-test-ledger";
+    cleanup(&pg, kind).await;
+    let store = PgRunStore::new(pg.clone());
+    let (id, token) = claimed_run(&store, kind).await;
+
+    for turn in 1..=3 {
+        let checkpoint = json!({"stage": "send", "turn": turn, "stageAttempt": 0});
+        store
+            .checkpoint(&id, &token, checkpoint, format!("turn {turn}"), false)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    store
+        .checkpoint(&id, &token, json!({"cursor": 9}), "swept".into(), false)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        [1, 2, 3, 4],
+        "one gapless row per checkpoint, oldest first"
+    );
+    assert!(rows.iter().all(|r| r.kind == CheckpointKind::Turn));
+    assert_eq!(rows[1].turn, Some(2));
+    assert_eq!(rows[1].status.as_deref(), Some("send"));
+    assert_eq!(rows[1].title.as_deref(), Some("turn 2"));
+    assert_eq!(rows[3].turn, None);
+    assert_eq!(rows[3].status, None);
+    assert!(!rows[0].restorable, "a turn boundary restores nothing");
+    assert!(rows[0].unrestorable_reason.is_some());
+
+    let run = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(run.checkpoint, json!({"cursor": 9}));
+    assert_eq!(run.phase, "swept");
+
+    cleanup(&pg, kind).await;
+    assert!(
+        run_checkpoints(&pg, &id).await.unwrap().is_empty(),
+        "the ledger goes with its run"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_lost_lease_write_leaves_no_ledger_row() {
+    let pg = pg().await;
+    let kind = "rust-store-test-lost-lease";
+    cleanup(&pg, kind).await;
+    let store = PgRunStore::new(pg.clone());
+    let (id, token) = claimed_run(&store, kind).await;
+    store
+        .checkpoint(&id, &token, json!({"turn": 1}), "turn 1".into(), false)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let refused = store
+        .checkpoint(
+            &id,
+            "someone-else",
+            json!({"turn": 2}),
+            "hijack".into(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(refused, Err(WriteFailure::LeaseLost { .. })));
+
+    store.cancel(&id, None).await.unwrap();
+    let cancelled = store
+        .checkpoint(&id, &token, json!({"turn": 3}), "late".into(), false)
+        .await
+        .unwrap();
+    assert_eq!(cancelled, Err(WriteFailure::Cancelled));
+
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the leaseholder's write is in the ledger"
+    );
+    assert_eq!(rows[0].turn, Some(1));
+    let seq: i64 = sqlx::query_scalar("select checkpoint_seq from runs where id = $1::uuid")
+        .bind(&id)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(seq, 1, "a refused write allocates no seq");
+
+    cleanup(&pg, kind).await;
 }

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-27 routes.
+28 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -32,6 +32,7 @@
 | [`/api/gaps`](#apigaps) | GET | `session` |
 | [`/api/gaps/{id}`](#apigapsid) | PUT | `session` + `perm:agents.manage` |
 | [`/api/muse`](#apimuse) | POST | `session` |
+| [`/api/runs/{id}/checkpoints`](#apirunsidcheckpoints) | GET | `session` |
 | [`/api/runs/{id}/events`](#apirunsidevents) | GET | `session` |
 | [`/api/runs/{id}/transcript`](#apirunsidtranscript) | GET | `session` |
 | [`/api/runs/{id}/watch`](#apirunsidwatch) | GET | `session` |
@@ -389,6 +390,20 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/muse.rs`](../../api/crates/
 | `instruction` | `string` | instruction: trimmed, then 1..8_000 (empty after trim is a 400). |
 | `current` | `string?(300000)` |  |
 | `context` | `string?(2000)` |  |
+
+## `/api/runs/{id}/checkpoints`
+
+Source: [`api/crates/talaria-routes-fleet/src/agents/runs_checkpoints.rs`](../../api/crates/talaria-routes-fleet/src/agents/runs_checkpoints.rs)
+
+> GET /api/runs/{id}/checkpoints. The run's append-only ledger, oldest first.
+>
+> Same authority as the transcript beside it, and the same refusal: missing
+> and out-of-audience both answer 403, so a guessable id is not an existence
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{checkpoints}` | 200, 403 | — |
 
 ## `/api/runs/{id}/events`
 
