@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import { buttonClasses } from '@/components/ui/button'
   import Skeleton from '@/components/ui/Skeleton.svelte'
@@ -18,6 +19,9 @@
     connected: boolean
     email: string | null
     connectedAt: string | null
+    /** Why the connection needs a person (its OAuth client is gone, or Google
+     *  refused it), else null — the server's sentence. */
+    reconnectReason: string | null
   }
 
   const qc = useQueryClient()
@@ -65,16 +69,27 @@
     <SettingsRow label="Google Workspace" hint="Not set up on this server yet. Ask an admin to register the Google client under Organization, General." />
   {/snippet}
   {#snippet children(data)}
-    <SettingsRow
-      label="Google Workspace"
-      hint={data.connected ? (data.email ?? 'Your account') : 'Mail, Calendar and Drive.'}
-      info="It reads as soon as you connect. Every email and invite it drafts waits for your approval in the Inbox."
-    >
+    <SettingsRow label="Google Workspace" info="It reads as soon as you connect. Every email and invite it drafts waits for your approval in the Inbox.">
+      {#snippet hint()}
+        {#if data.connected}
+          {data.email ?? 'Your account'}
+          {#if data.reconnectReason}<span class="block">{data.reconnectReason}</span>{/if}
+        {:else}
+          Mail, Calendar and Drive.
+        {/if}
+      {/snippet}
       <!-- Beside its control: in a group of settings, a status column of one would sit apart from everything. -->
       <span class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
-        <StatusDot status={data.connected ? 'ok' : 'idle'} />{data.connected ? 'Connected' : 'Not connected'}
+        {#if data.connected && data.reconnectReason}
+          <StatusDot status="warn" />Needs sign-in
+        {:else}
+          <StatusDot status={data.connected ? 'ok' : 'idle'} />{data.connected ? 'Connected' : 'Not connected'}
+        {/if}
       </span>
       {#if data.connected}
+        {#if data.reconnectReason}
+          <SettingsRowAction label="Reconnect Google Workspace" href="/api/integrations/google/connect">Reconnect</SettingsRowAction>
+        {/if}
         <SettingsRowMenu
           label="Actions for Google Workspace"
           items={[{ label: 'Disconnect Google', danger: true, onSelect: () => void disconnect() }]}

@@ -58,8 +58,25 @@
     principalKind: 'owner' | 'org' | 'agent'
     principalUserId: string | null
     connected: boolean
+    /** For an org agent the org account's address and `reconnectReason` reach
+     *  admins only; other managers read null. */
     email: string | null
     legacyOwnerUserId: string | null
+    /** The OAuth client that minted the connection this kind uses. */
+    clientId: string | null
+    /** Why that connection needs a person, else null — the server's sentence. */
+    reconnectReason: string | null
+    /** What is known of that client's AI-agent mark (null: no client recorded). */
+    agentic: 'verified' | 'declared_agentic' | 'declared_not_agentic' | 'unknown' | null
+    /** The server's sentence for why Google's Workspace MCP servers would not
+     *  be called with this connection, and the fix, else null. */
+    mcpRefusal: string | null
+  }
+  const AGENTIC_LABEL: Record<NonNullable<GoogleIdentity['agentic']>, string> = {
+    verified: 'marked for AI agents (Google confirmed)',
+    declared_agentic: 'marked for AI agents (declared)',
+    declared_not_agentic: 'not marked for AI agents (declared)',
+    unknown: 'AI-agent mark not recorded',
   }
   const googleQuery = createQuery(() => ({
     queryKey: ['agent-google', def.id],
@@ -69,6 +86,10 @@
   let kind = $state<'owner' | 'org' | 'agent'>('org')
   let principalUserId = $state('')
   let googleError = $state('')
+  // Set when a disconnect forgot the connection but did not revoke the grant
+  // at Google (another stored connection shares it, or Google refused) —
+  // the server's own sentence.
+  let googleNote = $state('')
   let googleBusy = $state(false)
   let googleSeeded = $state(false)
   $effect(() => {
@@ -120,9 +141,11 @@
   const isLocal = (t: ModelTarget) => /inference|vllm|ollama|spark|local/.test(t.endpoint)
   const disconnectGoogle = async () => {
     googleError = ''
+    googleNote = ''
     googleBusy = true
     try {
-      const saved = await delJson<GoogleIdentity>(`/api/fleet/defs/${def.id}/google`)
+      const saved = await delJson<GoogleIdentity & { revoked: boolean; revokeNote: string | null }>(`/api/fleet/defs/${def.id}/google`)
+      googleNote = saved.revokeNote ?? ''
       kind = saved.principalKind
       principalUserId = saved.principalUserId ?? ''
       await qc.invalidateQueries({ queryKey: ['agent-google', def.id] })
@@ -209,7 +232,18 @@
         <!-- apart: a person's account is two fields wide, and must not size the column the rows above and below share. -->
         <SettingsRow label="Google account" apart saved={autosave.saved('google')}>
           {#snippet hint()}
-            {#if googleError}<span class="text-danger">{googleError}</span>{:else if googleDirty}Not saved yet.{:else}{googleStatus}{/if}
+            {#if googleError}<span class="text-danger">{googleError}</span>{:else if googleDirty}Not saved yet.{:else}
+              {@const g = googleQuery.data}
+              {googleStatus}
+              {#if g?.connected && g.clientId}
+                <span title="The OAuth client that minted this connection. Google's Workspace MCP servers take only a client marked “Use this client for an AI-powered agent”, and Organization, General records the mark and checks it with Google.">
+                  Client <span class="font-mono text-xs">{g.clientId}</span>{#if g.agentic}, {AGENTIC_LABEL[g.agentic]}{/if}.
+                </span>
+              {/if}
+              {#if g?.connected && g.reconnectReason}<span class="block text-warning">{g.reconnectReason}</span>{/if}
+              {#if g?.connected && g.mcpRefusal}<span class="block">{g.mcpRefusal}</span>{/if}
+              {#if googleNote}<span class="block">{googleNote}</span>{/if}
+            {/if}
           {/snippet}
           {#if googleQuery.isLoading}
             <Skeleton class="h-8 w-[280px]" />
@@ -240,7 +274,9 @@
               />
             {/if}
             {#if kind === 'agent' && !googleDirty}
-              {#if googleQuery.data?.connected}
+              <!-- The saved principal's grant, not the unsaved pick: `connected`
+                   describes the org or owner grant for those kinds. -->
+              {#if googleQuery.data?.principalKind === 'agent' && googleQuery.data.connected}
                 <DangerLink onClick={() => void disconnectGoogle()} disabled={googleBusy}>Disconnect Google</DangerLink>
               {/if}
               <a href={`/api/fleet/defs/${def.id}/google/connect`} class={buttonClasses({ variant: 'outline', size: 'sm', voice: 'sans' })}>Connect Google</a>

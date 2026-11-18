@@ -21,6 +21,7 @@ talaria-daily-brief-delegation = { workspace = true }
 talaria-daily-brief-focus = { workspace = true }
 talaria-daily-brief-types = { workspace = true }
 talaria-google-calendar = { workspace = true }
+talaria-google-connections = { workspace = true }
 talaria-harness = { workspace = true }
 talaria-harness-defs = { workspace = true }
 talaria-me = { workspace = true }

@@ -1027,6 +1027,32 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("PUT") }),
         )
         .route(
+            "/api/admin/google-client/agentic",
+            put(talaria_routes_admin::admin::admin_google_client::put_agentic)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        .route(
+            "/api/admin/google-client/check",
+            post(talaria_routes_admin::admin::admin_google_client::post_check)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/admin/google/mcp",
+            get(talaria_routes_admin::admin::admin_google_mcp::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/admin/google/mcp/{product}",
+            post(talaria_routes_admin::admin::admin_google_mcp::post)
+                .delete(talaria_routes_admin::admin::admin_google_mcp::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/admin/google/mcp/{product}/tools/{tool}",
+            put(talaria_routes_admin::admin::admin_google_mcp::put_tool)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        .route(
             "/api/admin/instance",
             get(talaria_routes_admin::admin::admin_instance::get)
                 .put(talaria_routes_admin::admin::admin_instance::put)
@@ -1559,10 +1585,12 @@ pub fn router(state: AppState) -> Router {
         )
         // The workbench family, the agent sandbox plane: the per-repo git
         // flow, the operator's git hosts (talaria-git-hosts — list/add,
-        // read/patch/remove, test connection; admin, they hold org
-        // credentials), the human side of
+        // read/patch/remove, test connection, refresh what a GitHub App's
+        // installations accepted; admin, they hold org credentials), the
+        // human side of
         // workbench jobs (the ticket strip + approve/reject/merge-to-testing),
-        // the repo-creation approval queue, and the per-agent repo grants.
+        // the repo-creation approval queue, the per-agent repo grants, and
+        // the GitHub permissions an admin gives an agent on each host.
         // Who is a developer is the agent's own switch (fleet/defs PATCH).
         .route(
             "/api/workbench/flow",
@@ -1584,9 +1612,20 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
+            "/api/workbench/git-hosts/{id}/refresh",
+            post(talaria_routes_workbench::workbench::workbench_git_hosts_id_refresh::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/workbench/git-hosts/{id}/test",
             post(talaria_routes_workbench::workbench::workbench_git_hosts_id_test::post)
                 .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/workbench/github-permissions/{agentId}",
+            get(talaria_routes_workbench::workbench::workbench_github_permissions_agent_id::get)
+                .put(talaria_routes_workbench::workbench::workbench_github_permissions_agent_id::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(
             "/api/workbench/harnesses",
@@ -1598,6 +1637,12 @@ pub fn router(state: AppState) -> Router {
             "/api/workbench/jobs",
             get(talaria_routes_workbench::workbench::workbench_jobs::get)
                 .put(talaria_routes_workbench::workbench::workbench_jobs::put)
+                .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/workbench/permission-requests",
+            get(talaria_routes_workbench::workbench::workbench_permission_requests::get)
+                .put(talaria_routes_workbench::workbench::workbench_permission_requests::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
         )
         .route(

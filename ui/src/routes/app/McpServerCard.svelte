@@ -190,15 +190,20 @@
     ...(external && !s.package && s.authMode === 'org'
       ? [{ label: s.headerKeys?.length ? 'Edit credentials' : 'Set credentials', onSelect: () => (credentialsOpen = true) }]
       : []),
-    ...(external && !s.package
+    ...(external && !s.package && s.authMode !== 'google'
       ? [{ label: 'Detect sign-in method again', onSelect: () => ask({ redetectAuth: true, refreshTools: true }) }]
       : []),
     ...(s.oauthEnabled && s.oauthMeta?.clientSet ? [{ label: 'OAuth app settings', onSelect: () => (oauthOpen = true) }] : []),
     { label: s.enabled ? 'Disable server' : 'Enable server', onSelect: () => void patch({ enabled: !s.enabled }) },
-    {
-      label: s.authMode === 'org' ? 'Switch to per-user sign-in' : 'Switch to one org account',
-      onSelect: () => void patch({ authMode: s.authMode === 'org' ? 'per-user' : 'org' }),
-    },
+    // A Google Workspace MCP server's mode is the pack's.
+    ...(s.authMode === 'google'
+      ? []
+      : [
+          {
+            label: s.authMode === 'org' ? 'Switch to per-user sign-in' : 'Switch to one org account',
+            onSelect: () => void patch({ authMode: s.authMode === 'org' ? 'per-user' : 'org' }),
+          },
+        ]),
     ...(s.oauthEnabled && s.authMode === 'org' && s.orgConnected
       ? [{ label: 'Reconnect org account', onSelect: () => void connectPopup(s.id, 'org') }]
       : []),
@@ -240,6 +245,15 @@
       {:else if s.package}
         <Chip class="-my-px" title={`Runs as a hardened container from a ${s.package.kind.toUpperCase()} package. One org credential, sealed at rest and spoken only to the container.`}>
           Package
+        </Chip>
+      {/if}
+      {#if s.authMode === 'google'}
+        <Chip
+          class="-my-px"
+          tone="warn"
+          title="Google Workspace MCP, Developer Preview (Organization, General). Each agent acts with its own Google account. Read-only tools run, and every other call waits for a person to approve it."
+        >
+          Google preview
         </Chip>
       {/if}
       <!-- Where the status already reads "Each person signs in", the chip would say it twice. -->

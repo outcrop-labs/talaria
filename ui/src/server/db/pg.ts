@@ -4857,6 +4857,165 @@ alter table tasks drop column if exists conversation_id`,
   // steps, the failing step's output, a heartbeat) that the MCP answers, the
   // ticket strip and the Work view all read. NULL = never provisioned.
   `alter table workbench_jobs add column if not exists provision jsonb`,
+  // WHAT A GITHUB APP ASKS FOR, AND WHAT EACH INSTALLATION ACCEPTED
+  // (talaria-git-hosts' holdings, docs/WORKBENCH.md "Git hosts"). One row per
+  // installation a GitHub host's App connection uses: the App's ask and the
+  // installation's accepted set at the last good read (`GET /app`,
+  // `GET /app/installations/{id}`), its repository selection, suspension and
+  // settings page, when it was read, and why the last read failed (the last
+  // good answer stays). The mint sizes tokens to `held`, the alerts read it
+  // instead of GitHub, and Admin → Git hosts shows what is still waiting for
+  // an org owner. Refreshed every ten minutes, after a refused mint, on a
+  // host's writes and on an admin's Refresh. A new table, so roll-safe: the
+  // previous release never reads it.
+  `create table if not exists git_host_installations (
+     host_id text not null references git_hosts(id) on delete cascade,
+     installation_id bigint not null,
+     account text not null default '',
+     app_permissions jsonb,
+     held jsonb,
+     repository_selection text,
+     suspended_at timestamptz,
+     html_url text,
+     checked_at timestamptz,
+     error text,
+     primary key (host_id, installation_id)
+   )`,
+  // THE GITHUB PERMISSIONS AN ADMIN SETS FOR AN AGENT ON A HOST
+  // (talaria-git-hosts' permissions, docs/WORKBENCH.md "Git hosts"). Per
+  // agent, per host: the agent's WHOLE set as `{key: level}` — any key
+  // GitHub's App catalog knows, repository and organization keys alike —
+  // applying to every repo the agent is granted on that host (workbench_repos
+  // stays the repo gate and carries none). Written by an admin only, through
+  // a compare-and-set or an approval's one-key merge; the credential door
+  // mints the set, met with what the installation holds, into the agent's
+  // token, and a narrowing revokes the tokens already handed out. No row is
+  // the default (contents and pull requests to write, metadata to read). A
+  // new table, so roll-safe: the previous release never reads it, and an
+  // agent without a row carries what it always did.
+  `create table if not exists agent_github_permissions (
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     host_id text not null references git_hosts(id) on delete cascade,
+     permissions jsonb not null default '{}'::jsonb,
+     updated_by uuid references users(id) on delete set null,
+     updated_at timestamptz not null default now(),
+     primary key (agent_id, host_id)
+   )`,
+  // EVERY GOOGLE CONNECTION REMEMBERS THE CLIENT THAT MINTED IT
+  // (docs/GOOGLE-WORKSPACE.md "Which client a connection refreshes with").
+  // OAuth binds a refresh token to the client it was issued to, so each token
+  // store records that client and refreshes with it wherever it now sits
+  // (talaria-google-connections' vend_grant): an operator may move a client
+  // between the connections and sign-in slots without stranding a grant.
+  // `reconnect_reason` is Google's words from the last time it refused that
+  // client (invalid_client, unauthorized_client) — the grant is kept, never
+  // cleared, and a successful refresh forgets it; `reconnect_flagged_at` is
+  // when that refusal was first seen. Nullable columns, so roll-safe: the
+  // previous release neither reads nor writes them. Its limit: a reconnect
+  // the previous release stores (after a roll-back) keeps whatever stamp the
+  // row had, and a stamped grant is only ever sent to its stamped client — so
+  // if the slots were swapped meanwhile, that grant's stamp names the wrong
+  // client and its next refresh is refused (cleared on invalid_grant, flagged
+  // otherwise) until the person reconnects on this release.
+  `alter table google_connections
+     add column if not exists oauth_client_id text,
+     add column if not exists reconnect_reason text,
+     add column if not exists reconnect_flagged_at timestamptz`,
+  `alter table google_org_connection
+     add column if not exists oauth_client_id text,
+     add column if not exists reconnect_reason text,
+     add column if not exists reconnect_flagged_at timestamptz`,
+  `alter table agent_google_connections
+     add column if not exists oauth_client_id text,
+     add column if not exists reconnect_reason text,
+     add column if not exists reconnect_flagged_at timestamptz`,
+  // The grants stored before this: every refresh so far ran on the Admin
+  // UI's connections record whenever it was complete, so that record's
+  // client is the one they refresh with today. An install configured in
+  // ui/.env has no record to read here; its grants are stamped on their next
+  // refresh, by asking Google which configured client accepts them.
+  // "Complete" here is non-empty clientId and clientSecretEnc; the runtime
+  // also needs the secret to open. A record sealed under a lost key (which
+  // the resolver skips for the env pair) therefore stamps every grant with
+  // the record's client, configured nowhere, although the env pair may be
+  // what refreshed them: each answers the named reconnect instead of
+  // refreshing, until the person reconnects (or an admin re-saves that
+  // client, when it is the one that minted them).
+  `update google_connections set oauth_client_id = s.value->>'clientId'
+     from app_settings s
+    where s.key = 'google_oauth_client'
+      and coalesce(s.value->>'clientId', '') <> ''
+      and coalesce(s.value->>'clientSecretEnc', '') <> ''
+      and google_connections.oauth_client_id is null`,
+  `update google_org_connection set oauth_client_id = s.value->>'clientId'
+     from app_settings s
+    where s.key = 'google_oauth_client'
+      and coalesce(s.value->>'clientId', '') <> ''
+      and coalesce(s.value->>'clientSecretEnc', '') <> ''
+      and google_org_connection.oauth_client_id is null`,
+  `update agent_google_connections set oauth_client_id = s.value->>'clientId'
+     from app_settings s
+    where s.key = 'google_oauth_client'
+      and coalesce(s.value->>'clientId', '') <> ''
+      and coalesce(s.value->>'clientSecretEnc', '') <> ''
+      and agent_google_connections.oauth_client_id is null`,
+  // AN AGENT ASKS FOR A GITHUB PERMISSION (`request_git_permission`), and an
+  // admin decides it (talaria-git-hosts' requests, docs/WORKBENCH.md "Asking
+  // for a permission"). One row per (agent, host, permission) while open: a
+  // second raise appends to `why` and `evidence` (the partial unique index
+  // below). `repo` is where the need arose; an approval merges the key into
+  // the agent's set on the HOST (agent_github_permissions). `status`:
+  // pending → granted (the installation holds it) or awaiting_github (an org
+  // owner has not accepted it yet; a holdings refresh flips it to granted
+  // when it does), denied, or withdrawn (its last grant on the host went).
+  // A new table, so roll-safe: the previous release never reads it.
+  `create table if not exists workbench_permission_requests (
+     id uuid primary key default gen_random_uuid(),
+     agent_id uuid not null references agent_defs(id) on delete cascade,
+     agent_model text not null,
+     host_id text not null references git_hosts(id) on delete cascade,
+     repo text not null,
+     permission text not null,
+     level text not null,
+     why text not null default '',
+     evidence jsonb,
+     task_id uuid references tasks(id) on delete set null,
+     status text not null default 'pending',
+     decided_by uuid references users(id) on delete set null,
+     decision_note text,
+     decided_at timestamptz,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now()
+   )`,
+  `create unique index if not exists workbench_permission_requests_one_open
+     on workbench_permission_requests (agent_id, host_id, permission)
+     where status in ('pending', 'awaiting_github')`,
+  // GOOGLE'S WORKSPACE MCP SERVERS' LAST WORD ON A GRANT (docs/
+  // GOOGLE-WORKSPACE.md "Google's Workspace MCP servers"). The MCP gateway
+  // relays an agent's call to Google's Workspace MCP servers with the token
+  // of its principal's own grant; when Google answers 401 or 403, Google's
+  // words land on that grant as `last_mcp_refusal` {status, text, tool, at},
+  // and the admin pack panel lists them. (A 401 that a fresh token does not
+  // cure also sets the grant's `reconnect_reason`; a 403 never does.)
+  // Nullable, so roll-safe: the previous release neither reads nor writes it.
+  `alter table google_connections add column if not exists last_mcp_refusal jsonb`,
+  `alter table google_org_connection add column if not exists last_mcp_refusal jsonb`,
+  `alter table agent_google_connections add column if not exists last_mcp_refusal jsonb`,
+  // AN ADMIN'S WORD ON ONE GOOGLE WORKSPACE MCP TOOL (docs/GOOGLE-WORKSPACE.md
+  // "Holds"). The pack's default per tool is allow (a pinned read Google marks
+  // read-only), deny (the owner's trash/spam/sensitive-label list) or hold (every
+  // other tool: a person approves each call). A row here overrides that default
+  // for one tool on one pack server, by name — so a tool Google adds later never
+  // inherits a row — and the deny list is a floor no row lifts (the admin route
+  // refuses to write one; the gateway ignores one). The row goes with its server.
+  `create table if not exists mcp_tool_policies (
+     server_id uuid not null references mcp_servers(id) on delete cascade,
+     tool text not null,
+     policy text not null check (policy in ('allow', 'hold', 'deny')),
+     set_by uuid references users(id) on delete set null,
+     updated_at timestamptz not null default now(),
+     primary key (server_id, tool)
+   )`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
 ]

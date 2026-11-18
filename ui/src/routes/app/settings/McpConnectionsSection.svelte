@@ -27,7 +27,10 @@
     label: string
     description: string | null
     requiredHeaders: HeaderDecl[]
-    authKind: 'oauth' | 'headers'
+    /** `google`: a Google Workspace MCP server (Developer Preview). It has no
+     *  account of its own — your assistant uses it through your Google
+     *  connection, and `connected` is that connection. */
+    authKind: 'oauth' | 'headers' | 'google'
     connected: boolean
     /** Connected once, and the provider has since refused to refresh it
      *  (found by the hourly MCP health check): sign in again. */
@@ -115,7 +118,24 @@
         <SettingsRow label={s.label} hint={s.description ?? undefined}>
           {#snippet lead()}<McpServerMark title={s.label} domain={markOf(s)} />{/snippet}
           {#snippet status()}
-            {#if s.connected}
+            {#if s.authKind === 'google'}
+              <!-- No account of its own: it rides your Google connection,
+                   connected and disconnected on the Google Workspace row above. -->
+              <span
+                class="flex items-center gap-2"
+                title={s.needsReconnect
+                  ? 'Your Google connection needs attention before your assistant can use this server: Google refused it last time, or it was made with an OAuth client declared not marked for AI agents. Reconnect Google above; if that does not clear it, an admin needs a connections client marked for AI agents.'
+                  : s.connected
+                    ? 'Your assistant uses this server through your Google connection.'
+                    : 'Connect Google above, and your assistant can use this server as you.'}
+              >
+                <StatusDot status={s.needsReconnect ? 'warn' : s.connected ? 'ok' : 'idle'} />{s.needsReconnect
+                  ? 'Reconnect Google above'
+                  : s.connected
+                    ? 'Via your Google connection'
+                    : 'Needs your Google connection'}
+              </span>
+            {:else if s.connected}
               <StatusDot status="ok" />Connected
             {:else if s.authKind === 'oauth' && s.needsReconnect}
               <span
@@ -128,7 +148,9 @@
               <StatusDot status="idle" />Not connected
             {/if}
           {/snippet}
-          {#if s.connected}
+          {#if s.authKind === 'google'}
+            <SettingsRowMenu label={`Actions for ${s.label}`} items={[]} />
+          {:else if s.connected}
             <SettingsRowMenu
               label={`Actions for ${s.label}`}
               items={[{ label: `Disconnect ${s.label}`, danger: true, onSelect: () => void put(s.id, null) }]}

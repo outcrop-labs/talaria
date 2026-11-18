@@ -15,9 +15,10 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import { useSavedFlash } from '@/components/ui/save-button.svelte'
   import { errorMessage, getList, putJson } from '@/lib/fetch-json'
+  import { permissionSummary } from '@/lib/git-permissions'
   import { fly, slide } from '@/lib/motion'
   import AdminGithubGuideModal from './AdminGithubGuideModal.svelte'
-  import { useGitHostsRefresh, type GitHost } from './git-hosts'
+  import { useGitHostsRefresh, type GitHost, type GitHubInstallationListing } from './git-hosts'
 
   /** A GitHub host's connection — App (recommended) or access token — as its
    *  own dialog in Admin → Git hosts. The field-by-field walkthrough is the
@@ -82,8 +83,7 @@
   const installsQuery = createQuery(() => ({
     queryKey: ['git-host-installations', host.id],
     enabled: gh.mode === 'app' && gh.app.keySet,
-    queryFn: (): Promise<Array<{ id: number; account: string }>> =>
-      getList<{ id: number; account: string }>(`${url}?installations=1`, 'installations'),
+    queryFn: (): Promise<GitHubInstallationListing[]> => getList<GitHubInstallationListing>(`${url}?installations=1`, 'installations'),
   }))
   const installations = $derived(installsQuery.data ?? [])
   const installsFailed = $derived(installsQuery.isError && installsQuery.data === undefined)
@@ -133,13 +133,18 @@
                 <ul class="divide-y divide-line-subtle rounded-md border border-line">
                   {#each installations as i (i.id)}
                     {@const selected = gh.app.installationIds.includes(String(i.id))}
-                    <li class="flex items-center gap-3 px-3 py-2">
+                    <!-- Its title says what the installation holds, so the admin picks knowing the ceiling. -->
+                    <li
+                      class="flex items-center gap-3 px-3 py-2"
+                      title={i.permissions ? `It holds ${permissionSummary(i.permissions)}.` : 'What it holds could not be read.'}
+                    >
                       <span class="min-w-0 flex-1 truncate font-sans text-[13px] leading-5 text-fg">{i.account}</span>
+                      {#if i.suspended}<span class="font-sans text-[13px] leading-5 text-danger">Suspended</span>{/if}
                       <span class="font-mono text-xs text-muted">{i.id}</span>
                       <SavedMark on={installSaved.saved && savedInstall === i.id} />
                       <Toggle
                         checked={selected}
-                        disabled={!gh.app.keySet}
+                        disabled={!gh.app.keySet || busy}
                         title="Use the installation on {i.account}"
                         onChange={() => void setInstallation(i.id, !selected)}
                       />

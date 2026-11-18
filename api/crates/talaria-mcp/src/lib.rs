@@ -8,6 +8,7 @@ pub fn workbench_tools() -> Vec<Value> {
 }
 
 pub mod calls;
+pub mod google;
 pub mod health;
 pub mod not_connected;
 pub mod org_headers;

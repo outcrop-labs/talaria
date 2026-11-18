@@ -214,10 +214,8 @@ pub async fn post(
     match created {
         Ok(row) => {
             audit(&state, actor, "workbench.git_host_create", row.id.clone());
-            let st = talaria_git_hosts::GitHost::status(
-                &talaria_git_hosts::connect(&state.pg, &sb, &row).await,
-            )
-            .await;
+            let host = talaria_git_hosts::connect(&state.pg, &sb, &row).await;
+            let st = talaria_git_hosts::host_status(&state.pg, &host, &row).await;
             Ok((
                 StatusCode::CREATED,
                 Json(json!({ "host": row.wire_with(&st) })),

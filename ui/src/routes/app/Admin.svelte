@@ -18,9 +18,11 @@
   import AdminEmailPanel from './AdminEmailPanel.svelte'
   import AdminEncryptionPanel from './AdminEncryptionPanel.svelte'
   import AdminGitHostsPanel from './AdminGitHostsPanel.svelte'
+  import AdminGitPermissionsSection from './AdminGitPermissionsSection.svelte'
   import AdminRepoCreationSection from './AdminRepoCreationSection.svelte'
   import AdminRepoFlowSection from './AdminRepoFlowSection.svelte'
   import AdminGoogleClientPanel from './AdminGoogleClientPanel.svelte'
+  import AdminGoogleMcpPanel from './AdminGoogleMcpPanel.svelte'
   import AdminGuardrailsPanel from './AdminGuardrailsPanel.svelte'
   import AdminInstanceDomainPanel from './AdminInstanceDomainPanel.svelte'
   import AdminInvitesPanel from './AdminInvitesPanel.svelte'
@@ -96,6 +98,7 @@
         <AdminEmailPanel />
         <AdminGoogleClientPanel />
         <AdminOrgGooglePanel />
+        <AdminGoogleMcpPanel />
       {/if}
       {#if tab === 'agents'}
         <!-- The decision-model port leads the tab because the panels under it
@@ -109,8 +112,10 @@
         <AdminOutreachPanel />
       {/if}
       {#if tab === 'git'}
-        <!-- The hosts first: requests and PR bases are about repos on them. -->
+        <!-- The hosts first: requests and PR bases are about repos on them.
+             What agents asked for comes next: an agent waits on it. -->
         <AdminGitHostsPanel bind:adding={addingHost} />
+        <AdminGitPermissionsSection />
         <AdminRepoCreationSection />
         <AdminRepoFlowSection />
       {/if}

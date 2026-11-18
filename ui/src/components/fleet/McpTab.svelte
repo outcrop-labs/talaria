@@ -51,7 +51,7 @@
     package: boolean
     workbench: boolean
     allAgents: boolean
-    authMode: 'org' | 'per-user'
+    authMode: 'org' | 'per-user' | 'google'
     oauthEnabled: boolean
     needsConnection: boolean
     probe: ProbeRow | null
@@ -171,7 +171,13 @@
   // A state is a dot and a word. Chips on these rows are kinds.
   const stateWord = 'flex items-center gap-1.5 whitespace-nowrap font-sans text-[13px] leading-5 text-muted'
   const connectionLabel = (s: AgentServer) =>
-    s.authMode === 'per-user' ? 'Owner must connect' : s.probe?.state === 'reconnect' ? 'Reconnect needed' : 'Not connected'
+    s.authMode === 'google'
+      ? 'Google not connected'
+      : s.authMode === 'per-user'
+        ? 'Owner must connect'
+        : s.probe?.state === 'reconnect'
+          ? 'Reconnect needed'
+          : 'Not connected'
   const probeLabel = (state: string) =>
     state === 'auth-required' ? 'Needs credentials' : state === 'reconnect' ? 'Reconnect needed' : state.charAt(0).toUpperCase() + state.slice(1)
   // Where a server's mark lives, by the Tools page's rule, from the address host this row carries.
@@ -206,7 +212,9 @@
         {#if s.needsConnection}
           <span
             class={stateWord}
-            title={s.authMode === 'per-user'
+            title={s.authMode === 'google'
+              ? "A Google Workspace MCP server: it acts with this agent's own Google principal (its owner's connection, the org account, or its own identity), and that account is not connected, or was connected with an OAuth client declared not marked for AI agents. Until that changes, the agent is told who fixes it."
+              : s.authMode === 'per-user'
               ? 'A per-user server: the agent carries it now, and its calls work once its owner connects their account under Settings → Connections. Until then the agent is told where to connect.'
               : s.probe?.state === 'reconnect'
                 ? 'The provider refused to refresh the org account, so the grant is gone. Reconnect on the Tools page. Until then the agent is told an admin must connect it.'

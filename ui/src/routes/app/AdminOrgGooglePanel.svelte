@@ -12,6 +12,7 @@
   import { cn } from '@/lib/cn'
   import { delJson, errorMessage, getJson, getJsonOr } from '@/lib/fetch-json'
   import type { GoogleApiHealth } from '@/lib/google-apis'
+  import { googleBounceText, readGoogleBounce, type GoogleBounce } from '@/lib/google-bounce'
   import { toastError } from '@/lib/toast.svelte'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
   import AdminOrgGoogleWorkspace from './AdminOrgGoogleWorkspace.svelte'
@@ -24,6 +25,11 @@
     email: string | null
     connectedAt: string | null
     targets: { driveFolderId: string | null; calendarId: string | null; sendAs: string | null }
+    /** The OAuth client that minted the org grant (null until recorded). */
+    clientId: string | null
+    /** Why the org connection needs a person, else null — the server's
+     *  sentence, Google's words inside it when Google refused the client. */
+    reconnectReason: string | null
   }
 
   // The shared org Google account general fleet agents act as for Drive/Docs.
@@ -33,21 +39,29 @@
     queryFn: (): Promise<OrgGoogle> => getJson<OrgGoogle>('/api/integrations/google/org'),
   }))
   const data = $derived(query.data)
-  let flash = $state<string | null>(null)
+  // The org connect's bounce (?googleOrg=…, plus Google's own `reason` code
+  // when it sent one), shown once.
+  let flash = $state<GoogleBounce | null>(null)
   $effect(() => {
-    const p = new URLSearchParams(window.location.search).get('googleOrg')
-    if (!p) return
-    flash = p
+    const bounce = readGoogleBounce(window.location.search, 'googleOrg')
+    if (!bounce) return
+    flash = bounce
     window.history.replaceState({}, '', window.location.pathname)
-    if (p === 'connected') void qc.invalidateQueries({ queryKey: ['org-google'] })
+    if (bounce.status === 'connected') void qc.invalidateQueries({ queryKey: ['org-google'] })
     const t = setTimeout(() => (flash = null), 4000)
     return () => clearTimeout(t)
   })
 
+  // As on the personal disconnect: the server's sentence when the grant was
+  // kept at Google (an admin's own connection shares it) or Google refused.
+  let revokeNote = $state('')
+
   const disconnect = async () => {
+    revokeNote = ''
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect the org Google account? General agents lose Drive/Docs access.', confirmLabel: 'Disconnect', danger: true }))) return
     try {
-      await delJson<{ ok: true }>('/api/integrations/google/org')
+      const r = await delJson<{ ok: true; revoked: boolean; revokeNote: string | null }>('/api/integrations/google/org')
+      revokeNote = r.revokeNote ?? ''
     } catch (e) {
       toastError('Disconnect failed', e)
       return
@@ -55,10 +69,10 @@
     await qc.invalidateQueries({ queryKey: ['org-google'] })
   }
 
-  // Live probe of Drive / Calendar / Gmail — consent succeeds even with the
-  // APIs disabled in Google Cloud Console, so "connected" alone proves nothing
-  // about calls actually working. On demand, never on load (three real Google
-  // requests per click).
+  // Live probe of Drive / Calendar / Gmail / Sheets / Slides — consent
+  // succeeds even with the APIs disabled in Google Cloud Console, so
+  // "connected" alone proves nothing about calls actually working. On demand,
+  // never on load (five real Google requests per click).
   let apiResults = $state<GoogleApiHealth[] | null>(null)
   let probing = $state(false)
   let probeError = $state<string | null>(null)
@@ -120,9 +134,13 @@
         <SettingsRow label="Shared account">
           {#snippet lead()}{@render mark()}{/snippet}
           {#snippet hint()}
-            {#if data?.connected && data.email}
-              <span class="font-mono text-xs">{data.email}</span>
-            {:else if !data?.connected}
+            {#if data?.connected}
+              {#if data.email}<span class="font-mono text-xs">{data.email}</span>{/if}
+              <!-- The client the grant refreshes with: the census above counts by it. -->
+              {#if data.clientId}<span title="The OAuth client that minted this connection">{data.email ? ' · ' : ''}client <span class="font-mono text-xs">{data.clientId}</span></span>{/if}
+              <!-- The server's sentence, Google's words inside it when Google refused the client. -->
+              {#if data.reconnectReason}<span class="block">{data.reconnectReason}</span>{/if}
+            {:else}
               Agents cannot use Drive or Docs until an account is connected.
             {/if}
           {/snippet}
@@ -130,10 +148,15 @@
             {#if probing}
               <RowStatus status="idle">Testing</RowStatus>
             {:else}
-              <RowStatus status={data?.connected ? 'ok' : 'idle'}>{data?.connected ? 'Connected' : 'Not connected'}</RowStatus>
+              <RowStatus status={data?.connected ? (data.reconnectReason ? 'warn' : 'ok') : 'idle'}>
+                {data?.connected ? (data.reconnectReason ? 'Needs sign-in' : 'Connected') : 'Not connected'}
+              </RowStatus>
             {/if}
           {/snippet}
           {#if data?.connected}
+            {#if data.reconnectReason}
+              <SettingsRowAction href={CONNECT} label="Reconnect the shared Google account">Reconnect</SettingsRowAction>
+            {/if}
             <SettingsRowMenu
               label="Actions for the shared Google account"
               items={[
@@ -178,9 +201,13 @@
         {/snippet}
       </AdminOrgGoogleWorkspace>
     {/if}
+    {#if revokeNote}
+      <!-- As on the personal disconnect: kept at Google (an admin's own connection shares it) or refused there. -->
+      <p class="px-5 py-3 font-sans text-[13px] leading-5 text-muted">{revokeNote}</p>
+    {/if}
     {#if flash}
-      <p class={cn('px-5 py-3 font-sans text-[13px] leading-5', flash === 'connected' ? 'text-success' : 'text-danger')}>
-        {msg[flash] ?? flash}
+      <p class={cn('px-5 py-3 font-sans text-[13px] leading-5', flash.status === 'connected' ? 'text-success' : 'text-danger')}>
+        {googleBounceText(flash, msg)}
       </p>
     {/if}
   </SettingsGroup>

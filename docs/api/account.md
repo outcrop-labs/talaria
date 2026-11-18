@@ -69,7 +69,7 @@ Source: [`api/crates/talaria-routes-integrations/src/account/auth_google.rs`](..
 > GET /api/auth/google. Begin the OAuth dance: set the one-shot state cookie
 > and 302 to Google's consent screen. The state cookie is double-submit CSRF
 > proof — random in, random back, compared constant-time at the callback.
->
+> The client is LOGIN's: the sign-in client when one is set, else the
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

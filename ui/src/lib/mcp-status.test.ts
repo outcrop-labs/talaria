@@ -43,6 +43,17 @@ describe('serverStatus', () => {
     expect(serverStatus(row({ appSlug: 'crm', appOff: null, tools: [{ name: 'crm_find' }] })).kind).toBe('ready')
   })
 
+  it('a Google Workspace MCP server has no account of its own: the probe alone speaks', () => {
+    expect(serverStatus(row({ authMode: 'google', probe: { state: 'ok', detail: '9 tool(s), 5 read-only allowed', at: '' } }))).toMatchObject({
+      kind: 'ready',
+      tone: 'success',
+      detail: '9 tool(s), 5 read-only allowed',
+      action: null,
+    })
+    expect(serverStatus(row({ authMode: 'google', probe: { state: 'error', detail: 'Google answered HTTP 403', at: '' } })).kind).toBe('error')
+    expect(serverStatus(row({ authMode: 'google', enabled: false })).kind).toBe('disabled')
+  })
+
   it('an org OAuth server that nobody connected asks for the connect — or the app first', () => {
     const dcr = serverStatus(row({ oauthEnabled: true, orgConnected: false, oauthMeta: { dcr: true, clientSet: false, dcrRejected: null } }))
     expect(dcr.kind).toBe('needs-connect')
