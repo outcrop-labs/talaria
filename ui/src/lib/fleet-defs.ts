@@ -536,11 +536,16 @@ export async function hireFleetAgent(input: {
   soul?: string
   skills?: Array<{ name: string; content: string }>
   start?: boolean
-}): Promise<{ ok?: boolean; hire?: { id: string; state: string; phase: string }; error?: string }> {
+  /** The agent design this hire came from: the server spends it once the
+   *  hire is queued. */
+  designId?: string
+}): Promise<{ ok?: boolean; hire?: { id: string; state: string; phase: string }; error?: string; status?: number }> {
   try {
     return await postJson<{ ok?: boolean; hire?: { id: string; state: string; phase: string } }>('/api/fleet/create', input)
   } catch (e) {
-    return { error: errorMessage(e) }
+    // The status rides along: a 409 is a fact about the design or the
+    // roster the caller re-reads, not just a sentence.
+    return { error: errorMessage(e), ...(e instanceof HttpError ? { status: e.status } : {}) }
   }
 }
 

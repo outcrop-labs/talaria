@@ -633,10 +633,9 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             match ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await {
                 Ok(mut audience) => {
                     // ONE ACTION, ONE ROW. A person this same patch assigns is
-                    // told by the `task-assigned` row below; the promotion's
-                    // status move was a second row for the same click. They
-                    // leave this audience — every other watcher still hears
-                    // the move.
+                    // told by the `task-assigned` row below, so they leave
+                    // this audience — every other watcher still hears the
+                    // move.
                     audience.retain(|uid| !newly.contains(uid));
                     let now = next_status.replacen('_', " ", 1);
                     notify_task_users(
@@ -900,36 +899,61 @@ pub struct NewTask<'a> {
     pub parent_id: Option<&'a str>,
     pub tags: &'a [String],
     pub created_by: &'a str,
+    /// The column the creator put it in (a person's "add card" in a column);
+    /// None is the board's intake. Never chosen by its assignees.
+    pub status: Option<&'a str>,
+}
+
+/// The board's pickup column — `StatusMeta::assigned_key`, the first usable
+/// agent-start column — for a caller whose ticket IS a person's ask for an
+/// agent's work and must start it as soon as it exists: a plugin change
+/// request (a person asking the maintainer from Manage → Apps) and plugin
+/// upkeep (the plugin's own maintenance loop). They pass it as the new
+/// ticket's chosen `status`, which is where every assigned ticket used to be
+/// born; assignment itself no longer picks a column. None: the board has no
+/// usable agent-start column, and the ticket lands in intake, as it did.
+pub async fn pickup_column(pg: &PgPool, board_id: &str) -> Result<Option<String>, sqlx::Error> {
+    Ok(status_meta(pg, board_id).await?.assigned_key)
 }
 
 pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Task> {
     let pg = &deps.pg;
     let assignees: Vec<String> = input.assignees.to_vec();
     let meta = status_meta(pg, input.board_id).await?;
-    // A ticket is BORN in intake, or in the pickup queue when it arrives
-    // already assigned. Neither key is invented: `assigned_key` is None on a
-    // board with no usable agent-start column, and the honest landing spot
-    // then is intake — assigned to someone, not yet in anyone's pickup
-    // queue, and therefore not dispatched. `default_key` None means the
-    // board has no intake column at all, which no legal board can reach;
-    // say so instead of dropping the ticket into whatever column happened
-    // to sort first (that fallback could resolve to the system Blocked
-    // column).
-    let status = match if !assignees.is_empty() {
-        meta.assigned_key
-            .clone()
-            .or_else(|| meta.default_key.clone())
-    } else {
-        meta.default_key.clone()
-    } {
-        Some(s) => s,
-        None => {
-            let board = board_label(pg, input.board_id).await?;
-            return Err(TaskError::Refusal(format!(
-                "board {board} has no intake column, so there is nowhere to put a new ticket. \
-                 Add an open-category column in board settings → statuses."
-            )));
+    // A ticket is BORN where its creator put it — the board's intake unless
+    // they chose a column. ITS ASSIGNEES NEVER CHOOSE IT: a ticket created
+    // already assigned used to be born in the pickup queue and start its agent
+    // at once, though nobody had put it in an agent column. Work starts at
+    // creation only when the creator explicitly put the ticket in a pickup
+    // column (the push below asks; maybe_dispatch_ticket starts work only
+    // from one). `default_key` None means the board has no intake column at
+    // all, which no legal board can reach; say so instead of dropping the
+    // ticket into whatever column happened to sort first (that fallback
+    // could resolve to the system Blocked column).
+    let status = match input.status.filter(|s| !s.is_empty()) {
+        Some(chosen) => {
+            if !meta.keys.iter().any(|k| k == chosen) {
+                return Err(TaskError::Refusal(format!(
+                    "\"{chosen}\" is not a status on this board"
+                )));
+            }
+            if meta.terminal(chosen) {
+                return Err(TaskError::Refusal(
+                    "a new ticket cannot start closed — create it, then close it".into(),
+                ));
+            }
+            chosen.to_string()
         }
+        None => match meta.default_key.clone() {
+            Some(s) => s,
+            None => {
+                let board = board_label(pg, input.board_id).await?;
+                return Err(TaskError::Refusal(format!(
+                    "board {board} has no intake column, so there is nowhere to put a new ticket. \
+                     Add an open-category column in board settings → statuses."
+                )));
+            }
+        },
     };
     if let Some(parent) = input.parent_id.filter(|p| !p.is_empty()) {
         assert_valid_parent(pg, None, parent, input.board_id).await?;
@@ -1012,8 +1036,9 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     let Some(task) = get_task(pg, &id).await? else {
         return Err(TaskError::Db(sqlx::Error::RowNotFound));
     };
-    // Born assigned into an agent-start column → push the work to the
-    // agents. Detached: the row is the record, the push is a
+    // Born, by the creator's choice, in an agent-start column with agent
+    // assignees → push the work to them. Anywhere else the push asks and
+    // starts nothing. Detached: the row is the record, the push is a
     // delivery.
     spawn_dispatch(deps, task.clone(), None);
     // Apps whose triggers name it hear that a ticket exists — its id and its
@@ -1536,21 +1561,13 @@ pub async fn update_task(
     if let Some(tags) = patch.tags.as_ref().filter(|t| !t.is_empty()) {
         ensure_labels(pg, &cur.board_id, tags).await?;
     }
-    // Assignees on an intake ticket promote it into the pickup queue —
-    // approval by assignment, so an agent's own write never triggers it. The
-    // DESTINATION is never invented: with no usable agent-start column
-    // (`assigned_key` None) there is no pickup queue to promote into, and
-    // the ticket stays in intake rather than being moved somewhere that
-    // merely sorted first — which, before `assigned_key` got this treatment,
-    // could be a DONE column, so assigning someone closed the ticket.
-    let promoted_to = if who.kind != TaskActorKind::Agent
-        && !assignees.is_empty()
-        && meta.default_key.as_deref() == Some(cur.status.as_str())
-    {
-        meta.assigned_key.clone()
-    } else {
-        None
-    };
+    // ASSIGNING A TICKET NEVER MOVES IT. Assignees on an intake ticket used to
+    // "promote" it into the pickup queue, and the agent started at once on
+    // work nobody had put in an agent column — the owner's report, and 43
+    // "(promoted by assignment)" lines on their instance. The column moves
+    // when somebody moves it; an agent assigned to a ticket outside a pickup
+    // column waits there (maybe_dispatch_ticket only ever starts work from a
+    // pickup column).
     let next_title = patch.title.clone().unwrap_or_else(|| cur.title.clone());
     let next_description = pick(&patch.description, cur.description.clone());
     let next_effort = pick(&patch.effort, cur.effort.clone());
@@ -1567,11 +1584,7 @@ pub async fn update_task(
     let next_outcome = pick(&patch.outcome, cur.outcome.clone());
     let next_resolution = pick(&patch.resolution, cur.resolution.clone());
     let next_error_message = pick(&patch.error_message, cur.error_message.clone());
-    let next_status = patch
-        .status
-        .clone()
-        .or(promoted_to)
-        .unwrap_or_else(|| cur.status.clone());
+    let next_status = patch.status.clone().unwrap_or_else(|| cur.status.clone());
     let completed_at = completed_at_for(&meta, &next_status, cur.completed_at.as_deref());
     let approved_at = approved_at_for(&meta, &next_status, &cur.status, cur.approved_at.as_deref());
     let archived_at = match patch.archived {
@@ -1653,20 +1666,10 @@ pub async fn update_task(
         .await?;
     }
 
-    // THE COLUMN MOVED — however it moved. Gating this on
-    // `patch.status.is_some()` meant PROMOTION BY ASSIGNMENT left nothing on
-    // the record: a person patching only `assignees` moved the ticket out of
-    // intake and into the agent pickup queue, and the ticket's own history
-    // said only "assigned to …". The watchers were not told either.
-    // `next_status` is what was actually written, so ask it.
+    // THE COLUMN MOVED. `next_status` is what was actually written — only
+    // ever the patch's own status now that assignment moves nothing.
     if next_status != cur.status {
-        let why = patch.status_note.clone().unwrap_or_else(|| {
-            if patch.status.is_none() {
-                "promoted by assignment".to_string()
-            } else {
-                String::new()
-            }
-        });
+        let why = patch.status_note.clone().unwrap_or_default();
         let moved = if why.is_empty() {
             format!("moved to {next_status}")
         } else {
@@ -1687,10 +1690,12 @@ pub async fn update_task(
     }
     // ── ONE push-side call ─────────────────────────────────────────────────
     // Two things mean "this is now someone's work": the ticket ENTERED a
-    // pickup queue (a person moved the column, or promotion by assignment
-    // did), and/or it GAINED agent assignees. Whether the ticket may be
-    // dispatched to AT ALL is maybe_dispatch_ticket's call; this decides
-    // only whether anything changed enough to ask.
+    // pickup queue (somebody moved the column), and/or it GAINED agent
+    // assignees. Whether the ticket may be dispatched to AT ALL is
+    // maybe_dispatch_ticket's call — and it starts work only from a pickup
+    // column, so an agent assigned to a ticket anywhere else is asked about
+    // and starts nothing; one assigned to a ticket already sitting in a
+    // pickup column starts, as before.
     let added_agents = match &patch.assignees {
         Some(_) => agent_assignees(&assignees)
             .into_iter()

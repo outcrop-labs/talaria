@@ -4,8 +4,8 @@
 // for access when the row is filed), and the rows about an approval share one
 // key and read together when it is decided. Driven through the REAL router
 // with minted sessions, so the whole path — the route, its detached fan-out,
-// the writer's upsert — is what is proven. House rule: #[ignore]d; CI's
-// api-integration job runs them with --ignored.
+// the writer's upsert — is what is proven. House rule: #[ignore]d; ci.yml's
+// api job runs them with --ignored (its live-DB steps).
 //
 //   source ui/.env && cargo test -p talaria-api --test it notify_producers_live:: -- --ignored
 

@@ -183,6 +183,7 @@ talaria-agent-auth = { path = "crates/talaria-agent-auth" }
 talaria-agent-crons = { path = "crates/talaria-agent-crons" }
 
 talaria-agent-defs = { path = "crates/talaria-agent-defs" }
+talaria-agent-design = { path = "crates/talaria-agent-design" }
 
 talaria-agent-managers = { path = "crates/talaria-agent-managers" }
 
@@ -364,6 +365,8 @@ talaria-google-slides = { path = "crates/talaria-google-slides" }
 talaria-work-mode = { path = "crates/talaria-work-mode" }
 
 talaria-google-gmail = { path = "crates/talaria-google-gmail" }
+
+talaria-google-mcp = { path = "crates/talaria-google-mcp" }
 
 talaria-google-oauth = { path = "crates/talaria-google-oauth" }
 
@@ -639,6 +642,8 @@ talaria-web-search = { path = "crates/talaria-web-search" }
 
 talaria-work-dispatch = { path = "crates/talaria-work-dispatch" }
 
+talaria-work-pulse = { path = "crates/talaria-work-pulse" }
+
 talaria-work-wait = { path = "crates/talaria-work-wait" }
 
 talaria-workbench = { path = "crates/talaria-workbench" }
@@ -648,6 +653,8 @@ talaria-workbench-harnesses = { path = "crates/talaria-workbench-harnesses" }
 talaria-workbench-mcp = { path = "crates/talaria-workbench-mcp" }
 
 talaria-workbench-queue = { path = "crates/talaria-workbench-queue" }
+
+talaria-workbench-updates = { path = "crates/talaria-workbench-updates" }
 
 talaria-workchains = { path = "crates/talaria-workchains" }
 
@@ -758,6 +765,7 @@ talaria-fleet-resources = { workspace = true }
 talaria-fleet-seal = { workspace = true }
 talaria-gaps = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-github = { workspace = true }
 talaria-google-agent = { workspace = true }
 talaria-google-api-health = { workspace = true }
@@ -899,11 +907,13 @@ talaria-uploads = { workspace = true }
 talaria-users = { workspace = true }
 talaria-web-search = { workspace = true }
 talaria-work-dispatch = { workspace = true }
+talaria-work-pulse = { workspace = true }
 talaria-work-wait = { workspace = true }
 talaria-workbench = { workspace = true }
 talaria-workbench-harnesses = { workspace = true }
 talaria-workbench-mcp = { workspace = true }
 talaria-workbench-queue = { workspace = true }
+talaria-workbench-updates = { workspace = true }
 talaria-workchains = { workspace = true }
 talaria-workflows = { workspace = true }
 talaria-workspace-handles = { workspace = true }

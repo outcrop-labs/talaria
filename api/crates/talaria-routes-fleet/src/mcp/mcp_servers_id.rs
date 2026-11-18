@@ -22,9 +22,9 @@ use talaria_api_facades::mcp::oauth::{
     ManualClient, ensure_oauth_config, redetect_oauth_config, set_manual_oauth_client,
 };
 use talaria_api_facades::mcp::registry::{
-    ServerPatch, WORKBENCH_SERVER, delete_mcp_server, get_mcp_server, refresh_mcp_tools,
-    remove_assignment, set_assignment, set_team_access, set_user_access, update_mcp_server,
-    url_host_changed,
+    ServerPatch, WORKBENCH_SERVER, delete_mcp_server, get_mcp_server, pack_patch_refusal,
+    refresh_mcp_tools, remove_assignment, set_assignment, set_team_access, set_user_access,
+    update_mcp_server, url_host_changed,
 };
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
@@ -64,7 +64,29 @@ pub async fn put(
     // otherwise the self-heal re-probes only a never/half-discovered row.
     // Neither applies to the in-process rows (toolkit, workbench, packages,
     // apps): there is no upstream to ask.
+    // A Google Workspace MCP server (the pack) keeps its address, credentials
+    // and auth mode; no other server is pointed at Google's or made one.
+    let google = server.auth_mode == talaria_api_facades::mcp::google::AUTH_MODE;
+    if let Some(refusal) = pack_patch_refusal(
+        &server.auth_mode,
+        &ServerPatch {
+            url: patch.url.clone(),
+            headers: patch.headers.clone(),
+            merge_headers: patch.merge_headers.clone(),
+            auth_mode: patch.auth_mode.clone(),
+            ..ServerPatch::default()
+        },
+    ) {
+        return Ok(house_error(StatusCode::BAD_REQUEST, refusal));
+    }
+    if google && (patch.oauth_client.is_some() || patch.redetect_auth) {
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            "a Google Workspace MCP server acts with each agent's own Google connection; it takes no OAuth client of its own",
+        ));
+    }
     let discoverable = !server.builtin
+        && !google
         && server.app_slug.is_none()
         && server.package.is_none()
         && server.url.starts_with("http");

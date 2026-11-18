@@ -58,6 +58,7 @@ talaria-runs-agent-hire = { workspace = true }
 talaria-runs-decide = { workspace = true }
 talaria-runs-define = { workspace = true }
 talaria-runs-plan-draft = { workspace = true }
+talaria-agent-design = { workspace = true }
 talaria-runs-reclaim = { workspace = true }
 talaria-runs-reindex = { workspace = true }
 talaria-runs-rewind = { workspace = true }
@@ -73,11 +74,13 @@ talaria-uploads = { workspace = true }
 talaria-work-dispatch = { workspace = true }
 talaria-plugins = { workspace = true }
 talaria-workbench-mcp = { workspace = true }
+talaria-workbench-updates = { workspace = true }
 talaria-workbench-queue = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 talaria-fleet-create = { workspace = true }
 talaria-gaps = { workspace = true }
+talaria-git-hosts = { workspace = true }
 talaria-home = { workspace = true }
 talaria-titler = { workspace = true }
 talaria-refs = { workspace = true }

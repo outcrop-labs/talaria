@@ -18,7 +18,17 @@ pub struct AuditEntry<'a> {
 /// Insert one audit row. Auditing must never break the operation it records —
 /// an insert failure is logged here and nothing propagates.
 pub async fn log_audit(pg: &PgPool, entry: AuditEntry<'_>) {
-    let result = sqlx::query(
+    if let Err(e) = try_log_audit(pg, entry).await {
+        tracing::warn!("[audit] insert failed: {e}");
+    }
+}
+
+/// [`log_audit`] for a caller that has to know whether the row landed — one
+/// that writes a row once and must try again when it did not (the git
+/// credential door's once-per-token row). The caller still never fails its
+/// operation on the error; it only decides what to remember.
+pub async fn try_log_audit(pg: &PgPool, entry: AuditEntry<'_>) -> Result<(), sqlx::Error> {
+    sqlx::query(
         "insert into audit_log (actor, action, target_type, target_id, target_label, before, after) \
          values ($1, $2, $3, $4, $5, $6, $7)",
     )
@@ -30,10 +40,8 @@ pub async fn log_audit(pg: &PgPool, entry: AuditEntry<'_>) {
     .bind(entry.before)
     .bind(entry.after)
     .execute(pg)
-    .await;
-    if let Err(e) = result {
-        tracing::warn!("[audit] insert failed: {e}");
-    }
+    .await?;
+    Ok(())
 }
 
 /// Insert one audit row on a caller's connection — inside its transaction, so

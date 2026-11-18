@@ -11,6 +11,7 @@
   import { cn } from '@/lib/cn'
   import { delJson, errorMessage, getJson, getJsonOr } from '@/lib/fetch-json'
   import type { GoogleApiHealth } from '@/lib/google-apis'
+  import { googleBounceText, readGoogleBounce, type GoogleBounce } from '@/lib/google-bounce'
   import { toastError } from '@/lib/toast.svelte'
   import AdminOrgGoogleTargets from './AdminOrgGoogleTargets.svelte'
   import AdminOrgGoogleWorkspace from './AdminOrgGoogleWorkspace.svelte'
@@ -21,6 +22,11 @@
     email: string | null
     connectedAt: string | null
     targets: { driveFolderId: string | null; calendarId: string | null; sendAs: string | null }
+    /** The OAuth client that minted the org grant (null until recorded). */
+    clientId: string | null
+    /** Why the org connection needs a person, else null — the server's
+     *  sentence, Google's words inside it when Google refused the client. */
+    reconnectReason: string | null
   }
 
   // The shared org Google account general fleet agents act as for Drive/Docs.
@@ -30,21 +36,29 @@
     queryFn: (): Promise<OrgGoogle> => getJson<OrgGoogle>('/api/integrations/google/org'),
   }))
   const data = $derived(query.data)
-  let flash = $state<string | null>(null)
+  // The org connect's bounce (?googleOrg=…, plus Google's own `reason` code
+  // when it sent one), shown once.
+  let flash = $state<GoogleBounce | null>(null)
   $effect(() => {
-    const p = new URLSearchParams(window.location.search).get('googleOrg')
-    if (!p) return
-    flash = p
+    const bounce = readGoogleBounce(window.location.search, 'googleOrg')
+    if (!bounce) return
+    flash = bounce
     window.history.replaceState({}, '', window.location.pathname)
-    if (p === 'connected') void qc.invalidateQueries({ queryKey: ['org-google'] })
+    if (bounce.status === 'connected') void qc.invalidateQueries({ queryKey: ['org-google'] })
     const t = setTimeout(() => (flash = null), 4000)
     return () => clearTimeout(t)
   })
 
+  // As on the personal disconnect: the server's sentence when the grant was
+  // kept at Google (an admin's own connection shares it) or Google refused.
+  let revokeNote = $state('')
+
   const disconnect = async () => {
+    revokeNote = ''
     if (!(await confirm({ title: 'Disconnect Google', message: 'Disconnect the org Google account? General agents lose Drive/Docs access.', confirmLabel: 'Disconnect', danger: true }))) return
     try {
-      await delJson<{ ok: true }>('/api/integrations/google/org')
+      const r = await delJson<{ ok: true; revoked: boolean; revokeNote: string | null }>('/api/integrations/google/org')
+      revokeNote = r.revokeNote ?? ''
     } catch (e) {
       toastError('Disconnect failed', e)
       return
@@ -52,10 +66,10 @@
     await qc.invalidateQueries({ queryKey: ['org-google'] })
   }
 
-  // Live probe of Drive / Calendar / Gmail — consent succeeds even with the
-  // APIs disabled in Google Cloud Console, so "connected" alone proves nothing
-  // about calls actually working. On demand, never on load (three real Google
-  // requests per click).
+  // Live probe of Drive / Calendar / Gmail / Sheets / Slides — consent
+  // succeeds even with the APIs disabled in Google Cloud Console, so
+  // "connected" alone proves nothing about calls actually working. On demand,
+  // never on load (five real Google requests per click).
   let apiResults = $state<GoogleApiHealth[] | null>(null)
   let probing = $state(false)
   let probeError = $state<string | null>(null)
@@ -119,18 +133,32 @@
       <div class="min-w-0 flex-1">
         <div class="flex items-center gap-1.5 text-sm font-medium text-fg">
           Shared Drive &amp; Docs
-          {#if data?.connected}<StatusDot status="ok" />{/if}
+          {#if data?.connected}<StatusDot status={data.reconnectReason ? 'warn' : 'ok'} />{/if}
         </div>
         <div class="truncate font-mono text-[11px] text-muted">
           {data?.connected ? `Connected${data.email ? ` as ${data.email}` : ''}` : 'Not connected'}
         </div>
+        {#if data?.connected && data.clientId}
+          <!-- The client the grant refreshes with — the census above counts by it. -->
+          <div class="truncate font-mono text-[10px] text-ink-dim" title="The OAuth client that minted this connection">client {data.clientId}</div>
+        {/if}
       </div>
       {#if data?.connected}
+        {#if data.reconnectReason}
+          <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm' })}>Reconnect</a>
+        {/if}
         <Button variant="danger-outline" size="sm" onclick={() => void disconnect()}>Disconnect</Button>
       {:else}
         <a href="/api/integrations/google/org/connect" class={buttonClasses({ size: 'sm' })}>Connect</a>
       {/if}
     </div>
+    {#if data?.connected && data.reconnectReason}
+      <div class="mt-2 flex max-w-prose items-start gap-2 text-xs text-warning">
+        <StatusDot status="warn" class="mt-1" />
+        <span>{data.reconnectReason}</span>
+      </div>
+    {/if}
+    {#if revokeNote}<p class="mt-2 max-w-prose text-xs text-muted">{revokeNote}</p>{/if}
     {#if data?.connected}
       <!-- The "can we actually call Google" check — see probeApis above. -->
       <div class="mt-3 space-y-1.5">
@@ -139,7 +167,7 @@
           <Button variant="ghost" size="sm" onclick={() => void probeApis()} disabled={probing}>
             {probing ? 'Testing…' : 'Test'}
           </Button>
-          <span class="font-sans text-[10px] text-muted">Drive · Calendar · Gmail reachability</span>
+          <span class="font-sans text-[10px] text-muted">Drive · Calendar · Gmail · Sheets · Slides reachability</span>
         </div>
         {#if probeError}<div class="text-xs text-danger">{probeError}</div>{/if}
         {#if apiResults}
@@ -164,8 +192,8 @@
   {#if data?.connected}<AdminOrgGoogleTargets targets={data.targets} />{/if}
   {#if data?.connected}<AdminOrgGoogleWorkspace />{/if}
   {#if flash}
-    <div class={cn('mt-3 text-xs', flash === 'connected' ? 'text-success' : 'text-danger')}>
-      {msg[flash] ?? flash}
+    <div class={cn('mt-3 text-xs', flash.status === 'connected' ? 'text-success' : 'text-danger')}>
+      {googleBounceText(flash, msg)}
     </div>
   {/if}
 </Panel>

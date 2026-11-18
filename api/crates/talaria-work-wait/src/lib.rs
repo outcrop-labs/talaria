@@ -104,6 +104,76 @@ async fn position_of(pg: &PgPool, agent_model: &str, queued_ms: i64) -> i64 {
     n.max(1)
 }
 
+/// What a queued ticket is waiting BEHIND: the tickets its agent has live
+/// work sessions on, oldest first. The wait row says why it waits (RAM, the
+/// live-job cap); this says on what — but only as far as the reader may
+/// see. One agent works several boards, and a ticket on a board the reader
+/// is not on is named to nobody: its ref or title would leak it. Those are a
+/// count (`hidden`), never a label.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Behind {
+    /// Ticket refs (the title's head when the board does not number tickets)
+    /// on boards the reader can see.
+    pub visible: Vec<String>,
+    /// Live tickets on boards the reader cannot see.
+    pub hidden: usize,
+}
+
+/// `rows` as (board id, label), split by whether the reader sees the board.
+/// Pure.
+pub fn split_behind(rows: Vec<(String, String)>, sees: impl Fn(&str) -> bool) -> Behind {
+    let mut out = Behind::default();
+    for (board, label) in rows {
+        if sees(&board) {
+            out.visible.push(label);
+        } else {
+            out.hidden += 1;
+        }
+    }
+    out
+}
+
+/// [`Behind`] for `viewer_user_id`, who may see a board exactly when
+/// `talaria_boards::board_role` gives them a role on it — the same gate the
+/// board and ticket reads answer 403 behind.
+pub async fn behind(pg: &PgPool, viewer_user_id: &str, agent_model: &str) -> Behind {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "select b.id::text, coalesce( \
+                  case when t.ticket_no is not null \
+                       then coalesce(b.ticket_prefix, 'TASK') || '-' || t.ticket_no end, \
+                  left(t.title, 40)) \
+         from runs r \
+         join tasks t on t.id::text = r.subject_id \
+         join boards b on b.id = t.board_id \
+         where r.kind = 'work-session' and r.state in ('queued', 'running', 'awaiting') \
+           and r.input->>'agentModel' = $1 \
+         order by r.created_at \
+         limit 16",
+    )
+    .bind(agent_model)
+    .fetch_all(pg)
+    .await
+    .unwrap_or_default();
+    let mut seen: std::collections::HashMap<String, bool> = Default::default();
+    for (board, _) in &rows {
+        if !seen.contains_key(board) {
+            let ok = matches!(
+                talaria_boards::board_role(pg, viewer_user_id, board).await,
+                Ok(Some(_))
+            );
+            seen.insert(board.clone(), ok);
+        }
+    }
+    split_behind(rows, |b| seen.get(b).copied().unwrap_or(false))
+}
+
+/// A wait's wire shape with its [`Behind`]: `behind` (the labels the reader
+/// may see) and `behindHidden` (how many more there are).
+pub fn wire_behind(wire: &mut serde_json::Value, behind: &Behind) {
+    wire["behind"] = serde_json::json!(behind.visible);
+    wire["behindHidden"] = serde_json::json!(behind.hidden);
+}
+
 pub fn phase_of(position: i64) -> String {
     if position <= 1 {
         "next up — waiting for RAM".into()
@@ -125,6 +195,26 @@ pub fn wire(w: &Wait) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::{Wait, wire};
+
+    #[test]
+    fn a_ticket_on_a_board_the_reader_cannot_see_is_a_count_not_a_name() {
+        let rows = vec![
+            ("eng".to_string(), "PLAT-1".to_string()),
+            (
+                "private".to_string(),
+                "Acquire Foo Corp — term sheet".to_string(),
+            ),
+            ("eng".to_string(), "PLAT-4".to_string()),
+            ("private".to_string(), "DEAL-2".to_string()),
+        ];
+        let b = super::split_behind(rows, |board| board == "eng");
+        assert_eq!(b.visible, vec!["PLAT-1".to_string(), "PLAT-4".to_string()]);
+        assert_eq!(b.hidden, 2);
+        let mut wire = serde_json::json!({});
+        super::wire_behind(&mut wire, &b);
+        assert!(!wire.to_string().contains("Foo"), "{wire}");
+        assert_eq!(wire["behindHidden"], 2);
+    }
 
     #[test]
     fn first_in_line_is_next_up() {

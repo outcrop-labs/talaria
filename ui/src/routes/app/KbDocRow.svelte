@@ -1,5 +1,6 @@
 <script lang="ts">
   import KbDocRow from './KbDocRow.svelte'
+  import { kbTreeState } from '@/lib/knowledge-tree-state.svelte'
   import { Bot, ChevronRight, FileText, Plus, Star } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import type { KbDocMeta } from '@/lib/kb'
@@ -31,7 +32,14 @@
   } = $props()
 
   const kids = $derived(byParent.get(doc.id) ?? [])
-  let expanded = $state(true)
+  // Expansion lives in kbTreeState, not here: rows mount and unmount with
+  // space switches and navigation, and a row-local `expanded` died with the
+  // row (TALA-92). No local state either: the restore effect opens ancestor
+  // chains AFTER rows are mounted (the docs list arrives late), and a
+  // mount-time seed would never see it. `$derived` off the $state-backed
+  // store re-reads on every store write — the chevron writes, the render
+  // follows, and Knowledge.svelte's effects reach mounted rows too.
+  const expanded = $derived(kbTreeState.docExpanded(doc.id))
   let pos = $state<DropPos | null>(null)
   const hasKids = $derived(kids.length > 0)
 </script>
@@ -75,7 +83,7 @@
     {#if pos === 'after'}<span class="absolute inset-x-1 bottom-0 h-0.5 rounded bg-accent"></span>{/if}
     <button
       type="button"
-      onclick={() => (expanded = !expanded)}
+      onclick={() => kbTreeState.toggleDoc(doc.id, !expanded)}
       class={cn('shrink-0 rounded p-0.5 hover:bg-card2', !hasKids && 'invisible')}
     >
       <ChevronRight size={12} class={cn('transition-transform', expanded && 'rotate-90')} />
@@ -92,8 +100,11 @@
       type="button"
       onclick={(e) => {
         e.stopPropagation()
+        // Open the parent through the store, not just locally: the row's
+        // own `expanded` dies with the row, and the new child must stay
+        // visible after any remount (TALA-92).
+        kbTreeState.toggleDoc(doc.id, true)
         onNew('human', doc.id)
-        expanded = true
       }}
       title="New nested doc"
       class="shrink-0 rounded p-0.5 text-muted opacity-0 hover:bg-card2 hover:text-fg group-hover:opacity-100"

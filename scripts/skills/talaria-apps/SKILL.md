@@ -23,12 +23,16 @@ enables and grants.
      a README) and grants it to you. Carry on with other work: the decision is a line on the
      ticket, and an approved repo shows in `list_repos`. Never file it twice.
    - *Existing app:* its repo is in `list_repos`; `plugin_status` lists the plugins you maintain.
-3. **The job.** `start_job` (`taskId`, `repo`, `plan`), clone into the `workdir`, then:
+3. **The job.** `start_job` (`taskId`, `repo`, `plan`). Talaria provisions it: the `workdir`
+   already holds the repo, its toolchain and, for a repo with a `talaria.json`, the kit. Do not
+   clone. Then:
    - *New repo only:* write a seed `talaria.json` at the root first —
      `{"name": "Field Notes", "slug": "field-notes"}`, the slug you asked for. `prepare_env`
      installs the kit only for a repo with a `talaria.json` at its root.
-   - `prepare_env` (`jobId`) installs the kit and puts `talaria-app` on your PATH; its
-     answer's `appKit` says which kit. Open a new shell after it, as for any job.
+   - The kit and `talaria-app` on your PATH come with provisioning for a repo that has a
+     `talaria.json`; for a new repo, call `prepare_env` (`jobId`) after the seed — it provisions
+     the job again and installs the kit. Its answer's `appKit` says which kit. Open a new shell
+     after it.
    - *New repo only:* `talaria-app scaffold` (add `--harness` for a starter model call). It
      writes the app around your seed and keeps the README. Then add `"sdk": "^1.0"` to
      `talaria.json`, for the SDK version `talaria-app version` names.

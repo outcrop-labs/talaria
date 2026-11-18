@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 talaria-agent-managers = { workspace = true }
 talaria-agent-auth = { workspace = true }
+talaria-approvals = { workspace = true }
 talaria-attribution = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-boards = { workspace = true }
@@ -34,10 +35,12 @@ talaria-research = { workspace = true }
 talaria-research-origin = { workspace = true }
 talaria-session = { workspace = true }
 talaria-state = { workspace = true }
+talaria-statuses = { workspace = true }
 talaria-tasks = { workspace = true }
 talaria-teams = { workspace = true }
 talaria-users = { workspace = true }
 talaria-work-wait = { workspace = true }
+talaria-workbench-updates = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -46,3 +49,6 @@ redis = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 talaria-api-facades = { workspace = true }
+
+[dev-dependencies]
+talaria-config = { workspace = true }

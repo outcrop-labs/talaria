@@ -20,6 +20,7 @@ uuid = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-artifacts = { workspace = true }
 talaria-body = { workspace = true }
+talaria-work-pulse = { workspace = true }
 talaria-config = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-git-hosts = { workspace = true }

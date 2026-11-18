@@ -3,6 +3,8 @@
   import MessageRow from './MessageRow.svelte'
   import DayDivider from './DayDivider.svelte'
   import { dayDividerMap } from '@/lib/day-dividers'
+  import { continuationSet, messageBlocks } from '@/lib/message-groups'
+  import { threadGroupFacts } from './channel-groups'
   import { bottomStick } from '@/lib/stick-to-bottom'
   import ChannelComposer from './ChannelComposer.svelte'
   import TypingLine from './TypingLine.svelte'
@@ -57,6 +59,10 @@
   let scrollEl = $state<HTMLDivElement | null>(null)
   // Same day dividers as the main feed (R1) — a thread can span days.
   const dividers = $derived(dayDividerMap(messages, (m) => m.createdAt, { timeZone: ctx.timeZone, now: Date.now() }))
+  // Replies from one sender group like the main feed's (lib/message-groups).
+  // The root stands alone: the replies rule sits under it, so the first reply
+  // always carries its own header (threadGroupFacts).
+  const continued = $derived(continuationSet(messageBlocks(messages, threadGroupFacts, { dayStarts: dividers })))
 
   const stick = bottomStick()
   $effect(() => stick.attach(scrollEl))
@@ -157,7 +163,7 @@
       <X size={14} />
     </button>
   </div>
-  <div bind:this={scrollEl} class="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+  <div bind:this={scrollEl} class="flex-1 space-y-4 overflow-y-auto px-4 py-4 [&>[data-continued]]:-mt-4">
     {#if threadQuery.isError && threadQuery.data !== undefined}
       <QueryError
         variant="inline"
@@ -192,9 +198,9 @@
       {#key rootId}
         {#each messages as m, i (m.id)}
           {@const day = dividers.get(i)}
-          <div>
+          <div data-continued={continued.has(i) || undefined}>
             {#if day}<DayDivider label={day.label} class="mb-3" />{/if}
-            <MessageRow message={m} {ctx} inThread onInvoke={(text) => void send(text, [])} />
+            <MessageRow message={m} {ctx} inThread continued={continued.has(i)} onInvoke={(text) => void send(text, [])} />
             <!-- The replies rule under the root (R7): label, then a hairline. -->
             {#if i === 0 && messages.length > 1}
               <div class="mt-3 flex items-center gap-2">

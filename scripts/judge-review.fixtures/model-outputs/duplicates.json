@@ -1,0 +1,41 @@
+[
+  {
+    "severity": "major",
+    "category": "correctness",
+    "rule_id": "none",
+    "file": "api/crates/demo/src/lib.rs",
+    "line": 5,
+    "quote": "    let sql = format!(\"select * from users where name = '{}'\", name);",
+    "title": "a title",
+    "failure": "an input reaches the quoted line and the wrong row comes back to the caller",
+    "fix": "the smallest fix",
+    "rule": "none",
+    "confidence": "medium"
+  },
+  {
+    "severity": "blocker",
+    "category": "security",
+    "rule_id": "none",
+    "file": "api/crates/demo/src/lib.rs",
+    "line": 5,
+    "quote": "    let sql = format!(\"select * from users where name = '{}'\", name);",
+    "title": "a title",
+    "failure": "an input reaches the quoted line and the wrong row comes back to the caller",
+    "fix": "the smallest fix",
+    "rule": "none",
+    "confidence": "high"
+  },
+  {
+    "severity": "minor",
+    "category": "correctness",
+    "rule_id": "none",
+    "file": "api/crates/demo/src/lib.rs",
+    "line": 6,
+    "quote": "    db.query_one(&sql, &[])",
+    "title": "a title",
+    "failure": "an input reaches the quoted line and the wrong row comes back to the caller",
+    "fix": "the smallest fix",
+    "rule": "none",
+    "confidence": "high"
+  }
+]

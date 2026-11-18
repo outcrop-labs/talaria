@@ -2,12 +2,18 @@
   import { untrack } from 'svelte'
   import { quintOut } from 'svelte/easing'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Archive, Ellipsis, MessagesSquare, Pencil, SendHorizontal, Settings, SquarePen, Star } from '@lucide/svelte'
+  import { BellOff, ChevronRight, Ellipsis, MessagesSquare, Pencil, Pin, SendHorizontal, SquarePen } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Input from '@/components/ui/Input.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import { prompt } from '@/components/ui/confirm.svelte'
-  import { openCopyItems, type ContextMenuController, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { confirm, prompt } from '@/components/ui/confirm.svelte'
+  import {
+    contextMenuTarget,
+    copyAppLink,
+    type ContextMenuController,
+    type ContextMenuEntry,
+  } from '@/components/ui/context-menu.svelte'
+  import { isMenuKey } from '@/components/ui/context-menu-keys'
   import Rail from '@/components/app/Rail.svelte'
   import RailRow from '@/components/app/RailRow.svelte'
   import CountPill from '@/components/app/CountPill.svelte'
@@ -22,7 +28,20 @@
   import type { AgentStatus } from '@/lib/fleet'
   import { useFleetDefs } from '@/lib/fleet-defs'
   import type { DirectoryUser } from '@/lib/users'
-  import type { Channel } from '@/lib/channels.svelte'
+  import { deleteChannel, updateChannel, type Channel } from '@/lib/channels.svelte'
+  import { isMuted, putChannelNotify, refusalMessage, type ChannelNotifyPatch } from '@/lib/channel-notify'
+  import { useAgentMutes } from '@/lib/agent-mutes.svelte'
+  import { markChannelUnread, markConversationUnread, openInNewTab } from '@/lib/comms-row-actions'
+  import {
+    agentClickTarget,
+    agentMenu,
+    conversationMenu,
+    personMenu,
+    type ConversationActions,
+    type ConversationRow,
+  } from '@/lib/comms-row-menu'
+  import { inDesktopShell } from '@/lib/desktop-shell'
+  import type { ProfileSubject } from '@/lib/comms-profile'
   import { markConversationRead, type Conversation } from '@/lib/conversations.svelte'
   import type { CommsSelection } from '@/lib/comms-selection'
   import {
@@ -54,7 +73,7 @@
   //   Find a conversation
   //   Threads · Drafts & sent
   //   ───────
-  //   ▾ Starred           your favorites, any kind (hidden when none)
+  //   ▾ Pinned            what you pinned, any kind (hidden when none)
   //   ▾ Channels          #channels
   //   ▾ Relays            ⇄ relays
   //   ▾ Direct messages   people
@@ -89,6 +108,7 @@
     onStartDm,
     onCreate,
     markRead,
+    onOpenProfile,
   }: {
     sel: CommsSelection | null
     selfId: string | null
@@ -107,6 +127,8 @@
     onCreate: (name: string, kind: 'channel' | 'group') => void
     /** Advance a channel's read cursor to its latest message. */
     markRead: (channelId: string) => Promise<void>
+    /** Open the profile drawer on a person or an agent. */
+    onOpenProfile?: (s: ProfileSubject) => void
   } = $props()
 
   const qc = useQueryClient()
@@ -144,7 +166,8 @@
     writeCollapsed(collapsed)
   }
 
-  // Starred conversations — per person, shared with the header star buttons.
+  // Pinned conversations — per person, on the server, shared with the header
+  // pin buttons (lib/comms-stars.svelte.ts; the code still says "star").
   const stars = useStars(() => selfId)
   // Conversations with a half-written message: a pencil on their row, and the
   // count on "Drafts & sent".
@@ -221,47 +244,56 @@
         }
       : null
 
-  // ── row menus — shortcuts to what the rows already do ─────────────────────
+  // ── row menus ─────────────────────────────────────────────────────────────
+  // One list per row, opened by right-click, the Menu key or Shift+F10, a
+  // long-press on touch, and the row's "…" button (contextMenuTarget + the
+  // `more` snippet below). Which items a row offers — by kind and by what the
+  // person may do — is lib/comms-row-menu.ts, pure and tested; this half only
+  // says what the row is and does the work.
 
-  const starItem = (key: string): ContextMenuEntry => ({
-    label: stars.has(key) ? 'Unstar' : 'Star',
-    disabled: !selfId,
-    onSelect: () => stars.toggle(key),
-  })
-
-  const channelRowMenu = (c: Channel): ContextMenuEntry[] => [
-    ...openCopyItems(`/comms/channel/${c.id}`, () => onSelect({ t: 'channel', id: c.id })),
-    { label: 'Mark read', disabled: !c.unreadCount, onSelect: () => void markRead(c.id) },
-    starItem(channelStarKey(c.id)),
-  ]
+  const agentMutes = useAgentMutes(() => selfId)
+  // A mute runs out on its own: the menu re-reads the clock when it opens.
+  const menuCtx = (key: string) => ({ signedIn: !!selfId, pinned: stars.has(key), desktop: inDesktopShell(), now: Date.now() })
 
   // The agent's settings open in AgentManageModal, the /agents editor. Its
-  // defs carry canManage (admins and the agent's managers); everyone else
-  // sees the menu item disabled.
+  // defs carry canManage (admins and the agent's managers); for everyone else
+  // the item is not offered.
   const fleetDefs = useFleetDefs(() => true)
   const defFor = (model: string) => fleetDefs.data?.defs.find((d) => d.model === model) ?? null
   let editingModel = $state<string | null>(null)
   const editingDef = $derived(editingModel ? defFor(editingModel) : null)
 
+  /** A single click on an agent (or Enter on it): a blank conversation with
+   *  it — the fresh composer, no thread until the first message is sent —
+   *  with its recent threads fanned out under the row (comms-row-menu.ts,
+   *  AGENT_CLICK, says how to make it jump to the newest thread instead). */
+  const talkTo = (model: string) => {
+    const target = agentClickTarget(conversations.filter((c) => c.agentModel === model))
+    if (target.t === 'thread') onSelect({ t: 'agent', model, conversationId: target.id })
+    else onNewThread(model)
+    if (!expandedAgents.has(model)) expandedAgents = new Set([...expandedAgents, model])
+  }
+
   const agentRowMenu = (model: string): ContextMenuEntry[] => {
     const key = agentStarKey(model)
-    const def = defFor(model)
-    return [
+    const hasThreads = conversations.some((c) => c.agentModel === model)
+    const items = agentMenu(
+      { kind: 'agent', model, canManage: !!defFor(model)?.canManage, mutedUntil: agentMutes.mutedUntil(model) },
+      menuCtx(key),
       {
-        label: stars.has(key) ? 'Unstar' : 'Star',
-        icon: [Star, { size: 14 }],
-        disabled: !selfId,
-        onSelect: () => stars.toggle(key),
+        newConversation: () => onNewThread(model),
+        copyLink: copyAppLink,
+        viewProfile: () => onOpenProfile?.({ kind: 'agent', model }),
+        editAgent: () => (editingModel = model),
+        togglePin: () => stars.toggle(key),
+        muteDms: (until) => void agentMutes.set(model, until),
       },
-      {
-        label: def?.canManage === false ? 'Edit agent (managers only)' : 'Edit agent',
-        icon: [Settings, { size: 14 }],
-        disabled: !def?.canManage,
-        onSelect: () => (editingModel = model),
-      },
-      'sep',
-      { label: 'New thread', icon: [SquarePen, { size: 14 }], onSelect: () => onNewThread(model) },
-    ]
+    )
+    // Folding the agent's threads away has a home here too, for touch, where
+    // the row's chevron never shows.
+    return hasThreads
+      ? [...items, 'sep', { label: expandedAgents.has(model) ? 'Hide threads' : 'Show threads', onSelect: () => toggleExpanded(model) }]
+      : items
   }
 
   const markThreadRead = async (id: string) => {
@@ -279,52 +311,196 @@
     }
   }
 
-  // Archiving takes a thread out of the rail (and out of Starred, if pinned).
+  /** Run one row write, then refresh what it changed; a refusal is a toast.
+   *  Answers whether the write went through, for a caller with a follow-up
+   *  that only makes sense after it (unpinning what was archived). */
+  const rowWrite = async (what: string, run: () => Promise<unknown>, keys: string[][]): Promise<boolean> => {
+    let ok = true
+    try {
+      await run()
+    } catch (e) {
+      ok = false
+      toastError(`${what} failed`, e)
+    }
+    for (const queryKey of keys) void qc.invalidateQueries({ queryKey })
+    return ok
+  }
+
+  // Archiving takes a thread out of the rail (and out of Pinned, if pinned).
   // An open thread hands its pane back to the agent's fresh one.
-  const archiveThread = async (model: string, c: Conversation) => {
+  const archiveThread = async (model: string, c: Conversation, hard = false) => {
     archiving = new Set([...archiving, c.id])
     try {
       // DELETE archives (it hard-deletes only with ?hard=1); PATCH only restores.
-      await delJson(`/api/conversations/${c.id}`)
+      await delJson(`/api/conversations/${c.id}${hard ? '?hard=1' : ''}`)
     } catch (e) {
       archiving = new Set([...archiving].filter((id) => id !== c.id))
-      toastError('Archive failed', e)
+      toastError(hard ? 'Delete failed' : 'Archive failed', e)
       return
     }
-    // The refetch removes the row (its slide plays); only then un-star it, or
-    // a starred thread flashes back under its agent for a frame.
+    // The refetch removes the row (its slide plays); only then unpin it, or
+    // a pinned thread flashes back under its agent for a frame.
     await qc.invalidateQueries({ queryKey: ['conversations'] })
     const key = threadStarKey(c.id)
     if (stars.has(key)) stars.toggle(key)
     if (agentSel?.model === model && agentSel.conversationId === c.id) onSelect({ t: 'agent', model, conversationId: null })
   }
 
-  const threadRowMenu = (model: string, c: Conversation): ContextMenuEntry[] => [
-    ...openCopyItems(`/comms/agent/${model}/${c.id}`, () => onSelect({ t: 'agent', model, conversationId: c.id })),
-    ...(c.unreadCount ? [{ label: 'Mark read', onSelect: () => void markThreadRead(c.id) }] : []),
-    {
-      label: stars.has(threadStarKey(c.id)) ? 'Unstar' : 'Star',
-      disabled: !selfId,
-      onSelect: () => stars.toggle(threadStarKey(c.id)),
-    },
-    { label: 'Archive', onSelect: () => void archiveThread(model, c) },
-    {
-      label: 'Rename',
-      onSelect: () => {
-        void prompt({ title: 'Rename thread', defaultValue: c.title ?? '', placeholder: 'Thread name', confirmLabel: 'Rename' }).then(
-          async (name) => {
-            if (!name?.trim()) return
-            try {
-              await patchJson(`/api/conversations/${c.id}`, { title: name.trim() })
-            } catch (e) {
-              toastError('Rename failed', e)
-            }
-            void qc.invalidateQueries({ queryKey: ['conversations'] })
-          },
-        )
+  const renameThread = (c: Conversation) =>
+    void prompt({ title: 'Rename thread', defaultValue: c.title ?? '', placeholder: 'Thread name', confirmLabel: 'Rename' }).then(
+      (name) => {
+        if (!name?.trim()) return
+        void rowWrite('Rename', () => patchJson(`/api/conversations/${c.id}`, { title: name.trim() }), [['conversations']])
       },
-    },
-  ]
+    )
+
+  const deleteThread = async (model: string, c: Conversation) => {
+    const ok = await confirm({
+      title: 'Delete thread',
+      message: `Delete "${c.title?.trim() || 'Untitled'}"? The conversation goes away for good — Archive keeps it.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (ok) await archiveThread(model, c, true)
+  }
+
+  const threadRowMenu = (model: string, c: Conversation): ContextMenuEntry[] => {
+    const key = threadStarKey(c.id)
+    const row: ConversationRow = {
+      kind: 'thread',
+      id: c.id,
+      model,
+      owner: (c.role ?? 'owner') === 'owner',
+      unread: c.unreadCount ?? 0,
+      active: agentSel?.model === model && agentSel.conversationId === c.id,
+    }
+    return conversationMenu(row, menuCtx(key), {
+      open: () => onSelect({ t: 'agent', model, conversationId: c.id }),
+      openElsewhere: openInNewTab,
+      copyLink: copyAppLink,
+      markRead: () => void markThreadRead(c.id),
+      markUnread: () => void rowWrite('Mark unread', () => markConversationUnread(c.id), [['conversations']]),
+      togglePin: () => stars.toggle(key),
+      rename: () => renameThread(c),
+      setLevel: () => {},
+      mute: () => {},
+      archive: () => void archiveThread(model, c),
+      remove: () => void deleteThread(model, c),
+    })
+  }
+
+  // ── channel, relay and DM rows ─────────────────────────────────────────────
+  const writeNotify = (c: Channel, patch: ChannelNotifyPatch) =>
+    void (async () => {
+      try {
+        await putChannelNotify(c.id, patch)
+      } catch (e) {
+        toastError('Notifications not changed', refusalMessage(e))
+      }
+      void qc.invalidateQueries({ queryKey: ['channels'] })
+      void qc.invalidateQueries({ queryKey: ['channel', c.id] })
+    })()
+
+  const renameChannel = (c: Channel) =>
+    void prompt({
+      title: c.kind === 'group' ? 'Rename relay' : 'Rename channel',
+      defaultValue: c.name,
+      placeholder: c.kind === 'group' ? 'Relay name' : 'Channel name',
+      confirmLabel: 'Rename',
+    }).then((name) => {
+      if (!name?.trim()) return
+      void rowWrite('Rename', () => updateChannel(c.id, { name: name.trim() }), [['channels'], ['channel', c.id]])
+    })
+
+  const retireChannel = async (c: Channel, hard: boolean) => {
+    const noun = c.kind === 'group' ? 'relay' : 'channel'
+    if (hard) {
+      const ok = await confirm({
+        title: `Delete ${noun}`,
+        message: `Delete "${c.name}" and every message in it for everyone? Archive keeps it.`,
+        confirmLabel: 'Delete',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    const done = await rowWrite(
+      hard ? 'Delete' : 'Archive',
+      () => (hard ? deleteChannel(c.id) : delJson(`/api/channels/${c.id}`)),
+      [['channels']],
+    )
+    // A refused archive or delete leaves the channel — and its pin — as it was.
+    const key = channelStarKey(c.id)
+    if (done && stars.has(key)) stars.toggle(key)
+  }
+
+  const channelActions = (c: Channel, viewProfile?: () => void): ConversationActions => {
+    const key = channelStarKey(c.id)
+    return {
+      open: () => onSelect({ t: 'channel', id: c.id }),
+      openElsewhere: openInNewTab,
+      copyLink: copyAppLink,
+      markRead: () => void markRead(c.id),
+      markUnread: () => void rowWrite('Mark unread', () => markChannelUnread(c.id), [['channels']]),
+      togglePin: () => stars.toggle(key),
+      rename: () => renameChannel(c),
+      setLevel: (level) => writeNotify(c, { level }),
+      mute: (until) => writeNotify(c, { mutedUntil: until }),
+      archive: () => void retireChannel(c, false),
+      remove: () => void retireChannel(c, true),
+      viewProfile,
+    }
+  }
+
+  const channelRowMenu = (c: Channel, viewProfile?: () => void): ContextMenuEntry[] =>
+    conversationMenu(
+      {
+        kind: 'channel',
+        id: c.id,
+        channelKind: c.kind,
+        owner: c.role === 'owner',
+        unread: c.unreadCount ?? 0,
+        active: activeChannelId === c.id,
+        notify: c.notify ?? null,
+      },
+      menuCtx(channelStarKey(c.id)),
+      channelActions(c, viewProfile),
+    )
+
+  // THE MUTED MARKS RUN OUT ON THEIR OWN. `now` moves when the soonest
+  // running mute ends — one timer on that instant, re-armed for the next, no
+  // polling — so a 1-hour mute's bell-off leaves the row at the hour, not at
+  // the next refetch. A mute past the timer's reach (until turned back on)
+  // never ends on screen, which is right.
+  let now = $state(Date.now())
+  const nextMuteEnd = $derived.by(() => {
+    const ends = [
+      ...channels.map((c) => c.notify?.mutedUntil ?? null),
+      ...fleet.map((a) => agentMutes.mutedUntil(a.id)),
+    ]
+      .map((t) => (t ? Date.parse(t) : NaN))
+      .filter((t) => Number.isFinite(t) && t > now)
+    return ends.length > 0 ? Math.min(...ends) : null
+  })
+  $effect(() => {
+    const at = nextMuteEnd
+    if (at === null) return
+    const wait = at - Date.now() + 50
+    if (wait > 2_147_000_000) return
+    const t = setTimeout(() => (now = Date.now()), Math.max(0, wait))
+    return () => clearTimeout(t)
+  })
+  const agentMuted = (model: string) => isMuted({ mutedUntil: agentMutes.mutedUntil(model) }, now)
+
+  const dmMuted = (dmId: string | null) => {
+    const n = dmId ? channels.find((c) => c.id === dmId)?.notify : undefined
+    return !!n && isMuted(n, now)
+  }
+
+  const personRowMenu = (u: Person): ContextMenuEntry[] => {
+    const viewProfile = () => onOpenProfile?.({ kind: 'person', userId: u.id })
+    const dm = u.dmId ? channels.find((c) => c.id === u.dmId) : undefined
+    return dm ? channelRowMenu(dm, viewProfile) : personMenu({ message: () => onStartDm(u.id), viewProfile })
+  }
 
   // ── section header actions ────────────────────────────────────────────────
 
@@ -396,6 +572,9 @@
 
   // Trailing meta (time, pill, "new") gives way to the row's hover buttons.
   const hideOnHover = 'group-focus-within/row:invisible group-hover/row:invisible'
+  // A touch screen has no hover, so the "…" stays up there; a row keeps the
+  // room it takes so its count is never under it.
+  const touchRoom = '[@media(hover:none)]:pr-8'
   const unreadName = (n: number | undefined) => ((n ?? 0) > 0 ? 'font-semibold text-fg' : '')
 
   // Silhouette widths for the rail-row skeletons — varied per index so the
@@ -440,12 +619,33 @@
 
 {#snippet draftMark()}<Pencil size={12} class="shrink-0 text-muted" aria-label="Draft" />{/snippet}
 
+<!-- EVERY ROW IS ONE MENU TARGET: right-click, the Menu key or Shift+F10 on
+     its focused button, a long-press on touch — and its "…" button, which
+     shows on hover and focus (always, on a touch screen), so the menu is
+     found without knowing to right-click. The trailing meta (count, draft)
+     steps aside for it on hover, and on touch the row keeps room for it. -->
+{#snippet moreButton(label: string, items: () => ContextMenuEntry[])}
+  <button
+    type="button"
+    title={`More actions for ${label}`}
+    aria-label={`More actions for ${label}`}
+    aria-haspopup="menu"
+    class="grid h-6 w-6 place-items-center rounded text-muted transition-[color,scale] duration-150 ease-[cubic-bezier(0.25,0.46,0.45,0.94)] motion-safe:active:scale-[0.97] hover:text-fg focus-visible:text-fg focus-visible:outline-none"
+    onclick={(e) => {
+      e.stopPropagation()
+      menu.openAt(e.currentTarget, items(), { keyboard: e.detail === 0 })
+    }}
+  >
+    <Ellipsis size={14} />
+  </button>
+{/snippet}
+
 <!-- A group DM: a count badge where an avatar would be, then everyone
      else's names (or the name it was given). -->
 {#snippet groupDmRow(c: RailChannel)}
-  <RailRow active={activeChannelId === c.id} onClick={() => onSelect({ t: 'channel', id: c.id })}>
-    <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-    <span class="contents" oncontextmenu={(e) => menu.openMenu(e, channelRowMenu(c))}>
+  {@const items = () => channelRowMenu(c)}
+  <div class="group/row relative rounded-md" use:contextMenuTarget={{ menu, items }}>
+    <RailRow active={activeChannelId === c.id} onClick={() => onSelect({ t: 'channel', id: c.id })} class={touchRoom}>
       <span
         aria-hidden="true"
         class="grid h-5 w-5 shrink-0 place-items-center rounded-[5px] bg-raised font-mono text-[10px] text-muted"
@@ -457,56 +657,68 @@
         <TypingDots class="mb-[5px] shrink-0 text-muted" label="Someone is typing" />
       {/if}
       <span class="flex-1"></span>
-      {#if drafts.has(c.id)}{@render draftMark()}{/if}
-      <CountPill count={c.unreadCount} />
-    </span>
-  </RailRow>
+      <span class={cn('flex shrink-0 items-center gap-1.5', hideOnHover)}>
+        {#if drafts.has(c.id)}{@render draftMark()}{/if}
+        <CountPill count={c.unreadCount} />
+      </span>
+    </RailRow>
+    {#snippet actions()}{@render moreButton(c.label ?? c.name, items)}{/snippet}
+    {@render hoverActions(actions)}
+  </div>
 {/snippet}
 
-<!-- The three row kinds, shared by their own sections and by Starred. -->
+<!-- The three row kinds, shared by their own sections and by Pinned. -->
 {#snippet channelRow(c: Channel)}
-  <RailRow active={activeChannelId === c.id} onClick={() => onSelect({ t: 'channel', id: c.id })}>
-    <!-- display:contents wrapper — carries the context menu without touching row layout -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-    <span class="contents" oncontextmenu={(e) => menu.openMenu(e, channelRowMenu(c))}>
+  {@const items = () => channelRowMenu(c)}
+  <div class="group/row relative rounded-md" use:contextMenuTarget={{ menu, items }}>
+    <RailRow active={activeChannelId === c.id} onClick={() => onSelect({ t: 'channel', id: c.id })} class={touchRoom}>
       <!-- The Channel wire has no private flag yet, so every channel reads
            `#`; a relay reads `⇄`. -->
       <span class="w-3 shrink-0 text-center opacity-60">{c.kind === 'group' ? '⇄' : '#'}</span>
       <span class={cn('min-w-0 truncate', unreadName(c.unreadCount))}>{c.name}</span>
+      {#if c.notify && isMuted(c.notify, now)}
+        <BellOff size={12} class="shrink-0 text-muted" aria-label="Muted" />
+      {/if}
       {#if typersIn(c.id, selfId).length > 0}
         <TypingDots class="mb-[5px] shrink-0 text-muted" label="Someone is typing" />
       {/if}
       <span class="flex-1"></span>
-      {#if drafts.has(c.id)}{@render draftMark()}{/if}
-      <CountPill count={c.unreadCount} />
-    </span>
-  </RailRow>
+      <span class={cn('flex shrink-0 items-center gap-1.5', hideOnHover)}>
+        {#if drafts.has(c.id)}{@render draftMark()}{/if}
+        <CountPill count={c.unreadCount} />
+      </span>
+    </RailRow>
+    {#snippet actions()}{@render moreButton(c.name, items)}{/snippet}
+    {@render hoverActions(actions)}
+  </div>
 {/snippet}
 
 {#snippet personRow(u: Person)}
-  <RailRow
-    active={u.dmId !== null && activeChannelId === u.dmId}
-    onClick={() => (u.dmId ? onSelect({ t: 'channel', id: u.dmId }) : onStartDm(u.id))}
-  >
-    <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-    <span
-      class="contents"
-      oncontextmenu={(e) => {
-        const dm = u.dmId ? channels.find((c) => c.id === u.dmId) : undefined
-        menu.openMenu(e, dm ? channelRowMenu(dm) : [{ label: 'Open', onSelect: () => onStartDm(u.id) }])
-      }}
+  {@const items = () => personRowMenu(u)}
+  <div class="group/row relative rounded-md" use:contextMenuTarget={{ menu, items }}>
+    <RailRow
+      active={u.dmId !== null && activeChannelId === u.dmId}
+      onClick={() => (u.dmId ? onSelect({ t: 'channel', id: u.dmId }) : onStartDm(u.id))}
+      class={touchRoom}
     >
       <PresenceAvatar name={u.name ?? u.email ?? '?'} src={u.picture} presence={u.online ? 'online' : 'offline'} />
       <span class={cn('min-w-0 truncate', unreadName(u.unreadCount))}>{u.name ?? u.email}</span>
       {@render statusEmoji(u)}
+      {#if dmMuted(u.dmId)}
+        <BellOff size={12} class="shrink-0 text-muted" aria-label="Muted" />
+      {/if}
       {#if typersIn(u.dmId, selfId).includes(u.id)}
         <TypingDots class="mb-[5px] shrink-0 text-muted" label={`${u.name ?? u.email} is typing`} />
       {/if}
       <span class="flex-1"></span>
-      {#if drafts.has(u.dmId)}{@render draftMark()}{/if}
-      <CountPill count={u.unreadCount} />
-    </span>
-  </RailRow>
+      <span class={cn('flex shrink-0 items-center gap-1.5', hideOnHover)}>
+        {#if drafts.has(u.dmId)}{@render draftMark()}{/if}
+        <CountPill count={u.unreadCount} />
+      </span>
+    </RailRow>
+    {#snippet actions()}{@render moreButton(u.name ?? u.email ?? 'this person', items)}{/snippet}
+    {@render hoverActions(actions)}
+  </div>
 {/snippet}
 
 <!-- Agent and thread rows are ONE hoverable piece (Codex's rows): the
@@ -514,7 +726,9 @@
      no box of their own, in place of the trailing meta they hide. They are
      siblings of the row button, not children: a button cannot hold buttons. -->
 {#snippet hoverActions(actions: import('svelte').Snippet)}
-  <div class="absolute inset-y-0 right-1 hidden items-center gap-0.5 group-focus-within/row:flex group-hover/row:flex">
+  <div
+    class="absolute inset-y-0 right-1 hidden items-center gap-0.5 group-focus-within/row:flex group-hover/row:flex [@media(hover:none)]:flex"
+  >
     {@render actions()}
   </div>
 {/snippet}
@@ -556,9 +770,10 @@
   {@const activeThread = agentSel?.model === a.id && agentSel?.conversationId === c.id}
   {@const starKey = threadStarKey(c.id)}
   {@const starred = stars.has(starKey)}
+  {@const items = () => threadRowMenu(a.id, c)}
   <RowHoverCard>
     {#snippet card()}{@render threadCard(a, c)}{/snippet}
-    <div class="group/row relative rounded-md hover:bg-card2">
+    <div class="group/row relative rounded-md hover:bg-card2" use:contextMenuTarget={{ menu, items }}>
       <!-- Flat threads have no trailing meta, so the title alone must stop
            short of the hover buttons — right-1 + two 24px buttons + their
            2px gap is 54px, hence pr-13.5. Nested rows keep their meta box
@@ -568,14 +783,13 @@
         onClick={() => onSelect({ t: 'agent', model: a.id, conversationId: c.id })}
         class={cn(nested && 'pl-7', !nested && 'pr-13.5', unreadName(c.unreadCount))}
       >
-        <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-        <span class="contents" oncontextmenu={(e) => menu.openMenu(e, threadRowMenu(a.id, c))}>
+        <span class="contents">
           {#if nested}
             <!-- §10 session-row anatomy, shared with the Plan rail. -->
             <SessionRowBody
               conv={c}
               active={activeThread}
-              metaClass={hideOnHover}
+              metaClass={cn(hideOnHover, '[@media(hover:none)]:invisible')}
               showUnread={false}
               draft={drafts.has(c.id)}
               waitingSite="comms/thread-working"
@@ -590,11 +804,10 @@
           {/if}
         </span>
       </RailRow>
-      {#snippet starIcon()}<Star size={13} fill={starred ? 'currentColor' : 'none'} />{/snippet}
-      {#snippet archiveIcon()}<Archive size={13} />{/snippet}
+      {#snippet pinIcon()}<Pin size={13} fill={starred ? 'currentColor' : 'none'} />{/snippet}
       {#snippet actions()}
-        {@render rowAction(starred ? 'Unstar' : 'Star', () => selfId && stars.toggle(starKey), starIcon, starred)}
-        {@render rowAction('Archive thread', () => void archiveThread(a.id, c), archiveIcon)}
+        {@render rowAction(starred ? 'Unpin' : 'Pin', () => selfId && stars.toggle(starKey), pinIcon, starred)}
+        {@render moreButton(c.title || 'Untitled', items)}
       {/snippet}
       {@render hoverActions(actions)}
     </div>
@@ -613,6 +826,7 @@
   {@const threads = row.matchedThreads ?? (expanded ? (showAll ? agentThreads : agentThreads.slice(0, THREAD_CAP)) : [])}
   {@const role = a.role ? a.role.charAt(0).toUpperCase() + a.role.slice(1) : null}
   {@const presence = agentPresence(fleetStatus.get(a.id))}
+  {@const items = () => agentRowMenu(a.id)}
   <div class="space-y-0.5">
     <RowHoverCard>
       {#snippet card()}
@@ -628,20 +842,34 @@
           {agentThreads.length === 0 ? 'No threads yet' : `${agentThreads.length} ${agentThreads.length === 1 ? 'thread' : 'threads'}`}{#if agentThreads.some((c) => c.working)}<span class="text-success"> · working</span>{/if}
         </div>
       {/snippet}
-      <div class="group/row relative rounded-md hover:bg-card2">
+      <!-- svelte-ignore a11y_no_static_element_interactions -- reason: the keys here are the tree's Right/Left fold on the RailRow button inside, which carries the row's click + keyboard -->
+      <div
+        class="group/row relative rounded-md hover:bg-card2"
+        use:contextMenuTarget={{ menu, items }}
+        onkeydown={(e) => {
+          // The tree convention: Right opens the agent's threads, Left folds
+          // them — on the row itself, not its hover buttons.
+          if (isMenuKey(e) || agentThreads.length === 0 || !(e.target instanceof HTMLElement)) return
+          if (!e.target.querySelector('[data-agent-row-body]')) return
+          if ((e.key === 'ArrowRight' && !expanded) || (e.key === 'ArrowLeft' && expanded)) {
+            e.preventDefault()
+            toggleExpanded(a.id)
+          }
+        }}
+      >
         <!-- The agent label has no trailing box of its own either (its meta
              hides on hover), so the same 54px pr-13.5 keeps the hover's More
-             and New-thread buttons off the name's tail. -->
-        <RailRow active={freshThread} onClick={() => toggleExpanded(a.id)} class="pr-13.5">
-          <!-- svelte-ignore a11y_no_static_element_interactions -- reason: contextmenu is pointer-only; the RailRow button carries the row's click + keyboard -->
-          <span
-            class="contents"
-            aria-expanded={agentThreads.length > 0 ? expanded : undefined}
-            oncontextmenu={(e) => menu.openMenu(e, agentRowMenu(a.id))}
-          >
+             and New-thread buttons off the name's tail. ONE CLICK TALKS TO
+             IT: a blank conversation with the agent, its recent threads
+             fanned out below (talkTo). The chevron over the avatar folds. -->
+        <RailRow active={freshThread} onClick={() => talkTo(a.id)} class="pr-13.5">
+          <span class="contents" data-agent-row-body>
             <!-- R19: agents have no photo on the wire yet — initials. -->
             <PresenceAvatar name={a.label} {presence} />
             <span class={cn('min-w-0 flex-1 truncate', unreadName(row.unread))}>{a.label}</span>
+            {#if agentMuted(a.id)}
+              <BellOff size={12} class="shrink-0 text-muted" aria-label="DMs muted" />
+            {/if}
             <span class={cn('flex shrink-0 items-center gap-1.5', hideOnHover)}>
               <!-- A draft for a new thread, or — folded — in any of its threads. -->
               {#if drafts.has(newAgentDraftKey(a.id)) || (!expanded && agentThreads.some((c) => drafts.has(c.id)))}
@@ -658,11 +886,28 @@
             </span>
           </span>
         </RailRow>
-        {#snippet moreIcon()}<Ellipsis size={14} />{/snippet}
+        {#if agentThreads.length > 0}
+          <!-- The fold, over the avatar on hover and focus (Codex's project
+               rows); Right/Left on the row and the menu's Show/Hide threads
+               do the same. -->
+          <button
+            type="button"
+            title={expanded ? `Hide threads with ${a.label}` : `Show threads with ${a.label}`}
+            aria-label={expanded ? `Hide threads with ${a.label}` : `Show threads with ${a.label}`}
+            aria-expanded={expanded}
+            class="absolute left-1.5 top-1/2 hidden h-5 w-5 -translate-y-1/2 place-items-center rounded bg-card2 text-muted hover:text-fg focus-visible:text-fg focus-visible:outline-none group-focus-within/row:grid group-hover/row:grid [@media(hover:none)]:!hidden"
+            onclick={(e) => {
+              e.stopPropagation()
+              toggleExpanded(a.id)
+            }}
+          >
+            <ChevronRight size={13} class={cn('transition-transform duration-150', expanded && 'rotate-90')} />
+          </button>
+        {/if}
         {#snippet newIcon()}<SquarePen size={13} />{/snippet}
         {#snippet actions()}
-          {@render rowAction('More', (e) => menu.openMenu(e, agentRowMenu(a.id)), moreIcon)}
-          {@render rowAction(`New thread with ${a.label}`, () => onNewThread(a.id), newIcon)}
+          {@render moreButton(a.label, items)}
+          {@render rowAction(`New conversation with ${a.label}`, () => onNewThread(a.id), newIcon)}
         {/snippet}
         {@render hoverActions(actions)}
       </div>
@@ -726,7 +971,7 @@
   {/if}
 
   {#if showStarred}
-    <Section label="Starred" collapsed={collapsed.starred} onToggle={() => toggle('starred')} moreItems={starredMore}>
+    <Section label="Pinned" collapsed={collapsed.starred} onToggle={() => toggle('starred')} moreItems={starredMore}>
       {#each view.starred as s (s.key)}
         <div in:receiveRow={{ key: s.key }} out:rowOut={{ key: s.key, id: s.kind === 'thread' ? s.thread.id : '' }}>
           {#if s.kind === 'channel' && s.channel.group}

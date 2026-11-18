@@ -346,7 +346,8 @@ export const CLEAR_SEEDED_GATEWAY_PORTS =
   "do $$ begin if to_regclass('public.agent_defs') is not null then " +
   'update agent_defs set gateway_port = null where gateway_port is not null; end if; end $$;'
 
-/** How `talaria worktree` fills the new checkout's Rust build cache. */
+/** How `talaria worktree` fills the new checkout's Rust build cache: not at
+ *  all unless `seed` (or `seedFrom`, which names the source) says so. */
 export type WorktreeSeedOpts = { seed?: boolean; seedFrom?: string; desktop?: boolean }
 
 export async function runWorktree(ctx: Ctx, name: string, base = 'HEAD', seedOpts: WorktreeSeedOpts = {}): Promise<number> {
@@ -633,24 +634,27 @@ TALARIA_GATEWAY_PORT_BASE=${slot.gatewayBase}
     }
   }
 
-  // The Rust build cache, last: it is an optimisation, so a seed that cannot
-  // happen warns and the stack above is already whole. Every worktree used to
-  // start with an empty api/target and pay a cold build, writing its own copy
-  // of the same third-party artifacts (four agent worktrees held 15-107 GiB
-  // each). The seed reflinks the registry crates' units from the best idle
-  // checkout and leaves every workspace crate to build from this checkout's
-  // sources (src/targetseed.ts says why only those).
+  // The Rust build cache, last, and only when asked for (`--seed`). Exercising
+  // a change no longer needs a local api build — `talaria dev --api-from-ci`
+  // runs the binary CI built — and compile and test are CI's, so a worktree
+  // starts with no api/target at all. The seed is for the one case that still
+  // runs cargo here: reproducing a failure CI reported. It reflinks the
+  // registry crates' units from the best idle checkout and leaves every
+  // workspace crate to build from this checkout's sources (src/targetseed.ts
+  // says why only those); it is an optimisation, so a seed that cannot happen
+  // warns and the stack above is already whole.
   ctx.log.say('Rust build cache')
-  if (seedOpts.seed === false) {
-    ctx.log.skip('--no-seed: the first build is cold')
-  } else {
+  if (seedOpts.seed === true || seedOpts.seedFrom !== undefined) {
     await seedCheckout(ctx, wt, { from: seedOpts.seedFrom ? resolve(ctx.cwd ?? root, seedOpts.seedFrom) : undefined, desktop: seedOpts.desktop })
+  } else {
+    ctx.log.skip('api/target starts empty (pass --seed to reflink one)')
   }
 
   ctx.log.raw(`
 Worktree "${name}" ready — fully isolated from main.
 
-  Run it:   cd ${wt} && bun talaria dev
+  Run it:   cd ${wt} && bun talaria dev --api-from-ci
+            (the api binary CI built; plain \`bun talaria dev\` builds it here with cargo)
   App:      http://localhost:${slot.app}   (api :${slot.api} · Postgres :${slot.pg} · Redis :${slot.redis})
   Agents:   gateway ports from :${slot.gatewayBase} · toolkit :${slot.mcp} · omp auth :${slot.ompAuth}
 
@@ -674,21 +678,33 @@ export const worktreeCommand: Leaf = {
   kind: 'leaf',
   name: 'worktree',
   summary: 'spin up an isolated worktree stack (own DB seeded from main)',
-  usage: 'talaria worktree <name> [base-ref] [--no-seed] [--seed-from <checkout>] [--desktop]',
-  positionals: { name: 'name', required: true, multiple: true, desc: 'then optionally a base ref (default: HEAD)' },
+  usage: 'talaria worktree <name> [base-ref] [--seed] [--seed-from <checkout>] [--desktop]',
+  // Not `multiple`: that is a passthrough, and its flags were never parsed —
+  // `talaria worktree demo --no-seed` cut a worktree of the ref `--no-seed`.
+  positionals: { name: 'name', required: true, max: 2, desc: 'then optionally a base ref (default: HEAD)' },
   flags: [
-    { name: 'no-seed', kind: 'bool', desc: "start with an empty api/target (a cold build) instead of reflinking an idle checkout's registry crates" },
-    { name: 'seed-from', kind: 'value', desc: 'the checkout whose target to seed from (default: the idle one whose Cargo.lock shares the most entries)' },
-    { name: 'desktop', kind: 'bool', desc: 'seed desktop/src-tauri/target too' },
+    {
+      name: 'seed',
+      kind: 'bool',
+      desc: "reflink an idle checkout's registry crates into api/target — only when you will reproduce a CI failure with cargo here; `talaria dev --api-from-ci` needs no target",
+    },
+    { name: 'seed-from', kind: 'value', desc: 'seed, from this checkout (default: the idle one whose Cargo.lock shares the most entries)' },
+    { name: 'desktop', kind: 'bool', desc: 'seed desktop/src-tauri/target too (implies --seed)' },
+    { name: 'no-seed', kind: 'bool', desc: 'deprecated, and does nothing: api/target starts empty unless --seed says otherwise' },
   ],
   run: (ctx, args) => {
     if (args.positionals.length > 2) ctx.log.die(`unexpected argument \`${args.positionals[2]}\``)
     const seedFrom = typeof args.flags['seed-from'] === 'string' ? args.flags['seed-from'] : undefined
-    if (args.flags['no-seed'] === true && seedFrom) ctx.log.die('--no-seed and --seed-from contradict each other')
+    const noSeed = args.flags['no-seed'] === true
+    const desktop = args.flags.desktop === true
+    if (noSeed && args.flags.seed === true) ctx.log.die('--seed and --no-seed contradict each other')
+    if (noSeed && seedFrom) ctx.log.die('--no-seed and --seed-from contradict each other')
+    if (noSeed && desktop) ctx.log.die('--no-seed and --desktop contradict each other: --desktop seeds')
+    if (noSeed) ctx.log.warn('--no-seed is the default now and does nothing — drop it (--seed opts in)')
     return runWorktree(ctx, args.positionals[0]!, args.positionals[1] ?? 'HEAD', {
-      seed: args.flags['no-seed'] !== true,
+      seed: args.flags.seed === true || seedFrom !== undefined || desktop,
       seedFrom,
-      desktop: args.flags.desktop === true,
+      desktop,
     })
   },
 }

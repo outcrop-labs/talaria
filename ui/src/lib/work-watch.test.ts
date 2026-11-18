@@ -7,7 +7,12 @@ import {
   type WatchFrame,
 } from '@/lib/work-watch'
 
+// The invoke line as start_job hands it out since provisioning: the job's own
+// launcher, read off a real Developer Agent run (job 520b8ca7, 2026-11-04).
 const harnessCmd =
+  '/opt/data/workbench/harness/jobs/520b8ca7-ba0b-4d30-a0e5-e6061fa788ac/omp --mode json --auto-approve --session-dir /opt/data/workbench/sessions/520b8ca7-ba0b-4d30-a0e5-e6061fa788ac --model talaria/zai-outcrop/glm-5.3 "add the missing test"'
+// The line before provisioning. Old transcripts still carry it.
+const legacyCmd =
   'npx -y @oh-my-pi/pi-coding-agent@latest --mode json --auto-approve --session-dir /opt/data/workbench/sessions/job-1 --model talaria/code "add the missing test"'
 
 // ── Shapes taken from a real run ───────────────────────────────────────────
@@ -44,6 +49,31 @@ const realFrames = {
     r: '{"status": "timeout", "command": "cd /opt/data/workbench/jobs/2e5/repo/api && cargo test -p talaria-tasks"}',
   },
 } satisfies Record<string, WatchFrame>
+
+describe('the per-job launcher', () => {
+  it('is a harness turn, and so is the legacy npx line', () => {
+    // The pattern before provisioning named only the package; the launcher
+    // names none, so this first case failed on it.
+    expect(/pi-coding-agent|oh-my-pi|\bopencode\b/.test(harnessCmd)).toBe(false)
+    expect(isHarnessFrame({ t: 'tool', v: 'terminal', s: 'running', p: harnessCmd })).toBe(true)
+    expect(isHarnessFrame({ t: 'tool', v: 'terminal', s: 'running', p: legacyCmd })).toBe(true)
+  })
+
+  it('reads the steer out of a launcher line, not the launcher path', () => {
+    const turns = splitWatch([
+      { t: 'tool', v: 'terminal', s: 'running', p: harnessCmd },
+      { t: 'toolfull', v: 'terminal', s: 'completed', p: harnessCmd, r: '{"type":"agent_end","text":"test added"}' },
+    ]).turns
+    expect(turns).toHaveLength(1)
+    expect(turns[0]?.steer).toBe('add the missing test')
+  })
+
+  it('is not a turn when the agent only looks at the launcher', () => {
+    expect(
+      isHarnessFrame({ t: 'toolfull', v: 'terminal', s: 'completed', p: 'ls -la /opt/data/workbench/harness/jobs/520b8ca7-ba0b-4d30-a0e5-e6061fa788ac/omp', r: '' }),
+    ).toBe(false)
+  })
+})
 
 describe('isHarnessFrame', () => {
   it('does not mistake talking about the harness for running it', () => {

@@ -1,0 +1,16 @@
+# talaria-follow.timer — run the follower a few minutes after boot, then three
+# minutes after each pass finishes. The pacing between deploys is the
+# follower's own minimum gap (FOLLOW_MIN_GAP_MIN, 10 minutes by default), not
+# this timer. docs/TESTING-INSTANCE.md is the runbook.
+
+[Unit]
+Description=Talaria testing instance: poll the :testing image
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=3min
+RandomizedDelaySec=30s
+Unit=talaria-follow.service
+
+[Install]
+WantedBy=timers.target
