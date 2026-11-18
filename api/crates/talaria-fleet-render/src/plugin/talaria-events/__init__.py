@@ -656,15 +656,16 @@ def _checkout_for(session_id: str) -> tuple[str, str] | None:
     return found
 
 
-def _untracked_bytes(root: str, budget: int) -> int | None:
+def _untracked_bytes(root: str, budget: int) -> int:
     """Bytes of untracked, unignored files under the checkout, counted only
-    until the budget is passed. None when git could not list them."""
+    until the budget is passed. A listing git refuses is a failed stage, not
+    an empty one: the budget cannot be held over files nobody counted."""
     done = subprocess.run(
         ["git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z"],
         capture_output=True, timeout=_GIT_TIMEOUT,
     )
     if done.returncode != 0:
-        return None
+        raise _GitFailed("ls-files")
     total = 0
     for name in done.stdout.split(b"\0"):
         if not name or name == _JOB_ENV_FILE.encode():
@@ -761,7 +762,7 @@ def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:
     from the store, so a `git gc` or `git add` the agent runs beside it keeps
     every temp file of its own."""
     untracked = _untracked_bytes(root, _UNTRACKED_BUDGET)
-    if untracked is not None and untracked > _UNTRACKED_BUDGET:
+    if untracked > _UNTRACKED_BUDGET:
         raise _Skipped(
             f"untracked content {untracked / 1048576:.1f} MiB is over the "
             f"{_UNTRACKED_BUDGET // 1048576} MiB snapshot budget"

@@ -555,8 +555,8 @@ pub fn present_call_ids(rows: &[Value]) -> Vec<String> {
 /// a turn of the session's own. The ledger's `seq` is read first, so a frame
 /// that lands during the reads is not judged by a transcript that could not
 /// hold it. Best-effort by contract: a transcript the container cannot give,
-/// or one too long to read whole, changes nothing. Nothing here fails the
-/// step.
+/// one too long to read whole, or one a compaction moved while it was read
+/// changes nothing. Nothing here fails the step.
 async fn verify_session_steps(d: &WorkSessionDeps, agent_model: &str, run_id: &str, turn: i64) {
     let through = match talaria_runs_store::checkpoint_seq(&d.state.pg, run_id).await {
         Ok(seq) => seq,

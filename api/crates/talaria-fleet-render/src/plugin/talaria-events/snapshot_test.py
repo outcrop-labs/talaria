@@ -260,6 +260,29 @@ e6 = snapshots()[-1]
 assert "commit" not in e6 and e6["reason"].startswith("snapshot skipped: untracked content"), e6
 assert "over the" in e6["reason"] and "budget" in e6["reason"], e6["reason"]
 os.unlink(big)
+# A listing git refuses is not an empty one: the budget cannot be held over
+# files nobody counted, so the snapshot fails at that stage and adds nothing.
+refs_before = git(workdir, "for-each-ref", "refs/talaria/")
+
+
+def refused_listing(cmd, *a, **kw):
+    if "ls-files" in cmd:
+        return subprocess.CompletedProcess(cmd, 128, b"", b"fatal: refused")
+    return real_run(cmd, *a, **kw)
+
+
+open(os.path.join(workdir, "unlisted.txt"), "w").write("not counted\n")
+mod.subprocess.run = refused_listing
+try:
+    history6b = history6 + [{"role": "assistant", "tool_calls": [{"id": "c8b"}]}, {"role": "tool", "tool_call_id": "c8b", "tool_name": "terminal", "content": "h2"}]
+    pre(history6b, req="t1:api:7b")
+finally:
+    mod.subprocess.run = real_run
+e6b = snapshots()[-1]
+assert e6b.get("reason") == "snapshot failed: git ls-files failed in the job's checkout", e6b
+assert "commit" not in e6b and e6b["jobId"] == job_id, e6b
+assert git(workdir, "for-each-ref", "refs/talaria/") == refs_before, "a refused listing still wrote a checkpoint"
+os.unlink(os.path.join(workdir, "unlisted.txt"))
 # A git killed mid-add wrote only into the snapshot's own quarantine, which
 # goes with the failure; the agent's store, and any temp file of a git of
 # its own, is not touched.

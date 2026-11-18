@@ -1589,9 +1589,10 @@ pub async fn session_overview(agent_model: &str, conversation_id: &str) -> Optio
 
 /// Every row of a Hermes session, oldest first, asked of the agent's own
 /// container page by page on the control window. `None` is any failure, a
-/// 404 included, and also a session longer than the page cap: a caller that
-/// judges rows by their absence must not judge them by a transcript it did
-/// not read whole. A short page is the end.
+/// 404 included, a session longer than the page cap, and a transcript that
+/// moved between two pages: a caller that judges rows by their absence must
+/// not judge them by a transcript it did not read whole. A short page is the
+/// end.
 pub async fn session_messages(agent_model: &str, session_id: &str) -> Option<Vec<Value>> {
     session_rows(agent_model, session_id, 500, 8, false).await
 }
@@ -1622,11 +1623,18 @@ async fn session_rows_from(
     pages: usize,
     archived: bool,
 ) -> Option<Vec<Value>> {
-    let mut rows = Vec::new();
+    debug_assert!(page >= 2, "a page shares one row with the page before it");
+    let mut rows: Vec<Value> = Vec::new();
     for n in 0..pages {
+        // Hermes pages by offset only, and a compaction that archives the
+        // head of the live transcript between two pages moves every later
+        // row down, so the next page would start past rows it never showed.
+        // Each page after the first therefore starts on the row the page
+        // before it ended with: a different row there is a transcript that
+        // moved under the read.
+        let offset = n * (page - 1);
         let path = format!(
-            "/api/sessions/{session_id}/messages?limit={page}&offset={}&order=oldest{}",
-            n * page,
+            "/api/sessions/{session_id}/messages?limit={page}&offset={offset}&order=oldest{}",
             if archived {
                 "&include_compacted=true"
             } else {
@@ -1641,16 +1649,38 @@ async fn session_rows_from(
             return None;
         }
         let data = body.get("data")?.as_array()?;
-        rows.extend(data.iter().cloned());
+        let fresh = if n == 0 {
+            &data[..]
+        } else {
+            match (rows.last(), data.first()) {
+                (Some(last), Some(first)) if same_row(last, first) => &data[1..],
+                _ => {
+                    tracing::debug!(
+                        "[fleet_chat] {agent_model}: session {session_id} moved while it was read; not read whole"
+                    );
+                    return None;
+                }
+            }
+        };
+        rows.extend(fresh.iter().cloned());
         if data.len() < page {
             return Some(rows);
         }
     }
     tracing::debug!(
         "[fleet_chat] {agent_model}: session {session_id} is longer than {} rows; not read whole",
-        page * pages
+        page + pages.saturating_sub(1) * (page - 1)
     );
     None
+}
+
+/// Two reads of one transcript row: Hermes's row id when both carry one,
+/// and otherwise every field.
+fn same_row(a: &Value, b: &Value) -> bool {
+    match (a.get("id"), b.get("id")) {
+        (Some(x), Some(y)) if !x.is_null() => x == y,
+        _ => a == b,
+    }
 }
 
 /// A read through the agent's own door, parsed as json — bounded by the
@@ -2403,35 +2433,121 @@ mod session_read_tests {
         );
     }
 
+    /// Tool rows with Hermes's row ids 1..=n, oldest first.
+    fn tool_rows(n: u64) -> Vec<Value> {
+        (1..=n)
+            .map(|id| json!({ "id": id, "role": "tool", "tool_call_id": format!("call-{id}") }))
+            .collect()
+    }
+
+    fn ids(rows: &[Value]) -> Vec<u64> {
+        rows.iter().filter_map(|r| r["id"].as_u64()).collect()
+    }
+
+    /// A stand-in for session s1's messages door, paging `rows` by the
+    /// request's own `offset` and `limit` the way Hermes does. Once it has
+    /// answered `compact_after` pages it drops the first `compact` rows, as
+    /// a compaction archives the head of the live transcript between two
+    /// page reads. Any other path is a 404 and is not counted: a stray poll
+    /// on a loopback port is not a page.
+    async fn messages_door(
+        rows: Vec<Value>,
+        compact_after: usize,
+        compact: usize,
+    ) -> ManifestEntry {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = std::sync::Arc::new(std::sync::Mutex::new((rows, 0usize)));
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let state = state.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+                    let mut buf = [0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let target = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+                    let param = |name: &str| {
+                        query
+                            .split('&')
+                            .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+                            .and_then(|v| v.parse::<usize>().ok())
+                    };
+                    let (status, body) = if path == "/api/sessions/s1/messages" {
+                        let offset = param("offset").unwrap_or(0);
+                        let limit = param("limit").unwrap_or(500);
+                        let mut guard = state.lock().unwrap();
+                        let (rows, served) = &mut *guard;
+                        let page: Vec<Value> =
+                            rows.iter().skip(offset).take(limit).cloned().collect();
+                        *served += 1;
+                        if *served == compact_after {
+                            let cut = compact.min(rows.len());
+                            *rows = rows.split_off(cut);
+                        }
+                        (
+                            "200 OK",
+                            json!({ "session_id": "s1", "data": page }).to_string(),
+                        )
+                    } else {
+                        ("404 Not Found", "{}".to_string())
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        ManifestEntry {
+            model: "probe".into(),
+            url: format!("http://{addr}"),
+            key: None,
+        }
+    }
+
+    /// A transcript that holds still is read whole across pages, every row
+    /// once and in order, though each page after the first starts on the
+    /// row the one before it ended with.
+    #[tokio::test]
+    async fn a_transcript_read_in_pages_holds_every_row_once() {
+        let entry = messages_door(tool_rows(7), 0, 0).await;
+        let rows = session_rows_from(&entry, "s1", "probe", 3, 8, false)
+            .await
+            .expect("a still transcript is read whole");
+        assert_eq!(ids(&rows), (1..=7).collect::<Vec<u64>>());
+        // A transcript that ends exactly on a full page ends on the next
+        // page's one shared row.
+        let entry = messages_door(tool_rows(5), 0, 0).await;
+        let rows = session_rows_from(&entry, "s1", "probe", 3, 8, false)
+            .await
+            .expect("a still transcript is read whole");
+        assert_eq!(ids(&rows), (1..=5).collect::<Vec<u64>>());
+    }
+
+    /// A compaction between two pages moved every later row down, and the
+    /// next page by offset skipped rows the session still held live: rows 4
+    /// and 5 here, which the record stage then retired as compacted or as
+    /// never this run's. A read that sees the transcript move is no
+    /// transcript, which every caller takes as "steps keep their standing".
+    #[tokio::test]
+    async fn a_compaction_between_two_pages_is_no_transcript() {
+        let entry = messages_door(tool_rows(7), 1, 2).await;
+        assert_eq!(
+            session_rows_from(&entry, "s1", "probe", 3, 8, false).await,
+            None
+        );
+    }
+
     /// A session longer than the page cap is not read whole, and a caller
     /// that judges steps by their absence must not see a partial read as the
     /// transcript: every full page answers None.
     #[tokio::test]
     async fn a_session_past_the_page_cap_is_not_a_transcript() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            loop {
-                let (mut sock, _) = listener.accept().await.unwrap();
-                tokio::spawn(async move {
-                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-                    let mut buf = [0u8; 2048];
-                    let _ = sock.read(&mut buf).await;
-                    let body = r#"{"session_id":"s1","data":[{"role":"tool","tool_call_id":"a"},{"role":"tool","tool_call_id":"b"}]}"#;
-                    let head = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    let _ = sock.write_all(head.as_bytes()).await;
-                    let _ = sock.write_all(body.as_bytes()).await;
-                });
-            }
-        });
-        let entry = ManifestEntry {
-            model: "probe".into(),
-            url: format!("http://{addr}"),
-            key: None,
-        };
+        let entry = messages_door(tool_rows(10), 0, 0).await;
         assert_eq!(
             session_rows_from(&entry, "s1", "probe", 2, 3, false).await,
             None

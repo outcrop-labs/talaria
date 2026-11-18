@@ -23,11 +23,12 @@
 //   restore   the snapshot commit, and nothing past it, is fetched into a new
 //             repo in the attempt's workdir.
 //   verify    the fork ends at that row and the checkout's tree is the step's.
-//   start     the ticket is read again under the lock and moved if it still
-//             sits in review, the attempt and its job are inserted in one
-//             transaction with the hold lifted, the source's jobs are
-//             retired, and the attempt is driven. An attempt that already
-//             exists from an earlier try ends the rewind with no other write.
+//   start     the ticket is read again, the attempt and its job are inserted
+//             in one transaction with the hold lifted, the ticket is moved
+//             before that commits if it still sits in review, the source's
+//             jobs are retired, and the attempt is driven. An attempt that
+//             already exists from an earlier try ends the rewind with no
+//             other write.
 //
 // AFTER ANY CRASH A RETRY CONVERGES on the same end state and touches nothing
 // that happened since. A failure lifts the hold, and discards the checkout
@@ -353,7 +354,7 @@ async fn stage(
             world.cancel_source(&input.source_run_id).await?;
             Ok(next(Stage::Quiet, plan))
         }
-        Stage::Quiet => match world.quiet(&input.source_run_id).await {
+        Stage::Quiet => match world.quiet(&input.agent_model, &input.source_run_id).await {
             Quiet::Confirmed => Ok(next(Stage::Fork, plan)),
             Quiet::Unconfirmed(why) => Err(format!(
                 "the agent was not quiet within the stop window ({why}) — the old attempt stays stopped; \

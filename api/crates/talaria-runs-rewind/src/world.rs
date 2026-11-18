@@ -222,7 +222,9 @@ pub trait RewindWorld: Send + Sync {
         source_root: &'a str,
     ) -> BoxFuture<'a, Result<Reservation, String>>;
     fn cancel_source<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, Result<(), String>>;
-    fn quiet<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, Quiet>;
+    /// The source's turn is over, asked of `agent_model`: the rewind's own
+    /// input names the agent, so no read can leave the lease unasked.
+    fn quiet<'a>(&'a self, agent_model: &'a str, run_id: &'a str) -> BoxFuture<'a, Quiet>;
     fn fork<'a>(
         &'a self,
         agent_model: &'a str,
@@ -255,8 +257,9 @@ pub trait RewindWorld: Send + Sync {
     ) -> BoxFuture<'a, Result<Checkout, String>>;
     /// The attempt row under the plan's run id, when one exists.
     fn attempt<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, Result<Option<AttemptRow>, String>>;
-    /// Move the ticket to `move_to` when given, insert the attempt and its
-    /// job with the hold lifted, retire the source's jobs, and drive the
+    /// Insert the attempt and its job with the hold lifted and, when
+    /// `move_to` is given, move the ticket there before that commits, so a
+    /// failure leaves neither; then retire the source's jobs and drive the
     /// attempt. Called once, for an attempt that does not exist yet.
     fn start<'a>(
         &'a self,
@@ -563,7 +566,7 @@ impl RewindWorld for Real {
         .boxed()
     }
 
-    fn quiet<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, Quiet> {
+    fn quiet<'a>(&'a self, agent_model: &'a str, run_id: &'a str) -> BoxFuture<'a, Quiet> {
         async move {
             // One unconfirmed answer is not final: a turn names itself after
             // the cancel, and the stop then lands on it. Until the budget
@@ -572,13 +575,6 @@ impl RewindWorld for Real {
             // that reads finished proves nothing about the agent.
             let deadline = tokio::time::Instant::now() + QUIET_BUDGET;
             let session = run_id;
-            let agent_model: Option<String> =
-                sqlx::query_scalar("select input->>'agentModel' from runs where id = $1::uuid")
-                    .bind(run_id)
-                    .fetch_optional(self.pg())
-                    .await
-                    .ok()
-                    .flatten();
             loop {
                 let stop =
                     match tokio::time::timeout_at(deadline, stop_agent_turn(self.pg(), run_id))
@@ -587,12 +583,9 @@ impl RewindWorld for Real {
                         Ok(stop) => stop,
                         Err(_) => AgentStop::Unconfirmed("no answer inside the stop window".into()),
                     };
-                let lease = match &agent_model {
-                    Some(model) => container::session_lease(self.pg(), model, session)
-                        .await
-                        .ok(),
-                    None => None,
-                };
+                let lease = container::session_lease(self.pg(), agent_model, session)
+                    .await
+                    .ok();
                 if let Some(verdict) = quiet_from(&stop, lease.map(|l| l == SessionLease::Idle)) {
                     return verdict;
                 }
@@ -707,21 +700,16 @@ impl RewindWorld for Real {
                         plan.attempt_run_id
                     ));
                 }
-                if let Some(status) = move_to {
-                    let redis = self.state.redis().await.ok();
-                    let task_deps = TaskDeps::from_route(pg.clone(), redis);
-                    talaria_tasks::update_task(
-                        &task_deps,
-                        &input.task_id,
-                        TaskPatch {
-                            status: Some(status.to_string()),
-                            ..TaskPatch::default()
-                        },
-                        &TaskActor::human(input.requested_by.clone()),
-                    )
-                    .await
-                    .map_err(|e| format!("could not move the ticket back to \"{status}\": {}", e.message()))?;
-                }
+                // THE MOVE GOES LAST, inside the transaction's window: the
+                // attempt, its job and the hold and block lifts are written
+                // first and committed only after the ticket has moved. A
+                // refused move or a failed insert rolls all of it back and
+                // leaves the ticket in review, so a failed rewind does not
+                // reopen it with no attempt for the sweep to find; only a
+                // failed commit still can. The move writes the ticket and its
+                // activity on its own connection, none of the rows this
+                // transaction holds, and the dispatch it spawns runs detached
+                // behind the pair lock.
                 let mut tx = pg.begin().await.map_err(|e| format!("begin: {e}"))?;
                 insert_attempt(
                     &mut tx,
@@ -778,6 +766,21 @@ impl RewindWorld for Real {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| format!("block lift: {e}"))?;
+                if let Some(status) = move_to {
+                    let redis = self.state.redis().await.ok();
+                    let task_deps = TaskDeps::from_route(pg.clone(), redis);
+                    talaria_tasks::update_task(
+                        &task_deps,
+                        &input.task_id,
+                        TaskPatch {
+                            status: Some(status.to_string()),
+                            ..TaskPatch::default()
+                        },
+                        &TaskActor::human(input.requested_by.clone()),
+                    )
+                    .await
+                    .map_err(|e| format!("could not move the ticket back to \"{status}\": {}", e.message()))?;
+                }
                 tx.commit().await.map_err(|e| format!("commit: {e}"))?;
                 Ok(())
             }

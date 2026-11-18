@@ -194,29 +194,41 @@ pub async fn dispatch_ticket_work(
 }
 
 async fn surface_session_cap(pg: &PgPool, task_id: &str, agent_model: &str) {
+    if let Err(e) = log_session_cap_once(pg, task_id, agent_model).await {
+        tracing::error!("{LOG} {task_id}: the session cap line did not land: {e}");
+    }
+}
+
+/// The cap line, once per ticket and agent. Dispatches race (task mutations
+/// fire them and the sweep re-offers), so the check and the insert share one
+/// transaction under a lock on the pair: the second waits for the first to
+/// commit and then sees its line.
+async fn log_session_cap_once(
+    pg: &PgPool,
+    task_id: &str,
+    agent_model: &str,
+) -> Result<(), sqlx::Error> {
     let line = format!(
         "has had {MAX_SESSIONS_PER_TICKET_AGENT} work sessions on this ticket and will not start \
          another — a person should look at it"
     );
-    let logged = sqlx::query_scalar::<_, i32>(
-        "select 1 from task_activity \
-         where task_id = $1::uuid and actor = $2 and type = 'session_cap' limit 1",
+    let mut tx = pg.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("session-cap:{task_id}:{agent_model}"))
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "insert into task_activity (task_id, actor, type, description) \
+         select $1::uuid, $2, 'session_cap', $3 \
+         where not exists (select 1 from task_activity \
+                           where task_id = $1::uuid and actor = $2 and type = 'session_cap')",
     )
     .bind(task_id)
     .bind(agent_model)
-    .fetch_optional(pg)
-    .await;
-    match logged {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            if let Err(e) =
-                tasks::log_activity(pg, task_id, agent_model, "session_cap", &line).await
-            {
-                tracing::error!("{LOG} {task_id}: the session cap line did not land: {e}");
-            }
-        }
-        Err(e) => tracing::error!("{LOG} {task_id}: could not read the session cap line: {e}"),
-    }
+    .bind(&line)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
 }
 
 /// Dispatch to every AGENT assignee when the ticket sits in an agent-start
@@ -1341,6 +1353,57 @@ mod live_db {
             mixed_row.assignees,
             vec![person.clone(), "sweep-live-agent".to_string()]
         );
+
+        sqlx::query("delete from users where id = $1::uuid")
+            .bind(&user)
+            .execute(&pg)
+            .await
+            .expect("cleanup");
+    }
+
+    /// Dispatches that reach the cap together land its line once, and a later
+    /// sweep adds none.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn racing_dispatches_land_the_session_cap_line_once() {
+        let pg = pg().await;
+        let tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let email = format!("cap-race-{tag}@link-test.invalid");
+        let user: String = sqlx::query_scalar(
+            "insert into users (sub, email, name, role) values ($1, $1, 'Cap Race', 'member') \
+             returning id::text",
+        )
+        .bind(&email)
+        .fetch_one(&pg)
+        .await
+        .expect("insert user");
+        let board: String = sqlx::query_scalar(
+            "insert into boards (name, owner_id) values ('cap-race', $1::uuid) returning id::text",
+        )
+        .bind(&user)
+        .fetch_one(&pg)
+        .await
+        .expect("insert board");
+        let agent = format!("cap-race-{tag}");
+        let task = ticket(&pg, &board, "in_progress", serde_json::json!([agent])).await;
+
+        let racers = (0..6).map(|_| surface_session_cap(&pg, &task, &agent));
+        futures_util::future::join_all(racers).await;
+        surface_session_cap(&pg, &task, &agent).await;
+
+        let lines: i64 = sqlx::query_scalar(
+            "select count(*) from task_activity \
+             where task_id = $1::uuid and actor = $2 and type = 'session_cap'",
+        )
+        .bind(&task)
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .expect("count");
+        assert_eq!(lines, 1);
 
         sqlx::query("delete from users where id = $1::uuid")
             .bind(&user)
