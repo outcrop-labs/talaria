@@ -251,16 +251,24 @@ function outsideLines(outside: OutsideSummary | undefined) {
   ]
 }
 
-/** The confirm step, in the order a person has to weigh it. */
-export function rewindConfirmation({
-  running,
-  outside,
-  ticketMove,
-}: {
+interface RewindAsk {
   running: boolean
   outside?: OutsideSummary
   ticketMove: TicketMove | null
-}) {
+}
+
+/** The confirm itself. Rewinding a working attempt stops that run, so the
+ *  confirm is a danger one and opens on Cancel, where a stray Enter stops
+ *  nothing. A finished attempt loses nothing: it stays, and stays rewindable. */
+export const rewindConfirm = (ask: RewindAsk) => ({
+  title: 'Rewind to this step',
+  message: rewindConfirmation(ask),
+  confirmLabel: 'Rewind',
+  danger: ask.running,
+})
+
+/** The confirm step, in the order a person has to weigh it. */
+export function rewindConfirmation({ running, outside, ticketMove }: RewindAsk) {
   return [
     'A new attempt starts from this step, with the conversation and the files as they were here. The attempt it leaves stays visible.',
     ...(running ? ['This run is working, so it will stop first.'] : []),

@@ -8,6 +8,7 @@ import {
   path,
   plainFailure,
   plainReason,
+  rewindConfirm,
   rewindConfirmation,
   rewindStageWords,
   runIsLive,
@@ -421,6 +422,14 @@ describe('the confirm step', () => {
     const move = { from: 'In review', to: 'In progress' }
     expect(rewindConfirmation({ running: false, ticketMove: move })).toContain('moves from In review back to In progress')
     expect(rewindConfirmation({ running: false, ticketMove: null })).not.toContain('ticket')
+  })
+
+  it('opens on Cancel only when the rewind would stop a working run', () => {
+    expect(rewindConfirm({ running: true, ticketMove: null }).danger).toBe(true)
+    expect(rewindConfirm({ running: false, ticketMove: null }).danger).toBe(false)
+    expect(rewindConfirm({ running: true, outside, ticketMove: null }).message).toBe(
+      rewindConfirmation({ running: true, outside, ticketMove: null }),
+    )
   })
 })
 

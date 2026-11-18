@@ -6,7 +6,7 @@
   import { untrack } from 'svelte'
   import { createQuery, keepPreviousData, useQueryClient } from '@tanstack/svelte-query'
   import type { TabItem } from '@/components/ui/tabs'
-  import { fromLineage, lineageRewinding, rewindConfirmation, runIsLive, type RewindRow } from '@/lib/agent-checkpoints'
+  import { fromLineage, lineageRewinding, rewindConfirm, runIsLive, type RewindRow } from '@/lib/agent-checkpoints'
   import { getJson } from '@/lib/fetch-json'
   import {
     readRunLineage,
@@ -185,15 +185,13 @@
       })
       return
     }
-    const go = await confirm({
-      title: 'Rewind to this step',
-      message: rewindConfirmation({
+    const go = await confirm(
+      rewindConfirm({
         running: runIsLive(source?.state),
         outside: source?.outside,
         ticketMove: data.ticketMove,
       }),
-      confirmLabel: 'Rewind',
-    })
+    )
     if (!go) return
     asking = {
       id: 'asking',
