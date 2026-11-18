@@ -59,6 +59,8 @@
       qc.setQueryData(['channel', channelId], (old: unknown) => withNotify(old, r))
       now = Date.now()
       await qc.invalidateQueries({ queryKey: ['channel', channelId] })
+      // The rail's row carries the same level (its muted mark, its menu).
+      void qc.invalidateQueries({ queryKey: ['channels'] })
     } catch (e) {
       await alert({ title: 'Notifications not changed', message: refusalMessage(e) })
     } finally {

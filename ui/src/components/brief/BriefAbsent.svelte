@@ -68,7 +68,7 @@
 {#snippet clock()}<CalendarClock size={22} />{/snippet}
 {#snippet pen()}<PenLine size={22} />{/snippet}
 {#snippet writing()}
-  <div class="flex items-center justify-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+  <div class="flex items-center justify-center gap-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
     <WaitingMark site="brief/writing" size={12} /> writing
   </div>
 {/snippet}

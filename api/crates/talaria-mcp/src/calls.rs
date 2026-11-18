@@ -115,10 +115,14 @@ pub enum Outcome {
     /// The caller hung up before the answer finished — the client's choice,
     /// so it is counted on its own, never as the server's error.
     Cancelled,
+    /// Held for a person: the gateway queued the exact call for approval
+    /// (a Google Workspace MCP write, the `mcp_call` approval) and answered
+    /// with its id. Nothing reached the server.
+    Held,
 }
 
 impl Outcome {
-    pub const ALL: [Outcome; 7] = [
+    pub const ALL: [Outcome; 8] = [
         Outcome::Ok,
         Outcome::Error,
         Outcome::Denied,
@@ -126,6 +130,7 @@ impl Outcome {
         Outcome::UpstreamError,
         Outcome::SpendError,
         Outcome::Cancelled,
+        Outcome::Held,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -137,6 +142,7 @@ impl Outcome {
             Outcome::UpstreamError => "upstream_error",
             Outcome::SpendError => "spend_error",
             Outcome::Cancelled => "cancelled",
+            Outcome::Held => "held",
         }
     }
 
@@ -158,7 +164,10 @@ impl Outcome {
     /// percentile: the gateway answers a refusal or a missing connection
     /// itself in a few milliseconds, which would drag a server's p50 down.
     pub fn reached_server(self) -> bool {
-        !matches!(self, Outcome::Denied | Outcome::NotConnected)
+        !matches!(
+            self,
+            Outcome::Denied | Outcome::NotConnected | Outcome::Held
+        )
     }
 
     /// The `reached_server` complement as wire strings, for SQL.
@@ -1176,7 +1185,8 @@ mod tests {
                 "not_connected",
                 "upstream_error",
                 "spend_error",
-                "cancelled"
+                "cancelled",
+                "held"
             ]
         );
         for o in Outcome::ALL {
@@ -1199,9 +1209,13 @@ mod tests {
             !Outcome::Cancelled.is_error(),
             "a caller hanging up is not the server's error"
         );
+        assert!(
+            !Outcome::Held.is_error(),
+            "a held call is policy, not a failure"
+        );
         assert_eq!(
             Outcome::gateway_answered_strs(),
-            ["denied", "not_connected"],
+            ["denied", "not_connected", "held"],
             "the outcomes the gateway answers itself stay out of the percentiles"
         );
         assert!(Outcome::Cancelled.reached_server());
@@ -1589,7 +1603,7 @@ mod tests {
         let e = parse_filter(None, None, None, Some("bad"), None, None).unwrap_err();
         assert_eq!(
             e,
-            "outcome must be one of ok, error, denied, not_connected, upstream_error, spend_error, cancelled"
+            "outcome must be one of ok, error, denied, not_connected, upstream_error, spend_error, cancelled, held"
         );
         assert!(parse_filter(None, None, None, None, Some("yesterday"), None).is_err());
         assert!(parse_filter(None, None, None, None, Some("-5"), None).is_err());

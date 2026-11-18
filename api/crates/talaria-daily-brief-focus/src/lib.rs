@@ -330,6 +330,7 @@ pub async fn approval_items(
             let label = match kind.as_str() {
                 "gmail_send" => "SEND EMAIL",
                 "doc_update" => "UPDATE DOC",
+                "mcp_call" => "GOOGLE TOOL",
                 _ => "CREATE EVENT",
             };
             // The payload's own fields, not a paraphrase: the card recommends
@@ -338,6 +339,7 @@ pub async fn approval_items(
             let mut evidence = match kind.as_str() {
                 "gmail_send" => approval_evidence_email(&payload),
                 "doc_update" | "drive_move" | "drive_rename" => approval_evidence_file(&payload),
+                "mcp_call" => approval_evidence_mcp_call(&payload),
                 _ => approval_evidence_event(&payload),
             };
             evidence.push(BriefEvidence {
@@ -356,6 +358,7 @@ pub async fn approval_items(
                     match kind.as_str() {
                         "gmail_send" => "Send",
                         "doc_update" => "Update",
+                        "mcp_call" => "Run",
                         _ => "Create",
                     },
                     summary.unwrap_or_else(|| label.to_lowercase())
@@ -453,6 +456,34 @@ fn approval_evidence_event(payload: &Value) -> Vec<BriefEvidence> {
             label: "Notes".into(),
             text: notes.chars().take(1_000).collect(),
         });
+    }
+    out
+}
+
+/// A held Google Workspace MCP call (`mcp_call`) as evidence rows: which
+/// server, which tool, and the arguments exactly as the agent sent them.
+fn approval_evidence_mcp_call(payload: &Value) -> Vec<BriefEvidence> {
+    let get = |k: &str| {
+        payload
+            .get(k)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+    };
+    let mut out = Vec::new();
+    let push = |out: &mut Vec<BriefEvidence>, label: &str, text: &str| {
+        out.push(BriefEvidence {
+            label: label.into(),
+            text: text.chars().take(1_000).collect(),
+        });
+    };
+    if let Some(server) = get("productName").or_else(|| get("server")) {
+        push(&mut out, "Server", server);
+    }
+    if let Some(tool) = get("tool") {
+        push(&mut out, "Tool", tool);
+    }
+    if let Some(args) = payload.get("arguments") {
+        push(&mut out, "Arguments", &args.to_string());
     }
     out
 }

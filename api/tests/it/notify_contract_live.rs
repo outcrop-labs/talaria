@@ -4,7 +4,8 @@
 // row, the entity clears, and the ack. Postgres decides every one of these —
 // the row lock, the partial unique index, ON CONFLICT — so only a real
 // database can confirm them. #[ignore]d, so the plain `cargo test` never
-// needs a database; CI's api-integration job runs them with --ignored.
+// needs a database; ci.yml's api job runs them with --ignored (its live-DB
+// steps).
 //
 //   DATABASE_URL=postgres://… cargo test -p talaria-api --test it notify_contract_live:: -- --ignored --test-threads=1
 //

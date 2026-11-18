@@ -291,10 +291,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tokens_cover_localpart_dashed_name_and_first_name() {
+    fn tokens_cover_the_normalized_localpart_dashed_name_and_first_name() {
+        // The localpart token is normalized to the scanner's grammar —
+        // mention_tokens reads [a-z0-9-] only — so a dotted localpart
+        // answers to its dashed form: '@ada-l' is what the composer
+        // inserts and what the scan of a message containing it finds.
         assert_eq!(
             user_mention_tokens(Some("Ada Lovelace"), Some("Ada.L@example.com")),
-            ["ada.l", "ada-lovelace", "ada"]
+            ["ada-l", "ada-lovelace", "ada"]
         );
         // No name, no email → nothing to answer to.
         assert!(user_mention_tokens(None, None).is_empty());

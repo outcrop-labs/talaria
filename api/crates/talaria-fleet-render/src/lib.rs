@@ -939,12 +939,13 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "[ \"$1\" = \"get\" ] || exit 0\n",
     "decline() {\n",
     "  if [ -z \"$path\" ]; then\n",
-    "    echo \"talaria: git did not name a repository — set origin to https://$host/<owner>/<repo>.git and retry, or work in the job workdir. Do not run git credential fill; it prints the token.\" >&2\n",
+    "    echo \"talaria: git did not name a repository — set origin to https://$host/<owner>/<repo>.git and retry, or work in the job workdir. A git credential fill names path=<owner>/<repo>.git, and never runs bare: what it prints is the token, so read it inside \\$(...) for one command.\" >&2\n",
     "  fi\n",
     "  echo \"talaria: no credential for $host${path:+/$path}\" >&2\n",
+    "  [ -z \"$why\" ] || echo \"talaria: $why\" >&2\n",
     "  exit 0\n",
     "}\n",
-    "host=\"\"; proto=\"\"; path=\"\"\n",
+    "host=\"\"; proto=\"\"; path=\"\"; why=\"\"\n",
     "while IFS=\"=\" read -r k v; do\n",
     "  [ \"$k\" = \"host\" ] && host=\"$v\"\n",
     "  [ \"$k\" = \"protocol\" ] && proto=\"$v\"\n",
@@ -967,12 +968,25 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "# chassis's own server key is a different plane entirely and the route\n",
     "# has never accepted it.\n",
     "url=\"$TALARIA_API_URL/api/secrets/git-credential\"\n",
-    "body=\"{\\\"host\\\":\\\"$host\\\",\\\"protocol\\\":\\\"$proto\\\",\\\"path\\\":\\\"$path\\\"}\"\n",
+    "# Each value escaped into its JSON string (backslash, double quote): a\n",
+    "# path with a quote in it must not break the body or add a field to it.\n",
+    "jstr() { printf %s \"$1\" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g'; }\n",
+    "body=\"{\\\"host\\\":\\\"$(jstr \"$host\")\\\",\\\"protocol\\\":\\\"$(jstr \"$proto\")\\\",\\\"path\\\":\\\"$(jstr \"$path\")\\\"}\"\n",
     "if command -v curl >/dev/null 2>&1; then\n",
-    "  resp=$(curl -sS --fail -X POST \"$url\" \\\n",
+    "  # No --fail: a refusal's body says why. The status follows the body on\n",
+    "  # a line of its own, and a 403's sentence is passed on, because it names\n",
+    "  # what an admin changes (the agent's Developer Agent switch); a 404 says\n",
+    "  # no more than the line decline prints.\n",
+    "  out=$(curl -sS -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
-    "    -H \"content-type: application/json\" -d \"$body\" 2>/dev/null) \\\n",
+    "    -H \"content-type: application/json\" -d \"$body\" -w '\\n%{http_code}' 2>/dev/null) \\\n",
     "    || decline\n",
+    "  code=$(printf '%s\\n' \"$out\" | sed -n '$p')\n",
+    "  resp=$(printf '%s\\n' \"$out\" | sed '$d')\n",
+    "  if [ \"$code\" = \"403\" ]; then\n",
+    "    why=$(printf %s \"$resp\" | sed -n 's/.*\"error\":\"\\([^\"]*\\)\".*/\\1/p')\n",
+    "  fi\n",
+    "  case \"$code\" in 2??) ;; *) decline ;; esac\n",
     "elif command -v wget >/dev/null 2>&1; then\n",
     "  # TWO WGETS EXIST and they disagree. BusyBox (every alpine-derived\n",
     "  # harness image) takes --post-data; GNU wget takes --body-data with\n",
@@ -1005,55 +1019,70 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
 /// refs about to leave the container; the hook asks Talaria over the agent's
 /// own key, and a refusal becomes git's own "pre-push declined" with the rule
 /// on stderr. This is the gate that does not depend on GitHub's plan: it
-/// covers every granted repo, private ones included. The hook CHAINS to the
-/// repo's own .git/hooks/pre-push first when one exists, so a repo's own
-/// tooling (husky, a pre-push gate like this repo's) keeps working.
+/// covers every granted repo, private ones included. The hook first refuses a
+/// checkpoint ref or commit itself (no rule can let a snapshot leave), then
+/// CHAINS to the repo's own .git/hooks/pre-push when one exists, so a repo's
+/// own tooling (husky, a pre-push gate like this repo's) keeps working.
+///
+/// THREE WAYS THE FIRST HOOK COULD BE WALKED PAST, each closed here:
+///   - stdin is read once. The chained hook used to inherit it, so a repo
+///     hook that read its refs (as git-lfs and most gates do) left this one
+///     none, and the push went unchecked. The refs are buffered first and
+///     piped to the repo's hook from the buffer.
+///   - a push straight to a URL (`git push https://host/owner/repo.git
+///     HEAD:main`) has no remote of that name, so `remote.$1.url` was empty
+///     and the hook passed it. `$2` is the location git is pushing to — the
+///     URL itself, or the named remote's push URL (its `pushurl` when one is
+///     set, which is where the bytes go) — so it is read first.
+///   - the body was built by pasting strings into JSON. A ref name may hold a
+///     `"` (git refuses control characters and `\` in one, not quotes), and
+///     an unescaped one broke the body: every string is escaped now. A value
+///     that still makes the body unreadable is refused by the route, and a
+///     refused body is a refused push. A ref name may hold `$(…)` or
+///     backticks too; it is only ever expanded inside double quotes, so it
+///     stays text and runs nothing.
 const GIT_PRE_PUSH_HOOK: &str = concat!(
     "#!/bin/sh\n",
     "# Written by Talaria (fleet-render). Git gives this hook the refs about\n",
     "# to be pushed; Talaria answers allow/deny against this agent's repo rules.\n",
     "# stdin is read ONCE, here, and handed to each reader as a copy: the\n",
-    "# repo's own hook may read it to its end, and the checkpoint guard\n",
-    "# below must still see every line.\n",
+    "# repo's own hook may read it to its end, and the checkpoint guard and\n",
+    "# this gate must still see every ref.\n",
     "input=$(cat)\n",
     "# THE CHECKPOINT GUARD runs before anything else. A checkpoint ref\n",
     "# (refs/talaria/*) is the platform's own snapshot of this checkout and\n",
     "# never leaves it, whatever the remote or the rules; and a checkpoint\n",
     "# COMMIT pushed under any other name is the same snapshot leaving, so\n",
     "# every push is searched for the identity each snapshot is authored with.\n",
-    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>.\n",
+    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>, read\n",
+    "# through the same quoted pipeline as the gate below: the first refusal\n",
+    "# is printed, and a ref's text is data and never runs.\n",
     "zero=0000000000000000000000000000000000000000\n",
-    "while read -r local_ref local_sha remote_ref remote_sha; do\n",
+    "declined=$(printf '%s\\n' \"$input\" | while read -r local_ref local_sha remote_ref remote_sha; do\n",
     "  [ -n \"$local_ref\" ] || continue\n",
     "  case \"$remote_ref\" in refs/talaria/*)\n",
-    "    echo \"talaria: push declined — $remote_ref is a checkpoint ref and is never pushed\" >&2; exit 1 ;; esac\n",
+    "    printf '%s' \"$remote_ref is a checkpoint ref and is never pushed\"; break ;; esac\n",
     "  case \"$local_ref\" in refs/talaria/*)\n",
-    "    echo \"talaria: push declined — $local_ref is a checkpoint ref and is never pushed, as $remote_ref or any other name\" >&2; exit 1 ;; esac\n",
+    "    printf '%s' \"$local_ref is a checkpoint ref and is never pushed, as $remote_ref or any other name\"; break ;; esac\n",
     "  case \"$local_sha\" in \"$zero\"|\"\") continue ;; esac\n",
     "  exclude=\"\"; case \"$remote_sha\" in \"$zero\"|\"\") ;; *) exclude=\"^$remote_sha\" ;; esac\n",
     "  hit=$(git rev-list --max-count=1 --author=checkpoint@talaria.invalid \"$local_sha\" $exclude 2>/dev/null)\n",
     "  if [ -n \"$hit\" ]; then\n",
-    "    echo \"talaria: push declined — $remote_ref carries checkpoint commit $hit, which is never pushed\" >&2; exit 1\n",
+    "    printf '%s' \"$remote_ref carries checkpoint commit $hit, which is never pushed\"; break\n",
     "  fi\n",
-    "done <<TALARIA_REFS\n",
-    "$input\n",
-    "TALARIA_REFS\n",
-    "# The repo's own hook (if any) runs next and its verdict stands.\n",
-    "if [ -x \"$GIT_DIR/hooks/pre-push\" ] && [ \"$GIT_DIR\" != \".\" ]; then\n",
-    "  printf '%s\\n' \"$input\" | \"$GIT_DIR/hooks/pre-push\" \"$@\" || exit 1\n",
+    "done)\n",
+    "if [ -n \"$declined\" ]; then\n",
+    "  echo \"talaria: push declined — $declined\" >&2; exit 1\n",
     "fi\n",
-    "refs=\"\"; n=0\n",
-    "while read -r _ _ remote_ref _; do\n",
-    "  [ -n \"$remote_ref\" ] || continue\n",
-    "  case \"$remote_ref\" in refs/heads/*) ;; *) continue ;; esac\n",
-    "  n=$((n+1)); refs=\"$refs\\\"$remote_ref\\\",\"\n",
-    "done <<TALARIA_REFS\n",
-    "$input\n",
-    "TALARIA_REFS\n",
-    "[ \"$n\" -gt 0 ] || exit 0\n",
-    "remote=\"\"\n",
-    "# $1 is the remote name; resolve its URL from the config.\n",
-    "remote_url=$(git config --get \"remote.$1.url\" 2>/dev/null)\n",
+    "# The repo's own hook (if any) runs next, on the same refs, and its\n",
+    "# verdict stands.\n",
+    "if [ -x \"$GIT_DIR/hooks/pre-push\" ] && [ \"$GIT_DIR\" != \".\" ]; then\n",
+    "  if [ -n \"$input\" ]; then printf '%s\\n' \"$input\"; fi | \"$GIT_DIR/hooks/pre-push\" \"$@\" || exit 1\n",
+    "fi\n",
+    "# $2 is where git is pushing: the URL itself for `git push <url>`, else the\n",
+    "# remote's push URL. The remote's configured url is the fallback.\n",
+    "remote_url=\"$2\"\n",
+    "[ -n \"$remote_url\" ] || remote_url=$(git config --get \"remote.$1.url\" 2>/dev/null)\n",
     "[ -n \"$remote_url\" ] || exit 0\n",
     "# owner/repo from an https or ssh remote URL.\n",
     "repo=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://[^/]+/([^/]+/[^/]+)/?$#\\1#p' -e 's#^([^@]+@)?[^:]+:([^/]+/[^/]+)/?$#\\2#p' | sed 's#\\.git$##')\n",
@@ -1061,9 +1090,19 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
     "# And the host (with any port) the remote is on: the same owner/repo on\n",
     "# two git hosts is two repositories with two sets of rules.\n",
     "host=$(printf %s \"$remote_url\" | sed -nE -e 's#^[a-z+]+://([^@/]+@)?([^/]+)/.*$#\\2#p' -e 's#^([^@]+@)?([^:/]+):.*$#\\2#p')\n",
+    "# A JSON string's inside: backslash and double quote escaped.\n",
+    "jstr() { printf %s \"$1\" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g'; }\n",
+    "# stdin lines: <local ref> <local sha> <remote ref> <remote sha>. Each\n",
+    "# branch ref becomes one escaped JSON string. A ref's text is data, never\n",
+    "# shell: it is only ever expanded inside double quotes.\n",
+    "refs=$(printf '%s\\n' \"$input\" | while read -r _ _ remote_ref _; do\n",
+    "  [ \"${remote_ref#refs/heads/}\" != \"$remote_ref\" ] || continue\n",
+    "  printf '\"%s\",' \"$(jstr \"$remote_ref\")\"\n",
+    "done)\n",
     "refs=\"${refs%,}\"\n",
+    "[ -n \"$refs\" ] || exit 0\n",
     "url=\"$TALARIA_API_URL/api/secrets/git-push-check\"\n",
-    "body=\"{\\\"repo\\\":\\\"$repo\\\",\\\"host\\\":\\\"$host\\\",\\\"refs\\\":[$refs]}\"\n",
+    "body=\"{\\\"repo\\\":\\\"$(jstr \"$repo\")\\\",\\\"host\\\":\\\"$(jstr \"$host\")\\\",\\\"refs\\\":[$refs]}\"\n",
     "if command -v curl >/dev/null 2>&1; then\n",
     "  resp=$(curl -sS -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
@@ -1095,6 +1134,44 @@ const GIT_PRE_PUSH_HOOK: &str = concat!(
 /// answer could only be scoped to github.com, i.e. every repo the
 /// installation can reach.
 const GITCONFIG: &str = "[credential]\n\thelper = /usr/local/bin/git-credential-talaria\n\tuseHttpPath = true\n[core]\n\thooksPath = /usr/local/share/talaria-git-hooks\n";
+
+/// HOW AN AGENT READS ITS GITHUB TOKEN FOR ONE API CALL. The credential the
+/// helper hands git for a repo is the agent's token for that one repository
+/// (on a GitHub App host, the set an admin gave it, met with what the
+/// installation holds), and the agent spends it on the API itself: `git
+/// credential fill` asks the same helper, for the repo `path` names, and the
+/// token lives in one shell variable for one command. Never printed, never
+/// exported, never written down. `GIT_TERMINAL_PROMPT=0`: a decline must end
+/// the command, not wait on a username prompt nobody will answer. It opens
+/// the call the skills teach verbatim ([`api_call_example`], talaria-toolkit),
+/// and a test runs it through git and the helper above.
+const API_TOKEN_LINE: &str = "TOKEN=$(printf 'protocol=https\\nhost=github.com\\npath=OWNER/REPO.git\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill | sed -n 's/^password=//p')";
+
+/// What stands between the read and the call: `TOKEN=$(…)` succeeds with an
+/// empty token when the helper declines (the pipeline's status is sed's), and
+/// a call sent with `Bearer ` and nothing after it is a 401 that explains
+/// nothing. The guard ends the subshell there, under the helper's own reason.
+const API_TOKEN_GUARD: &str =
+    "[ -n \"$TOKEN\" ] || { echo 'no GitHub token for OWNER/REPO' >&2; exit 1; }";
+
+/// The whole call, as the agents are taught it: one command, in a subshell,
+/// so the token is gone when it ends. Split over two tool calls, the second
+/// would find `$TOKEN` empty.
+fn api_call_example() -> String {
+    format!(
+        "( {API_TOKEN_LINE}; {API_TOKEN_GUARD}; curl -sS -H \"Authorization: Bearer $TOKEN\" https://api.github.com/repos/OWNER/REPO/pulls )"
+    )
+}
+
+/// The workspace pointer every harness reads in its working directory
+/// (AGENTS.md, and CLAUDE.md for a harness that reads that name): where the
+/// skills live, and how git and the GitHub API authenticate.
+fn workspace_pointer() -> String {
+    format!(
+        "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never put a token in a remote URL.\n\nOn GitHub that credential is also your API token for the one repository, carrying what `list_repos` shows for it (`github.carries`). Read it and spend it in ONE command, in a subshell, so it is gone when the command ends; never print, echo, export or store it, and never run that command with `-v`, `--trace` or `set -x`, which print it:\n\n```sh\n{call}\n```\n\nRun it as one tool call: a `TOKEN` set in one is gone in the next. An empty token (the repo is not granted, or its token would carry nothing; `doctor` says which) stops at the guard under the helper's reason, rather than calling the API as nobody. `host=` is the host in the repo's clone URL. `GH_TOKEN=\"$TOKEN\" gh api repos/OWNER/REPO/pulls` in place of curl works the same where `gh` is installed. A permission your token lacks is an admin's to give: ask with `request_git_permission`.\n",
+        call = api_call_example()
+    )
+}
 
 async fn set_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -1963,6 +2040,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             );
             obj.insert("pids_limit".into(), json!("${AGENT_WB_PIDS_LIMIT:-2048}"));
             obj.insert("oom_score_adj".into(), json!(500));
+            // The CPU a developer agent gets, written whole: see
+            // `developer_cpu` for the numbers and why.
+            developer_cpu(obj, talaria_fleet_budget::workbench_cpus());
             for (k, v) in talaria_workbench::sandbox_env() {
                 env.insert(k, v);
             }
@@ -1989,6 +2069,13 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             // dir, and its non-default model roles (the default rides
             // `--model` on each start_job invocation line).
             for (k, v) in talaria_workbench_harnesses::omp_env() {
+                env.insert(k, v);
+            }
+            // Which render created this container, in the one place a
+            // container cannot be updated behind: its env. The workbench's
+            // provisioning reads it back to tell a stale sandbox from a
+            // current one (talaria_workbench_harnesses::SANDBOX_SHAPE).
+            for (k, v) in talaria_workbench_harnesses::shape_env() {
                 env.insert(k, v);
             }
             for (k, v) in omp_roles.env() {
@@ -2133,16 +2220,9 @@ pub async fn render_fleet(pg: &PgPool, sb: &SecretBox) -> Result<RenderResult, S
             harness_mounts.extend(pi_config_mounts(&wb_dir, &fleet_skills));
             // The workspace pointers every harness reads in its working
             // directory — where the skills live, whichever tool lands there.
-            let _ = tokio::fs::write(
-                wb_dir.join("AGENTS.md"),
-                "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never `gh`, never a token in a remote URL.\n",
-            )
-            .await;
-            let _ = tokio::fs::write(
-                wb_dir.join("CLAUDE.md"),
-                "# Workspace\n\nThe fleet's skills live at `/opt/skills` (read-only). Read `talaria-toolkit` and `workbench-driving` before you start.\n\nGit over `https://` just works: Talaria injects the credential at git time via `/usr/local/bin/git-credential-talaria`. Never `gh`, never a token in a remote URL.\n",
-            )
-            .await;
+            let pointer = workspace_pointer();
+            let _ = tokio::fs::write(wb_dir.join("AGENTS.md"), &pointer).await;
+            let _ = tokio::fs::write(wb_dir.join("CLAUDE.md"), &pointer).await;
         }
 
         let mut vols: Vec<String> = Vec::new();
@@ -2731,6 +2811,7 @@ fn fleet_owned_config(
     fleet_approvals(routed, def.developer);
     fleet_nous_off(routed);
     fleet_delegation(routed, def.max_children);
+    fleet_api_server_capacity(routed, def.developer);
     fleet_disabled_toolsets(routed, toolset_floor, &def.disabled_toolsets);
     talaria_agent_web_search::merge_into(routed, web);
     fleet_browser_local_close(routed, secret_names);
@@ -2873,6 +2954,90 @@ fn fleet_nous_off(routed: &mut Map<String, Value>) {
         .unwrap_or_default();
     nous.insert("guest".into(), json!(false));
     routed.insert("nous".into(), Value::Object(nous));
+}
+
+/// The CPU a developer agent's container gets. Its workbench jobs run INSIDE
+/// it — every clone, build, test suite and omp process of up to
+/// MAX_LIVE_JOBS_PER_AGENT tickets — so the chassis's CPU keys, written for a
+/// chat agent, are replaced rather than inherited:
+///
+/// - `cpus: ${AGENT_WB_CPUS:-<n>}`, `n` = [`talaria_fleet_budget::workbench_cpus`]
+///   (the host's cores less an eighth kept for the platform, at least 2). A
+///   ceiling, not two cores: an older chassis carried `cpus: ${AGENT_CPUS:-2}`,
+///   and on outcrop (2026-11-04) three tickets' builds shared those two cores
+///   at a load average of 15 on a 32-core host; a cold build ran past Hermes'
+///   420 s tool ceiling and was rebuilt from cold. But still a ceiling, not
+///   none: cargo, Go and the JVM size their parallelism from the cgroup's
+///   CPU limit, and with none every build sizes itself to every host core.
+///   `AGENT_WB_CPUS` in fleet/.env overrides it (0 = no limit — compose drops
+///   a zero `cpus`), the same way `AGENT_WB_PIDS_LIMIT` overrides the pids
+///   cap; a chassis `AGENT_CPUS` no longer reaches a developer agent.
+/// - `cpu_shares: ${AGENT_WB_CPU_SHARES:-512}`: half the default weight, so a
+///   container running sixteen builds yields to the app and Postgres (both at
+///   Docker's default 1024) under contention instead of matching them.
+///
+/// `cpu_quota` and `cpu_period` are dropped: Docker refuses them beside
+/// `cpus`, and a chassis that spelled the cap that way would still cap it.
+fn developer_cpu(service: &mut Map<String, Value>, default_cpus: u32) {
+    for quota in ["cpus", "cpu_quota", "cpu_period", "cpu_shares"] {
+        service.remove(quota);
+    }
+    service.insert(
+        "cpus".into(),
+        json!(format!("${{AGENT_WB_CPUS:-{default_cpus}}}")),
+    );
+    service.insert(
+        "cpu_shares".into(),
+        json!(format!("${{AGENT_WB_CPU_SHARES:-{DEVELOPER_CPU_SHARES}}}")),
+    );
+}
+
+/// A developer agent's default CPU weight — half Docker's 1024 (see
+/// [`developer_cpu`]).
+const DEVELOPER_CPU_SHARES: u32 = 512;
+
+/// Headroom over the live-job cap for the agent's other turns: chats, crons,
+/// and a ticket's next turn opening while its last is still settling.
+const API_RUN_HEADROOM: u64 = 8;
+
+/// How many turns Hermes' API server takes at once. Every work session is a
+/// turn in flight for its whole length, and Hermes counts chats, crons and
+/// `/v1/runs` against the same cap — `gateway.api_server.max_concurrent_runs`,
+/// default 10 in v0.22.4, answered with a 429 past it. A developer agent may
+/// hold up to [`talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT`] sessions (16),
+/// so at the default its eleventh ticket's turn was refused and the session
+/// failed while the job cap said there was room. Developer agents get the cap
+/// plus [`API_RUN_HEADROOM`]; a def that authored a larger cap, or 0 (no cap),
+/// keeps it. Other agents keep Hermes' default.
+fn fleet_api_server_capacity(routed: &mut Map<String, Value>, developer: bool) {
+    if !developer {
+        return;
+    }
+    let floor = talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT as u64 + API_RUN_HEADROOM;
+    let mut gateway = routed
+        .get("gateway")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut api = gateway
+        .get("api_server")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    // Read the way Hermes reads it — `int(...)`, so a quoted number counts,
+    // and anything at or below 0 is "no cap" — and keep what the def meant:
+    // no cap, or a cap at least the floor. Only a cap below it is raised.
+    let authored = api.get("max_concurrent_runs").and_then(|v| match v {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    });
+    let keep = authored.is_some_and(|n| n <= 0 || n >= floor as i64);
+    if !keep {
+        api.insert("max_concurrent_runs".into(), json!(floor));
+    }
+    gateway.insert("api_server".into(), Value::Object(api));
+    routed.insert("gateway".into(), Value::Object(gateway));
 }
 
 /// How many subagents this agent may run at once — the def's `max_children`,
@@ -3811,6 +3976,7 @@ own() {
 # dir does not come out root-owned.
 mkdir -p \
   /opt/data/workbench/harness/pi \
+  /opt/data/workbench/harness/jobs \
   /opt/data/workbench/harness/xdg \
   /opt/data/workbench/harness/playwright \
   /opt/data/workbench/harness/npm \
@@ -3820,6 +3986,7 @@ mkdir -p \
 own /opt/data/workbench
 own /opt/data/workbench/harness
 own /opt/data/workbench/harness/pi
+own /opt/data/workbench/harness/jobs
 own /opt/data/workbench/harness/xdg
 own /opt/data/workbench/harness/playwright
 own /opt/data/workbench/harness/npm
@@ -3836,8 +4003,14 @@ own /opt/data/workbench/sessions
 # to the user's own mise config on the persistent volume, so it survives the
 # container and costs nothing after the first boot. Best effort: no mise yet
 # means prepare_env has not run on this volume, and it pins bun too.
+#
+# Only on a volume the workbench has not provisioned yet (no bun linked): once
+# it has, the harness channel owns which bun this is (it moves to bun's newer
+# releases after one has installed and started on a workbench), and every
+# provision re-pins and re-links the one it verified. A boot must not pull the
+# volume back to the compiled fallback below.
 mise=/opt/data/.local/bin/mise
-if [ -x "$mise" ]; then
+if [ -x "$mise" ] && [ ! -x /opt/data/.local/bin/bun ]; then
   runuser -u hermes -- sh -lc "\"$mise\" use -g bun@__BUN__ >/dev/null 2>&1" || true
   # And put it where EVERY shell looks. mise's shims reach a login shell's
   # PATH only through prepare_env's profile block; a plain `bash -c` — how
@@ -3862,8 +4035,9 @@ fi
 ln -sfn /opt/data/.local/bin/bun /usr/local/bin/bun 2>/dev/null || true
 "#;
 
-// The bun the coding harness runs on — one pin, shared with the workbench's
-// own provisioning (`talaria_workbench_harnesses::HARNESS_BUN`).
+// The bun the coding harness runs on when nothing newer has been verified —
+// the bootstrap fallback, shared with the workbench's own provisioning
+// (`talaria_workbench_harnesses::HARNESS_BUN`).
 use talaria_workbench_harnesses::{HARNESS_BUN, HARNESS_XDG_DATA_HOME};
 
 /// `HARNESS_OWN_SCRIPT` with the bun pin and mise's data dir filled in.
@@ -4706,6 +4880,80 @@ service:
             assert_eq!(
                 empty.get("tools"),
                 Some(&json!({ "tool_search": { "enabled": "on" } }))
+            );
+        }
+    }
+
+    #[test]
+    fn a_developer_service_gets_its_own_cpu_ceiling_and_a_lower_weight() {
+        // outcrop's chassis, seeded 2026-09-02 from the 2026-08-17 template:
+        // a hard two-core quota and no cpu_shares at all.
+        let mut svc = json!({ "cpus": "${AGENT_CPUS:-2}", "mem_limit": "2g" })
+            .as_object()
+            .cloned()
+            .unwrap();
+        developer_cpu(&mut svc, 28);
+        assert_eq!(
+            Value::Object(svc),
+            json!({
+                "mem_limit": "2g",
+                "cpus": "${AGENT_WB_CPUS:-28}",
+                "cpu_shares": "${AGENT_WB_CPU_SHARES:-512}",
+            })
+        );
+        // A chassis that spelled the cap as quota/period, with its own
+        // weight: all of it is replaced, never left to collide with `cpus`.
+        let mut svc = json!({
+            "cpu_quota": 200000, "cpu_period": 100000, "cpu_shares": "${AGENT_CPU_SHARES:-1024}",
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        developer_cpu(&mut svc, 3);
+        assert_eq!(
+            Value::Object(svc),
+            json!({ "cpus": "${AGENT_WB_CPUS:-3}", "cpu_shares": "${AGENT_WB_CPU_SHARES:-512}" })
+        );
+    }
+
+    #[test]
+    fn a_developer_agent_takes_as_many_turns_as_it_may_hold_jobs() {
+        let floor = talaria_fleet_budget::MAX_LIVE_JOBS_PER_AGENT as u64 + API_RUN_HEADROOM;
+        let mut routed = Map::new();
+        fleet_api_server_capacity(&mut routed, false);
+        assert!(
+            routed.get("gateway").is_none(),
+            "a chat agent keeps Hermes' default"
+        );
+        fleet_api_server_capacity(&mut routed, true);
+        assert_eq!(
+            routed["gateway"]["api_server"]["max_concurrent_runs"],
+            json!(floor)
+        );
+        assert!(floor > 10, "above Hermes v0.22.4's default of 10");
+        // A def's own larger cap, or no cap (0, negative, or either quoted —
+        // Hermes `int()`s the value), stands; a smaller one, or junk, is raised.
+        for (authored, want) in [
+            (json!(64), json!(64)),
+            (json!("64"), json!("64")),
+            (json!(0), json!(0)),
+            (json!("0"), json!("0")),
+            (json!(-1), json!(-1)),
+            (json!(4), json!(floor)),
+            (json!("4"), json!(floor)),
+            (json!("lots"), json!(floor)),
+        ] {
+            let mut routed = Map::new();
+            routed.insert(
+                "gateway".into(),
+                json!({ "api_server": { "max_concurrent_runs": authored, "port": 8642 } }),
+            );
+            fleet_api_server_capacity(&mut routed, true);
+            assert_eq!(routed["gateway"]["api_server"]["max_concurrent_runs"], want);
+            assert_eq!(
+                routed["gateway"]["api_server"]["port"],
+                json!(8642),
+                "the rest of the block stays"
             );
         }
     }
@@ -6566,7 +6814,7 @@ empty_list: []
             "no curl or wget in this image",
             "no credential for $host${path:+/$path}",
             "git -c credential.helper= config --get remote.origin.url",
-            "Do not run git credential fill",
+            "never runs bare: what it prints is the token",
             "sed -n 's/.*\"username\":\"\\([^\"]*\\)\".*/\\1/p')\n",
         ] {
             assert!(
@@ -6604,12 +6852,20 @@ empty_list: []
 
     #[test]
     fn the_git_helper_reads_origin_when_git_omits_the_path() {
-        fn run(with_origin: bool, curl_ok: bool) -> (i32, String, String, String) {
+        // `reply`: what the stub curl prints, as curl does with `-w` — the
+        // body, then the status on a line of its own — or None for a curl
+        // that fails outright.
+        fn run(
+            with_origin: bool,
+            reply: Option<(&str, u16)>,
+            ask: &[u8],
+        ) -> (i32, String, String, String) {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static RUN: AtomicUsize = AtomicUsize::new(0);
             let dir = std::env::temp_dir().join(format!(
-                "talaria-cred-{}-{}-{}",
+                "talaria-cred-{}-{}",
                 std::process::id(),
-                u8::from(with_origin),
-                u8::from(curl_ok)
+                RUN.fetch_add(1, Ordering::SeqCst)
             ));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(dir.join("stub")).unwrap();
@@ -6621,13 +6877,12 @@ empty_list: []
             let exec = std::fs::Permissions::from_mode(0o755);
             std::fs::set_permissions(&helper, exec.clone()).unwrap();
             let capture = dir.join("body");
-            let curl = if curl_ok {
-                format!(
-                    "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\nprintf '%s' '{{\"username\":\"x-access-token\",\"password\":\"sekret\"}}'\n",
+            let curl = match reply {
+                Some((body, status)) => format!(
+                    "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\nprintf '%s\\n%s' '{body}' '{status}'\n",
                     capture.display()
-                )
-            } else {
-                "#!/bin/sh\nexit 1\n".to_string()
+                ),
+                None => "#!/bin/sh\nexit 1\n".to_string(),
             };
             let curl_path = dir.join("stub/curl");
             std::fs::write(&curl_path, curl).unwrap();
@@ -6676,12 +6931,7 @@ empty_list: []
                 .spawn()
                 .unwrap();
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(b"protocol=https\nhost=github.com\n\n")
-                .unwrap();
+            child.stdin.take().unwrap().write_all(ask).unwrap();
             let out = child.wait_with_output().unwrap();
             let body = std::fs::read_to_string(&capture).unwrap_or_default();
             let _ = std::fs::remove_dir_all(&dir);
@@ -6693,16 +6943,34 @@ empty_list: []
             )
         }
 
-        let (code, stdout, stderr, body) = run(true, true);
+        let granted = Some((r#"{"username":"x-access-token","password":"sekret"}"#, 200));
+        let pathless = b"protocol=https\nhost=github.com\n\n";
+        let (code, stdout, stderr, body) = run(true, granted, pathless);
         assert_eq!(code, 0, "{stderr}");
         assert!(stdout.contains("username=x-access-token"), "{stdout}");
-        assert!(
-            body.contains("outcrop-labs/talaria"),
+        let asked: Value = serde_json::from_str(&body).expect("the body is JSON");
+        assert_eq!(
+            asked["path"], "outcrop-labs/talaria",
             "pathless ask must be scoped to origin, got {body}"
         );
         assert!(!stderr.contains("no credential"), "{stderr}");
 
-        let (code, stdout, stderr, _) = run(false, false);
+        // A path with a quote in it is escaped into its string: it can neither
+        // break the body nor add a field to it.
+        let (code, _, stderr, body) = run(
+            false,
+            granted,
+            b"protocol=https\nhost=github.com\npath=acme/wid\",\"host\":\"evil.example.git\n\n",
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let asked: Value = serde_json::from_str(&body).expect("the body is JSON");
+        assert_eq!(asked["host"], "github.com", "{body}");
+        assert_eq!(
+            asked["path"], "acme/wid\",\"host\":\"evil.example.git",
+            "{body}"
+        );
+
+        let (code, stdout, stderr, _) = run(false, None, pathless);
         assert_eq!(code, 0, "a decline must not hang git: {stderr}");
         assert!(
             stdout.is_empty(),
@@ -6711,119 +6979,441 @@ empty_list: []
         assert!(stderr.contains("no credential for github.com"), "{stderr}");
         assert!(stderr.contains("did not name a repository"), "{stderr}");
         assert!(stderr.contains("git credential fill"), "{stderr}");
+
+        // A 403 says why, and the helper passes the sentence on: it names
+        // the switch an admin turns, which "no credential" alone does not.
+        let scoped = b"protocol=https\nhost=github.com\npath=acme/widgets.git\n\n";
+        let refused = Some((
+            r#"{"error":"this agent is not a Developer Agent, so Talaria gives it no git credential and no push"}"#,
+            403,
+        ));
+        let (code, stdout, stderr, _) = run(false, refused, scoped);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.is_empty(), "a refusal prints no login: {stdout}");
+        assert!(
+            stderr.contains("no credential for github.com/acme/widgets.git"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("talaria: this agent is not a Developer Agent"),
+            "{stderr}"
+        );
+        // A 404 is a plain no: nothing more than the decline line, and a
+        // body that carries a password is still no answer under a refusal.
+        let missing = Some((
+            r#"{"error":"no credential for that host","password":"x"}"#,
+            404,
+        ));
+        let (code, stdout, stderr, _) = run(false, missing, scoped);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(!stderr.contains("that host"), "{stderr}");
+        assert!(stderr.contains("no credential for github.com"), "{stderr}");
+    }
+
+    /// RUN the line the agents are taught for a GitHub API call, through real
+    /// git and the rendered helper, the way the sandbox has them: a gitconfig
+    /// that names the helper and turns on useHttpPath, and a stub curl
+    /// standing in for the credential door. What the line puts in `$TOKEN`
+    /// is what this answers, along with the body the helper sent.
+    fn run_api_token_line(reply: Option<&str>) -> (i32, String, String, Value) {
+        let dir = std::env::temp_dir().join(format!(
+            "talaria-api-token-{}-{}",
+            std::process::id(),
+            reply.is_some()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("stub")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let exec = std::fs::Permissions::from_mode(0o755);
+        let helper = dir.join("git-credential-talaria");
+        std::fs::write(&helper, GIT_CREDENTIAL_HELPER).unwrap();
+        std::fs::set_permissions(&helper, exec.clone()).unwrap();
+        let config = dir.join("gitconfig");
+        std::fs::write(
+            &config,
+            GITCONFIG.replace(
+                "/usr/local/bin/git-credential-talaria",
+                &helper.display().to_string(),
+            ),
+        )
+        .unwrap();
+        let capture = dir.join("body");
+        let curl = match reply {
+            Some(body) => format!(
+                "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\nprintf '%s\\n%s' '{body}' 200\n",
+                capture.display()
+            ),
+            None => "#!/bin/sh\nexit 1\n".to_string(),
+        };
+        let curl_path = dir.join("stub/curl");
+        std::fs::write(&curl_path, curl).unwrap();
+        std::fs::set_permissions(&curl_path, exec).unwrap();
+        // The taught call, with printf where the API call goes.
+        let script = format!("( {API_TOKEN_LINE}; {API_TOKEN_GUARD}; printf %s \"$TOKEN\" )\n")
+            .replace("OWNER/REPO", "acme/widgets");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .current_dir(&dir)
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.join("stub").display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("HOME", &dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", &config)
+            .env_remove("GIT_ASKPASS")
+            .env_remove("SSH_ASKPASS")
+            .env("TALARIA_API_URL", "http://talaria.test")
+            .env("TALARIA_AGENT_KEY", "tak_test")
+            .env("API_SERVER_MODEL_NAME", "engineer-engineering")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let body = std::fs::read_to_string(&capture)
+            .ok()
+            .and_then(|b| serde_json::from_str(&b).ok())
+            .unwrap_or(Value::Null);
+        let _ = std::fs::remove_dir_all(&dir);
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+            body,
+        )
     }
 
     #[test]
-    fn the_pre_push_hook_answers_allow_and_deny_end_to_end() {
-        // `sh -n` proves syntax, not behavior — the first shipped hook was
-        // syntactically valid shell whose sed had lost a line continuation,
-        // so `repo` came back empty and the gate passed everything. This
-        // test RUNS the hook: a real git repo, a github-shaped remote, and a
-        // stub curl standing in for the check route, for both verdicts.
-        fn run(curl_body: &'static str) -> (i32, String, String) {
-            let dir = std::env::temp_dir().join(format!(
-                "talaria-hookrun-{}-{}",
-                std::process::id(),
-                curl_body.len()
-            ));
-            std::fs::create_dir_all(dir.join("repo")).unwrap();
-            std::fs::create_dir_all(dir.join("stub")).unwrap();
-            std::fs::write(dir.join("repo/pre-push"), GIT_PRE_PUSH_HOOK).unwrap();
-            std::fs::write(
-                dir.join("stub/curl"),
-                format!(
-                    "#!/bin/sh\n[ -n \"$TALARIA_CAPTURE\" ] && printf '%s' \"$*\" > \"$TALARIA_CAPTURE\"\nprintf '%s' '{curl_body}'\n"
-                ),
-            )
-            .unwrap();
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir.join("stub/curl"), {
-                let mut p = std::fs::metadata(dir.join("stub/curl"))
-                    .unwrap()
-                    .permissions();
-                p.set_mode(0o755);
-                p
-            })
-            .unwrap();
-            assert!(
-                std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(dir.join("repo"))
-                    .args(["init", "-q"])
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
-            );
-            assert!(
-                std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(dir.join("repo"))
-                    .args([
-                        "remote",
-                        "add",
-                        "origin",
-                        "https://github.com/acme/widgets.git"
-                    ])
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
-            );
-            // PATH is PREPENDED for real — env() does not expand "$PATH",
-            // and a literal "$PATH" entry would hide sed/git from the hook.
-            let mut stub_path = dir.join("stub").into_os_string();
-            stub_path.push(":");
-            stub_path.push(std::env::var_os("PATH").unwrap_or_default());
-            // The refs arrive as a FILE-backed stdin: no write race with a
-            // child that may exit before the parent writes.
-            let refs_file = dir.join("refs.txt");
-            std::fs::write(&refs_file, b"refs/heads/x 0 refs/heads/agent/y 0\n").unwrap();
-            let out = std::process::Command::new("sh")
-                .arg("pre-push")
-                .arg("origin")
-                .current_dir(dir.join("repo"))
-                .env("PATH", stub_path)
-                .env("TALARIA_API_URL", "http://talaria.test")
-                .env("API_SERVER_MODEL_NAME", "probe-eng")
-                .env("TALARIA_AGENT_KEY", "probe-key")
-                .env("GIT_DIR", ".git")
-                .env("TALARIA_CAPTURE", dir.join("asked"))
-                .stdin(std::fs::File::open(&refs_file).unwrap())
-                .output()
-                .unwrap();
-            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-            let script = GIT_PRE_PUSH_HOOK.to_string();
-            let asked = std::fs::read_to_string(dir.join("asked")).unwrap_or_default();
-            let _ = std::fs::remove_dir_all(&dir);
-            (
-                out.status.code().unwrap_or(-1),
-                format!("{stderr}\n---script---\n{script}"),
-                asked,
-            )
+    fn the_api_token_line_reads_the_repos_token_through_git_and_the_helper() {
+        // Granted: the helper asks the door for exactly that repository on
+        // that host, and the token lands in $TOKEN, never on the output
+        // until the script itself prints it.
+        let (code, stdout, stderr, body) = run_api_token_line(Some(
+            r#"{"username":"x-access-token","password":"ghs_sekret"}"#,
+        ));
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stdout, "ghs_sekret", "{stderr}");
+        assert_eq!(body["host"], "github.com", "{body}");
+        assert_eq!(body["path"], "acme/widgets.git", "{body}");
+        assert_eq!(body["protocol"], "https", "{body}");
+        assert!(!stderr.contains("ghs_sekret"), "{stderr}");
+
+        // Declined: the read ends with an empty $TOKEN, rather than waiting
+        // on a username prompt nobody will answer, and the guard stops the
+        // call there, under the helper's reason.
+        let (code, stdout, stderr, _) = run_api_token_line(None);
+        assert_eq!(code, 1, "{stderr}");
+        assert_eq!(stdout, "", "{stderr}");
+        assert!(
+            stderr.contains("no credential for github.com/acme/widgets.git"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("no GitHub token for acme/widgets"),
+            "{stderr}"
+        );
+    }
+
+    #[test]
+    fn the_workspace_pointer_and_the_skill_teach_the_same_api_token_line() {
+        let pointer = workspace_pointer();
+        assert!(pointer.contains(&api_call_example()), "{pointer}");
+        assert!(pointer.contains("list_repos"), "{pointer}");
+        assert!(pointer.contains("request_git_permission"), "{pointer}");
+        assert!(!pointer.contains("Never `gh`"), "{pointer}");
+        // The skill ships to every agent container; the line it teaches is
+        // the one the test above runs.
+        let skill = include_str!("../../../../scripts/skills/talaria-toolkit/SKILL.md");
+        let call = api_call_example();
+        assert!(
+            skill.contains(&call),
+            "scripts/skills/talaria-toolkit/SKILL.md must teach the API call verbatim:\n{call}"
+        );
+    }
+
+    /// What one run of the generated pre-push hook did.
+    struct HookRun {
+        code: i32,
+        /// The hook's stderr, with the script appended for a failing assert.
+        stderr: String,
+        /// The stub curl's argv: what the hook sent the push check.
+        asked: String,
+        /// What the repo's own pre-push hook read on its stdin, when the run
+        /// installed one.
+        own_saw: Option<String>,
+    }
+
+    impl HookRun {
+        /// The JSON body the hook sent the push check, parsed — a body that
+        /// is not JSON fails here, which is the point of reading it.
+        fn body(&self) -> Value {
+            let raw = self
+                .asked
+                .split_once(" -d ")
+                .map(|(_, b)| b)
+                .unwrap_or_else(|| panic!("the hook asked nothing: {}", self.stderr));
+            serde_json::from_str(raw)
+                .unwrap_or_else(|e| panic!("the hook sent a body that is not JSON ({e}): {raw}"))
         }
-        let (code, _, asked) = run(r#"{"ok":true}"#);
-        assert_eq!(code, 0, "an allowed push must pass through");
+    }
+
+    /// RUN the generated hook — `sh -n` proves syntax, not behavior: the first
+    /// shipped hook was syntactically valid shell whose sed had lost a line
+    /// continuation, so `repo` came back empty and the gate passed everything.
+    /// A real git repo with a github-shaped `origin`, a stub curl standing in
+    /// for the check route (answering `curl_body`), the hook's arguments as
+    /// git passes them (`<remote name> <location>`), `refs` as its stdin, and
+    /// optionally the repo's own `.git/hooks/pre-push` (`own_hook`, a script
+    /// that may read `$OWN_SAW` to record its stdin).
+    fn run_pre_push(args: &[&str], refs: &str, curl_body: &str, own_hook: Option<&str>) -> HookRun {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static RUN: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "talaria-hookrun-{}-{}",
+            std::process::id(),
+            RUN.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("repo")).unwrap();
+        std::fs::create_dir_all(dir.join("stub")).unwrap();
+        std::fs::write(dir.join("repo/pre-push"), GIT_PRE_PUSH_HOOK).unwrap();
+        std::fs::write(
+            dir.join("stub/curl"),
+            format!(
+                "#!/bin/sh\n[ -n \"$TALARIA_CAPTURE\" ] && printf '%s' \"$*\" > \"$TALARIA_CAPTURE\"\nprintf '%s' '{curl_body}'\n"
+            ),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let exec = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(dir.join("stub/curl"), exec.clone()).unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(dir.join("repo"))
+                    .args(args)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success(),
+                "git {args:?}"
+            );
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/acme/widgets.git",
+        ]);
+        if let Some(own) = own_hook {
+            let path = dir.join("repo/.git/hooks/pre-push");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, own).unwrap();
+            std::fs::set_permissions(&path, exec).unwrap();
+        }
+        // PATH is PREPENDED for real — env() does not expand "$PATH", and a
+        // literal "$PATH" entry would hide sed/git from the hook.
+        let mut stub_path = dir.join("stub").into_os_string();
+        stub_path.push(":");
+        stub_path.push(std::env::var_os("PATH").unwrap_or_default());
+        // The refs arrive as a FILE-backed stdin: no write race with a child
+        // that may exit before the parent writes.
+        let refs_file = dir.join("refs.txt");
+        std::fs::write(&refs_file, refs).unwrap();
+        let out = std::process::Command::new("sh")
+            .arg("pre-push")
+            .args(args)
+            .current_dir(dir.join("repo"))
+            .env("PATH", stub_path)
+            .env("TALARIA_API_URL", "http://talaria.test")
+            .env("API_SERVER_MODEL_NAME", "probe-eng")
+            .env("TALARIA_AGENT_KEY", "probe-key")
+            .env("GIT_DIR", ".git")
+            .env("TALARIA_CAPTURE", dir.join("asked"))
+            .env("OWN_SAW", dir.join("own-saw"))
+            .stdin(std::fs::File::open(&refs_file).unwrap())
+            .output()
+            .unwrap();
+        let run = HookRun {
+            code: out.status.code().unwrap_or(-1),
+            stderr: format!(
+                "{}\n---script---\n{GIT_PRE_PUSH_HOOK}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            asked: std::fs::read_to_string(dir.join("asked")).unwrap_or_default(),
+            own_saw: std::fs::read_to_string(dir.join("own-saw")).ok(),
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        run
+    }
+
+    const ORIGIN: &str = "https://github.com/acme/widgets.git";
+    const TWO_REFS: &str =
+        "refs/heads/x 1111 refs/heads/agent/y 0000\nrefs/heads/z 2222 refs/heads/agent/z 0000\n";
+
+    #[test]
+    fn the_pre_push_hook_answers_allow_and_deny_end_to_end() {
+        let run = run_pre_push(&["origin", ORIGIN], TWO_REFS, r#"{"ok":true}"#, None);
+        assert_eq!(
+            run.code, 0,
+            "an allowed push must pass through: {}",
+            run.stderr
+        );
         // THE PARSE, pinned: a .git-suffixed https remote must arrive at the
         // route as bare owner/repo — the first parse kept the suffix (the
         // lazy `+?` is load-bearing) and every push 404'd against its own
-        // grant.
-        assert!(
-            asked.contains(r#""repo":"acme/widgets""#),
-            "the repo string must be .git-suffix-free: {asked}"
+        // grant. The remote's host rides along: the route resolves the grant
+        // on the git host the push goes to.
+        assert_eq!(
+            run.body(),
+            json!({
+                "repo": "acme/widgets",
+                "host": "github.com",
+                "refs": ["refs/heads/agent/y", "refs/heads/agent/z"],
+            })
         );
-        // The remote's host rides along: the route resolves the grant on
-        // the git host the push goes to.
-        assert!(
-            asked.contains(r#""host":"github.com""#),
-            "the host must arrive bare: {asked}"
+        let run = run_pre_push(
+            &["origin", ORIGIN],
+            TWO_REFS,
+            r#"{"error":"acme/widgets is not yours to push"}"#,
+            None,
         );
-        let (code, err, _) = run(r#"{"error":"acme/widgets is not yours to push"}"#);
-        assert_eq!(code, 1, "a refused push must abort");
+        assert_eq!(run.code, 1, "a refused push must abort");
         assert!(
-            err.contains("push declined") && err.contains("not yours"),
-            "the refusal must carry the route's sentence: {err}"
+            run.stderr.contains("push declined") && run.stderr.contains("not yours"),
+            "the refusal must carry the route's sentence: {}",
+            run.stderr
         );
+        // A hook run with the remote's name alone (no location) still finds
+        // the remote's url.
+        let run = run_pre_push(&["origin"], TWO_REFS, r#"{"ok":true}"#, None);
+        assert_eq!(run.body()["repo"], "acme/widgets");
+    }
+
+    #[test]
+    fn a_repo_hook_that_reads_stdin_still_leaves_the_gate_its_refs() {
+        // REGRESSION: the repo's own hook used to inherit stdin. One that read
+        // its refs (git-lfs, husky, this repo's own gate) consumed them, the
+        // gate then read nothing, counted no refs and let the push through
+        // unasked. The refs are buffered and handed to both.
+        let reads_stdin = "#!/bin/sh\ncat > \"$OWN_SAW\"\nexit 0\n";
+        let run = run_pre_push(
+            &["origin", ORIGIN],
+            TWO_REFS,
+            r#"{"error":"main is the base branch"}"#,
+            Some(reads_stdin),
+        );
+        assert_eq!(
+            run.own_saw.as_deref().map(str::trim_end),
+            Some(TWO_REFS.trim_end()),
+            "the repo's hook reads every ref git sent"
+        );
+        assert_eq!(
+            run.code, 1,
+            "Talaria's gate still asked, and its deny stands: {}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains("main is the base branch"),
+            "{}",
+            run.stderr
+        );
+        let run = run_pre_push(
+            &["origin", ORIGIN],
+            TWO_REFS,
+            r#"{"ok":true}"#,
+            Some(reads_stdin),
+        );
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert_eq!(
+            run.body()["refs"],
+            json!(["refs/heads/agent/y", "refs/heads/agent/z"])
+        );
+        // The repo's own refusal still stands, and Talaria is not asked.
+        let run = run_pre_push(
+            &["origin", ORIGIN],
+            TWO_REFS,
+            r#"{"ok":true}"#,
+            Some("#!/bin/sh\ncat > /dev/null\nexit 1\n"),
+        );
+        assert_eq!(run.code, 1, "{}", run.stderr);
+        assert!(run.asked.is_empty(), "{}", run.asked);
+    }
+
+    #[test]
+    fn a_push_to_a_url_is_still_checked() {
+        // `git push https://github.com/acme/other.git HEAD:main` names no
+        // remote: git passes the URL as both arguments, and there is no
+        // `remote.<url>.url` to read. The hook used to exit 0 here.
+        let url = "https://github.com/acme/other.git";
+        let run = run_pre_push(
+            &[url, url],
+            "HEAD 1111 refs/heads/main 0000\n",
+            r#"{"error":"main is the base branch"}"#,
+            None,
+        );
+        assert_eq!(run.code, 1, "{}", run.stderr);
+        assert_eq!(
+            run.body(),
+            json!({ "repo": "acme/other", "host": "github.com", "refs": ["refs/heads/main"] })
+        );
+        // A named remote is checked where git is pushing (its push URL),
+        // not where its fetch url points.
+        let run = run_pre_push(
+            &["origin", "git@github.com:acme/pushed.git"],
+            TWO_REFS,
+            r#"{"ok":true}"#,
+            None,
+        );
+        assert_eq!(run.body()["repo"], "acme/pushed");
+    }
+
+    #[test]
+    fn a_ref_name_is_data_and_never_runs() {
+        // Git allows `$`, `(`, `)` and backticks in a ref name. The hook
+        // only ever expands one inside double quotes, so a name shaped like a
+        // command substitution reaches the route as text and runs nothing.
+        let marker_dir =
+            std::env::temp_dir().join(format!("talaria-hook-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&marker_dir).unwrap();
+        let marker = marker_dir.join("ran");
+        let _ = std::fs::remove_file(&marker);
+        let refs = format!(
+            "refs/heads/x 1111 refs/heads/a$(:>{m})b 0000\nrefs/heads/y 2222 refs/heads/c`:>{m}`d 0000\n",
+            m = marker.display()
+        );
+        let run = run_pre_push(&["origin", ORIGIN], &refs, r#"{"ok":true}"#, None);
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert!(!marker.exists(), "a ref name ran as a command");
+        assert_eq!(
+            run.body()["refs"],
+            json!([
+                format!("refs/heads/a$(:>{})b", marker.display()),
+                format!("refs/heads/c`:>{}`d", marker.display()),
+            ])
+        );
+        let _ = std::fs::remove_dir_all(&marker_dir);
+    }
+
+    #[test]
+    fn a_ref_with_a_quote_still_makes_valid_json() {
+        // Git refuses control characters and backslashes in a ref name, not
+        // double quotes; pasted into the body unescaped, one broke it.
+        let run = run_pre_push(
+            &["origin", ORIGIN],
+            "refs/heads/x 1111 refs/heads/agent/a\"b 0000\n",
+            r#"{"ok":true}"#,
+            None,
+        );
+        assert_eq!(run.code, 0, "{}", run.stderr);
+        assert_eq!(run.body()["refs"], json!(["refs/heads/agent/a\"b"]));
     }
 
     /// A checkpoint ref never leaves the container. The branch check skips
@@ -7088,6 +7678,10 @@ empty_list: []
         // Globally, because a shim with no version is the whole bug: a Rust
         // job pins rust and mold, and omp is a bun program wherever it runs.
         assert!(filled.contains("use -g bun@"));
+        // Only before the workbench first provisions the volume: after that
+        // the harness channel's verified bun is the one linked and pinned,
+        // and a boot must not pull it back to the compiled fallback.
+        assert!(filled.contains("if [ -x \"$mise\" ] && [ ! -x /opt/data/.local/bin/bun ]; then"));
         assert!(
             !HARNESS_OWN_SCRIPT.contains("chown -R"),
             "a recursive chown retakes the :ro policy files"

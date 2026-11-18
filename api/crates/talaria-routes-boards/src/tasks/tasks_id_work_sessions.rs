@@ -62,7 +62,7 @@ pub async fn get(
     // younger than a recent finish), then the finished tail newest-first.
     // `subject_id` is TEXT: untyped bind, same as the live read.
     let rows = match sqlx::query(sqlx::AssertSqlSafe(format!(
-        "select id::text, state::text, phase, input, checkpoint, {LINEAGE_COLS}, \
+        "select id::text, state::text, phase, input, checkpoint, error, {LINEAGE_COLS}, \
                 coalesce(to_char(finished_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') as finished, \
                 (select coalesce(sum(u.prompt_tokens::bigint + u.completion_tokens \
                                      + u.cache_write_tokens + u.cache_read_tokens), 0)::bigint \
@@ -104,6 +104,11 @@ pub async fn get(
             "agentModel": input.get("agentModel").and_then(|v| v.as_str()),
             "turn": checkpoint.and_then(|c| c.get("turn")?.as_i64()),
             "finishedAt": if finished.is_empty() { None } else { Some(finished) },
+            // Why a session ended badly, on the log row itself — a red
+            // FAILED chip that makes the reader open the transcript to
+            // learn "the agent's tools failed on every call" hides the
+            // one line they came for.
+            "error": row.get::<Option<String>, _>("error"),
             "lineageId": lineage.lineage_id,
             "attemptNo": lineage.attempt_no,
             "rewoundFromRunId": lineage.rewound_from_run_id,

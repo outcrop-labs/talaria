@@ -124,7 +124,7 @@
       ...(external && !s.package && s.authMode === 'org'
         ? [{ label: s.headerKeys?.length ? 'Edit credentials…' : 'Set credentials…', onSelect: () => (credentialsOpen = true) }]
         : []),
-      ...(external && !s.package
+      ...(external && !s.package && s.authMode !== 'google'
         ? [
             {
               label: 'Re-detect auth',
@@ -137,10 +137,15 @@
         : []),
       ...(s.oauthEnabled && s.oauthMeta?.clientSet ? [{ label: 'OAuth app settings…', onSelect: () => (oauthEditing = true) }] : []),
       { label: s.enabled ? 'Disable server' : 'Enable server', onSelect: () => void patch({ enabled: !s.enabled }) },
-      {
-        label: s.authMode === 'org' ? 'Switch to per-user auth' : 'Switch to org auth',
-        onSelect: () => void patch({ authMode: s.authMode === 'org' ? 'per-user' : 'org' }),
-      },
+      // A Google Workspace MCP server's mode is the pack's.
+      ...(s.authMode === 'google'
+        ? []
+        : [
+            {
+              label: s.authMode === 'org' ? 'Switch to per-user auth' : 'Switch to org auth',
+              onSelect: () => void patch({ authMode: s.authMode === 'org' ? 'per-user' : 'org' }),
+            },
+          ]),
       ...(s.oauthEnabled && s.authMode === 'org' && s.orgConnected
         ? [{ label: 'Reconnect org account', onSelect: () => void connectPopup(s.id, 'org') }]
         : []),
@@ -203,6 +208,9 @@
           </Chip>
         {:else if domain}
           <span class="truncate font-mono text-[11px] text-muted">{domain}</span>
+        {/if}
+        {#if s.authMode === 'google'}
+          <Chip class="shrink-0" tone="warn" title="Google Workspace MCP, Developer Preview (Admin → Org). Each agent acts with its own Google account; read-only tools run, and every other call waits for a person to approve it.">google · preview</Chip>
         {/if}
         {#if s.authMode === 'per-user' && !s.builtin}
           <Chip class="shrink-0" title="Each person connects their own account; until they do, their assistant is told where to connect.">per-user</Chip>

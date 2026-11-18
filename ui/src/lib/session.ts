@@ -143,6 +143,10 @@ export function useLogout() {
     // the last one's mentions in the notification centre.
     const { closeShownNotifications, stopPushSubscription } = await import('@/lib/browser-notify')
     await Promise.all([stopPushSubscription(2000), closeShownNotifications()])
+    // An agent-design edit kept for a page that closed mid-save is this
+    // person's; the next one at this machine must not be offered it.
+    const { clearUnsavedEdits } = await import('@/lib/agent-design')
+    clearUnsavedEdits()
     // The nav button fires and forgets this, so a refused sign-out surfaces
     // here rather than as an unhandled rejection — and the session is
     // re-checked either way, because the person is still signed in.

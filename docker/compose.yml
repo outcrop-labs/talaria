@@ -179,6 +179,13 @@ services:
       # instead, set HERMES_IMAGE in the fleet's .env.
       TALARIA_HERMES_MIN_STABLE_HOURS: ${TALARIA_HERMES_MIN_STABLE_HOURS:-}
       TALARIA_HERMES_STABLE_REF: ${TALARIA_HERMES_STABLE_REF:-}
+      # The workbench harness channel (docs/UPDATES.md, "The workbench
+      # harnesses"): how long an Oh My Pi or bun release soaks before a
+      # workbench smoke-tests it, and where the check reads them. Empty (the
+      # default) is 24 h, registry.npmjs.org and bun's GitHub releases.
+      TALARIA_HARNESS_MIN_AGE_HOURS: ${TALARIA_HARNESS_MIN_AGE_HOURS:-}
+      TALARIA_HARNESS_NPM_REGISTRY: ${TALARIA_HARNESS_NPM_REGISTRY:-}
+      TALARIA_HARNESS_BUN_RELEASES: ${TALARIA_HARNESS_BUN_RELEASES:-}
       # Fronted by TLS (Dokploy/Traefik domain, or any reverse proxy)? Set
       # these three through the environment instead — plain http is the
       # default posture and browsers refuse Secure cookies over it. Empty

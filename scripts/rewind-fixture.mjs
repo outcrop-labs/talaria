@@ -475,12 +475,26 @@ This turn: do steps 1 to 4, committing on the job's branch after each step, then
 5. Next turn only: run \`python3 test_calc.py\`, finish the job, then move this ticket to review.`,
 }
 
+/**
+ * Assignment starts nothing: a ticket is born in intake unless its creator puts
+ * it in a column, and work starts only in an agent column. So the fixture files
+ * its ticket in the first one, as a person adding a card there would, by the
+ * engine's rule (talaria-statuses `meta_of`: agent-start, not review, not terminal).
+ */
+async function pickupColumn(api, board) {
+  const { statuses = [] } = await api('GET', `/api/boards/${board.id}/statuses`)
+  const pickup = statuses.find((s) => s.agentStart && !['review', 'done', 'blocked'].includes(s.category))
+  if (!pickup) die(`board "${BOARD_NAME}" has no agent column to file the ticket in`)
+  return pickup.key
+}
+
 async function ticket(stack, slug, wait, variant) {
   const api = apiClient(stack, mintSession(stack))
   const agent = agentRow(stack, slug)
   const board = await ensureBoard(stack, api, agent)
   const body = { batched: BATCHED_TICKET, direct: DIRECT_TICKET, long: LONG_TICKET }[variant] ?? TICKET
-  const { task } = await api('POST', `/api/boards/${board.id}/tasks`, { ...body, assignees: [agent.model] })
+  const status = await pickupColumn(api, board)
+  const { task } = await api('POST', `/api/boards/${board.id}/tasks`, { ...body, status, assignees: [agent.model] })
   say(`filed ${task.ticketRef} (${task.id})`)
   if (!wait) {
     process.stdout.write(`${JSON.stringify({ taskId: task.id, ticketRef: task.ticketRef, boardId: board.id })}\n`)
@@ -494,6 +508,7 @@ async function ticket(stack, slug, wait, variant) {
     if (line !== last) say((last = line))
     if (/^(done|error|cancelled)\b/.test(line)) break
   }
+  if (!last) die(`no work session started for ${task.ticketRef} in ${SESSION_DEADLINE_MS / 60_000} minutes`)
   const out = await report(stack, api, task, mintToken(stack, 'read:repository'))
   process.stdout.write(`${JSON.stringify(out)}\n`)
   const stepCount = Object.values(out.tools).reduce((a, b) => a + b, 0)

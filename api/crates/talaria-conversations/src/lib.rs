@@ -523,6 +523,48 @@ pub async fn mark_conversation_read(
     Ok(())
 }
 
+/// MARK UNREAD: put the reader's cursor back to just before the thread's
+/// newest turn that counts as unread for them — the agent's, or another
+/// person's — so that turn reads unread again. The read cursor otherwise only
+/// advances (`mark_conversation_read`); this is the one deliberate step back,
+/// on the reader's own row, and it is a step BACK only: `least()` keeps a
+/// cursor that is already behind where it is, so a click made against a stale
+/// count never marks newer turns read. A reader with no cursor row has read
+/// nothing yet, so there is nothing to move. Answers whether the thread now
+/// reads unread: false when it holds nothing that could count (an empty
+/// thread, or only the reader's own words).
+pub async fn mark_conversation_unread(
+    pg: &PgPool,
+    conversation_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    // The same predicate the list's unread count uses, so the step back lands
+    // exactly one countable turn behind.
+    let newest: Option<i32> = sqlx::query_scalar(
+        "select max(m.seq) from messages m \
+         where m.conversation_id = $1::uuid and m.status = 'complete' \
+           and (m.role = 'assistant' or m.author_user_id is distinct from $2::uuid)",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_one(pg)
+    .await?;
+    let Some(newest) = newest else {
+        return Ok(false);
+    };
+    sqlx::query(
+        "update conversation_reads \
+            set last_read_seq = least(last_read_seq, $3), updated_at = now() \
+          where conversation_id = $1::uuid and user_id = $2::uuid",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .bind(newest - 1)
+    .execute(pg)
+    .await?;
+    Ok(true)
+}
+
 /// The thread's highest landed seq — the "mark to latest" arm of the read
 /// route, for callers who know WHICH thread but haven't loaded its seqs.
 /// An empty thread reads as 0, which the counting floor (-1) treats as
@@ -1224,6 +1266,10 @@ pub const WRITER_LEASE_UNWRITTEN: std::time::Duration = std::time::Duration::fro
         + 30,
 );
 
+// The sweep and `reply_fate` read a reply as quiet at the ordinary lease and
+// leave the longer one to the guarded close, so it must be the longer.
+const _: () = assert!(WRITER_LEASE_UNWRITTEN.as_secs() >= WRITER_LEASE.as_secs());
+
 /// The line an orphaned reply is closed with, after whatever prose it had.
 /// A restart is the usual way a writer goes, not the only one (a writer task
 /// that panicked goes the same way), so the line says "most likely".
@@ -1352,17 +1398,41 @@ async fn close_orphan(pg: &PgPool, message_id: &str) -> Result<bool, sqlx::Error
 /// Run at boot, and on every beat after it, by each process; the rows this
 /// one writes are never its orphans. Answers the closed rows as
 /// `(message_id, conversation_id)`.
+///
+/// THE ROWS FIRST, THEN THE HOLDS, then the guarded close: the order
+/// [`reply_fate`] reads in. The sweep used to read this process's holds as it
+/// built its one statement, and the rows only when that statement ran. A
+/// reply held between the two, and quiet past the lease by the time the
+/// statement ran, was in neither: the sweep closed it while its writer held it.
+/// Read after the rows, the holds name every reply held before it went quiet.
 pub async fn sweep_orphaned_replies(pg: &PgPool) -> Result<Vec<(String, String)>, sqlx::Error> {
+    // Quiet past the ordinary lease: the close applies the longer one.
+    let quiet: Vec<(String,)> = sqlx::query_as(
+        "select id::text from messages \
+         where role = 'assistant' and status = 'streaming' \
+           and streamed_at < now() - make_interval(secs => $1)",
+    )
+    .bind(WRITER_LEASE.as_secs_f64())
+    .fetch_all(pg)
+    .await?;
+    let unheld: Vec<String> = quiet
+        .into_iter()
+        .map(|(id,)| id)
+        .filter(|id| !written_here(id))
+        .collect();
+    if unheld.is_empty() {
+        return Ok(Vec::new());
+    }
     sqlx::query_as(concat!(
         close_orphan_sql!(),
-        " and not (id::text = any($5::text[])) \
+        " and id = any($5::uuid[]) \
          returning id::text, conversation_id::text"
     ))
     .bind(WRITER_LEASE.as_secs_f64())
     .bind(format!("\n\n{ORPHANED_LINE}"))
     .bind(ORPHANED_LINE)
     .bind(PROSE_WHITESPACE)
-    .bind(replies_written_here())
+    .bind(&unheld)
     .bind(WRITER_LEASE_UNWRITTEN.as_secs_f64())
     .fetch_all(pg)
     .await

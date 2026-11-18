@@ -53,7 +53,7 @@
         ></span>
 
         <div class="flex items-baseline gap-2">
-          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
+          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
             {clockLabel(update.at, brief.zone)}
           </span>
         </div>

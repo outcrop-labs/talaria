@@ -18,7 +18,7 @@
 // The caller is an admin, which passes every agent-manager and permission
 // gate, so each request reaches the id. The channel routes get a channel the
 // admin is a member of, so the gate under test is the message id's.
-// House rule: #[ignore]d; CI's api-integration job runs it.
+// House rule: #[ignore]d; ci.yml's api job runs it in its live-DB steps.
 //
 //   source ui/.env && cargo test -p talaria-api --test it malformed_path_ids:: -- --ignored
 

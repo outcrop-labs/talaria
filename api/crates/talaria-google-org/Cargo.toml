@@ -17,7 +17,5 @@ talaria-google-connections = { workspace = true }
 talaria-secretbox = { workspace = true }
 tracing = { workspace = true }
 talaria-gateway = { workspace = true }
-axum = { workspace = true }
 reqwest = { workspace = true }
 base64 = { workspace = true }
-url = { workspace = true }

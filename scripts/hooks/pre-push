@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // pre-push — the branch-flow guard, wired where it can still say no.
 //
+// It guards the long-lived branches — main, rc and testing — and lets every
+// other ref through: tags and working branches are the pusher's own business.
+//
 // WHAT GIT HANDS A PRE-PUSH HOOK, and what it expects back. One line per ref
 // about to leave the machine, on stdin:
 //
@@ -23,9 +26,11 @@
 // allows a push it could not check — but it also never fakes a refusal, which
 // is why an unrunnable check exits 1 and says so.
 //
-// IT DOES NOT FETCH. flow-guard reads origin/main and origin/rc as this clone
-// has them; a clone that has never fetched one of them is told so, and the
-// push is refused with the command to run, rather than passing on ignorance.
+// IT DOES NOT FETCH. flow-guard reads origin/main, origin/rc and
+// origin/testing as this clone has them (a push to testing reads rc and main;
+// a merge pushed to rc reads testing); a clone that has never fetched one of
+// them is told so, and the push is refused with the command to run, rather
+// than passing on ignorance.
 //
 // WHAT IT IS NOT, said plainly. This hook runs the policy from the WORKING
 // TREE — `scripts/flow-guard.mjs` as that branch has it. Check out a
@@ -81,7 +86,7 @@ if (unverified) {
   process.stderr.write(
     'pre-push: a check above could not run, so nothing verified this push. Git refuses a\n' +
       'push on any non-zero hook exit and this is exit 1 — fix what the message above names\n' +
-      '(usually `git fetch origin main rc`) and push again, or push past it with\n' +
+      '(usually `git fetch origin main rc testing`) and push again, or push past it with\n' +
       '`git push --no-verify`, which is the same as not having this hook.\n'
   )
   process.exit(1)

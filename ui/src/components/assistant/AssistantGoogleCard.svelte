@@ -24,6 +24,9 @@
     connected: boolean
     email: string | null
     connectedAt: string | null
+    /** Why the connection needs a person (its OAuth client is gone, or Google
+     *  refused it), else null — the server's sentence. */
+    reconnectReason: string | null
   }
 
   const qc = useQueryClient()
@@ -82,13 +85,18 @@
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-1.5 text-sm font-medium text-fg">
             Gmail · Calendar · Drive
-            {#if data.connected}<StatusDot status="ok" />{/if}
+            {#if data.connected}<StatusDot status={data.reconnectReason ? 'warn' : 'ok'} />{/if}
           </div>
           <div class="truncate font-mono text-[11px] text-muted">
             {data.connected ? `Connected as ${data.email ?? 'your account'}` : 'Not connected'}
           </div>
         </div>
         {#if data.connected}
+          {#if data.reconnectReason}
+            <a href="/api/integrations/google/connect" class={cn(buttonClasses({ size: 'sm' }), 'shrink-0')}>
+              Reconnect
+            </a>
+          {/if}
           <Button variant="ghost" size="sm" class="shrink-0 hover:text-danger" onclick={() => void disconnect()}>
             Disconnect
           </Button>
@@ -98,6 +106,12 @@
           </a>
         {/if}
       </div>
+      {#if data.connected && data.reconnectReason}
+        <div class="mt-2 flex max-w-prose items-start gap-2 text-xs text-warning">
+          <StatusDot status="warn" class="mt-1" />
+          <span>{data.reconnectReason}</span>
+        </div>
+      {/if}
       <p class="mt-2 max-w-prose text-xs text-muted">
         {data.connected
           ? 'Your assistant reads your mail and calendar live. Emails and invites it drafts wait in your Inbox for your approval. Nothing sends without you.'

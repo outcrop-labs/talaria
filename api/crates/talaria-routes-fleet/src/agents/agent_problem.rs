@@ -321,6 +321,7 @@ pub async fn post(
                 parent_id: None,
                 tags: &[],
                 created_by: &agent,
+                status: None,
             },
         )
         .await;
