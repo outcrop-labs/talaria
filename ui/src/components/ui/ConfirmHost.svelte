@@ -28,9 +28,10 @@
   let answerRef = $state<HTMLButtonElement | null>(null)
   let cancelRef = $state<HTMLButtonElement | null>(null)
   $effect(() => {
-    if (!spec || needsText) return
+    if (!spec) return
     const before = document.activeElement
-    void tick().then(() => (spec.danger && cancelRef ? cancelRef : answerRef)?.focus())
+    // A typed challenge takes focus through its input (the select above).
+    if (!needsText) void tick().then(() => (spec.danger && cancelRef ? cancelRef : answerRef)?.focus())
     return () => {
       if (before instanceof HTMLElement) before.focus()
     }
