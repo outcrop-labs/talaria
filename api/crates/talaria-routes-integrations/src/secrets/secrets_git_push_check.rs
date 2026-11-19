@@ -13,6 +13,10 @@
 // A DENY NEVER LEAVES THE CONTAINER AS DATA: the hook turns it into git's
 // own "pre-push declined" with the sentence on stderr, so the agent reads
 // the rule where it reads every other git fact.
+//
+// THE SAME DOOR AS THE CREDENTIAL'S: a proven agent whose Developer switch is
+// on (`talaria_agent_auth::agent_is_developer`), then its grant on the host
+// the push goes to.
 
 use axum::Json;
 use axum::extract::State;
@@ -20,12 +24,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use talaria_agent_auth::require_agent;
+use talaria_agent_auth::{agent_is_developer, require_agent};
 use talaria_body::{optional_max_string_member, parse, string_array_member, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_git_hosts::{self as hosts, GitHost};
 use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
+
+use super::secrets_git_credential::NOT_A_DEVELOPER;
 
 pub async fn post(
     State(state): State<AppState>,
@@ -66,6 +72,25 @@ pub async fn post(
             "no credential for that host",
         ));
     };
+    // The Developer switch, by the same check as the credential door beside
+    // this route: an agent that may not have a git credential may not push,
+    // and the hook shows it why.
+    match agent_is_developer(&state.pg, &caller.model).await {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                "[secrets] {} asked to push to {repo} but is not a Developer Agent — refused",
+                caller.model
+            );
+            return Ok((
+                StatusCode::FORBIDDEN,
+                [(axum::http::header::CACHE_CONTROL, "no-store")],
+                Json(json!({ "error": NOT_A_DEVELOPER })),
+            )
+                .into_response());
+        }
+        Err(e) => return Ok(internal("[secrets] push check developer read failed", e)),
+    }
     let host_id = match &authority {
         Some(a) => match hosts::host_row_at(&state.pg, a).await {
             Ok(row) => row.map(|r| r.id),

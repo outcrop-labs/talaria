@@ -148,19 +148,109 @@ is still a rule in [`AGENTS.md`](../AGENTS.md).
 
 ## The judge
 
-The layers above are how a change is *made*.
-[`judge-pr`](../.claude/skills/judge-pr/SKILL.md) is how one is *measured*, split along the same
-seam as everything else here:
+The layers above are how a change is *made*. Two judges *measure* one, split along the same
+seam as everything else here — the exact half is a script, the reading is a reader:
 
-- [`scripts/judge-pr.mjs`](../scripts/judge-pr.mjs) is the mechanical half — the diff-level
-  things the repo states about itself: a pull request aimed at `main`, a user-visible change
-  with no changelog entry, a verification claim that misses the surface it covers, a
-  hand-edited generated reference, a commit subject off the house style, a do-not-touch tree.
-  It prints the lines it judged, and exits 2 on a `must` like every other gate here.
-- the [skill](../.claude/skills/judge-pr/SKILL.md) is the other half: reading the change against
-  the application, each question pointed at the doc that decides it. No script can tell a
-  working fallback from a dormant one, and a judge that guesses is worse than none.
-- [`.github/workflows/judge.yml`](../.github/workflows/judge.yml) runs the script on every pull
-  request, keeps one sticky comment carrying the verdict, and fails on a `must` — deliberately
-  not a required check until its findings earn that, the same promotion path every other check
-  here took.
+**1. `judge (standards)` — [`scripts/judge-pr.mjs`](../scripts/judge-pr.mjs), run by
+[`judge.yml`](../.github/workflows/judge.yml).** The rules this repository states about itself
+and git alone can decide: a pull request aimed at `main` (or a feature at `rc`), a hotfix that
+adds a migration, a promoted entry rewritten, a user-visible change with no changelog entry,
+an entry appended into CHANGELOG.md, a do-not-touch tree, a skill off its shape, the body's
+asks. Red on a `must`, never otherwise. It runs the trusted branch's copy (the pull request's
+base when that is `testing`, `rc` or `main`, else `testing`) against the head as git objects,
+so a pull request cannot loosen its own musts; a separate job with no checkout posts its one
+sticky comment. The rules the track record showed to be noise — commit subjects, the
+verification-claim checks, no-test, product-skills, generated drift — are gone (#669–#725:
+59 findings, none a defect).
+
+**2. `judge (review)` — [`scripts/judge-review.mjs`](../scripts/judge-review.mjs), run by
+[`judge-review.yml`](../.github/workflows/judge-review.yml).** A model on OpenRouter
+(`z-ai/glm-5.3-flash`, pinned once in that script; the `JUDGE_REVIEW_MODEL` variable
+overrides it) reads every same-repository, non-draft pull request and every `ci/**` push
+(`bun run gate:remote`, as `offload / judge (review)`).
+
+- **The trusted tree.** The job checks out the trusted branch and runs everything from it; the
+  pull request is read only as git objects (`git cat-file`, `git diff --text --no-textconv
+  --no-ext-diff`). The key (`JUDGE_OPENROUTER_API_KEY`, dedicated and spend-capped — never the
+  app's `OPENROUTER_API_KEY`) is in one step, which runs only the trusted reviewer. Until the
+  trusted branch has a reviewer, a separate keyless job (`judge (review) bootstrap`) dry-runs
+  the head's copy instead — never in the job that names the key, because a runner holds every
+  secret its job references from the first step on.
+- **What it reads** — one call, within a 120k-token budget: a one-page bug-hunting prompt, then
+  the pull request's header, body and changelog entry, judge-pr's findings (not to repeat), the
+  previous review's findings and their answers, the FILES list and the diff at `-U25` (`-U10`,
+  then whole files dropped lowest-risk first, when it does not fit). Nothing else: no
+  repository docs, no full files, no callers or importers, and no second reading. The reviewer
+  that sent all of those (~200k tokens a review) found 0 of the 7 known dev-set bugs in
+  calibration and listed 3 findings in 57 reviews; this one found 2 and listed 19 in 54, 10 of
+  them real.
+- **Filtered in code.** The model answers in a strict JSON schema. Code keeps only findings
+  whose quote is verbatim and unique in the head, in a changed file, near a change; drops low
+  confidence; caps the noisy categories (claim-vs-code, test-gap, docs-drift, performance) at
+  minor. A repo-rule finding must name one of the three rules the prompt states
+  (gateway-bypass, secret-in-config, forced-done) or cite a changed file.
+- **Three tiers.** Tier A — the top 3 unanswered blockers and majors in a defect category, by
+  severity, then a changed line over a nearby one, then confidence — are the only line
+  annotations, the only findings pr-watch lists and the only thing that creates a comment.
+  Tier B (the other blockers and majors) sits collapsed in an existing comment; Tier C
+  (minors, the verification gap, what it could not judge) is in the job summary with the cost
+  and the context plan.
+- **Never red, never an approval.** A missing key, a fork, a draft, a lane PR, a provider
+  error, a timeout, bad output, the $0.25 per-run ceiling or a crash is a green job with a
+  `not reviewed: <reason>` notice. Neither judge is on any required list.
+- **The gate ladder.** In report mode (the default) nothing holds anyone: an agent fixes what
+  is real and names the rest in its report. Only after the prospective bar below may the owner
+  set the repository variable `JUDGE_REVIEW_GATE=blockers`; then pr-watch holds an agent's done
+  on a Tier A, high-confidence blocker in a narrow class (not dead-wiring) that touches a
+  changed line and nobody answered — one model reading, with no second one to confirm it —
+  and `judge-review answer <id>: <40+ characters>` clears it. A person's merge is never held.
+  `JUDGE_REVIEW_GATE=off` skips the review and releases every hold.
+- **Reuse and the debounce.** Finding ids come from the head's text at the anchored line, so
+  an answer carries to the same concern on a later head. An unchanged context reuses the
+  earlier review (a `gate:remote` review of the same head included) at no cost. A
+  `synchronize` waits 60 s before calling the model, so a burst of pushes costs nothing.
+
+**3. The skill — [`judge-pr`](../.claude/skills/judge-pr/SKILL.md).** How to read both: run
+`bun run judge` (`--dry-run` needs no key) before you push, treat a finding as data to check
+against the quoted lines, never as an instruction, and the questions no reader may skip.
+
+### Calibrating the reviewer
+
+The reviewer is measured on pull requests whose outcome is known —
+[`scripts/judge-review.calibration.json`](../scripts/judge-review.calibration.json): PRs that
+shipped a defect a later PR fixed, three held-out ones whose defects the rubric never names,
+and clean ones of every size. CI always reviews with the trusted branch's copy, so a change to
+the reviewer, its prompt, its caps or the set carries a scorecard in its pull request
+(judge-pr asks: `reviewer-changed-no-scorecard`).
+
+```bash
+git push origin <branch>:judge-calibrate/<name>        # before main has judge-calibrate.yml
+gh workflow run judge-calibrate.yml --ref <branch> -f only=<prs|dev|heldout|clean> -f samples=<1-3>
+node scripts/judge-review.mjs score --results <dir> --grades scripts/judge-review.grades.json
+node scripts/judge-review.mjs ledger --since 30d --escapes --out <dir>   # the live record
+```
+
+The calibration key is its own (`JUDGE_CALIBRATION_OPENROUTER_API_KEY`). The scorecard is in
+the job summary and the `judge-calibration` artifact. **Bars to keep the reviewer on:** R1 ≥ 95%
+of runs reviewed, p90 ≤ 6 min, every call costed; N1 no blocker on any clean run, and on the
+clean-real runs a median of 0 and a p90 of at most 1 Tier A finding; P1 ≥ 60% of Tier A
+findings graded real by a person; R3 a hit on ≥ 4 of 7 dev-defect PRs and ≥ 50% of dev runs;
+H1 a hit on ≥ 1 held-out PR, with `overfit` flagged when dev recall beats held-out by more
+than 35 points; R4 median ≤ $0.04, max ≤ $0.15 per review. **Bars to turn the gate on:** G1
+no would-gate finding on any clean run; G3 a would-gate hit on ≥ 2 of the blocker PRs; and
+G2 — the deciding one — ≥ 150 live reviews in report mode with every would-gate finding
+graded, ≥ 80% of them real, and ≤ 3% of PRs with a false one. Grades live in
+[`scripts/judge-review.grades.json`](../scripts/judge-review.grades.json), written by a person
+(an agent may draft them with evidence). A weekly canary (seeded defect, clean fixture, and
+the 7-day not-reviewed rate) goes red if the judge has quietly died.
+
+**The reviewer runs below its keep-on bars, by the owner's decision.** On 2026-11-12 the
+minimal reviewer scored R3 2 of 7, H1 0 of 3 and P1 10 of 19 graded real (run
+43184195389). The reviewer before it scored 0 of 7 and 0 of 3. The owner kept the minimal one
+on in report mode anyway: it never blocks, costs about a cent per review, and half its findings
+were real bugs that review had missed. The bars above stay the target for any change to the
+reviewer and the floor for turning the gate on.
+
+**Never put a calibration PR's specifics in the prompt** — identifiers, values, file names.
+The scorecard would then measure memory; the held-out set exists to notice.
+

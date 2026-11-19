@@ -2,8 +2,11 @@
 // Sources: managed-container reality (docker), gateway reachability, the token
 // ledger's blind spots (unpriced cloud usage, estimated counts), the background
 // scheduler (failing jobs, and whether it is running at all), the notification
-// outbox (depth, age, breaker, what has been lost), and stuck tickets on boards
-// the requesting user can access.
+// outbox (depth, age, breaker, what has been lost), what each GitHub App
+// installation has accepted (the record talaria-git-hosts keeps — never GitHub
+// itself), the agents given GitHub permissions it has not, a git token revoke
+// GitHub did not confirm, and stuck tickets on boards the requesting user can
+// access.
 //
 // THE RULE THIS FILE IS FOR: anything whose failure mode is SILENCE has to be
 // asked here, because nothing else asks it. A dead container is obvious the
@@ -28,6 +31,7 @@ use talaria_fleet_docker::container_status;
 use talaria_fleet_preflight::last_fleet_preflight;
 use talaria_gateway::budget::group;
 use talaria_gateway::usage::cost_overview;
+use talaria_git_hosts::holdings::{HostHoldings, InstallationRow, STALE_AFTER_MS};
 use talaria_mcp_service::mcp_port;
 use talaria_notify::notification_mail_stats;
 use talaria_retrieval::backfill::rag_health;
@@ -318,6 +322,37 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         && let Some(alert) = mcp_attention_alert(&mcp_servers_needing_attention(pg).await)
     {
         alerts.push(alert);
+    }
+
+    // ── GitHub: what an installation has not accepted, or is unknown ─────────
+    // Admins only, like the MCP line: an org owner approves on GitHub, and an
+    // admin is who knows to ask one. Read from the holdings record the
+    // refresh keeps (talaria-git-hosts), never from GitHub: this runs on
+    // every page load. A permission change nobody has accepted is a token
+    // minted without it, and an installation nobody could read is one whose
+    // pending change shows nowhere — both are silence until someone looks.
+    // Beside them, from the same record and the agents' permissions: an
+    // agent given a GitHub permission the installation has not accepted
+    // carries it on no token, which nothing else says; and a revoke GitHub
+    // did not confirm in the last hour is a token still alive that an admin
+    // meant to take back.
+    if is_admin(pg, user_id).await {
+        match talaria_git_hosts::holdings::recorded_holdings(pg).await {
+            Ok(hosts) => {
+                alerts.extend(git_host_alerts(&hosts, now_ms()));
+                match talaria_git_hosts::permissions::agent_sets(pg).await {
+                    Ok(sets) => alerts.extend(dormant_permissions_alert(
+                        &talaria_git_hosts::permissions::dormant(&hosts, &sets),
+                    )),
+                    Err(e) => tracing::warn!("[alerts] {e}"),
+                }
+            }
+            Err(e) => tracing::warn!("[alerts] {e}"),
+        }
+        match unconfirmed_revokes(pg).await {
+            Ok(n) => alerts.extend(revoke_failed_alert(n)),
+            Err(e) => tracing::warn!("[alerts] token revoke read failed: {e}"),
+        }
     }
 
     // ── Tool plane: a failing tool streak the green dashboards never show ─────
@@ -773,6 +808,181 @@ fn mcp_attention_alert(labels: &[String]) -> Option<Alert> {
     })
 }
 
+/// Where a git host's alert sends an admin: Admin → Git hosts, whose host
+/// card lists each installation's permissions and has the Refresh.
+pub const GIT_HOSTS_HREF: &str = "/admin/git";
+
+/// The GitHub App alerts, from the holdings record alone (`hosts`, as
+/// `recorded_holdings` reads it): one warning naming every installation with
+/// a permission change waiting for an owner of its account, and one naming
+/// every installation whose permissions are unknown — never read, the last
+/// read failed, or the last good read is older than the record trusts. A
+/// cold or broken record is said, never read as "nothing pending".
+pub fn git_host_alerts(hosts: &[HostHoldings], now_ms: i64) -> Vec<Alert> {
+    let mut waiting: Vec<String> = Vec::new();
+    let mut unknown: Vec<String> = Vec::new();
+    for h in hosts {
+        for id in &h.selected {
+            let row = h.rows.iter().find(|r| &r.installation_id == id);
+            let who = |r: Option<&InstallationRow>| match r
+                .map(|r| r.account.as_str())
+                .filter(|a| !a.is_empty())
+            {
+                Some(account) => format!("{account} (installation {id} on {})", h.host.name),
+                None => format!("installation {id} on {}", h.host.name),
+            };
+            let Some(r) = row else {
+                unknown.push(format!("{}: never checked", who(None)));
+                continue;
+            };
+            match (&r.error, r.checked_at_ms) {
+                (Some(e), _) => {
+                    unknown.push(format!("{}: the last check failed ({e})", who(Some(r))))
+                }
+                (None, None) => unknown.push(format!("{}: never checked", who(Some(r)))),
+                (None, Some(at)) if now_ms - at > STALE_AFTER_MS => unknown.push(format!(
+                    "{}: not checked for {} minutes",
+                    who(Some(r)),
+                    minutes(now_ms - at)
+                )),
+                _ => {}
+            }
+            // The last good read's answer stands while a later one fails.
+            let pending = r.pending();
+            if !pending.is_empty() {
+                waiting.push(format!(
+                    "{} has not accepted {pending}{}",
+                    who(Some(r)),
+                    r.html_url
+                        .as_deref()
+                        .map(|u| format!(" (an owner accepts it at {u})"))
+                        .unwrap_or_default()
+                ));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if !waiting.is_empty() {
+        let one = waiting.len() == 1;
+        out.push(Alert {
+            severity: AlertSeverity::Warning,
+            title: if one {
+                "A GitHub App permission change is waiting for org-owner approval on GitHub".into()
+            } else {
+                format!(
+                    "{} GitHub App permission changes are waiting for org-owner approval on GitHub",
+                    waiting.len()
+                )
+            },
+            detail: format!(
+                "{}. The App asks for {}, and until an owner of the account accepts it on GitHub, Talaria mints tokens without it.",
+                waiting.join("; "),
+                if one { "it" } else { "them" }
+            ),
+            href: GIT_HOSTS_HREF,
+        });
+    }
+    if !unknown.is_empty() {
+        out.push(Alert {
+            severity: AlertSeverity::Warning,
+            title: format!(
+                "GitHub permissions unknown for {} installation{}",
+                unknown.len(),
+                if unknown.len() == 1 { "" } else { "s" }
+            ),
+            detail: format!(
+                "{}. Talaria cannot say what {} accepted, so a permission change waiting for an org owner would show nowhere. Press Refresh on the host in Admin → Git hosts; the record is read again every ten minutes.",
+                unknown.join("; "),
+                if unknown.len() == 1 { "it has" } else { "they have" }
+            ),
+            href: GIT_HOSTS_HREF,
+        });
+    }
+    out
+}
+
+/// The alert for agents given a GitHub permission on a host whose
+/// installation has not accepted it (as talaria-git-hosts' `dormant` finds
+/// them): an admin set it in Talaria, and every token of those repos goes
+/// without it until the GitHub App asks for it and an owner of the account
+/// accepts the change on GitHub. Informational: nothing waits on it. None
+/// when there are none.
+pub fn dormant_permissions_alert(
+    dormant: &[talaria_git_hosts::permissions::Dormant],
+) -> Option<Alert> {
+    if dormant.is_empty() {
+        return None;
+    }
+    let mut agents: Vec<&str> = dormant.iter().map(|d| d.agent_id.as_str()).collect();
+    agents.sort_unstable();
+    agents.dedup();
+    let n = agents.len();
+    let each: Vec<String> = dormant
+        .iter()
+        .map(|d| {
+            format!(
+                "{} on {}: {} ({})",
+                d.agent_name,
+                d.host_name,
+                d.missing,
+                d.repos.join(", ")
+            )
+        })
+        .collect();
+    Some(Alert {
+        severity: AlertSeverity::Info,
+        title: if n == 1 {
+            "1 agent holds GitHub permissions the installation has not accepted".into()
+        } else {
+            format!("{n} agents hold GitHub permissions the installation has not accepted")
+        },
+        detail: format!(
+            "{}. An admin gave {} in Talaria, and the tokens of those repos carry the rest without {} until the GitHub App asks for {} and an owner of the account accepts the change on GitHub (Admin → Git hosts names each installation and where to accept it).",
+            each.join("; "),
+            if each.len() == 1 { "it" } else { "them" },
+            if each.len() == 1 { "it" } else { "them" },
+            if each.len() == 1 { "it" } else { "them" }
+        ),
+        href: GIT_HOSTS_HREF,
+    })
+}
+
+/// How many agent git tokens Talaria revoked in the last hour without
+/// GitHub confirming it (`github.token_revoke_failed` rows, each counting
+/// the tokens it names). An installation token lives an hour, so older
+/// ones have expired.
+async fn unconfirmed_revokes(pg: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "select coalesce(sum(coalesce((after->>'failed')::bigint, 1)), 0)::bigint from audit_log \
+         where action = 'github.token_revoke_failed' and created_at > now() - interval '1 hour'",
+    )
+    .fetch_one(pg)
+    .await
+}
+
+/// The alert for tokens revoked without GitHub confirming it: they were
+/// dropped from every cache, but GitHub may still honour them until they
+/// expire. None when there are none.
+pub fn revoke_failed_alert(n: i64) -> Option<Alert> {
+    (n > 0).then(|| Alert {
+        severity: AlertSeverity::Warning,
+        title: if n == 1 {
+            "A GitHub token Talaria revoked was not confirmed revoked".into()
+        } else {
+            format!("{n} GitHub tokens Talaria revoked were not confirmed revoked")
+        },
+        detail: format!(
+            "In the last hour Talaria took back {} from agents whose GitHub access narrowed, and GitHub did not confirm the revoke. Talaria will not hand {} out again, but GitHub may honour {} until {} expire{}, within the hour. The audit trail (github.token_revoke_failed) names the agent.",
+            if n == 1 { "a token" } else { "tokens" },
+            if n == 1 { "it" } else { "them" },
+            if n == 1 { "it" } else { "them" },
+            if n == 1 { "it" } else { "they" },
+            if n == 1 { "s" } else { "" }
+        ),
+        href: GIT_HOSTS_HREF,
+    })
+}
+
 /// Where the unpriced alert sends an admin: the Cost tab's unpriced panel.
 pub const UNPRICED_HREF: &str = "/observability/cost#unpriced";
 
@@ -835,6 +1045,7 @@ async fn probe_mcp() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use talaria_git_hosts::{Level, PermissionSet};
 
     #[test]
     fn the_unpriced_alert_names_the_tokens_and_links_the_panel_that_fixes_them() {
@@ -905,6 +1116,210 @@ mod tests {
         assert!(two.detail.starts_with(
             "A, B. The last health check could not use them, so agents calling their tools"
         ));
+    }
+
+    /// The host row the alert names. Which installations it follows is
+    /// `HostHoldings::selected`, so its config is never read here.
+    fn github_host() -> talaria_git_hosts::HostRow {
+        talaria_git_hosts::HostRow {
+            id: "github".into(),
+            kind: talaria_git_hosts::HostKind::Github,
+            name: "GitHub".into(),
+            base_url: "https://github.com".into(),
+            api_url: None,
+            auth: Default::default(),
+            repo_creation_orgs: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    fn holdings(selected: &[&str], rows: Vec<InstallationRow>) -> HostHoldings {
+        HostHoldings {
+            host: github_host(),
+            selected: selected.iter().map(|s| s.to_string()).collect(),
+            rows,
+        }
+    }
+
+    fn perms(pairs: &[(&str, Level)]) -> PermissionSet {
+        PermissionSet::of(pairs)
+    }
+
+    /// A good read of installation `id`: the App asks for contents and
+    /// metadata, and the installation took both.
+    fn checked(id: &str, account: &str, at: i64) -> InstallationRow {
+        let all = perms(&[("contents", Level::Write), ("metadata", Level::Read)]);
+        InstallationRow {
+            host_id: "github".into(),
+            installation_id: id.into(),
+            account: account.into(),
+            app_permissions: Some(all.clone()),
+            held: Some(all),
+            checked_at_ms: Some(at),
+            ..InstallationRow::default()
+        }
+    }
+
+    const NOW: i64 = 10_000_000_000;
+
+    #[test]
+    fn the_github_alerts_read_the_record_and_a_missing_row_is_unknown() {
+        // 91 was never read (no row); 92 is read and has nothing waiting.
+        let hosts = [holdings(
+            &["91", "92"],
+            vec![checked("92", "beta", NOW - 60_000)],
+        )];
+        let alerts = git_host_alerts(&hosts, NOW);
+        assert_eq!(alerts.len(), 1, "{alerts:?}");
+        assert_eq!(alerts[0].severity, AlertSeverity::Warning);
+        assert_eq!(
+            alerts[0].title,
+            "GitHub permissions unknown for 1 installation"
+        );
+        assert!(
+            alerts[0]
+                .detail
+                .starts_with("installation 91 on GitHub: never checked."),
+            "{}",
+            alerts[0].detail
+        );
+        assert_eq!(alerts[0].href, "/admin/git");
+        // Everything read and accepted: silence is earned, not assumed.
+        let quiet = [holdings(&["92"], vec![checked("92", "beta", NOW - 60_000)])];
+        assert!(git_host_alerts(&quiet, NOW).is_empty());
+        assert!(git_host_alerts(&[], NOW).is_empty());
+    }
+
+    /// The App now asks for workflows too, which acme's owners have not
+    /// accepted.
+    fn asks_for_workflows(mut r: InstallationRow) -> InstallationRow {
+        r.app_permissions = Some(perms(&[
+            ("contents", Level::Write),
+            ("metadata", Level::Read),
+            ("workflows", Level::Write),
+        ]));
+        r
+    }
+
+    #[test]
+    fn a_change_no_owner_accepted_is_named_with_where_to_accept_it() {
+        let mut acme = asks_for_workflows(checked("91", "acme", NOW - 60_000));
+        acme.html_url =
+            Some("https://github.com/organizations/acme/settings/installations/91".into());
+        let alerts = git_host_alerts(&[holdings(&["91"], vec![acme])], NOW);
+        assert_eq!(alerts.len(), 1, "{alerts:?}");
+        assert_eq!(alerts[0].severity, AlertSeverity::Warning);
+        assert_eq!(
+            alerts[0].title,
+            "A GitHub App permission change is waiting for org-owner approval on GitHub"
+        );
+        assert_eq!(
+            alerts[0].detail,
+            "acme (installation 91 on GitHub) has not accepted workflows:write (an owner accepts it at https://github.com/organizations/acme/settings/installations/91). The App asks for it, and until an owner of the account accepts it on GitHub, Talaria mints tokens without it."
+        );
+        assert_eq!(alerts[0].href, "/admin/git");
+    }
+
+    #[test]
+    fn a_failed_or_stale_read_is_unknown_and_its_last_answer_still_counts() {
+        let mut failed = asks_for_workflows(checked("91", "acme", NOW - 60_000));
+        failed.error = Some("GitHub GET /app/installations/91 → 502: Server Error".into());
+        let stale = checked("92", "beta", NOW - STALE_AFTER_MS - 120_000);
+        let alerts = git_host_alerts(&[holdings(&["91", "92"], vec![failed, stale])], NOW);
+        assert_eq!(alerts.len(), 2, "{alerts:?}");
+        // The last good read of 91 still has workflows waiting.
+        assert!(
+            alerts[0]
+                .detail
+                .starts_with("acme (installation 91 on GitHub) has not accepted workflows:write."),
+            "{}",
+            alerts[0].detail
+        );
+        assert_eq!(
+            alerts[1].title,
+            "GitHub permissions unknown for 2 installations"
+        );
+        assert!(
+            alerts[1].detail.contains(
+                "acme (installation 91 on GitHub): the last check failed (GitHub GET /app/installations/91 → 502: Server Error)"
+            ),
+            "{}",
+            alerts[1].detail
+        );
+        assert!(
+            alerts[1]
+                .detail
+                .contains("beta (installation 92 on GitHub): not checked for 32 minutes"),
+            "{}",
+            alerts[1].detail
+        );
+    }
+
+    #[test]
+    fn agents_given_what_the_installation_has_not_accepted_are_named_with_their_repos() {
+        use talaria_git_hosts::permissions::Dormant;
+        assert!(dormant_permissions_alert(&[]).is_none());
+        let wf = perms(&[("workflows", Level::Write)]);
+        let dormant = |agent: &str, name: &str, repos: &[&str]| Dormant {
+            agent_id: agent.into(),
+            agent_name: name.into(),
+            host_id: "github".into(),
+            host_name: "GitHub".into(),
+            missing: wf.clone(),
+            repos: repos.iter().map(|r| r.to_string()).collect(),
+        };
+        let one = dormant_permissions_alert(&[dormant("a1", "Billy", &["acme/site"])]).unwrap();
+        assert_eq!(
+            one.severity,
+            AlertSeverity::Info,
+            "informational: nothing waits on it"
+        );
+        assert_eq!(
+            one.title,
+            "1 agent holds GitHub permissions the installation has not accepted"
+        );
+        assert!(
+            one.detail
+                .starts_with("Billy on GitHub: workflows:write (acme/site)."),
+            "{}",
+            one.detail
+        );
+        assert_eq!(one.href, "/admin/git");
+        let two = dormant_permissions_alert(&[
+            dormant("a1", "Billy", &["acme/site"]),
+            dormant("a2", "Ana", &["acme/app", "acme/api"]),
+        ])
+        .unwrap();
+        assert_eq!(
+            two.title,
+            "2 agents hold GitHub permissions the installation has not accepted"
+        );
+        assert!(
+            two.detail
+                .contains("Ana on GitHub: workflows:write (acme/app, acme/api)")
+        );
+    }
+
+    #[test]
+    fn a_revoke_github_did_not_confirm_is_said_until_its_token_has_expired() {
+        assert!(revoke_failed_alert(0).is_none());
+        let one = revoke_failed_alert(1).unwrap();
+        assert_eq!(
+            one.title,
+            "A GitHub token Talaria revoked was not confirmed revoked"
+        );
+        assert!(one.detail.contains("until it expires"), "{}", one.detail);
+        let three = revoke_failed_alert(3).unwrap();
+        assert_eq!(
+            three.title,
+            "3 GitHub tokens Talaria revoked were not confirmed revoked"
+        );
+        assert!(
+            three.detail.contains("until they expire,"),
+            "{}",
+            three.detail
+        );
     }
 
     #[test]

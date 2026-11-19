@@ -32,6 +32,7 @@ Bun is the runner for the whole repo (the root `package.json` is the hub):
 | `bun run api` | the Rust api (`cargo run`, :5274) |
 | `bun run check` | invariants + doc links + generated-reference drift — seconds, **needs no install** |
 | `bun run gate:remote` | compile + test on GitHub before a PR exists: pushes HEAD to `ci/<branch>`, reports the first red job with its log — run it in the background (`--full` adds macOS/Windows/iOS/e2e) |
+| `bun run judge` | the PR judge on your branch — judge-pr's checks plus the model review (needs `JUDGE_OPENROUTER_API_KEY`; without it, `bun run gate:remote` reviews the branch on GitHub) |
 | `bun run gate` | local scoped compile — only to reproduce one failure CI reported |
 | `bun run api:check` | fmt + clippy `-D warnings` + cargo tests — CI's api job; never local |
 | `bun run desktop` | Talaria Desktop (`tauri dev`) — run on the **host**, never in a box (no display); `docs/DESKTOP.md` |
@@ -52,7 +53,7 @@ toolkit `57xx`, omp auth `58xx`, agent gateways from `20000 + slot·100`).
 
 Distilled from [`CONTRIBUTING.md`](./CONTRIBUTING.md) — the full text is the contract:
 
-- Everything through the Talaria gateway — never wire an agent at a raw provider endpoint.
+- Everything through the Talaria gateway — never wire an agent at a raw provider endpoint (repo tooling such as the CI judge is not an agent).
 - **Pull requests target `testing`.** testing is the integration lane: light CI, and every
   push deploys to the testing instance. Merge your own PR into testing once
   `scripts/hooks/pr-watch.mjs` is green (`gh pr merge <n> --merge --admin` — it bypasses the
@@ -119,7 +120,7 @@ situation matches.
 | [`dev-loop`](./.claude/skills/dev-loop/SKILL.md) | starting or restarting the stack, choosing worktree vs devbox, seeding data, or deciding which command verifies which surface |
 | [`repo-traps`](./.claude/skills/repo-traps/SKILL.md) | a change that should work fails oddly — a 500, a zombie port, docker DNS, or an API test that needs auth |
 | [`ship-a-change`](./.claude/skills/ship-a-change/SKILL.md) | a change is code-complete: gates, changelog, the PR against `testing`, the merge, testing-watch — do not claim done on red, pending, or a conflict |
-| [`judge-pr`](./.claude/skills/judge-pr/SKILL.md) | a pull request is being reviewed: the diff-level checks (`scripts/judge-pr.mjs`) and the reading no script can do |
+| [`judge-pr`](./.claude/skills/judge-pr/SKILL.md) | a pull request is being reviewed, or a `judge (review)` finding needs reading |
 | [`cut-release`](./.claude/skills/cut-release/SKILL.md) | cutting an RC or stable release, or diagnosing why a channel or image tag didn't move |
 | [`cleanup`](./.claude/skills/cleanup/SKILL.md) | before claiming a task done — remove the local workspace it created; also when the stop gate blocks on disk pressure or stale artifacts |
 

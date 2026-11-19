@@ -373,7 +373,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](..
 > /api/fleet/defs/{id}/google — who this agent acts as on Google, and the
 > connect/disconnect control for a per-agent identity.
 >
-> GET    → the registry row (or the legacy fallback) plus connection face
+> GET    → the registry row (or the legacy fallback) plus connection face:
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -395,7 +395,7 @@ Source: [`api/crates/talaria-routes-fleet/src/fleet/fleet_defs_id_google.rs`](..
 > /api/fleet/defs/{id}/google — who this agent acts as on Google, and the
 > connect/disconnect control for a per-agent identity.
 >
-> GET    → the registry row (or the legacy fallback) plus connection face
+> GET    → the registry row (or the legacy fallback) plus connection face:
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |

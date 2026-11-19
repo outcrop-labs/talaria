@@ -1437,8 +1437,8 @@ async fn hygiene_step(pg: &PgPool, agent_id: &str) -> Option<String> {
                     .map(|p| format!(" under \"{p}\""))
                     .unwrap_or_default();
                 out.push_str(&format!(
-                    "   - {}: branch{} off {base}; never push {base} — push your branch and \
-                     open a PR against {base}.{env_note}\n",
+                    "   - {}: branch{} off {base}; never push {base} — push your branch; \
+                     `finish_job` opens the PR against {base}.{env_note}\n",
                     r.repo, prefix
                 ));
             }

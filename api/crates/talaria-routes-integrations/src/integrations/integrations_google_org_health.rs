@@ -1,8 +1,9 @@
 // GET /api/integrations/google/org/health — live probe of Drive / Calendar /
-// Gmail with the org connection's token. Admin-only, and
-// deliberately a separate route from the org status read: it makes three real
+// Gmail / Sheets / Slides with the org connection's token. Admin-only, and
+// deliberately a separate route from the org status read: it makes five real
 // Google calls and must only run when an admin asks for it, not on every
-// panel load.
+// panel load. A disabled API's `detail` is Google's own sentence and its
+// `consoleUrl` the activation page Google named for the project.
 
 use axum::Json;
 use axum::extract::State;

@@ -9,7 +9,10 @@
 //
 // THE CONTRACT for a test file here: stdlib only (`bun run check` needs no
 // install), no network, exit 0 on a pass and non-zero on a failure, saying
-// what failed. Each runs with this process's own runtime (bun under `bun run
+// what failed. No test ever sees a model key: each runs with
+// JUDGE_OPENROUTER_API_KEY, JUDGE_CALIBRATION_OPENROUTER_API_KEY and
+// OPENROUTER_API_KEY stripped and JUDGE_REVIEW_OFFLINE=1, so the reviewer
+// (scripts/judge-review.mjs) refuses the network even if a test forgot to. Each runs with this process's own runtime (bun under `bun run
 // check`), from the repo root, with inherited output, one after another, in
 // sorted order. Not recursive: fixtures directories hold no tests.
 
@@ -32,9 +35,16 @@ if (files.length === 0) {
   process.exit(1)
 }
 
+/** This process's environment without a model key, and offline. */
+export function childEnv(env = process.env) {
+  const out = { ...env }
+  for (const k of ['JUDGE_OPENROUTER_API_KEY', 'JUDGE_CALIBRATION_OPENROUTER_API_KEY', 'OPENROUTER_API_KEY']) delete out[k]
+  return { ...out, JUDGE_REVIEW_OFFLINE: '1' }
+}
+
 const failed = []
 for (const file of files) {
-  const r = spawnSync(process.execPath, [join(ROOT, file)], { cwd: ROOT, stdio: 'inherit' })
+  const r = spawnSync(process.execPath, [join(ROOT, file)], { cwd: ROOT, stdio: 'inherit', env: childEnv() })
   if (r.error || r.status !== 0) {
     failed.push(r.error ? `${file} (${r.error.message})` : `${file} (exit ${r.status ?? r.signal})`)
   }

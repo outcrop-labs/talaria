@@ -82,7 +82,10 @@ A behaviour change with no test that would catch its regression is a review conv
 ## The rules that aren't style
 
 - **Everything through Talaria.** Agent LLM and persona chat route through the gateway —
-  guarded, metered, observable. Don't wire agents at raw provider endpoints.
+  guarded, metered, observable. Don't wire agents at raw provider endpoints. Repo tooling is
+  not an agent: the pull-request judge (`scripts/judge-review.mjs`) calls OpenRouter directly
+  with its own spend-capped CI key, `JUDGE_OPENROUTER_API_KEY` — never the app's
+  `OPENROUTER_API_KEY`.
 - **Secrets in the DB, never in configs.** Envelope-encrypted in Postgres; a config file
   never holds a live credential ([`docs/ENCRYPTION.md`](./docs/ENCRYPTION.md)).
 - **Keep the guardrails.** Agents create and triage, but they can't self-assign or

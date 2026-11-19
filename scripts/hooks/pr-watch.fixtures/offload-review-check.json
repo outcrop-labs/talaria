@@ -1,0 +1,10 @@
+{
+  "__typename": "CheckRun",
+  "name": "offload / judge (review)",
+  "workflowName": "judge review",
+  "status": "IN_PROGRESS",
+  "conclusion": "",
+  "startedAt": "2026-11-11T10:00:00Z",
+  "completedAt": null,
+  "detailsUrl": "https://github.com/outcrop-labs/talaria/actions/runs/990/job/991"
+}

@@ -84,6 +84,14 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
     // An access request's outcome — the request was yours, but the
     // notification is news, not a door.
     ("board_access", "work_complete", "Access decided"),
+    // A GitHub permission an agent you manage asked for was decided (or
+    // GitHub started to hold one an admin approved): news about the agent,
+    // not a door — the decision is made.
+    (
+        "git_permission_decided",
+        "work_complete",
+        "GitHub permission decided",
+    ),
     // A Google principal for an agent was provisioned: an agent now reads
     // your mail, calendar and Drive. A security notice about YOUR account,
     // never the quiet outcome bucket the fall-through used to put it in
@@ -487,6 +495,8 @@ mod tests {
             // An access request's outcome — news, not a door. Explicit so the
             // quiet bucket is a decision here, not the fall-through's default.
             ("board_access", "work_complete"),
+            // A GitHub permission decided for an agent you manage: news too.
+            ("git_permission_decided", "work_complete"),
             // A security notice about your own account (SE-14), never the
             // quiet outcome bucket wave 1's fall-through put it in.
             ("agent_google_principal", "account"),
