@@ -6,7 +6,14 @@
   import { untrack } from 'svelte'
   import { createQuery, keepPreviousData, useQueryClient } from '@tanstack/svelte-query'
   import type { TabItem } from '@/components/ui/tabs'
-  import { fromLineage, lineageRewinding, rewindConfirm, runIsLive, type RewindRow } from '@/lib/agent-checkpoints'
+  import {
+    fromLineage,
+    lineageRewinding,
+    refreshNotice,
+    rewindConfirm,
+    runIsLive,
+    type RewindRow,
+  } from '@/lib/agent-checkpoints'
   import { getJson } from '@/lib/fetch-json'
   import {
     readRunLineage,
@@ -160,6 +167,8 @@
     else if (ledger.isSuccess) lastLedgerError = null
   })
   const ledgerError = $derived(ledger.data === undefined ? (ledger.isError ? ledger.error : lastLedgerError) : null)
+  // A failed poll over rows that loaded keeps the rows and says so, quietly.
+  const ledgerStale = $derived(refreshNotice(ledger))
   const retryLedger = () => {
     lastLedgerError = null
     void ledger.refetch()
@@ -361,6 +370,7 @@
             {/snippet}
             {#snippet children(data)}
               {@const rewinds = rewindsOf(data)}
+              {#if ledgerStale}<p role="status" class="mb-2 font-sans text-[11px] leading-4 text-muted">{ledgerStale}</p>{/if}
               <AgentCheckpoints
                 checkpoints={fromLineage(data.attempts, rewinds)}
                 live={data.attempts.some((a) => runIsLive(a.state))}
