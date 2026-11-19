@@ -97,7 +97,8 @@
 
   <div class="mb-3 flex min-h-[30px] items-center">
     {#if fits}
-      <Segmented variant="solid" voice="sans" size="xs" class="bg-lane" options={VIEWS} value={selectedKey ? layout : view} onChange={choose} />
+      <!-- The sans voice's sm size at 2px less padding: 13px labels on the Inbox's 24px switch. -->
+      <Segmented variant="solid" voice="sans" size="sm" class="bg-lane [&>button]:py-0.5" options={VIEWS} value={selectedKey ? layout : view} onChange={choose} />
     {:else}
       <p class="px-2 font-sans text-[13px] leading-5 text-muted">List view · the board needs a wider window</p>
     {/if}

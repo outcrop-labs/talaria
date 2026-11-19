@@ -1,13 +1,19 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import RowStatus from '@/components/admin/RowStatus.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
   import CopyButton from '@/components/ui/CopyButton.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
+  import Disclosure from '@/components/ui/Disclosure.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { errorMessage, getJson, postJson, putJson } from '@/lib/fetch-json'
   import { relativeTime } from '@/lib/fleet'
 
@@ -45,6 +51,7 @@
   }
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   // `kicked` is local: it remembers that THIS browser pressed Update, so the
   // polling keeps going through the cutover itself — the edge keeps serving,
   // but the drain is a real (brief) window of failed requests, and the query
@@ -134,7 +141,7 @@
     const ok = await confirm({
       title: 'Take over updates?',
       message:
-        'Talaria becomes its own deployer: it pulls its image, brings itself up beside this container, and an edge takes this port the moment the old container releases it — a one-time cut of a few seconds while traffic moves. Every update after this rolls with no interruption at all.',
+        'Talaria starts installing its own updates. The first handover interrupts traffic once, for a few seconds. Every update after that installs with no interruption.',
       confirmLabel: 'Take over',
     })
     if (!ok) return
@@ -159,7 +166,7 @@
     const ok = await confirm({
       title: 'Finish the handover?',
       message:
-        'The old container stops and the handover lands. Traffic is already arriving through the edge — this page loaded through it.',
+        'The old version stops and the handover is complete. Traffic already arrives through the new front door, which is how this page loaded.',
       confirmLabel: 'Finish',
     })
     if (!ok) return
@@ -197,6 +204,7 @@
     error = null
     try {
       await putJson<{ autoUpdate: boolean }>('/api/admin/updates', { autoUpdate: on })
+      autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     }
@@ -207,7 +215,7 @@
     const ok = await confirm({
       title: 'Generate a deploy key?',
       message:
-        'The key authorizes the deploy script (check, apply, roll back) without a session. It is shown once and stored as a hash — copy it now or mint a new one later.',
+        'The key lets a deploy script check, update and roll back without signing in. It is shown once and only a hash is stored, so copy it now or generate a new one later.',
       confirmLabel: 'Generate',
     })
     if (!ok) return
@@ -235,155 +243,185 @@
       : false,
   )
   const canRollBack = $derived(status?.migrated === true && status.lastRun?.state === 'done')
+
+  const checkItem = (label: string): ContextMenuEntry => ({ label, disabled: busy !== null, onSelect: () => void check() })
+  const rollbackItems = $derived.by((): ContextMenuEntry[] =>
+    canRollBack
+      ? [{ label: `Roll back to ${status?.lastRun?.from.version}`, disabled: busy !== null, onSelect: () => void rollback() }]
+      : [],
+  )
+  const RUN_WORD: Record<RunRecord['state'], string> = {
+    pulling: 'Downloading',
+    starting: 'Starting',
+    'cutting-over': 'Switching over',
+    done: 'Updated',
+    failed: 'Failed',
+    'rolled-back': 'Rolled back',
+  }
 </script>
 
-<Panel>
-  <SectionHeader
-    title="Updates"
-    info="Keep this Talaria current from right here. An update rolls: the new container comes up beside the live one, takes traffic once healthy, and the old one drains. No server shell needed."
-  />
+{#snippet working(text: string, detail: string)}
+  <SettingsRow label={text} hint={detail}>
+    {#snippet lead()}<span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[var(--theme-accent)]"></span>{/snippet}
+  </SettingsRow>
+{/snippet}
 
-  <QueryState query={query} errorTitle="Could not load update status" errorVariant="inline">
-    {#snippet skeleton()}<Skeleton class="h-4 w-64" />{/snippet}
-    {#snippet children(status)}
-    <div class="space-y-3">
-      {#if status.mode !== 'image'}
-        <!-- The engine's own refusal sentence IS the panel text — checkout,
-             dev, and off installs get the truth about why there are no
-             buttons here, straight from the api that would refuse them. -->
-        <p class="text-sm text-muted">{status.sentence}</p>
-      {:else if running}
-        <div class="flex items-center gap-2 text-sm text-fg">
-          <span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[var(--theme-accent)]"></span>
-          Rolling out {status.lastRun?.to.version}. Traffic moves once the new container is healthy.
-        </div>
-        {#if status.adoption?.stage === 'edge-pending'}
-          <p class="text-xs text-muted">
-            The edge is not up on port {status.adoption.edgePort} yet — still starting, or a start
-            that failed. Retry below; if it keeps pending, inspect the edge container on the host.
-          </p>
-          <div>
-            <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void retryEdge()}>
-              {busy === 'adopt' ? 'Retrying...' : 'Retry the edge'}
-            </Button>
-          </div>
-        {:else if status.adoption?.stage === 'edge-ready'}
-          <p class="text-xs text-muted">
-            The edge is up on port {status.adoption.edgePort} — traffic moves when the proxy points at it.
-          </p>
-          <div>
-            <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void finishAdoption()}>
-              {busy === 'adopt' ? 'Finishing...' : 'Finish the handover'}
-            </Button>
-          </div>
-        {/if}
-      {:else if kicked}
-        <!-- Requests are failing against a drain in flight: the honest line
-             is the cutover, not an error card. -->
-        <div class="flex items-center gap-2 text-sm text-fg">
-          <span class="h-2 w-2 shrink-0 animate-pulse rounded-full bg-[var(--theme-accent)]"></span>
-          Moving traffic to the new container. Hang tight.
-        </div>
-      {:else}
-        <p class="text-sm text-muted">
-          Running
-          <span class="font-mono text-[13px] text-fg">{status.running.version ?? 'a local build'}</span>
-          {#if status.running.slot}<span class="whitespace-nowrap">(slot {status.running.slot})</span>{/if}
-        </p>
-        {#if !status.migrated}
-          <!-- Every install starts here: the engine ships dormant, and
-               deploys keep flowing through the orchestrator exactly as they
-               always have until an admin adopts the update engine. -->
-          <p class="text-sm text-muted">
-            This install deploys the way it always has — the in-app rolling updater takes over only after an admin adopts it.
-          </p>
-          <div class="flex items-center gap-2">
-            <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void adopt()}>
-              {busy === 'adopt' ? 'Taking over...' : 'Take over updates'}
-            </Button>
-            <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void check()}>
-              {busy === 'check' ? 'Checking...' : 'Check for updates'}
-            </Button>
-          </div>
-        {:else if upToDate}
-          <div class="flex items-center gap-2">
-            <p class="text-sm text-muted">You're up to date.</p>
-            <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void check()}>
-              {busy === 'check' ? 'Checking...' : 'Check again'}
-            </Button>
-          </div>
-        {:else if status.available}
-          <p class="text-sm text-fg">
-            <span class="font-mono text-[13px]">{status.available.version}</span> is available.
-          </p>
-          <div class="flex items-center gap-2">
-            <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void apply()}>
-              {busy === 'apply' ? 'Starting...' : 'Update now'}
-            </Button>
-            <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void check()}>
-              {busy === 'check' ? 'Checking...' : 'Check again'}
-            </Button>
-          </div>
-        {:else}
-          <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void check()}>
-            {busy === 'check' ? 'Checking...' : 'Check for updates'}
-          </Button>
-        {/if}
-      {/if}
+<!-- Declared out here because the rows below sit where `status` is the update
+     state, and a `status` snippet inside them would shadow it. -->
+{#snippet versionStatus()}
+  {#if busy === 'check'}
+    <RowStatus status="idle">Checking</RowStatus>
+  {:else if status?.migrated && status.available && !upToDate}
+    <RowStatus status="warn">Update available</RowStatus>
+  {:else if status?.migrated && upToDate}
+    <RowStatus status="ok">Up to date</RowStatus>
+  {:else if status?.migrated}
+    <RowStatus status="idle">Not checked</RowStatus>
+  {/if}
+{/snippet}
+{#snippet deployKeyStatus()}
+  {#if busy === 'mint'}
+    <RowStatus status="idle">Generating</RowStatus>
+  {:else}
+    <RowStatus status={status?.machineKeySet ? 'ok' : 'idle'}>{status?.machineKeySet ? 'Set' : 'Not set'}</RowStatus>
+  {/if}
+{/snippet}
 
-      {#if status.lastCheck?.error && !running}
-        <p class="text-sm text-danger">{status.lastCheck.error}</p>
-      {/if}
-
-      {#if status.mode === 'image' && status.migrated && !running}
-        <div class="border-t border-line pt-3">
-          <Checkbox checked={status.autoUpdate} onChange={(v) => void setAuto(v)} label="Update automatically" />
-          <p class="mt-1 text-xs text-muted">
-            Checks every few hours and rolls updates out on its own. Off by default.
-          </p>
-        </div>
-        {#if canRollBack}
-          <div class="border-t border-line pt-3">
-            <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void rollback()}>
-              {busy === 'rollback' ? 'Rolling back...' : `Roll back to ${status.lastRun?.from.version}`}
-            </Button>
-          </div>
-        {/if}
-      {/if}
-
-      {#if status.mode === 'image'}
-        <div class="border-t border-line pt-3">
-          {#if mintedKey}
-            <p class="text-xs text-muted">Deploy key (shown once — copy it now):</p>
-            <div class="mt-1 flex items-center gap-2">
-              <code class="break-all rounded bg-muted px-2 py-1 font-mono text-xs">{mintedKey}</code>
-              <CopyButton value={mintedKey} title="Copy key" />
-            </div>
+<SettingsSection
+  title="Updates"
+  description="Keep this Talaria current without touching the server."
+  info="An update starts the new version beside the running one, moves traffic to it once it is healthy, and then stops the old one, so nobody is interrupted."
+>
+  <div class="space-y-3">
+    <SettingsGroup>
+      <QueryState query={query} errorTitle="Could not load update status" errorVariant="compact">
+        {#snippet skeleton()}
+          <SettingsRow label="Version"><Skeleton class="h-8 w-28" /></SettingsRow>
+        {/snippet}
+        {#snippet children(status)}
+          {#if status.mode !== 'image'}
+            <!-- The engine's own refusal sentence IS the row text — checkout,
+                 dev, and off installs get the truth about why there are no
+                 buttons here, straight from the api that would refuse them. -->
+            <SettingsRow label="Updates are not managed here" hint={status.sentence ?? undefined} />
+          {:else if running}
+            {@render working(`Updating to ${status.lastRun?.to.version ?? 'the new version'}`, 'Traffic moves once the new version is healthy.')}
+            {#if status.adoption?.stage === 'edge-pending'}
+              <SettingsRow
+                label="The front door has not started"
+                hint={`Nothing is answering on port ${status.adoption.edgePort} yet. If retrying does not help, check its container on the server.`}
+              >
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void retryEdge()}>
+                  {busy === 'adopt' ? 'Retrying' : 'Retry'}
+                </Button>
+              </SettingsRow>
+            {:else if status.adoption?.stage === 'edge-ready'}
+              <SettingsRow
+                label="Ready to hand over"
+                hint={`The front door is up on port ${status.adoption.edgePort}. Traffic moves when your proxy points at it.`}
+              >
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void finishAdoption()}>
+                  {busy === 'adopt' ? 'Finishing' : 'Finish the handover'}
+                </Button>
+              </SettingsRow>
+            {/if}
+          {:else if kicked}
+            <!-- Requests are failing against a drain in flight: the honest line
+                 is the cutover, not an error card. -->
+            {@render working('Moving traffic to the new version', 'This page follows along on its own.')}
           {:else}
-            <div class="flex items-center gap-2">
-              <Button size="sm" variant="ghost" disabled={busy !== null} onclick={() => void mint()}>
-                {busy === 'mint' ? 'Generating...' : status.machineKeySet ? 'Regenerate deploy key' : 'Generate deploy key'}
-              </Button>
-            </div>
-            <p class="mt-1 text-xs text-muted">
-              For the deploy script (header <code class="font-mono">x-talaria-key</code>): check, apply, roll back — no session. Stored as a hash.
-            </p>
+            <SettingsRow label="Version" status={versionStatus}>
+              {#snippet meta()}
+                <code class="shrink-0 font-mono text-xs text-muted">{status.running.version ?? 'local build'}</code>
+              {/snippet}
+              {#snippet hint()}
+                {#if !status.migrated}
+                  <!-- Every install starts here: the engine ships dormant, and
+                       deploys keep flowing through the orchestrator exactly as
+                       they always have until an admin adopts the update engine. -->
+                  This install is still updated from the server. Take over to update it from here.
+                {:else if upToDate}
+                  Nothing newer is out.
+                {:else if status.available}
+                  Version <span class="font-mono text-xs text-fg">{status.available.version}</span> is ready to install.
+                {:else}
+                  Check for updates from the menu to see whether a newer version is out.
+                {/if}
+              {/snippet}
+              {#if !status.migrated}
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void adopt()}>
+                  {busy === 'adopt' ? 'Taking over' : 'Take over updates'}
+                </Button>
+                <SettingsRowMenu label="More update actions" items={[checkItem('Check for updates')]} />
+              {:else if status.available && !upToDate}
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void apply()}>
+                  {busy === 'apply' ? 'Starting' : 'Update now'}
+                </Button>
+                <SettingsRowMenu label="More update actions" items={[checkItem('Check again'), ...rollbackItems]} />
+              {:else}
+                <!-- Nothing to install, so checking is a menu item and the
+                     status says where things stand. -->
+                <SettingsRowMenu label="More update actions" items={[checkItem(upToDate ? 'Check again' : 'Check for updates'), ...rollbackItems]} />
+              {/if}
+            </SettingsRow>
           {/if}
-        </div>
-      {/if}
 
-      {#if status.lastRun?.state === 'failed' && status.lastRun.error}
-        <p class="text-sm text-danger">{status.lastRun.error}</p>
-      {:else if status.lastRun?.finishedAt}
-        <p class="text-xs text-muted">
-          {status.lastRun.state === 'rolled-back' ? 'Rolled back' : 'Last updated'} {relativeTime(status.lastRun.finishedAt)}.
-        </p>
-      {/if}
+          {#if status.mode === 'image' && status.migrated && !running}
+            <SettingsRow label="Update automatically" hint="Checks every few hours and installs updates on its own." saved={autosave.saved()}>
+              <Toggle title="Update automatically" checked={status.autoUpdate} onChange={(v) => void setAuto(v)} />
+            </SettingsRow>
+          {/if}
 
+          {#if status.mode === 'image'}
+            <SettingsRow
+              label="Deploy key"
+              hint="Lets a deploy script check, update and roll back without signing in."
+              info="The script sends it in the x-talaria-key header. Only a hash is stored, so the key is shown once. Generate a new one if you lose it."
+              status={deployKeyStatus}
+            >
+              <!-- A deploy key is optional, so making one is a menu item
+                   whether or not one is set. -->
+              <SettingsRowMenu
+                label="Actions for the deploy key"
+                items={[{ label: status.machineKeySet ? 'Regenerate key' : 'Generate key', disabled: busy !== null, onSelect: () => void mint() }]}
+              />
+            </SettingsRow>
+            {#if mintedKey}
+              <SettingsRow label="Copy your deploy key now" hint="It will not be shown again." stacked>
+                <code class="min-w-0 flex-1 break-all rounded-md border border-line bg-surface px-3 py-2 font-mono text-xs text-fg">{mintedKey}</code>
+                <CopyButton value={mintedKey} label="Copy" title="Copy key" />
+              </SettingsRow>
+            {/if}
+          {/if}
+
+          {#if status.lastCheck?.error && !running}
+            <p class="px-5 py-3 font-sans text-[13px] leading-5 text-danger">{status.lastCheck.error}</p>
+          {/if}
+          {#if status.lastRun?.state === 'failed' && status.lastRun.error}
+            <p class="px-5 py-3 font-sans text-[13px] leading-5 text-danger">{status.lastRun.error}</p>
+          {/if}
+        {/snippet}
+      </QueryState>
       {#if error}
-        <p class="text-sm text-danger">{error}</p>
+        <p class="px-5 py-3 font-sans text-[13px] leading-5 text-danger">{error}</p>
       {/if}
-    </div>
-    {/snippet}
-  </QueryState>
-</Panel>
+    </SettingsGroup>
+
+    {#if status?.history.length}
+      <Disclosure title="Update history" variant="card">
+        <ul class="space-y-2 font-sans text-[13px] leading-5">
+          {#each status.history as run (run.startedAt)}
+            <li class="grid grid-cols-[minmax(0,1fr)_8rem_6rem_5rem] items-center gap-4">
+              <span class="truncate font-mono text-xs text-fg">{run.from.version} → {run.to.version}</span>
+              <span class={run.state === 'failed' ? 'text-danger' : 'text-muted'} title={run.error ?? undefined}>{RUN_WORD[run.state]}</span>
+              <span class="text-muted">{run.by === 'auto' ? 'Automatic' : 'By an admin'}</span>
+              <span class="text-right tabular-nums text-muted" title={new Date(run.startedAt).toLocaleString()}>
+                {relativeTime(run.finishedAt ?? run.startedAt)}
+              </span>
+            </li>
+          {/each}
+        </ul>
+      </Disclosure>
+    {/if}
+  </div>
+</SettingsSection>

@@ -15,8 +15,8 @@
   // completion event.
   import { CircleAlert } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
   import { slide } from '@/lib/motion'
   import { retryFleetHire, type AgentHire } from '@/lib/fleet-defs'
@@ -46,29 +46,28 @@
 </script>
 
 {#if live.length > 0 || failed.length > 0}
-  <div transition:slide={{ duration: 150 }} class="space-y-3">
-    <Panel class="divide-y divide-line">
+  <div transition:slide={{ duration: 150 }}>
+    <SettingsGroup>
       {#each live as h (h.id)}
-        <div class="flex items-center gap-3 px-4 py-3">
+        <div class="flex min-h-[52px] items-center gap-3 px-5 py-3">
           <WaitingMark site="fleet/agent-hire" size={12} class="shrink-0 text-accent" />
-          <span class="truncate font-medium">{h.name}</span>
-          <span class="truncate font-sans text-xs text-muted">{h.phase || 'queued'}</span>
-          <span class="ml-auto shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">hiring</span>
+          <span class="shrink-0 font-sans text-sm font-medium leading-5 text-fg">Hiring {h.name}</span>
+          <span class="min-w-0 truncate font-sans text-[13px] leading-5 text-muted">{h.phase || 'Queued'}</span>
         </div>
       {/each}
       {#each failed as h (h.id)}
-        <div class="flex items-start gap-3 px-4 py-3">
-          <CircleAlert size={14} class="mt-0.5 shrink-0 text-danger" />
-          <span class="shrink-0 font-medium">{h.name}</span>
-          <span class="min-w-0 text-sm text-danger">
-            {h.error ?? 'the hire failed'}
-            {#if retryErr[h.id]}<span class="mt-1 block text-xs text-muted">{retryErr[h.id]}</span>{/if}
-          </span>
-          <Button variant="outline" size="xs" class="ml-auto shrink-0" disabled={retrying !== null} onclick={() => void retry(h)}>
+        <div class="flex min-h-[52px] items-start gap-3 px-5 py-3">
+          <CircleAlert size={16} class="mt-0.5 shrink-0 text-danger" />
+          <div class="min-w-0 flex-1">
+            <div class="font-sans text-sm font-medium leading-5 text-fg">{h.name} was not hired</div>
+            <div class="font-sans text-[13px] leading-5 text-danger">{h.error ?? 'The hire failed'}</div>
+            {#if retryErr[h.id]}<div class="font-sans text-[13px] leading-5 text-muted">{retryErr[h.id]}</div>{/if}
+          </div>
+          <Button variant="outline" size="sm" class="shrink-0" disabled={retrying !== null} onclick={() => void retry(h)}>
             {retrying === h.id ? 'Retrying' : 'Retry'}
           </Button>
         </div>
       {/each}
-    </Panel>
+    </SettingsGroup>
   </div>
 {/if}

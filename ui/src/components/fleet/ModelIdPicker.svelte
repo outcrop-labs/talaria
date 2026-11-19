@@ -2,6 +2,7 @@
   import Combobox from '@/components/ui/Combobox.svelte'
   import type { ComboOption } from '@/components/ui/combobox'
   import type { ControlSize } from '@/components/ui/control'
+  import { useModelNames } from '@/components/models/model-names.svelte'
 
   // The searchable picker for a BARE model id — "which model runs this"
   // wherever a setting names one id from a list (slot assignments, workbench
@@ -45,10 +46,17 @@
   // The current pick stays selectable after it leaves the list — the trigger
   // would otherwise show a value the menu refuses to re-choose — labelled so
   // the staleness is legible. Same rule as ModelPicker.
+  //
+  // A model the catalog names leads with that name and keeps its id as the
+  // second line, so a search still finds it by either.
+  const modelName = useModelNames()
   const options = $derived.by(() => {
     const opts: ComboOption[] = emptyLabel ? [{ value: '', label: emptyLabel, sub: emptySub }] : []
-    if (value && !models.includes(value)) opts.push({ value, label: value, sub: 'no longer listed' })
-    for (const m of models) opts.push({ value: m, label: m })
+    if (value && !models.includes(value)) opts.push({ value, label: modelName(value) ?? value, sub: 'No longer listed' })
+    for (const m of models) {
+      const name = modelName(m)
+      opts.push({ value: m, label: name ?? m, sub: name ? m : undefined })
+    }
     return opts
   })
 </script>

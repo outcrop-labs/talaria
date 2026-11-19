@@ -1,8 +1,15 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+  import NoticeRow from '@/components/admin/NoticeRow.svelte'
+  import RowStatus from '@/components/admin/RowStatus.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Input from '@/components/ui/Input.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { repoKey, type HostRepo } from './git-hosts'
@@ -22,7 +29,7 @@
     queryFn: (): Promise<FlowData> => getJson<FlowData>('/api/workbench/flow'),
   }))
   const data = $derived(query.data)
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
 
   const save = async (r: HostRepo, baseBranch: string | null) => {
     try {
@@ -31,7 +38,7 @@
       toastError('Save failed', e)
       return
     }
-    savedFlash.flash()
+    autosave.flash(repoKey(r))
     await qc.invalidateQueries({ queryKey: ['workbench-flow'] })
   }
   // Every reachable repo is a row; configs for repos a host no longer
@@ -49,42 +56,46 @@
 <!-- A failed read used to REMOVE the whole section, so per-repo base branches
      looked unconfigured — and re-entering them would have overwritten the real
      flow. -->
-{#if !data}
-  {#if query.isError}
-    <QueryError variant="inline" error={query.error} title="Could not load repository flow" onRetry={() => void query.refetch()} />
-  {/if}
-{:else}
-  <div class="space-y-2">
-    <div class="flex flex-wrap items-baseline gap-x-2">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Repository flow</span>
-      <span class="text-xs text-muted">which branch workbench PRs target, per repo</span>
-      {#if savedFlash.saved}<span class="ml-auto text-xs text-success">Saved</span>{/if}
-    </div>
-    {#each data.hosts.filter((h) => h.error) as h (h.id)}
-      <p class="text-xs text-warning">{h.name} could not list its repositories: {h.error}</p>
-    {/each}
-    <div class="space-y-1.5">
+<SettingsSection
+  title="Pull request branches"
+  description="The branch each repository's jobs start from and its pull requests target."
+  info="Leave a field blank to use the repository's default branch. Talaria's job ends at the pull request. How it is reviewed and merged belongs to the repository's own branch protection and CI."
+>
+  <SettingsGroup>
+    {#if !data}
+      {#if query.isError}
+        <QueryError variant="compact" error={query.error} title="Could not load repository flow" onRetry={() => void query.refetch()} />
+      {:else}
+        <div class="px-5 py-4"><SkeletonRows rows={3} /></div>
+      {/if}
+    {:else}
+      {#each data.hosts.filter((h) => h.error) as h (h.id)}
+        <NoticeRow status="danger">{h.name} could not list its repositories: {h.error}</NoticeRow>
+      {/each}
+      {#if rows.length > 0}
+        <SettingsHeaderRow label="Repository">
+          <span class="w-[280px] shrink-0">Target branch</span>
+        </SettingsHeaderRow>
+      {/if}
       {#each rows as r (repoKey(r))}
         {@const f = data.flows.find((x) => x.host === r.host && x.repo === r.repo)}
         {@const unreachable = !data.repos.some((x) => x.host === r.host && x.repo === r.repo)}
-        <div class="grid grid-cols-1 items-center gap-1 sm:grid-cols-[minmax(0,1fr)_11rem] sm:gap-2">
-          <span class="min-w-0 truncate font-mono text-xs text-fg">
-            {#if manyHosts}<span class="text-muted">{`${hostName(r.host)} · `}</span>{/if}{r.repo}
-            {#if unreachable}<span class="ml-2 font-sans text-xs text-warning">no longer reachable</span>{/if}
-          </span>
+        <SettingsRow hint={manyHosts ? hostName(r.host) : undefined} as="label" saved={autosave.saved(repoKey(r))}>
+          {#snippet label()}<span class="font-mono text-[13px] font-normal">{r.repo}</span>{/snippet}
+          {#snippet status()}{#if unreachable}<RowStatus status="danger">Unreachable</RowStatus>{/if}{/snippet}
           <Input
             size="sm"
+            class="w-[280px] font-mono"
             aria-label="PRs land on for {r.repo}"
             value={f?.baseBranch ?? ''}
             placeholder="default branch"
             onblur={(e) => e.currentTarget.value.trim() !== (f?.baseBranch ?? '') && void save(r, e.currentTarget.value.trim() || null)}
           />
-        </div>
+        </SettingsRow>
       {/each}
-      {#if rows.length === 0}<p class="text-xs text-muted">No repositories reachable yet. Connect a git host above.</p>{/if}
-    </div>
-    <p class="text-[11px] text-muted">
-      <span class="text-fg">PRs land on</span>: the branch workbench jobs cut from and pull requests target; blank uses the repo's default branch. Talaria's job ends at the pull request — how it is then reviewed and merged belongs to the repository's own branch protection and CI.
-    </p>
-  </div>
-{/if}
+      {#if rows.length === 0}
+        <SettingsRow label="No repositories yet" hint="Connect a git host above and its repositories show here." />
+      {/if}
+    {/if}
+  </SettingsGroup>
+</SettingsSection>

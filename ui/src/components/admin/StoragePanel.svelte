@@ -1,59 +1,78 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import Panel from '@/components/ui/Panel.svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowAction from '@/components/settings/SettingsRowAction.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import WaitingMark from '@/components/ui/WaitingMark.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
   import Select from '@/components/ui/Select.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { errorMessage, postJson, putJson } from '@/lib/fetch-json'
-  import { fade, slide } from '@/lib/motion'
+  import { slide } from '@/lib/motion'
+  import NoticeRow from './NoticeRow.svelte'
+  import RowStatus from './RowStatus.svelte'
   import TargetFields from './TargetFields.svelte'
+  import ToggleField from './ToggleField.svelte'
   import { fmtBytes, useStorageAdmin, type StorageAdmin } from './storage'
+  import { sansFill } from '@/lib/ui-voice'
 
   // Where upload blobs live: local disk, the bundled MinIO container ("built-in
   // bucket"), or any external S3-compatible service — plus an optional replica
   // that mirrors every blob to a second provider.
+  type Config = StorageAdmin['config']
+  type Part = 'location' | 'replica'
+
   const qc = useQueryClient()
   const query = useStorageAdmin()
   const data = $derived(query.data)
-  let form = $state<StorageAdmin['config'] | null>(null)
+
+  // The draft a dialog edits. Seeded from the saved config each time one
+  // opens, so closing a dialog drops what was typed in it.
+  let editing = $state<Part | null>(null)
+  let form = $state<Config | null>(null)
   let secret = $state('')
   let replicaSecret = $state('')
   let busy = $state(false)
-  let note = $state<{ ok: boolean; text: string } | null>(null)
+  let saveError = $state<string | null>(null)
+  let note = $state<{ part: Part; ok: boolean; text: string } | null>(null)
 
-  $effect(() => {
-    if (data && !form) form = data.config
-  })
-
-  const set = (patch: Partial<StorageAdmin['config']>) => {
+  const edit = (part: Part, patch?: Partial<Config['replica']>) => {
+    if (!data) return
+    form = { ...data.config, replica: { ...data.config.replica, ...patch } }
+    secret = ''
+    replicaSecret = ''
+    saveError = null
+    editing = part
+  }
+  const set = (patch: Partial<Config>) => {
     if (form) form = { ...form, ...patch }
   }
-  const setReplica = (patch: Partial<StorageAdmin['config']['replica']>) => {
+  const setReplica = (patch: Partial<Config['replica']>) => {
     if (form) form = { ...form, replica: { ...form.replica, ...patch } }
   }
 
   const save = async () => {
-    if (!form) return
+    if (!form || !editing) return
+    const part = editing
     busy = true
-    note = null
+    saveError = null
     try {
-      const j = await putJson<{ config: StorageAdmin['config'] }>('/api/admin/storage', {
+      await putJson<{ config: Config }>('/api/admin/storage', {
         ...form,
         secretAccessKey: secret || undefined,
         replica: { ...form.replica, secretAccessKey: replicaSecret || undefined },
       })
-      form = j.config
-      secret = ''
-      replicaSecret = ''
-      note = { ok: true, text: 'saved' }
+      editing = null
+      note = { part, ok: true, text: 'Saved.' }
       await qc.invalidateQueries({ queryKey: ['storage-admin'] })
     } catch (e) {
-      note = { ok: false, text: errorMessage(e) }
+      saveError = errorMessage(e)
     } finally {
       busy = false
     }
@@ -61,23 +80,24 @@
 
   const act = async (action: 'test' | 'test-replica' | 'migrate' | 'sync') => {
     busy = true
+    const part: Part = action === 'test' || action === 'migrate' ? 'location' : 'replica'
     if (action === 'test' || action === 'test-replica') note = null
     try {
       if (action === 'test' || action === 'test-replica') {
         // The verdict rides a 200 body ({ ok, detail }); a server-side failure
         // is a 4xx the door rejects into the catch below.
         const j = await postJson<{ ok: boolean; detail: string }>('/api/admin/storage', { action })
-        note = { ok: j.ok, text: j.detail }
+        note = { part, ok: j.ok, text: j.detail }
       } else {
         await postJson('/api/admin/storage', { action })
       }
     } catch (e) {
-      note = { ok: false, text: errorMessage(e) }
+      note = { part, ok: false, text: errorMessage(e) }
     } finally {
       busy = false
     }
     // Refetch either way: a failed migrate/sync may still have moved blobs,
-    // and the status strip should say so.
+    // and the rows above should say so.
     await qc.invalidateQueries({ queryKey: ['storage-admin'] })
   }
 
@@ -91,130 +111,223 @@
     if (ok) await act('migrate')
   }
 
-  const inBucket = $derived(form !== null && form.mode !== 'local')
-  const external = $derived(form?.mode === 's3')
-  const migrating = $derived(data?.migrate?.running)
-  const syncing = $derived(data?.sync?.running)
-  const totalBlobs = $derived(data ? data.stats.local + data.stats.s3 + data.stats.internal : 0)
+  const files = (n: number) => `${n.toLocaleString()} file${n === 1 ? '' : 's'}`
+
+  // A bucket is named by itself and found at its endpoint. The rest of what
+  // describes it (region, prefix, keys) is in its dialog.
+  const bucketOf = (d: StorageAdmin): { bucket: string; endpoint: string } | null =>
+    d.config.mode === 's3' ? d.config : d.config.mode === 'internal' ? d.internal : null
 </script>
 
-{#snippet panelSkeleton()}
-  <!-- Panel-shaped skeleton (title, stat strip, config grid, button row) so the
-       Storage tab never renders blank and then materializes. -->
-  <Skeleton class="mb-4 h-4 w-20 rounded-full" />
-  <div class="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3">
-    <Skeleton class="h-3 w-32 rounded-full" />
-    <Skeleton class="h-3 w-36 rounded-full" />
-    <Skeleton class="h-3 w-32 rounded-full" />
-  </div>
-  <div class="grid gap-2 sm:grid-cols-2">
-    {#each Array.from({ length: 6 }) as _, i (i)}
-      <div>
-        <Skeleton class="mb-1.5 h-2.5 w-24 rounded-full" />
-        <Skeleton class="h-9 w-full" />
-      </div>
-    {/each}
-  </div>
-  <div class="mt-3 flex items-center gap-2">
-    <Skeleton class="h-7 w-16" />
-    <Skeleton class="h-7 w-32" />
-  </div>
+<!-- A bucket is its name and the endpoint it is found at. -->
+{#snippet bucketLine(bucket: string | undefined, endpoint: string | undefined)}
+  <span class="break-all font-mono text-xs">{bucket || 'No bucket set'}</span>{' · '}<span class="break-all font-mono text-xs">{endpoint || 'No endpoint set'}</span>
 {/snippet}
 
-<Panel>
-  <!-- A failed read used to leave `data` undefined for ever, so this panel
-       shimmered its skeleton at a request that had already died — a loading
-       state that never ends is just a slower blank screen. QueryState's error
-       branch owns that. -->
-  <QueryState query={query} errorTitle="Could not load storage settings">
-    {#snippet skeleton()}{@render panelSkeleton()}{/snippet}
-    {#snippet children(data)}
-    {#if form === null}
-      <!-- The editable draft seeds from the read in an effect, one render after
-           it lands — hold the same skeleton through that beat. -->
-      {@render panelSkeleton()}
-    {:else}
-      {@const cfg = form}
-      {@const d = data}
-      <SectionHeader
-        class="mb-4"
-        title="Storage"
-        info="Where uploaded files live. Local disk keeps everything on this machine; the built-in bucket is Talaria's own bundled object store (no cloud account needed); external works with any S3-compatible service (AWS S3, Backblaze B2, Cloudflare R2, MinIO). Each file remembers where it was stored, so switching never breaks existing links. A replica mirrors every file to a second provider for redundancy."
-      />
+{#snippet result(part: Part)}
+  {#if note?.part === part}
+    <div transition:slide={{ duration: 150 }}>
+      <NoticeRow status={note.ok ? 'ok' : 'danger'}>{note.text}</NoticeRow>
+    </div>
+  {/if}
+{/snippet}
 
-      <div class="mb-3 flex flex-wrap items-center gap-3 rounded-md border border-line p-3 text-xs text-muted">
-        <span><span class="font-mono text-fg">{d.stats.local}</span> on disk (<span class="font-mono">{fmtBytes(d.stats.localBytes)}</span>)</span>
-        <span><span class="font-mono text-fg">{d.stats.internal}</span> in the built-in bucket</span>
-        <span><span class="font-mono text-fg">{d.stats.s3}</span> in external storage</span>
-        {#if migrating}
-          <span class="flex items-center gap-1.5"><WaitingMark site="admin/storage-migrate" size={11} /> moving <span class="font-mono">{d.migrate!.moved}/{d.migrate!.total}</span></span>
-        {/if}
-        {#if syncing}
-          <span class="flex items-center gap-1.5"><WaitingMark site="admin/storage-sync" size={11} /> syncing <span class="font-mono">{d.sync!.moved}/{d.sync!.total}</span> to replica</span>
-        {/if}
-        {#if !migrating && d.migrate?.failed}<span class="text-danger">{d.migrate.failed} failed to move</span>{/if}
-        {#if !syncing && d.sync?.failed}<span class="text-danger">{d.sync.failed} failed to sync</span>{/if}
-        {#if inBucket && d.stats.local > 0 && !migrating}
-          <Button size="sm" variant="outline" class="ml-auto" onclick={() => void migrate()} disabled={busy}>
-            Move local files to bucket
-          </Button>
-        {/if}
-      </div>
-
-      <div class="grid gap-2 sm:grid-cols-2">
-        <label class="text-xs text-muted">
-          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Mode</span>
-          <Select value={cfg.mode} onchange={(e) => set({ mode: e.currentTarget.value as StorageAdmin['config']['mode'] })} class="mt-1 w-full">
-            <option value="local">Local disk</option>
-            <option value="internal">Built-in bucket (bundled MinIO)</option>
-            <option value="s3">External (S3-compatible)</option>
-          </Select>
-        </label>
-        {#if cfg.mode === 'internal'}
-          <div class="self-end pb-1 text-xs text-muted">
-            <span class="font-mono text-[11px]">{d.internal.endpoint}</span> · bucket <span class="font-mono text-[11px] text-fg">{d.internal.bucket}</span>
-            <span class="opacity-70"> (creds via TALARIA_S3_* env; bucket auto-created)</span>
-          </div>
-        {/if}
-        {#if external}<TargetFields t={cfg} {secret} onChange={set} onSecret={(v) => (secret = v)} />{/if}
-      </div>
-
-      <!-- Replica — mirror every blob to a second provider -->
-      <div class="mt-4 rounded-md border border-line p-3">
-        <Checkbox checked={cfg.replica.enabled} onChange={(checked) => setReplica({ enabled: checked })} label="Replicate to a second provider" class="gap-2 font-medium text-fg" />
-        <p class="mt-1 text-xs text-muted">
-          New uploads are mirrored as they land (an outage never blocks an upload); "Sync all" copies
-          everything already stored (disk, built-in, or external) into the replica bucket.
-        </p>
-        {#if cfg.replica.enabled}
-          <div transition:slide={{ duration: 150 }} class="mt-2 grid gap-2 sm:grid-cols-2">
-            <TargetFields t={cfg.replica} secret={replicaSecret} onChange={setReplica} onSecret={(v) => (replicaSecret = v)} />
-            <div class="flex items-center gap-2 sm:col-span-2">
-              <Button size="sm" variant="outline" onclick={() => void act('test-replica')} disabled={busy || !cfg.replica.hasSecret}>
-                Test replica
-              </Button>
-              <Button size="sm" variant="outline" onclick={() => void act('sync')} disabled={busy || syncing || !cfg.replica.hasSecret || totalBlobs === 0}>
-                Sync all to replica
-              </Button>
+<!-- A failed read used to leave `data` undefined for ever, so this panel
+     shimmered its skeleton at a request that had already died — a loading
+     state that never ends is just a slower blank screen. QueryState's error
+     branch owns that. -->
+<QueryState {query} errorTitle="Could not load storage settings">
+  {#snippet skeleton()}
+    <SettingsSection title="Stored files">
+      <SettingsGroup><div class="px-5 py-4"><SkeletonRows rows={4} /></div></SettingsGroup>
+    </SettingsSection>
+  {/snippet}
+  {#snippet children(d)}
+    {@const saved = d.config}
+    {@const inBucket = saved.mode !== 'local'}
+    {@const external = saved.mode === 's3'}
+    {@const migrating = d.migrate?.running}
+    {@const syncing = d.sync?.running}
+    {@const total = d.stats.local + d.stats.s3 + d.stats.internal}
+    {@const places = [
+      // The dashboards' series family: gold and coral read as "needs attention" and "failed" beside a status dot.
+      { label: 'External storage', count: d.stats.s3, bar: 'bg-chart-1' },
+      { label: 'Built-in bucket', count: d.stats.internal, bar: 'bg-fg' },
+      { label: `Local disk (${fmtBytes(d.stats.localBytes)})`, count: d.stats.local, bar: 'bg-line-strong' },
+    ]}
+    <div class="space-y-8">
+      <SettingsSection title="Stored files" description="Every uploaded file, by where it is kept.">
+        <SettingsGroup>
+          <div class="px-5 py-4">
+            <div class="flex items-baseline justify-between gap-4">
+              <span class="font-sans text-sm font-medium leading-5 text-fg">Files</span>
+              <span class="font-sans text-sm leading-5 tabular-nums text-fg">{total.toLocaleString()}</span>
             </div>
+            <div class="mt-3 flex h-1.5 overflow-hidden rounded-full {sansFill}" role="img" aria-label="Share of files by location">
+              {#each places as p (p.label)}
+                {#if p.count > 0}<div class={p.bar} style:width="{(p.count / total) * 100}%"></div>{/if}
+              {/each}
+            </div>
+            <ul class="mt-3 flex flex-wrap gap-x-8 gap-y-1">
+              {#each places as p (p.label)}
+                <li class="flex items-center gap-2 font-sans text-[13px] leading-5 text-muted">
+                  <span class="h-1.5 w-1.5 shrink-0 rounded-full {p.bar}"></span>
+                  {p.label}
+                  <span class="tabular-nums text-fg">{p.count.toLocaleString()}</span>
+                </li>
+              {/each}
+            </ul>
+          </div>
+          {#if migrating && d.migrate}
+            <SettingsRow label="Moving files to the bucket">
+              {#snippet lead()}<WaitingMark site="admin/storage-migrate" size={14} />{/snippet}
+              <span class="font-sans text-[13px] tabular-nums text-muted">{d.migrate.moved.toLocaleString()} of {d.migrate.total.toLocaleString()}</span>
+            </SettingsRow>
+          {/if}
+          {#if inBucket && d.stats.local > 0 && !migrating}
+            <NoticeRow status={d.migrate?.failed ? 'danger' : 'warn'}>
+              {#if d.migrate?.failed}{files(d.migrate.failed)} failed to move.{/if}
+              {files(d.stats.local)} {d.stats.local === 1 ? 'is' : 'are'} still on local disk.
+              {#snippet action()}
+                <SettingsRowAction label="Move local files to the bucket" onclick={() => void migrate()} disabled={busy}>Move files</SettingsRowAction>
+              {/snippet}
+            </NoticeRow>
+          {:else if !migrating && d.migrate?.failed}
+            <NoticeRow status="danger">{files(d.migrate.failed)} failed to move.</NoticeRow>
+          {/if}
+        </SettingsGroup>
+      </SettingsSection>
+
+      <SettingsSection title="Where files live" description="New uploads go to the primary, and a replica receives a copy of every file.">
+        <SettingsGroup>
+          <SettingsRow
+            label="Primary"
+            info="Local disk keeps everything on this machine. The built-in bucket is Talaria's own bundled object store, with no cloud account needed. External works with any S3-compatible service: AWS S3, Backblaze B2, Cloudflare R2, MinIO. Switching never breaks an existing link."
+            onOpen={() => edit('location')}
+            openLabel="Edit where files live"
+          >
+            {#snippet hint()}
+              {#if inBucket}
+                {#if !external}Built-in bucket{' · '}{/if}{@render bucketLine(bucketOf(d)?.bucket, bucketOf(d)?.endpoint)}
+              {:else}
+                Local disk, so files are kept on this machine.
+              {/if}
+            {/snippet}
+            {#snippet status()}
+              {#if external && !saved.hasSecret}<RowStatus status="warn">Secret key not set</RowStatus>{/if}
+            {/snippet}
+            <SettingsRowMenu
+              label="Actions for file storage"
+              items={[
+                { label: 'Edit', onSelect: () => edit('location') },
+                ...(inBucket
+                  ? [{ label: 'Test connection', disabled: busy || (external && !saved.hasSecret), onSelect: () => void act('test') }]
+                  : []),
+                ...(inBucket && d.stats.local > 0 && !migrating
+                  ? [{ label: 'Move local files to the bucket', disabled: busy, onSelect: () => void migrate() }]
+                  : []),
+              ]}
+            />
+          </SettingsRow>
+          {@render result('location')}
+          {#if saved.replica.enabled}
+            {@const behind = !syncing && !!d.sync?.failed}
+            {@const canSync = !busy && saved.replica.hasSecret && total > 0}
+            <SettingsRow
+              label="Replica"
+              info="New uploads are copied as they land, and an outage at the replica never blocks an upload. Sync all copies everything already stored, on disk or in a bucket, into the replica bucket."
+              onOpen={() => edit('replica')}
+              openLabel="Edit the replica"
+            >
+              {#snippet hint()}{@render bucketLine(saved.replica.bucket, saved.replica.endpoint)}{/snippet}
+              {#snippet status()}
+                {#if syncing && d.sync}
+                  <WaitingMark site="admin/storage-sync" size={14} />
+                  <span class="tabular-nums">Syncing {d.sync.moved.toLocaleString()} of {d.sync.total.toLocaleString()}</span>
+                {:else if !saved.replica.hasSecret}
+                  <RowStatus status="warn">Secret key not set</RowStatus>
+                {:else if behind && d.sync}
+                  <RowStatus status="danger">{files(d.sync.failed)} not copied</RowStatus>
+                {/if}
+              {/snippet}
+              <SettingsRowMenu
+                label="Actions for the replica"
+                items={[
+                  { label: 'Edit', onSelect: () => edit('replica') },
+                  { label: 'Test replica', disabled: busy || !saved.replica.hasSecret, onSelect: () => void act('test-replica') },
+                  { label: 'Sync all to replica', disabled: !canSync || syncing, onSelect: () => void act('sync') },
+                ]}
+              />
+            </SettingsRow>
+          {:else}
+            <!-- One place is a choice, not a fault, so the row opens the
+                 setup and shows no button. -->
+            <SettingsRow
+              label="Replica"
+              hint="Off, so files are kept in one place only."
+              onOpen={() => edit('replica', { enabled: true })}
+              openLabel="Set up a replica"
+            >
+              <SettingsRowMenu label="Actions for the replica" items={[{ label: 'Set up replica', onSelect: () => edit('replica', { enabled: true }) }]} />
+            </SettingsRow>
+            {#if !syncing && d.sync?.failed}
+              <NoticeRow status="danger">{files(d.sync.failed)} did not reach the replica.</NoticeRow>
+            {/if}
+          {/if}
+          {@render result('replica')}
+        </SettingsGroup>
+      </SettingsSection>
+    </div>
+  {/snippet}
+</QueryState>
+
+<Modal
+  open={editing !== null && form !== null}
+  onClose={() => (editing = null)}
+  title={editing === 'replica' ? 'Replica' : 'Primary storage'}
+  width="max-w-2xl"
+>
+  {#if form}
+    {@const cfg = form}
+    <div class="space-y-5">
+      {#if editing === 'location'}
+        <SettingsField label="Location" for="storage-mode">
+          <Select id="storage-mode" size="sm" value={cfg.mode} onchange={(e) => set({ mode: e.currentTarget.value as Config['mode'] })} class="w-full">
+            <option value="local">Local disk</option>
+            <option value="internal">Built-in bucket</option>
+            <option value="s3">External S3-compatible storage</option>
+          </Select>
+        </SettingsField>
+        {#if cfg.mode === 'internal' && data}
+          <p class="font-sans text-[13px] leading-5 text-muted">
+            Uses <span class="font-mono text-xs text-fg">{data.internal.bucket}</span> at
+            <span class="font-mono text-xs text-fg">{data.internal.endpoint}</span>. The bucket is created automatically, with
+            credentials from <span class="font-mono text-xs">TALARIA_S3_*</span> in the environment.
+          </p>
+        {/if}
+        {#if cfg.mode === 's3'}
+          <TargetFields id="storage" t={cfg} {secret} onChange={set} onSecret={(v) => (secret = v)} />
+        {/if}
+      {:else}
+        <ToggleField
+          label="Replicate files"
+          hint="Copy every file to this second provider."
+          checked={cfg.replica.enabled}
+          onChange={(checked) => setReplica({ enabled: checked })}
+        />
+        {#if cfg.replica.enabled}
+          <div transition:slide={{ duration: 150 }}>
+            <TargetFields id="replica" t={cfg.replica} secret={replicaSecret} onChange={setReplica} onSecret={(v) => (replicaSecret = v)} />
           </div>
         {/if}
-      </div>
-
-      <div class="mt-3 flex items-center gap-2">
-        <Button size="sm" onclick={() => void save()} disabled={busy}>
-          Save
-        </Button>
-        {#if inBucket}
-          <Button size="sm" variant="outline" onclick={() => void act('test')} disabled={busy || (external && !cfg.hasSecret)}>
-            Test connection
-          </Button>
-        {/if}
-        <!-- Inline (non-block) status word — slide can't animate an inline box's
-             height, so this one notice fades instead. -->
-        {#if note}<span transition:fade={{ duration: 150 }} class={`text-xs ${note.ok ? 'text-muted' : 'text-danger'}`}>{note.text}</span>{/if}
-      </div>
-    {/if}
-    {/snippet}
-  </QueryState>
-</Panel>
+      {/if}
+      {#if saveError}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{saveError}</div>{/if}
+    </div>
+  {/if}
+  {#snippet footer()}
+    <div class="flex justify-end gap-2">
+      <Button variant="ghost" size="sm" onclick={() => (editing = null)}>Cancel</Button>
+      <Button size="sm" onclick={() => void save()} disabled={busy}>{busy ? 'Saving' : editing === 'replica' ? 'Save replica' : 'Save storage'}</Button>
+    </div>
+  {/snippet}
+</Modal>

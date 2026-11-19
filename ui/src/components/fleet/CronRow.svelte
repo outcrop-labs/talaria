@@ -1,14 +1,28 @@
+<script lang="ts" module>
+  // The table's captions (CronTable) and each row's cells share these widths.
+  // The table is the container: a narrow one drops the agent, then the
+  // frequency, which the row then says under its name.
+  export const CRON_AGENT = 'hidden w-28 shrink-0 @4xl:block'
+  export const CRON_FREQUENCY = 'hidden w-48 shrink-0 @3xl:block'
+  export const CRON_NEXT = 'w-28 shrink-0 text-right'
+  export const CRON_ON = 'w-9 shrink-0'
+</script>
+
 <script lang="ts">
-  import { Pause, Pencil, Play, Trash2, Zap } from '@lucide/svelte'
+  import { Pencil, Trash2, Zap } from '@lucide/svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import IconButton from '@/components/ui/IconButton.svelte'
+  import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import Input from '@/components/ui/Input.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
   import Textarea from '@/components/ui/Textarea.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
-  import { MAX_CRON_PROMPT, describeSchedule, editPatch, fmtNext, jobDot, parseSchedule, schedToString, type CronJob, type CronPatch, type Sched } from './agent-crons'
+  import { MAX_CRON_PROMPT, describeSchedule, editPatch, fmtNext, isRawSchedule, jobDot, parseSchedule, schedToString, type CronJob, type CronPatch, type Sched } from './agent-crons'
   import ScheduleBuilder from './ScheduleBuilder.svelte'
 
   let {
@@ -39,6 +53,9 @@
   // svelte-ignore state_referenced_locally -- reason: edit drafts, re-seeded by startEdit() before they are ever shown
   let prompt = $state(job.prompt)
   const paused = $derived(!job.enabled || job.state === 'paused')
+  const failed = $derived(!paused && !!job.lastStatus && /error|fail/i.test(job.lastStatus))
+  // A cadence the builder cannot name stays a cron string, which is an identifier.
+  const rawCron = $derived(isRawSchedule(job.schedule))
 
   const startEdit = () => {
     name = job.name
@@ -58,72 +75,69 @@
     const ok = await onEdit(patch)
     if (ok) editing = false
   }
+
+  const menu = (): ContextMenuEntry[] => [
+    ...(onEdit ? [{ label: 'Edit', icon: [Pencil, { size: 14 }], disabled: busy, onSelect: startEdit } as ContextMenuEntry] : []),
+    // A paused job cannot be run now: Hermes's run would resume it for good,
+    // so the api refuses it. Resume first.
+    { label: paused ? 'Run now (resume it first)' : 'Run now', icon: [Zap, { size: 14 }], disabled: busy || paused, onSelect: () => onAction?.('run') },
+    'sep',
+    { label: 'Delete', icon: [Trash2, { size: 14 }], danger: true, disabled: busy, onSelect: () => onAction?.('remove') },
+  ]
+
+  const cell = 'font-sans text-[13px] leading-5 text-muted'
+  const cadence = $derived(describeSchedule(job.schedule))
 </script>
 
-<!-- div, not li: the schedules lists render these directly inside a divide-y
-     container (Materialize-friendly geometry). -->
-<div class="px-3.5 py-3">
-  <div class="flex items-center gap-2.5">
-    <StatusDot color={jobDot(job)} title={paused ? 'paused' : job.state} class="h-[7px] w-[7px]" />
-    <button type="button" onclick={() => (expanded = !expanded)} class="min-w-0 flex-1 text-left">
-      <span class="font-sans text-sm font-medium text-fg">{job.name}</span>
-      {#if agentLabel}<span class="ml-2 text-xs text-muted">{agentLabel}</span>{/if}
-      <span class="ml-2 font-sans text-xs text-accent" title={job.schedule}>
-        {describeSchedule(job.schedule)}
-      </span>
-    </button>
-    <span class="shrink-0 font-mono text-[11px] text-muted">
-      {paused ? 'paused' : job.nextRunAt ? `next ${fmtNext(job.nextRunAt)}` : ''}
-    </span>
+{#snippet frequency(className: string)}
+  <span class={cn(className, 'truncate text-muted', rawCron ? 'font-mono text-xs leading-5' : 'font-sans text-[13px] leading-5')} title={job.schedule}>
+    {cadence}
+  </span>
+{/snippet}
+
+<!-- A div, not an li: the schedules lists render these straight into a card
+     that draws the dividers. -->
+<div>
+  <SettingsRow label={job.name} wrap onOpen={() => (expanded = !expanded)} {expanded}>
+    {#snippet lead()}<StatusDot status={jobDot(job)} />{/snippet}
+    {#snippet hint()}
+      <!-- The failure is beside the name it is about, so the next run keeps its own column. -->
+      {@render frequency('block @3xl:hidden')}
+      {#if failed}<span class="block text-danger" title={job.lastError ?? undefined}>Last run failed</span>{/if}
+    {/snippet}
+    {#if agentLabel}<span class={cn(CRON_AGENT, cell, 'truncate')} title={agentLabel}>{agentLabel}</span>{/if}
+    {@render frequency(CRON_FREQUENCY)}
+    <span class={cn(CRON_NEXT, cell, 'tabular-nums')}>{paused ? 'Paused' : job.nextRunAt ? fmtNext(job.nextRunAt) : ''}</span>
     {#if onAction}
-      <span class={cn('flex shrink-0 items-center', busy && 'pointer-events-none opacity-40')}>
-        {#if onEdit}
-          <IconButton size="sm" title="Edit" onclick={startEdit}>
-            <Pencil size={13} />
-          </IconButton>
-        {/if}
-        <!-- A paused job cannot be run now: Hermes's run would resume it for
-             good, so the api refuses it — resume first. -->
-        <IconButton
-          size="sm"
-          title={paused ? 'Paused — resume it to run it' : 'Run on the next tick (≤60s)'}
-          disabled={paused}
-          onclick={() => onAction('run')}
-        >
-          <Zap size={14} />
-        </IconButton>
-        <IconButton size="sm" title={paused ? 'Resume' : 'Pause'} onclick={() => onAction(paused ? 'resume' : 'pause')}>
-          {#if paused}<Play size={14} fill="currentColor" />{:else}<Pause size={14} fill="currentColor" />{/if}
-        </IconButton>
-        <IconButton size="sm" title="Delete" danger onclick={() => onAction('remove')}>
-          <Trash2 size={14} />
-        </IconButton>
-      </span>
+      <Toggle checked={!paused} disabled={busy} onChange={() => onAction(paused ? 'resume' : 'pause')} title={paused ? `Resume ${job.name}` : `Pause ${job.name}`} />
+      <SettingsRowMenu label={`Actions for ${job.name}`} items={menu} />
     {/if}
-  </div>
+  </SettingsRow>
   {#if expanded && !editing}
-    <div class="mt-2.5 space-y-1.5 pl-4" transition:slide={{ duration: 150 }}>
-      <div class="whitespace-pre-wrap rounded-md border border-line p-3 font-sans text-xs leading-5 text-muted">{job.prompt}</div>
-      <div class="font-mono text-[11px] text-muted">
-        {job.lastRunAt ? `last ran ${relativeTime(job.lastRunAt)}${job.lastStatus ? ` · ${job.lastStatus}` : ''}` : 'never ran'}
+    <div class="space-y-2 pb-4 pl-[38px] pr-5" transition:slide={{ duration: 150 }}>
+      <p class="max-w-[72ch] whitespace-pre-wrap font-sans text-[13px] leading-5 text-muted">{job.prompt}</p>
+      <p class="font-sans text-xs leading-4 text-muted">
+        {job.lastRunAt ? `Last ran ${relativeTime(job.lastRunAt)}${job.lastStatus ? ` · ${job.lastStatus}` : ''}` : 'Never ran'}
         {#if job.lastError}<span class="text-danger"> · {job.lastError}</span>{/if}
-      </div>
+      </p>
     </div>
   {/if}
   {#if editing}
-    <div class="mt-2.5 space-y-3 rounded-lg border border-line p-3.5 pl-4" transition:slide={{ duration: 150 }}>
-      <div class="flex items-center gap-2">
-        <Input size="sm" bind:value={name} maxlength={80} class="w-56" />
-      </div>
-      <ScheduleBuilder value={sched} onChange={(s) => (sched = s)} />
-      <Textarea autoGrow rows={3} bind:value={prompt} class="max-h-64" maxlength={MAX_CRON_PROMPT} />
+    <div class="space-y-5 pb-5 pl-[38px] pr-5 pt-1" transition:slide={{ duration: 150 }}>
+      <SettingsField label="Name">
+        <Input size="sm" bind:value={name} maxlength={80} class="w-[280px]" />
+      </SettingsField>
+      <SettingsField label="When">
+        <ScheduleBuilder value={sched} onChange={(s) => (sched = s)} />
+      </SettingsField>
+      <SettingsField label="What it does">
+        <Textarea autoGrow rows={3} bind:value={prompt} class="max-h-64" maxlength={MAX_CRON_PROMPT} />
+      </SettingsField>
       <div class="flex items-center gap-2">
         <Button size="sm" disabled={busy || !name.trim() || !prompt.trim() || !schedToString(sched)} onclick={() => void saveEdit()}>
           Save changes
         </Button>
-        <Button size="sm" variant="ghost" onclick={() => (editing = false)}>
-          Cancel
-        </Button>
+        <Button size="sm" variant="ghost" onclick={() => (editing = false)}>Cancel</Button>
       </div>
     </div>
   {/if}

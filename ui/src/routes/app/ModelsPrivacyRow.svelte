@@ -1,4 +1,5 @@
 <script lang="ts">
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Toggle from '@/components/ui/Toggle.svelte'
   import { patchEndpoint } from '@/lib/models'
   import type { LlmEndpoint } from '@/lib/fleet-defs'
@@ -17,15 +18,11 @@
   }
 </script>
 
-<div class="mt-4 flex items-start gap-2.5 border-t border-line pt-3">
-  <!-- The §8 toggle primitive: gold knob on a warm track when on. -->
-  <Toggle checked={on} onChange={toggle} class="mt-0.5 shrink-0" />
-  <div class="min-w-0">
-    <div class="text-xs font-medium text-fg">No-train routing {#if on}<span class="font-mono text-[10px] uppercase tracking-[0.05em] text-success">· on</span>{/if}</div>
-    <div class="font-sans text-[11px] text-muted">
-      {ep.provider === 'openrouter'
-        ? 'Restrict to US, no-store provider pools and deny data collection on every request.'
-        : 'Send data_collection: deny with every request (honored where the provider supports it).'}
-    </div>
-  </div>
-</div>
+<SettingsRow
+  label="No-train routing"
+  hint={ep.provider === 'openrouter'
+    ? 'Only US providers that do not store requests, with data collection denied.'
+    : 'Asks the provider not to collect data, where it honors the request.'}
+>
+  <Toggle checked={on} onChange={toggle} title="No-train routing" />
+</SettingsRow>

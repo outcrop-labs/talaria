@@ -2,6 +2,7 @@
   import { Link2, Copy, Check } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { fade } from '@/lib/motion'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { focusRing } from './control'
 
   // The one copy-to-clipboard affordance: icon (or icon+label) that flashes a
@@ -25,6 +26,8 @@
   } = $props()
 
   let copied = $state(false)
+  // A label inherits the size of whatever it sits in. In the sans voice it is a button label.
+  const sans = useUiVoice() === 'sans'
 </script>
 
 <button
@@ -55,5 +58,5 @@
   {:else}
     <Copy size={13} />
   {/if}
-  {#if label}<span>{copied ? 'Copied' : label}</span>{/if}
+  {#if label}<span class={sans ? 'font-sans text-[13px] font-medium leading-5' : undefined}>{copied ? 'Copied' : label}</span>{/if}
 </button>
