@@ -2,6 +2,7 @@
   import { Plus, CornerDownLeft } from '@lucide/svelte'
   import { scale } from '@/lib/motion'
   import Button from './Button.svelte'
+  import type { ButtonVariant } from './button'
   import IconButton from './IconButton.svelte'
   import Input from './Input.svelte'
 
@@ -15,6 +16,7 @@
     class: className,
     size = 'sm',
     icon = false,
+    variant,
   }: {
     /** The accessible name and tooltip. Still required when `icon` — a bare
      *  glyph with no name is unreachable by a screen reader, and it is the
@@ -29,6 +31,8 @@
      *  not need a button that reads "New role". A labeled Button is for a
      *  page's one or two primary actions. */
     icon?: boolean
+    /** The labeled button's variant. Omit for the Button default. */
+    variant?: ButtonVariant
   } = $props()
 
   let open = $state(false)
@@ -52,7 +56,7 @@
         <Plus size={15} />
       </IconButton>
     {:else}
-      <Button {size} onclick={() => (open = true)}>
+      <Button {size} {variant} onclick={() => (open = true)}>
         <Plus size={size === 'sm' ? 15 : 17} />
         {label}
       </Button>

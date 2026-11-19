@@ -2,6 +2,7 @@
   import { tick } from 'svelte'
   import { cn } from '@/lib/cn'
   import { portal } from '@/lib/portal'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { popPanel } from '@/components/chat/chat-chrome'
   import type { ContextMenuController, ContextMenuEntry, ContextMenuItem, MenuIcon } from './context-menu.svelte'
@@ -25,6 +26,9 @@
   // side has room. A menu taller than the screen scrolls inside itself.
 
   let { menu, label = 'Actions' }: { menu: ContextMenuController; label?: string } = $props()
+
+  const voice = useUiVoice()
+  const sans = voice === 'sans'
 
   let el = $state<HTMLDivElement | null>(null)
   let subEl = $state<HTMLDivElement | null>(null)
@@ -240,7 +244,7 @@
   {/if}
   <span class="min-w-0 flex-1 truncate">{it.label}</span>
   {#if it.hint}
-    <span class="shrink-0 font-mono text-[10px] text-ink-dim">{it.hint}</span>
+    <span class={sans ? 'shrink-0 font-sans text-xs text-muted' : 'shrink-0 font-mono text-[10px] text-ink-dim'}>{it.hint}</span>
   {/if}
   {#if hasKids}
     <span class="shrink-0 text-xs text-muted" aria-hidden="true">▸</span>
@@ -256,7 +260,7 @@
        first node was moved to <body> and whose last was not would walk on
        through <body> — and take whatever was portaled after it (a dialog an
        item just opened) with it. A single root is removed alone. -->
-  <div use:portal class="contents">
+  <div use:portal data-voice={voiceScope(voice)} class="contents">
     <div
       bind:this={el}
       role="menu"
@@ -282,6 +286,7 @@
             tabindex="-1"
             data-row={i}
             data-sel={idx >= 0 ? idx : undefined}
+            title={item.title}
             disabled={item.disabled}
             aria-haspopup={hasKids ? 'menu' : undefined}
             aria-expanded={hasKids ? openSub === i : undefined}
@@ -333,6 +338,7 @@
               aria-checked={kid.checked !== undefined ? kid.checked : undefined}
               tabindex="-1"
               data-sub-sel={kidx >= 0 ? kidx : undefined}
+              title={kid.title}
               disabled={kid.disabled}
               onmouseenter={(e) => {
                 if (kid.disabled) return

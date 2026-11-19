@@ -1,6 +1,7 @@
 <script lang="ts" generics="T extends string">
   import { cn } from '@/lib/cn'
   import { markCrossfade } from '@/lib/motion'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { sansVoice, type ButtonVoice } from './button'
   import { focusRing } from './control'
   import type { SegmentedOption } from './segmented'
@@ -14,19 +15,25 @@
     value,
     onChange,
     size = 'sm',
-    variant = 'dither',
-    voice = 'mono',
+    variant: variantProp,
+    voice: voiceProp,
     class: className,
   }: {
     options: ReadonlyArray<SegmentedOption<T>>
     value: T
     onChange: (id: T) => void
-    size?: 'xs' | 'sm'
+    /** `md` is as tall as a `sm` Input or Select, for a filter row that holds both. */
+    size?: 'xs' | 'sm' | 'md'
     variant?: 'dither' | 'solid'
-    /** `sans` is Home's Inbox's sentence-case voice; every other surface keeps the mono default. */
+    /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
     voice?: ButtonVoice
     class?: string
   } = $props()
+
+  const areaVoice = useUiVoice()
+  const voice = $derived(voiceProp ?? areaVoice)
+  // The sans voice is matte: its thumb is the solid one unless a caller says otherwise.
+  const variant = $derived(variantProp ?? (voice === 'sans' ? 'solid' : 'dither'))
 
   // The raised thumb slides between cells (ANIMATIONS.md `markCrossfade`);
   // one pair per control instance so neighboring Segmenteds never trade marks.
@@ -44,8 +51,13 @@
       class={cn(
         'relative select-none rounded font-mono uppercase tracking-[0.05em] transition-colors',
         focusRing,
-        size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : 'px-2.5 py-1 text-[10px] leading-4',
-        voice === 'sans' && cn(sansVoice, 'px-2.5 font-medium leading-5'),
+        size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : size === 'md' ? 'px-3 py-[7px] text-[10px] leading-4' : 'px-2.5 py-1 text-[10px] leading-4',
+        voice === 'sans' &&
+          cn(
+            sansVoice,
+            'font-medium',
+            size === 'xs' ? 'px-2 py-[3px] text-xs leading-4' : size === 'md' ? 'px-3 py-[5px] leading-5' : 'px-2.5 py-[3px] leading-5',
+          ),
         variant === 'dither' && 'dither-fill',
         value === o.id ? 'text-fg' : 'text-muted hover:text-fg',
       )}

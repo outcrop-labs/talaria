@@ -1,9 +1,10 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { Trash2 } from '@lucide/svelte'
+  import { X } from '@lucide/svelte'
+  import IconButton from '@/components/ui/IconButton.svelte'
   import { cn } from '@/lib/cn'
 
-  /** The access sections' one row shape: name · tool scope · quiet remove. */
+  /** The access sections' one row shape: name, tool scope, remove. */
   let {
     name,
     tools,
@@ -12,29 +13,15 @@
     removeTitle,
   }: {
     name: string
-    tools?: Snippet
+    tools: Snippet
     dim?: boolean
     onRemove: () => void
     removeTitle: string
   } = $props()
 </script>
 
-<div class="group flex items-center gap-3 rounded-md px-1.5 py-1 transition-colors dither-fill">
-  <span class="w-44 shrink-0 truncate">
-    <span class={cn('font-sans text-sm', dim ? 'text-muted' : 'text-fg')}>{name}</span>
-  </span>
-  <span class="min-w-0 flex-1">
-    {#if tools}{@render tools()}{:else}<span class="font-mono text-[10px] uppercase tracking-[0.05em] text-ink-dim">all tools</span>{/if}
-  </span>
-  <!-- Fixed-width control cluster so every row's tool box ends flush. -->
-  <span class="flex w-8 shrink-0 items-center justify-end">
-    <button
-      type="button"
-      onclick={onRemove}
-      title={removeTitle}
-      class="text-muted opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
-    >
-      <Trash2 size={13} />
-    </button>
-  </span>
+<div class="flex items-center gap-3 py-1.5">
+  <span class={cn('w-44 shrink-0 truncate font-sans text-sm leading-5', dim ? 'text-muted' : 'text-fg')} title={name}>{name}</span>
+  <span class="min-w-0 flex-1">{@render tools()}</span>
+  <IconButton size="sm" title={removeTitle} onclick={onRemove}><X size={16} /></IconButton>
 </div>

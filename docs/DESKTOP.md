@@ -1049,10 +1049,10 @@ control character, and no `.` or `..` segment in any spelling (`%2e` included), 
 the instance refuses is one the shell refuses too.
 
 **What the person sees and controls.** Settings → Desktop → Notifications reads the
-status from the OS (`desktop_notification_status`): "On — shown by GNOME Shell 50 (spec
+status from the OS (`desktop_notification_status`): "On, shown by GNOME Shell 50 (spec
 1.2)", "Not allowed yet", "Blocked in System Settings", or "Notification service
 unavailable: …" with the D-Bus error; that instance's own last error; Allow (macOS) or
-Open System Settings; **Send test notification**, which posts through the real path and
+Open System Settings; **Send test**, which posts through the real path and
 reports what happened; **Keep running in the background**; and, for an instance muted in
 the launcher, that it is muted and that its count still counts toward the badge. The
 launcher shows the same ask on macOS, a notice when Linux has no notification service, the

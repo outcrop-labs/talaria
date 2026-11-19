@@ -1,10 +1,11 @@
 // Shared pieces of the Agents roster (Agents.svelte + its tiles/rows): the
-// health mapping, the per-agent control logic, and the right-click menu.
+// health mapping, the per-agent control logic, and the agent's menu.
 import { useQueryClient } from '@tanstack/svelte-query'
 import { Archive, Copy, Play, Repeat, RotateCw, SlidersHorizontal, Square, Trash2, UserPlus } from '@lucide/svelte'
+import type { DotStatus } from '@/components/ui/chip'
 import { confirm } from '@/components/ui/confirm.svelte'
 import { useContextMenu, type ContextMenuController, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
-import { controlAgent, type AgentContainers, type AgentDef, type ControlAnswer, type FleetAction, type FleetRollRow } from '@/lib/fleet-defs'
+import { controlAgent, type AgentBrainHealth, type AgentContainers, type AgentDef, type ControlAnswer, type FleetAction, type FleetRollRow } from '@/lib/fleet-defs'
 import { pushToast, type ToastSpec } from '@/lib/toast.svelte'
 
 // ── Health: one word from container reality. 'warming' = the healthcheck's
@@ -16,13 +17,24 @@ import { pushToast, type ToastSpec } from '@/lib/toast.svelte'
 // to tell. Managed+created only: an imported def without a container was
 // never Talaria's to boot, so it stays 'down' where it belongs. ──
 export type Health = 'up' | 'warming' | 'degraded' | 'down' | 'draft' | 'retired'
-export const HEALTH_COLOR: Record<Health, string> = {
-  up: 'var(--theme-success)',
-  warming: 'var(--theme-warning)',
-  degraded: 'var(--theme-warning)',
-  down: 'var(--theme-danger)',
-  draft: 'var(--theme-ink-dim)',
-  retired: 'var(--theme-line)',
+/** One tone per state, the same on every page: running is green, starting is
+ *  gold, a fault is orange, and a state nobody has to act on is neutral. */
+export const HEALTH_TONE: Record<Health, DotStatus> = {
+  up: 'ok',
+  warming: 'warn',
+  degraded: 'danger',
+  down: 'danger',
+  draft: 'idle',
+  retired: 'idle',
+}
+/** The word beside the dot. */
+export const HEALTH_LABEL: Record<Health, string> = {
+  up: 'Running',
+  warming: 'Starting',
+  degraded: 'Unhealthy',
+  down: 'Stopped',
+  draft: 'Draft',
+  retired: 'Retired',
 }
 
 export function healthOf(d: AgentDef, c: AgentContainers | null): { health: Health; running: boolean } {
@@ -41,10 +53,16 @@ export function healthOf(d: AgentDef, c: AgentContainers | null): { health: Heal
   return { health: state?.health === 'unhealthy' ? 'degraded' : 'up', running: true }
 }
 
-// Confirm copy shared by the Controls buttons and the right-click menu, so the
-// two paths can never drift apart.
-export const RESTART_CONFIRM = 'Restart this agent now? Any reply it is mid-way through will be dropped.'
-export const deleteForeverConfirm = (d: AgentDef) =>
+/** The state a tile or row shows. A running agent that cannot reach its main
+ *  model is not healthy, whatever its container reports, so the dot and the
+ *  word agree with the "Model unreachable" beside them. */
+export function shownHealth(d: AgentDef, c: AgentContainers | null, brain?: AgentBrainHealth): Health {
+  const { health } = healthOf(d, c)
+  return health === 'up' && brain !== undefined && !brain.ok ? 'degraded' : health
+}
+
+const RESTART_CONFIRM = 'Restart this agent now? Any reply it is mid-way through will be dropped.'
+const deleteForeverConfirm = (d: AgentDef) =>
   `Permanently delete ${d.displayName}? This removes its definition, version history, secrets, and (for Talaria-created agents) its memory volume. Chats, tickets, and ledger history it produced are kept. This cannot be undone.`
 
 export interface AgentControlsState {
@@ -243,31 +261,35 @@ export function useAgentControls(def: () => AgentDef): AgentControlsState {
 export interface AgentMenu {
   menu: ContextMenuController
   onContextMenu: (e: MouseEvent) => void
+  /** The agent's actions, for the right-click menu and the row's own menu. */
+  entries: () => ContextMenuEntry[]
   act: (action: FleetAction, label: string, confirmMsg?: string) => Promise<void>
+  /** The label of the control being carried out, or null. */
+  readonly pending: string | null
   /** True while the retire double opt-in modal should show. */
   retiring: boolean
 }
 
-// Right-click menu for a tile / list row — the same actions as the Controls
-// cluster (same manager guards, same confirms), reachable from anywhere on
-// the row. Its own useAgentControls instance drives the acts; AgentRetireModal
+// One agent's actions as a menu: the same list (same manager guards, same
+// confirms) opens on right-click anywhere on the tile or row and from its
+// "…" button. One useAgentControls instance drives the acts; AgentRetireModal
 // keeps its double opt-in. The caller renders `<ContextMenu menu={x.menu} />`
-// plus the retire modal off `x.retiring` (this was the `overlays` JSX the
-// React hook returned).
+// plus the retire modal off `x.retiring`.
 export function useAgentMenu(
   def: () => AgentDef,
   running: () => boolean,
   onManage: () => void,
   onDuplicate: () => void,
-  /** The department is mid-roll (its own, or the fleet-wide batch): Roll is
-   *  offered but disabled, the same answer the control route gives (409). */
+  /** The department is mid-roll (its own, or the fleet-wide batch): the fresh
+   *  restart is offered but disabled, the same answer the control route gives
+   *  (409). */
   rolling: () => boolean = () => false,
 ): AgentMenu {
   const controls = useAgentControls(def)
   const menu = useContextMenu()
   let retiring = $state(false)
 
-  const onContextMenu = (e: MouseEvent) => {
+  const entries = (): ContextMenuEntry[] => {
     const d = def()
     // Changing an agent belongs to its managers — the same answer the write
     // routes give (docs/PERMISSIONS.md, "Agent managers"). Duplicate and
@@ -277,8 +299,8 @@ export function useAgentMenu(
     if (!d.enabled) {
       // Retired: duplicate as a template for anyone; re-hire and delete
       // forever for the people who manage it.
-      const entries: ContextMenuEntry[] = [
-        { label: 'Duplicate to a new agent', icon: [Copy, { size: 14 }], onSelect: onDuplicate },
+      return [
+        { label: 'Duplicate', icon: [Copy, { size: 14 }], onSelect: onDuplicate },
         ...(canManage
           ? ([
               { label: 'Re-hire', icon: [UserPlus, { size: 14 }], onSelect: () => void act('unretire', 're-hiring') },
@@ -292,12 +314,10 @@ export function useAgentMenu(
             ] as ContextMenuEntry[])
           : []),
       ]
-      menu.openMenu(e, entries)
-      return
     }
-    const entries: ContextMenuEntry[] = [
+    return [
       { label: canManage ? 'Manage' : 'View', icon: [SlidersHorizontal, { size: 14 }], onSelect: onManage },
-      { label: 'Duplicate to a new agent', icon: [Copy, { size: 14 }], onSelect: onDuplicate },
+      { label: 'Duplicate', icon: [Copy, { size: 14 }], onSelect: onDuplicate },
       ...(canManage
         ? ([
             'sep',
@@ -306,7 +326,7 @@ export function useAgentMenu(
                   { label: 'Stop', icon: [Square, { size: 13, fill: 'currentColor' }], onSelect: () => void act('stop', 'stopping') },
                   { label: 'Restart', icon: [RotateCw, { size: 13 }], onSelect: () => void act('restart', 'restarting', RESTART_CONFIRM) },
                   {
-                    label: rolling() ? 'Rolling now' : 'Roll',
+                    label: rolling() ? 'Restarting on a fresh container' : 'Restart on a fresh container',
                     icon: [Repeat, { size: 13 }],
                     disabled: rolling(),
                     onSelect: () => void act('roll', 'rolling'),
@@ -320,13 +340,16 @@ export function useAgentMenu(
           ] as ContextMenuEntry[])
         : []),
     ]
-    menu.openMenu(e, entries)
   }
 
   return {
     menu,
-    onContextMenu,
+    onContextMenu: (e: MouseEvent) => menu.openMenu(e, entries()),
+    entries,
     act: controls.act,
+    get pending() {
+      return controls.pending
+    },
     get retiring() {
       return retiring
     },
