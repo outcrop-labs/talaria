@@ -8,6 +8,12 @@
 // place its hold, and again to insert its attempt and lift the hold, so a
 // dispatcher past its hold read cannot claim the attempt's generation.
 //
+// A rewind that fails can leave its fork in the agent's store under the
+// attempt's id when the agent cannot be reached to delete it. The dispatcher
+// never claims an id a rewind reserved (`rewind_reserved`), so no fresh
+// session continues that conversation. Only the next rewind, which asks the
+// agent first, takes the fork back and may use the generation again.
+//
 // A session lock rides its connection: a pooled connection handed back with
 // the lock still held would hold it for the life of the pool. `release`
 // unlocks before the connection returns, and a guard dropped unreleased
@@ -15,6 +21,9 @@
 
 use sqlx::pool::PoolConnection;
 use sqlx::{PgConnection, PgPool, Postgres};
+use talaria_runs_work_session::session_run_id;
+
+use crate::MAX_SESSIONS_PER_TICKET_AGENT;
 
 pub struct SessionLock {
     conn: Option<PoolConnection<Postgres>>,
@@ -131,4 +140,26 @@ pub async fn lift_hold(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// The pair's session ids that a `run-rewind` reserved for its attempt,
+/// whatever came of the rewind. A rewind checkpoints its plan, with the
+/// attempt's id at `plan.attemptRunId`, before it forks anything, so this
+/// names every id a leftover fork can sit under. A rewind that made its
+/// attempt has a run row at that id as well, which the walk reads first.
+pub async fn rewind_reserved(
+    conn: &mut PgConnection,
+    task_id: &str,
+    agent_model: &str,
+) -> Result<Vec<String>, sqlx::Error> {
+    let pair: Vec<String> = (0..MAX_SESSIONS_PER_TICKET_AGENT)
+        .map(|generation| session_run_id(task_id, agent_model, generation))
+        .collect();
+    sqlx::query_scalar(
+        "select distinct checkpoint->'plan'->>'attemptRunId' from runs \
+         where kind = 'run-rewind' and checkpoint->'plan'->>'attemptRunId' = any($1)",
+    )
+    .bind(&pair)
+    .fetch_all(conn)
+    .await
 }

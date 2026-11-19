@@ -32,9 +32,11 @@
 //
 // AFTER ANY CRASH A RETRY CONVERGES on the same end state and touches nothing
 // that happened since. A failure lifts the hold, and discards the checkout
-// and the fork only when the attempt is known not to exist, so a failed rewind
-// spends no generation; a fork it could not reach is taken back at the next
-// rewind's reservation.
+// and the fork only when the attempt is known not to exist. A fork it could
+// not reach is taken back at the next rewind's reservation, and until then the
+// dispatcher cannot open a session in it: it never claims a generation a
+// rewind reserved (`talaria_work_dispatch::holds::rewind_reserved`, which reads
+// the plan's `attemptRunId` from this run's checkpoint).
 //
 // WHAT DECIDES AND WHAT ACTS are kept apart. `validate` is pure and the step
 // is written against the `RewindWorld` trait, so the tests drive every stage,
