@@ -1,18 +1,12 @@
 <script lang="ts">
-  import ComposerPicker from '@/components/chat/ComposerPicker.svelte'
+  import Combobox from '@/components/ui/Combobox.svelte'
   import { useModelEfforts } from '@/lib/model-efforts.svelte'
 
-  // The effort dial on a Models-view slot row (a Model role, a platform
-  // agent).
+  // The effort level on a Models-view row (a model role, a platform agent).
   //
-  // THREE STATES, all visible — the dial being invisible when a model is
-  // unassigned or ladder-less read as "the feature does not exist", which is
-  // how it shipped the first time:
-  //    model assigned, publishes levels → the effort chip
-  //    model assigned, no levels (answer landed) → a quiet "no levels" label,
-  //      so the absence is legible rather than a hole in the row
-  //    Auto (no model) → nothing; there is no model to ask a level of, and the
-  //      select beside this says so already
+  // It renders only for a model that publishes levels, the same rule the
+  // Profile page's effort picker follows: there is no level to set on a model
+  // with no ladder, or on Auto, where there is no model to ask.
   //
   // A COMPONENT RATHER THAN A CALL IN THE PARENT'S each-loop because
   // `useModelEfforts` is a query hook: one per row means one query per
@@ -22,6 +16,7 @@
     value,
     onChange,
     disabled = false,
+    class: className,
   }: {
     /** The model assigned to the slot; null/undefined (Auto) renders nothing. */
     model: string | null | undefined
@@ -29,42 +24,27 @@
     value: string
     onChange: (effort: string | null) => void
     disabled?: boolean
+    class?: string
   } = $props()
 
-  // Kept whole and read through its getters: destructured, the levels and
-  // the loading flag would be the query's state at mount, frozen.
+  // Kept whole and read through its getter: destructured, the levels would be
+  // the query's state at mount, frozen.
   const modelEfforts = useModelEfforts(() => model ?? null)
   const efforts = $derived(modelEfforts.efforts)
-  const settled = $derived(!!model && !modelEfforts.isLoading)
 
-  // The effort chip's shape: its rows, the rung the stored level sits on ('' is
-  // the model's own default — no rung), and the ingress row that means it.
-  const effort = $derived(value ?? '')
-  const effortOptions = $derived(efforts.map((level) => ({ value: level, label: level })))
-  const effortMeter = $derived({ total: efforts.length, lit: Math.max(0, efforts.indexOf(effort) + 1) })
-  const effortAuto = { value: '', label: 'auto', sub: 'model default' }
+  const sentence = (level: string) => level.charAt(0).toUpperCase() + level.slice(1)
 </script>
 
 {#if model && efforts.length > 0}
-  <ComposerPicker
-    chipVariant="primary"
-    value={effort}
-    label={effort || 'auto'}
-    options={effortOptions}
-    autoOption={effortAuto}
-    meter={effortMeter}
+  <!-- '' is the model's own default: picking it clears the preference. A stored
+       level the model no longer publishes reads as that default. -->
+  <Combobox
+    size="sm"
+    class={className}
     searchable={false}
-    menuClass="min-w-48"
-    title="Reasoning effort for this reply"
-    menuLabel="Reasoning effort"
     {disabled}
-    onChange={(v) => onChange(v || null)}
+    options={[{ value: '', label: 'Auto effort', sub: 'The model decides' }, ...efforts.map((level) => ({ value: level, label: sentence(level) }))]}
+    selected={[efforts.includes(value) ? value : '']}
+    onChange={([v]) => onChange(v || null)}
   />
-{:else if settled}
-  <span
-    class="px-1 font-mono text-[9px] uppercase tracking-[0.06em] text-ink-dim"
-    title="This model publishes no reasoning-effort levels"
-  >
-    no levels
-  </span>
 {/if}

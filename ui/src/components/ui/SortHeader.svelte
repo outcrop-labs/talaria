@@ -2,6 +2,7 @@
   import type { Component, Snippet } from 'svelte'
   import { ChevronDown, ChevronUp } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
+  import { useUiVoice, type UiVoice } from '@/lib/ui-voice'
 
   // The one sortable column head: the label dims to ink-dim until its column is
   // the sorted one, then it is fg with an arrow beside it, reversed on a
@@ -24,6 +25,7 @@
     arrows = [ChevronUp, ChevronDown],
     size = 12,
     onclick,
+    voice,
     class: className,
     children,
   }: {
@@ -37,17 +39,24 @@
     arrows?: [Component<any>, Component<any>]
     size?: number
     onclick: () => void
+    /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
+    voice?: UiVoice
     class?: string
     children: Snippet
   } = $props()
+
+  const areaVoice = useUiVoice()
+  const sans = $derived((voice ?? areaVoice) === 'sans')
 </script>
 
 <button
   type="button"
   {onclick}
   class={cn(
-    'flex items-center gap-1 uppercase tracking-[0.08em] transition-colors hover:text-fg',
-    active ? 'text-fg' : 'text-ink-dim',
+    sans
+      ? 'flex items-center gap-1 font-sans text-xs font-medium leading-4 transition-colors hover:text-fg'
+      : 'flex items-center gap-1 uppercase tracking-[0.08em] transition-colors hover:text-fg',
+    active ? 'text-fg' : sans ? 'text-muted' : 'text-ink-dim',
     className,
   )}
 >

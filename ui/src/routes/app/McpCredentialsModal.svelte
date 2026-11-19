@@ -1,11 +1,15 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
   import { X } from '@lucide/svelte'
+  import Chip from '@/components/ui/Chip.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Select from '@/components/ui/Select.svelte'
+  import { cn } from '@/lib/cn'
   import { slide } from '@/lib/motion'
+  import { useUiVoice } from '@/lib/ui-voice'
+  import McpField from './McpField.svelte'
   import McpHeaderRows from './McpHeaderRows.svelte'
   import McpServerMark from './McpServerMark.svelte'
   import {
@@ -14,6 +18,7 @@
     headerFields,
     headersOfRows,
     patchServer,
+    serverDomain,
     type HeaderField,
     type HeaderRow,
     type McpServerRow,
@@ -37,6 +42,9 @@
     onSaved?: () => void
   } = $props()
 
+  // The marketplace opens this from an agent's dialog in comms too, where the
+  // voice is mono: every `sans` fork below keeps that look as it was.
+  const sans = useUiVoice() === 'sans'
   const qc = useQueryClient()
   // svelte-ignore state_referenced_locally -- reason: the form seeds once from the server row; the modal mounts per edit
   const declared = s.requiredHeaders ?? []
@@ -91,35 +99,55 @@
   }
 </script>
 
-<Modal open {onClose} width="max-w-md">
-  <div>
-    <div class="flex items-center gap-3">
-      <McpServerMark title={s.label} domain={(() => { try { const u = new URL(s.url); return u.protocol.startsWith('http') ? u.hostname.replace(/^mcp\./, '') : null } catch { return null } })()} size={36} />
-      <div class="min-w-0 flex-1">
-        <div class="font-sans text-sm font-semibold text-fg">Credentials for {s.label}</div>
-        <div class="font-sans text-xs text-muted">
-          {s.authMode === 'per-user'
-            ? 'Fixed publisher headers only — people connect their own account under Settings → Connections.'
-            : 'The org account every agent speaks with. Sealed at rest; spoken only by the gateway.'}
+{#snippet actions()}
+  <Button size="sm" variant="ghost" onclick={onClose}>{discovery ? 'Close' : 'Cancel'}</Button>
+  <Button size="sm" disabled={busy || !dirty} onclick={() => void save()}>{busy ? 'Saving' : 'Save and test'}</Button>
+{/snippet}
+
+{#snippet footer()}
+  <div class="flex justify-end gap-2">{@render actions()}</div>
+{/snippet}
+
+<Modal open {onClose} title={sans ? `Credentials for ${s.label}` : undefined} footer={sans ? footer : undefined} width="max-w-md">
+  <div class={cn(sans && 'space-y-5')}>
+    {#if sans}
+      <p class="font-sans text-[13px] leading-5 text-muted">
+        {s.authMode === 'per-user'
+          ? 'Fixed headers only. Each person connects their own account under Settings, Connections.'
+          : 'The org account every agent uses. Stored encrypted and sent only by Talaria.'}
+      </p>
+    {:else}
+      <div class="flex items-center gap-3">
+        <McpServerMark title={s.label} domain={serverDomain(s.url)?.replace(/^mcp\./, '')} size={36} />
+        <div class="min-w-0 flex-1">
+          <div class="font-sans text-sm font-semibold text-fg">Credentials for {s.label}</div>
+          <div class="font-sans text-xs text-muted">
+            {s.authMode === 'per-user'
+              ? 'Fixed publisher headers only — people connect their own account under Settings → Connections.'
+              : 'The org account every agent speaks with. Sealed at rest; spoken only by the gateway.'}
+          </div>
         </div>
       </div>
-    </div>
+    {/if}
 
     {#if s.probe?.state === 'auth-required'}
-      <div class="mt-3 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 font-sans text-xs text-fg">{s.probe.detail}</div>
+      <div class={cn('rounded-md border border-warning/40 bg-warning/5 px-3 py-2 font-sans text-fg', sans ? 'text-[13px] leading-5' : 'mt-3 text-xs')}>
+        {s.probe.detail}
+      </div>
     {/if}
 
     {#if fields.length}
-      <div class="mt-3 space-y-3">
+      <div class={sans ? 'space-y-5' : 'mt-3 space-y-3'}>
         {#each fields as f (f.key)}
           {@const stored = storedKeys.includes(f.header)}
-          <div>
-            <label for={`cred-${f.key}`} class="mb-1 flex items-baseline gap-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-              {f.label}
-              {#if f.isRequired && !stored}<span class="text-accent">*</span>{/if}
-              {#if f.header !== f.label}<span class="normal-case text-ink-dim/70">→ {f.header}</span>{/if}
-              {#if stored}<span class="normal-case text-success/80">set</span>{/if}
-            </label>
+          <McpField
+            label={f.label}
+            for={`cred-${f.key}`}
+            required={f.isRequired}
+            header={f.header !== f.label ? f.header : null}
+            {stored}
+            hint={f.description}
+          >
             {#if f.choices?.length}
               <Select id={`cred-${f.key}`} size="sm" value={values[f.key] ?? ''} onchange={(e) => (values = { ...values, [f.key]: e.currentTarget.value })} class="w-full">
                 <option value="">{stored ? 'Keep current' : 'Pick one'}</option>
@@ -128,57 +156,76 @@
             {:else}
               <Input
                 id={`cred-${f.key}`}
+                size={sans ? 'sm' : 'md'}
                 type={f.isSecret ? 'password' : 'text'}
                 value={values[f.key] ?? ''}
                 oninput={(e) => (values = { ...values, [f.key]: e.currentTarget.value })}
-                placeholder={stored ? '••• (leave blank to keep)' : (f.placeholder ?? (f.isSecret ? '•••' : ''))}
+                placeholder={stored
+                  ? sans
+                    ? 'Saved. Leave blank to keep it'
+                    : '••• (leave blank to keep)'
+                  : (f.placeholder ?? (f.isSecret ? '•••' : ''))}
                 autocomplete="off"
               />
             {/if}
-            {#if f.description}<div class="mt-1 font-sans text-[11px] text-muted/90">{f.description}</div>{/if}
-          </div>
+          </McpField>
         {/each}
       </div>
     {/if}
 
     {#if extraStored.length || !fields.length}
-      <div class="mt-3">
-        <div class="mb-1 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          {fields.length ? 'Other headers' : 'Auth headers'}
-        </div>
-        {#if extraStored.length}
-          <div class="mb-2 flex flex-wrap gap-1.5">
-            {#each extraStored as k (k)}
-              <span class="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 font-mono text-[11px] text-muted" class:line-through={removed.includes(k)}>
-                {k}: •••
-                {#if !removed.includes(k)}
-                  <button type="button" title="Remove this header" class="text-muted hover:text-danger" onclick={() => (removed = [...removed, k])}><X size={11} /></button>
+      <div class={cn(!sans && 'mt-3')}>
+        <McpField
+          label={fields.length ? 'Other headers' : 'Auth headers'}
+          hint={sans && !fields.length ? 'Most servers want Authorization: Bearer and a key. The server\'s docs say which header it reads.' : undefined}
+        >
+          {#if extraStored.length}
+            <div class={cn('flex flex-wrap gap-1.5', sans ? 'mb-1' : 'mb-2')}>
+              {#each extraStored as k (k)}
+                {#if sans && removed.includes(k)}
+                  <Chip class="font-mono font-normal line-through opacity-60" title="Removed when you save. Click to keep it" onSelect={() => (removed = removed.filter((x) => x !== k))}>
+                    {k}
+                  </Chip>
+                {:else if sans}
+                  <Chip class="font-mono font-normal" title="A header stored for this server" onRemove={() => (removed = [...removed, k])}>{k}</Chip>
                 {:else}
-                  <button type="button" class="text-[10px] text-accent" onclick={() => (removed = removed.filter((x) => x !== k))}>keep</button>
+                  <span class="inline-flex items-center gap-1 rounded border border-line px-1.5 py-0.5 font-mono text-[11px] text-muted" class:line-through={removed.includes(k)}><!-- voice-ok: mono branch -->
+                    {k}: •••
+                    {#if !removed.includes(k)}
+                      <button type="button" title="Remove this header" class="text-muted hover:text-danger" onclick={() => (removed = [...removed, k])}><X size={11} /></button>
+                    {:else}
+                      <button type="button" class="text-[10px] text-accent" onclick={() => (removed = removed.filter((x) => x !== k))}>keep</button><!-- voice-ok: mono branch -->
+                    {/if}
+                  </span>
                 {/if}
-              </span>
-            {/each}
-          </div>
-        {/if}
-        <McpHeaderRows bind:rows />
-        {#if !fields.length}
-          <div class="mt-1.5 font-sans text-[11px] text-muted/80">
-            Most servers want <code class="font-mono">Authorization: Bearer &lt;key&gt;</code>; some name their own header (<code class="font-mono">X-API-Key</code>). The server's docs say which.
-          </div>
-        {/if}
+              {/each}
+            </div>
+          {/if}
+          <McpHeaderRows bind:rows />
+          {#if !sans && !fields.length}
+            <div class="mt-1.5 font-sans text-[11px] text-muted/80"><!-- voice-ok: mono branch -->
+              Most servers want <code class="font-mono">Authorization: Bearer &lt;key&gt;</code>; some name their own header (<code class="font-mono">X-API-Key</code>). The server's docs say which.
+            </div>
+          {/if}
+        </McpField>
       </div>
     {/if}
 
-    {#if error}<div transition:slide={{ duration: 150 }} class="mt-3 text-xs text-danger">{error}</div>{/if}
-    {#if discovery}
-      <div transition:slide={{ duration: 150 }} class="mt-3 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 font-sans text-xs text-fg">
-        Saved, but the server still refused: {discovery}
-      </div>
+    {#if sans}
+      {#if error}<div class="font-sans text-[13px] leading-5 text-danger" role="alert">{error}</div>{/if}
+      {#if discovery}
+        <div class="rounded-md border border-danger/40 bg-danger/5 px-3 py-2 font-sans text-[13px] leading-5 text-fg" role="alert">
+          Saved, but the server still refused: {discovery}
+        </div>
+      {/if}
+    {:else}
+      {#if error}<div transition:slide={{ duration: 150 }} class="mt-3 text-xs text-danger">{error}</div>{/if}
+      {#if discovery}
+        <div transition:slide={{ duration: 150 }} class="mt-3 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 font-sans text-xs text-fg">
+          Saved, but the server still refused: {discovery}
+        </div>
+      {/if}
+      <div class="mt-4 flex justify-end gap-2 border-t border-line pt-3">{@render actions()}</div>
     {/if}
-
-    <div class="mt-4 flex justify-end gap-2 border-t border-line pt-3">
-      <Button size="sm" variant="ghost" onclick={onClose}>{discovery ? 'Close' : 'Cancel'}</Button>
-      <Button size="sm" disabled={busy || !dirty} onclick={() => void save()}>{busy ? 'Saving' : 'Save and test'}</Button>
-    </div>
   </div>
 </Modal>

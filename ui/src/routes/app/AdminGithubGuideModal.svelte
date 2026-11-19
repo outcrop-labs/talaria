@@ -1,5 +1,4 @@
 <script lang="ts">
-  import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Segmented from '@/components/ui/Segmented.svelte'
@@ -7,8 +6,8 @@
   import AdminGhFields from './AdminGhFields.svelte'
   import AdminGhStep from './AdminGhStep.svelte'
 
-  /** The full field-by-field setup walkthrough — out of the panel, into a calm
-   *  scrollable modal. Mirrors whichever method is selected.
+  /** The field-by-field setup walkthrough for a GitHub connection. Opens on
+   *  whichever method the connection dialog has selected.
    *
    *  THE APP IS THE CEILING, NOT THE GRANT. Give the App every permission any
    *  agent should ever use: Talaria mints each token for one repository and
@@ -23,107 +22,105 @@
     void open
     tab = mode
   })
+
+  const text = 'font-sans text-[13px] leading-5 text-muted'
+  const link = 'text-accent underline-offset-2 hover:underline'
 </script>
 
-<Modal {open} {onClose} width="max-w-2xl" title="Connect GitHub: setup guide">
-  <div class="space-y-4">
+<Modal {open} {onClose} width="max-w-2xl" title="GitHub setup guide">
+  <div class="space-y-6">
     <Segmented
       options={[
-        { id: 'app', label: 'GitHub App (recommended)' },
-        { id: 'pat', label: 'Personal access token' },
+        { id: 'app', label: 'GitHub App' },
+        { id: 'pat', label: 'Access token' },
       ] as const}
       value={tab}
       onChange={(t) => (tab = t)}
     />
-    <!-- Tab-pane grammar, in a modal whose height follows the guide: the modal
-         glides between the two methods' heights (AutoHeight), the steps rise
-         in with a stagger — this pane is a stack of sections. -->
-    <AutoHeight>
-      <div class="max-h-[60vh] overflow-y-auto pr-1">
-        {#key tab}
-        <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-4">
-      {#if tab === 'app'}
-        <p class="rounded-md border border-line-subtle bg-raised/40 px-3 py-2 text-xs text-muted">
-          <span class="text-fg">The App is the ceiling, not the grant.</span> Give it every permission any agent here should ever use. Talaria mints each token for one repository and narrows it to what an admin granted that agent on this host, so nothing the App holds reaches an agent by itself — and nothing the App lacks can be granted.
-        </p>
-        <AdminGhStep n={1} title="Create the App">
-          <p class="text-xs text-muted">
-            Open{' '}
-            <a href="https://github.com/settings/apps/new" target="_blank" rel="noreferrer" class="text-accent hover:underline">
-              github.com/settings/apps/new
-            </a>, or
-            if the repos belong to an organization, prefer <span class="text-fg">Org settings → Developer settings → GitHub Apps → New GitHub App</span> so the org owns it outright. GitHub's form is long; here is every field that matters (leave anything unlisted at its default):
+    {#key tab}
+      <div in:fly={{ y: 6, duration: 200 }} use:staggerIn class="space-y-6">
+        {#if tab === 'app'}
+          <p class={text}>
+            <span class="text-fg">The app is the ceiling, not the grant.</span> Give it every permission any agent here should ever use.
+            Talaria mints each token for one repository and narrows it to what an admin granted that agent on this host, so nothing the app
+            holds reaches an agent by itself, and nothing the app lacks can be granted.
           </p>
-          <AdminGhFields
-            rows={[
-              ['GitHub App name', 'Anything unique, e.g. "Talaria Workbench (Yourco)".'],
-              ['Description', 'Optional.'],
-              ['Homepage URL', "Required by GitHub but unused here: your company site or this Talaria instance's address both work."],
-              ['Callback URL', 'Leave blank. Talaria never signs users in through this App.'],
-              ['Request user authorization / Device flow', 'Leave unchecked.'],
-              ['Setup URL / Redirect on update', 'Leave blank / unchecked.'],
-              ['Webhook → Active', 'UNCHECK it. Talaria calls GitHub directly, so no webhook; unchecking also removes the required-URL field.'],
-              ['Repository permissions: always', 'Contents: Read and write (clone, push the job branch) · Pull requests: Read and write (Talaria opens the pull request) · Checks: Read-only and Commit statuses: Read-only (a pull request\'s CI on a private repo) · Metadata: Read-only (set automatically).'],
-              ['Repository permissions: what agents may use', 'Anything else an agent here should ever be able to use: Workflows (to change .github/workflows), Actions, Secrets, Variables, Commit statuses write. Granting it here gives it to no agent; an admin still picks it per agent per host.'],
-              ['Repository → Administration', 'Only if agents may request NEW repos (a person approves each): Talaria spends it itself to protect the new repo\'s default branch, and never puts it on an agent\'s token.'],
-              ['Organization permissions', 'None needed. (Administration: Read and write only for the same repo requests: creating a repo in the org.)'],
-              ['Subscribe to events', 'None.'],
-              ['Where can this app be installed?', 'If the repos live in an ORGANIZATION and the app is created under your personal account, choose "Any account". "Only on this account" locks installs to the owner. (Already created it? App settings → Advanced → "Make public" flips this; public only means installable elsewhere, nothing is exposed.) Org-owned apps can stay "Only on this account".'],
-            ]}
-          />
-        </AdminGhStep>
-        <AdminGhStep n={2} title="Collect the credentials">
-          <p class="text-xs text-muted">
-            After "Create GitHub App": the <span class="text-fg">App ID</span> is at the top of the app's settings page (About section). Then scroll to{' '}
-            <span class="text-fg">Private keys → Generate a private key</span>. It downloads a <span class="text-fg">.pem</span> file; open it in any text editor and paste the whole thing into the panel, BEGIN/END lines included. Both are stored encrypted.
-          </p>
-        </AdminGhStep>
-        <AdminGhStep n={3} title="Install it on your repos">
-          <p class="text-xs text-muted">
-            On the app's settings page choose <span class="text-fg">Install App</span> in the sidebar → pick the account or organization (org installs by non-owners become a request an org owner approves) →{' '}
-            <span class="text-fg">"Only select repositories"</span> → choose the repos agents will work (you can add more any time). Then pick that installation in the panel's "Installed on" chips.
-          </p>
-        </AdminGhStep>
-        <AdminGhStep n={4} title="Changing the App's permissions later">
-          <p class="text-xs text-muted">
-            Add a permission to the App and GitHub asks an owner of every account it is installed on to accept it. Until they do, the host card's <span class="text-fg">Permissions</span> lists it as <span class="text-fg">waiting for org-owner approval</span>, with the link where they accept it, an alert says so, and tokens are minted without it. Talaria reads the App and each installation again every ten minutes; <span class="text-fg">Refresh</span> on the card reads them now.
-          </p>
-        </AdminGhStep>
-      {:else}
-        <AdminGhStep n={1} title="Create a fine-grained token">
-          <p class="text-xs text-muted">
-            Open{' '}
-            <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer" class="text-accent hover:underline">
-              github.com/settings/personal-access-tokens/new
-            </a>{' '}
-            and fill the form like this:
-          </p>
-          <AdminGhFields
-            rows={[
-              ['Token name', 'Anything recognizable, e.g. "Talaria Workbench".'],
-              ['Resource owner', 'The account or organization that owns the repos your agents will work.'],
-              ['Expiration', 'Your call: re-paste a fresh token when it rotates.'],
-              ['Repository access', '"Only select repositories" → pick the repos agents may touch. You can add more later.'],
-              ['Permissions → Repository', 'Contents: Read and write · Pull requests: Read and write · Checks: Read-only · Commit statuses: Read-only. (Metadata: Read-only is added automatically.)'],
-              ['Everything else', 'Leave at its default.'],
-            ]}
-          />
-          <p class="text-xs text-muted">
-            A token cannot be narrowed: every agent granted a repo on this host can spend all of it. The GitHub App mints a token per repository, narrowed per agent; prefer it.
-          </p>
-        </AdminGhStep>
-        <AdminGhStep n={2} title="Paste it in the panel">
-          <p class="text-xs text-muted">Stored encrypted; never shown again. The status line confirms who it acts as.</p>
-        </AdminGhStep>
-      {/if}
-        </div>
-        {/key}
+          <AdminGhStep n={1} title="Create the app">
+            <p class={text}>
+              Open
+              <a href="https://github.com/settings/apps/new" target="_blank" rel="noreferrer" class={link}>github.com/settings/apps/new</a>.
+              If an organization owns the repositories, create it from the organization's developer settings instead. Leave any field
+              not listed here as it is.
+            </p>
+            <AdminGhFields
+              rows={[
+                ['GitHub App name', 'Anything unique, such as "Talaria Workbench".'],
+                ['Homepage URL', 'Required but unused. Your company site works.'],
+                ['Callback URL', 'Leave blank.'],
+                ['Request user authorization', 'Leave unchecked, and Device flow too.'],
+                ['Webhook', 'Uncheck Active. Talaria calls GitHub directly.'],
+                ['Repository permissions', "Contents and Pull requests, both Read and write. Checks and Commit statuses, Read-only, for a pull request's CI on a private repository."],
+                ['Other repository permissions', 'Anything an agent here should ever use, such as Workflows, Actions, Secrets or Variables. It reaches no agent until an admin grants it to that agent on this host.'],
+                ['Repository administration', "Only if agents will request new repositories, which a person approves. Talaria uses it to protect the new repository's default branch and never puts it on an agent's token."],
+                ['Organization permissions', 'None. Add Administration, Read and write, only if agents will request new repositories.'],
+                ['Subscribe to events', 'None.'],
+                ['Where can it be installed', 'Any account, if the app is under your personal account and an organization owns the repositories. Advanced, Make public changes it later.'],
+              ]}
+            />
+          </AdminGhStep>
+          <AdminGhStep n={2} title="Copy the App ID and a private key">
+            <p class={text}>
+              The App ID is at the top of the app's settings page. Under Private keys, generate a key, open the downloaded .pem file in a
+              text editor, and paste all of it into the connection dialog.
+            </p>
+          </AdminGhStep>
+          <AdminGhStep n={3} title="Install it on your repositories">
+            <p class={text}>
+              Choose Install App in the app's sidebar, pick the account, then Only select repositories. Back in the connection dialog,
+              turn that installation on.
+            </p>
+          </AdminGhStep>
+          <AdminGhStep n={4} title="Change the app's permissions later">
+            <p class={text}>
+              Add a permission to the app and GitHub asks an owner of every account it is installed on to accept it. Until they do, the
+              host's row says Approval waiting, its dialog lists the permission as waiting with the link where they accept it, an alert says
+              so, and tokens are minted without it. Talaria reads the app and each installation every ten minutes, and Refresh in the host's
+              dialog reads them now.
+            </p>
+          </AdminGhStep>
+        {:else}
+          <AdminGhStep n={1} title="Create a fine-grained token">
+            <p class={text}>
+              Open
+              <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer" class={link}>
+                github.com/settings/personal-access-tokens/new
+              </a>
+              and fill it in like this.
+            </p>
+            <AdminGhFields
+              rows={[
+                ['Token name', 'Anything you will recognize, such as "Talaria Workbench".'],
+                ['Resource owner', 'The account or organization that owns the repositories.'],
+                ['Expiration', 'Your choice. Paste a fresh token when it rotates.'],
+                ['Repository access', 'Only select repositories, then the ones agents may touch.'],
+                ['Repository permissions', 'Contents and Pull requests, both Read and write. Checks and Commit statuses, Read-only.'],
+              ]}
+            />
+            <p class={text}>
+              A token cannot be narrowed: every agent granted a repository on this host can spend all of it. The GitHub App mints a token per
+              repository, narrowed per agent, so prefer it.
+            </p>
+          </AdminGhStep>
+          <AdminGhStep n={2} title="Paste it into the connection dialog">
+            <p class={text}>It is stored encrypted and never shown again. The host's row then says who it acts as.</p>
+          </AdminGhStep>
+        {/if}
       </div>
-    </AutoHeight>
-    <div class="flex justify-end">
-      <Button size="sm" variant="outline" onclick={onClose}>
-        Done
-      </Button>
-    </div>
+    {/key}
   </div>
+  {#snippet footer()}
+    <div class="flex justify-end">
+      <Button size="sm" variant="outline" onclick={onClose}>Done</Button>
+    </div>
+  {/snippet}
 </Modal>

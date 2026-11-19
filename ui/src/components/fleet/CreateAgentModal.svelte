@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Sparkles } from '@lucide/svelte'
+  import SettingsField from '@/components/settings/SettingsField.svelte'
   import AutoHeight from '@/components/ui/AutoHeight.svelte'
   import Button from '@/components/ui/Button.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
@@ -32,6 +32,7 @@
     watchDesign,
     type DraftFields,
   } from '@/lib/agent-design'
+  import { cn } from '@/lib/cn'
   import { errorMessage } from '@/lib/fetch-json'
   import { useSession } from '@/lib/session'
   import Modal from '@/components/ui/Modal.svelte'
@@ -544,7 +545,7 @@
        waits (and the bell said so) rather than overwrite this one, and comes
        back here once this one is hired or discarded. Nothing is lost. -->
   {#each returned as r (r.designId)}
-    <p transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="design-returned">
+    <p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-muted" data-testid="design-returned">
       {didNotFinish(r.name, r.reason)}
       Its design comes back here once this one is hired or discarded.
       <button type="button" class="ml-1 underline hover:text-danger" onclick={() => dismissReturned(qc, r.designId).catch((e: unknown) => (startErr = errorMessage(e)))}>Discard it</button>
@@ -553,7 +554,7 @@
   <!-- A failed hire's design came back into New agent while the person was
        typing into it: offered beside what is typed, never put in its place. -->
   {#if arrived}
-    <p transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="design-arrived">
+    <p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-muted" data-testid="design-arrived">
       {didNotFinish(arrived.draft?.name.trim() || 'the designed agent', arrived.error)}
       Its design is back:
       <button type="button" class="underline hover:text-fg" onclick={openOffered}>Open it</button>
@@ -563,11 +564,22 @@
   {/if}
 {/snippet}
 
+{#snippet quietLink(label: string, onclick: () => void, danger = false, testid?: string)}
+  <button
+    type="button"
+    class={cn('font-sans text-[13px] leading-5 text-muted transition-colors', danger ? 'hover:text-danger' : 'hover:text-fg')}
+    {onclick}
+    data-testid={testid}
+  >
+    {label}
+  </button>
+{/snippet}
+
 {#if step === null}
   <!-- The first read of the design is still out (the roster usually has it
        cached, so this is rare): say so rather than guess a step. -->
   <Modal {open} {onClose} title="New agent" width="max-w-lg">
-    <div class="flex items-center gap-2 py-6 text-sm text-muted">
+    <div class="flex items-center gap-2 py-6 font-sans text-sm text-muted">
       <WaitingMark site="fleet/agent-design" size={12} />
       Checking for a design in progress
     </div>
@@ -579,166 +591,144 @@
          the moment generation starts (TALA-11). Keyed on `generating` with
          the stagger as the entrance (ANIMATIONS.md step grammar), and the
          AutoHeight wrapper is load-bearing: the splash is far taller than
-         the form, and a resize the user watches must glide. The footer row
+         the form, and a resize the user watches must glide. The footer
          stays outside the key so the Designing button (its WaitingMark) and
          Cancel remain reachable for the whole wait — and Cancel now really
          is an exit, not a cancel: the generation keeps running on the
          server, and the roster's row, the New agent mark and the bell all
          lead back to it. Discard is the one that stops it. -->
-    <AutoHeight>
-      {#key generating}
-        {#if generating}
-          <!-- No token stream to show: an agent design is a JSON contract, so
-               this is the same progress moment the inline block carried, at
-               the scale of the thing being made. Drift says working, never
-               how far along; the elapsed count (once it is genuinely taking
-               a while) is what separates "working, slowly" from "wedged". -->
-          <div use:staggerIn>
-            <!-- What was asked for, kept visible on a reopen: the splash says
-                 the work is running, the purpose line says what it is for. -->
-            {#if design?.purpose}
-              <p class="mb-3 truncate font-sans text-xs text-muted">{design.purpose}</p>
-            {/if}
-            <GeneratingSplash
-              label="Designing the agent: identity, soul, and starter skills"
-              seconds={genSeconds}
-              site="fleet/agent-design"
-            />
-          </div>
-        {:else}
-          <div class="space-y-5" use:staggerIn>
-            <p class="text-sm leading-relaxed text-muted">
-              Describe what this agent should do: its job, what it watches, what it produces. The AI designs the whole
-              agent (identity, soul, starter skills) for you to review before anything is created.
-            </p>
-            <div class="flex items-end gap-2.5">
-              <Sparkles size={14} class="mb-3 shrink-0 text-accent" />
-              <Textarea
-                autoGrow
-                rows={3}
-                bind:value={purpose}
-                placeholder="e.g. “A release manager that tracks our deploy trains, chases sign-offs before each cut, and posts a go/no-go summary.”"
-                class="max-h-48 text-sm"
-                autofocus
+    <div class="space-y-4">
+      <AutoHeight>
+        {#key generating}
+          {#if generating}
+            <!-- No token stream to show: an agent design is a JSON contract, so
+                 this is the same progress moment the inline block carried, at
+                 the scale of the thing being made. Drift says working, never
+                 how far along; the elapsed count (once it is genuinely taking
+                 a while) is what separates "working, slowly" from "wedged". -->
+            <div use:staggerIn>
+              <!-- What was asked for, kept visible on a reopen: the splash says
+                   the work is running, the purpose line says what it is for. -->
+              {#if design?.purpose}
+                <p class="mb-3 truncate font-sans text-[13px] leading-5 text-muted">{design.purpose}</p>
+              {/if}
+              <GeneratingSplash
+                label="Designing the agent: identity, instructions and starter skills"
+                seconds={genSeconds}
+                site="fleet/agent-design"
               />
             </div>
-            <!-- The other entry path, a peer of describing: pick a role, the fields
-                 fill, the review step opens. Nothing is bound — everything stays
-                 editable over there. Hidden while generating (the splash owns the
-                 body), so its old `!generating` guard now lives in the branch. -->
-            {#if roleTemplates.length}
-              <div class="flex items-center gap-2.5">
-                <span class="shrink-0 font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">or start from a role</span>
-                <Select
-                  bind:value={roleSlug}
-                  onchange={() => roleSlug && applyRole(roleSlug)}
-                  class="min-w-0 flex-1"
-                  aria-label="Start from a role template"
-                >
-                  <option value="">Pick a role…</option>
-                  {#if roleTemplates.some((t) => !t.builtIn)}
-                    <optgroup label="Your organization">
-                      {#each roleTemplates.filter((t) => !t.builtIn) as t (t.slug)}
+          {:else}
+            <div class="space-y-5" use:staggerIn>
+              <SettingsField label="What should this agent do?" hint="Muse designs the whole agent for you to review before anything is created.">
+                <Textarea
+                  autoGrow
+                  rows={4}
+                  bind:value={purpose}
+                  placeholder="e.g. “A release manager that tracks our deploy trains, chases sign-offs before each cut, and posts a go/no-go summary.”"
+                  class="max-h-48"
+                  autofocus
+                />
+              </SettingsField>
+              <!-- The other entry path, a peer of describing: pick a role, the fields
+                   fill, the review step opens. Nothing is bound — everything stays
+                   editable over there. Hidden while generating (the splash owns the
+                   body), so its old `!generating` guard now lives in the branch. -->
+              {#if roleTemplates.length}
+                <SettingsField label="Or start from a role" for="cam-role-template">
+                  <Select id="cam-role-template" size="sm" bind:value={roleSlug} onchange={() => roleSlug && applyRole(roleSlug)} class="w-full">
+                    <option value="">Pick a role</option>
+                    {#if roleTemplates.some((t) => !t.builtIn)}
+                      <optgroup label="Your organization">
+                        {#each roleTemplates.filter((t) => !t.builtIn) as t (t.slug)}
+                          <option value={t.slug}>{t.name}</option>
+                        {/each}
+                      </optgroup>
+                    {/if}
+                    <optgroup label="Common roles">
+                      {#each roleTemplates.filter((t) => t.builtIn) as t (t.slug)}
                         <option value={t.slug}>{t.name}</option>
                       {/each}
                     </optgroup>
-                  {/if}
-                  <optgroup label="Common roles">
-                    {#each roleTemplates.filter((t) => t.builtIn) as t (t.slug)}
-                      <option value={t.slug}>{t.name}</option>
-                    {/each}
-                  </optgroup>
-                </Select>
-              </div>
-            {/if}
-          </div>
-        {/if}
-      {/key}
-    </AutoHeight>
-    {#if genErr || startErr}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{genErr ?? startErr}</p>{/if}
-    {@render returnedNotes()}
-    {#if leftForHire}
-      <p transition:slide={{ duration: 150 }} class="text-xs text-muted" data-testid="design-left-for-hire">
-        {leftForHire} is being hired from another tab. The roster shows its progress.
-      </p>
-    {/if}
-    {#if readErr}
-      <p transition:slide={{ duration: 150 }} class="text-xs text-danger" data-testid="design-read-error">
-        Could not check for a design in progress: {readErr}
-        <button type="button" class="ml-1 underline hover:text-fg" onclick={() => void designQuery.refetch()}>Retry</button>
-      </p>
-    {/if}
-    <div class="flex items-center gap-3 border-t border-line pt-4">
-      {#if generating}
-        <button type="button" class="text-xs text-muted hover:text-danger" onclick={() => void discard()} data-testid="design-discard">
-          Discard design
-        </button>
-      {:else}
-        <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'review')}>
-          Configure manually →
-        </button>
+                  </Select>
+                </SettingsField>
+              {/if}
+            </div>
+          {/if}
+        {/key}
+      </AutoHeight>
+      {#if genErr || startErr}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{genErr ?? startErr}</p>{/if}
+      {@render returnedNotes()}
+      {#if leftForHire}
+        <p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-muted" data-testid="design-left-for-hire">
+          {leftForHire} is being hired from another tab. The roster shows its progress.
+        </p>
       {/if}
-      <span class="ml-auto"></span>
-      <Button variant="ghost" size="sm" onclick={onClose}>
-        {generating ? 'Close' : 'Cancel'}
-      </Button>
-      <Button onclick={() => (generating ? undefined : void describe())} disabled={generating || !purpose.trim()}>
-        {#if generating}<WaitingMark site="fleet/agent-create" size={12} />{/if}
-        {generating ? 'Designing' : 'Design agent'}
-      </Button>
+      {#if readErr}
+        <p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" data-testid="design-read-error">
+          Could not check for a design in progress: {readErr}
+          <button type="button" class="ml-1 underline hover:text-fg" onclick={() => void designQuery.refetch()}>Retry</button>
+        </p>
+      {/if}
     </div>
+    {#snippet footer()}
+      <div class="flex items-center gap-2">
+        {#if generating}
+          {@render quietLink('Discard design', () => void discard(), true, 'design-discard')}
+        {:else}
+          {@render quietLink('Configure manually', () => (step = 'review'))}
+        {/if}
+        <span class="ml-auto"></span>
+        <Button variant="ghost" size="sm" onclick={onClose}>
+          {generating ? 'Close' : 'Cancel'}
+        </Button>
+        <Button size="sm" onclick={() => (generating ? undefined : void describe())} disabled={generating || !purpose.trim()}>
+          {#if generating}<WaitingMark site="fleet/agent-create" size={12} />{/if}
+          {generating ? 'Designing' : 'Design agent'}
+        </Button>
+      </div>
+    {/snippet}
   </Modal>
 {:else}
   <!-- ── Step 2: review + create ──────────────────────────────────────────── -->
-  <Modal {open} {onClose} title="New agent" takeover>
+  <Modal {open} {onClose} title="New agent" width="max-w-3xl">
     <div class="space-y-5">
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label for="cam-name" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Name</label>
-          <Input id="cam-name" value={form.name} oninput={(e) => onName(e.currentTarget.value)} placeholder="Research Analyst" autofocus={!generated} />
-        </div>
-        <div>
-          <label for="cam-handle" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Handle</label>
-          <Input id="cam-handle" value={form.handle} oninput={(e) => set({ handle: e.currentTarget.value })} placeholder="analyst" />
-        </div>
-      </div>
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label for="cam-role" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Role</label>
-          <Input id="cam-role" value={form.role} oninput={(e) => set({ role: e.currentTarget.value })} placeholder="Research Analyst" />
-        </div>
-        <div>
-          <label for="cam-department" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Department</label>
-          <Input id="cam-department" value={form.department} oninput={(e) => set({ department: e.currentTarget.value })} placeholder="research" aria-invalid={departmentHolder ? 'true' : undefined} />
+      <div class="grid grid-cols-2 gap-x-4 gap-y-5">
+        <SettingsField label="Name" for="cam-name">
+          <Input id="cam-name" size="sm" value={form.name} oninput={(e) => onName(e.currentTarget.value)} placeholder="Research Analyst" autofocus={!generated} />
+        </SettingsField>
+        <SettingsField label="Handle" for="cam-handle">
+          <Input id="cam-handle" size="sm" class="font-mono" value={form.handle} oninput={(e) => set({ handle: e.currentTarget.value })} placeholder="analyst" />
+        </SettingsField>
+        <SettingsField label="Role" for="cam-role" hint="The title shown on the roster.">
+          <Input id="cam-role" size="sm" value={form.role} oninput={(e) => set({ role: e.currentTarget.value })} placeholder="Research Analyst" />
+        </SettingsField>
+        <SettingsField label="Department" for="cam-department" hint="Names its container and memory. Each agent has its own.">
+          <Input id="cam-department" size="sm" class="font-mono" value={form.department} oninput={(e) => set({ department: e.currentTarget.value })} placeholder="research" aria-invalid={departmentHolder ? 'true' : undefined} />
           {#if departmentHolder}
-            <p transition:slide={{ duration: 150 }} class="mt-1 text-xs text-danger" data-testid="department-taken">
-              Taken by {departmentHolder.displayName} — pick another.
+            <p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" data-testid="department-taken">
+              Taken by {departmentHolder.displayName}. Pick another.
             </p>
           {/if}
-        </div>
+        </SettingsField>
       </div>
-      <p class="-mt-2 font-sans text-xs text-muted">
-        Role is the roster title; department is the agent's own key — it names its container and its memory, so no two
-        agents share one. The fleet model id becomes
-        <span class="font-mono text-fg">{form.handle || 'handle'}-{form.department || 'department'}</span>.
+      <p class="font-sans text-[13px] leading-5 text-muted">
+        Its id becomes <span class="font-mono text-xs text-fg">{form.handle || 'handle'}-{form.department || 'department'}</span>.
       </p>
 
-      <div>
-        <label for="cam-template" class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-          Chassis template <span class="normal-case">(model tiers, tools, and plugins carry over)</span>
-        </label>
-        <Select id="cam-template" bind:value={templateId} class="w-full">
-          <option value="">Platform defaults: chassis + first local model</option>
+      <SettingsField label="Copy settings from" for="cam-template" hint="Model tiers, tools and plugins carry over.">
+        <Select id="cam-template" size="sm" bind:value={templateId} class="w-full">
+          <option value="">Platform defaults</option>
           {#each templates as t (t.id)}
             <option value={t.id}>{t.displayName} · {t.department} (v{t.currentVersion})</option>
           {/each}
         </Select>
-      </div>
+      </SettingsField>
 
-      <div>
-        <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Soul</span>
+      <div class="space-y-1.5">
+        <div class="font-sans text-[13px] font-medium leading-5 text-fg">Instructions</div>
         {#if form.soul.trim()}
-          <!-- Rich like the post-creation soul editor; autosave keeps `soul`
+          <!-- Rich like the post-creation editor; autosave keeps `soul`
                fresh for create + refine, reseeded whenever muse redrafts. -->
           <div class="max-h-72 overflow-y-auto">
             {#key soulRev}
@@ -746,14 +736,14 @@
             {/key}
           </div>
         {:else}
-          <p class="text-xs text-muted">Starts from a scaffold you edit after creation, or go back and describe the agent to have one designed.</p>
+          <p class="font-sans text-[13px] leading-5 text-muted">It starts from a scaffold you can edit once it is created. Or go back and describe the agent to have them written.</p>
         {/if}
       </div>
 
       {#if form.skills.length > 0}
-        <div in:fade={{ duration: 150 }}>
-          <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Starter skills</span>
-          <ul class="divide-y divide-line rounded-lg border border-line" use:listStagger>
+        <div in:fade={{ duration: 150 }} class="space-y-1.5">
+          <div class="font-sans text-[13px] font-medium leading-5 text-fg">Starter skills</div>
+          <ul class="overflow-hidden rounded-lg border border-line [&>*+*]:border-t [&>*+*]:border-line-subtle" use:listStagger>
             {#each form.skills as s (s.name)}
               <SkillPreviewRow skill={s} onRemove={() => set({ skills: form.skills.filter((x) => x.name !== s.name) })} />
             {/each}
@@ -773,51 +763,42 @@
       {#if lastChange}
         <!-- THE REFINED RECEIPT: what the accepted draft changed, in place of
              the silent field swap this step used to do. -->
-        <div
-          transition:slide={{ duration: 150 }}
-          class="flex items-center gap-2 rounded-md border border-line-subtle bg-surface px-2.5 py-1.5 text-[11px] text-muted"
-          data-refine-applied="visible"
-        >
-          <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Refine applied</span>
-          <span class="truncate">
-            {#if lastChange.fields.length > 0}
-              {lastChange.fields.map((f) => f.label).join(', ')}
-              {#if !lastChange.soul.oversized}
-                · {lastChange.soul.text}
-              {/if}
-            {:else if lastChange.soul.text !== 'no text changes'}
-              {lastChange.soul.text}
-            {:else}
-              no changes to the design
+        <p transition:slide={{ duration: 150 }} class="truncate font-sans text-[13px] leading-5 text-muted" data-refine-applied="visible">
+          <span class="font-medium text-fg">Refined.</span>
+          {#if lastChange.fields.length > 0}
+            {lastChange.fields.map((f) => f.label).join(', ')}
+            {#if !lastChange.soul.oversized}
+              · {lastChange.soul.text}
             {/if}
-          </span>
-        </div>
+          {:else if lastChange.soul.text !== 'no text changes'}
+            {lastChange.soul.text}
+          {:else}
+            No changes to the design.
+          {/if}
+        </p>
       {/if}
 
-      <Checkbox checked={start} onChange={(checked) => (start = checked)} label="Start the container now" class="gap-2 text-sm text-fg" />
+      <Checkbox checked={start} onChange={(checked) => (start = checked)} label="Start it as soon as it is created" class="gap-2 text-sm text-fg" />
       {@render returnedNotes()}
-      {#if hireErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger" data-testid="design-hire-error">{hireErr}</div>{/if}
-      {#if restored}<div transition:slide={{ duration: 150 }} class="text-sm text-muted" data-testid="design-restored">Restored edits that had not reached the server when the page closed. They are being saved now.</div>{/if}
-      {#if err || saveErr}<div transition:slide={{ duration: 150 }} class="text-sm text-danger">{err ?? `Your edits were not saved: ${saveErr}`}</div>{/if}
-      <div class="flex items-center gap-2 border-t border-line pt-4">
-        {#if !preselect}
-          <button type="button" class="text-xs text-muted hover:text-fg" onclick={() => (step = 'describe')}>
-            ← Describe instead
-          </button>
-        {/if}
-        {#if design && !preselect}
-          <button type="button" class="text-xs text-muted hover:text-danger" onclick={() => void discard()} data-testid="design-discard">
-            Discard design
-          </button>
-        {/if}
-        <span class="ml-auto"></span>
-        <Button variant="ghost" size="sm" onclick={onClose}>
-          Cancel
-        </Button>
-        <Button onclick={() => void create()} disabled={busy || generating || !form.handle || !form.department || !form.name || !!departmentHolder}>
+      {#if hireErr}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" data-testid="design-hire-error">{hireErr}</div>{/if}
+      {#if restored}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-muted" data-testid="design-restored">Restored edits that had not reached the server when the page closed. They are being saved now.</div>{/if}
+      {#if err || saveErr}<div transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{err ?? `Your edits were not saved: ${saveErr}`}</div>{/if}
+    </div>
+    {#snippet footer()}
+      <div class="flex items-center gap-2">
+        <span class="mr-auto flex items-center gap-4">
+          {#if !preselect}
+            {@render quietLink('Describe instead', () => (step = 'describe'))}
+          {/if}
+          {#if design && !preselect}
+            {@render quietLink('Discard design', () => void discard(), true, 'design-discard')}
+          {/if}
+        </span>
+        <Button variant="ghost" size="sm" onclick={onClose}>Cancel</Button>
+        <Button size="sm" onclick={() => void create()} disabled={busy || generating || !form.handle || !form.department || !form.name || !!departmentHolder}>
           {busy ? 'Hiring' : 'Create agent'}
         </Button>
       </div>
-    </div>
+    {/snippet}
   </Modal>
 {/if}

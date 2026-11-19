@@ -15,7 +15,7 @@ vi.mock('@/lib/session', () => ({ useSession: vi.fn() }))
 // whole directory (see vitest.config.ts). The module under test is
 // routes/app/agents.svelte.ts; its consumers (AgentItem) live one door down
 // from this file.
-import { HEALTH_COLOR, healthOf } from '@/routes/app/agents.svelte'
+import { HEALTH_TONE, healthOf, shownHealth } from '@/routes/app/agents.svelte'
 
 const def = (over: Partial<AgentDef> = {}): AgentDef =>
   ({
@@ -59,14 +59,31 @@ describe('healthOf: the draft state', () => {
     expect(healthOf(def({ enabled: false }), null)).toEqual({ health: 'retired', running: false })
   })
 
-  it('carries a neutral color, not a signal tone — a draft is not a fault', () => {
-    expect(HEALTH_COLOR.draft).toBe('var(--theme-ink-dim)')
-    // Distinct from the colors that mean something is wrong or something is
-    // live: retired is the line token, down the danger one — draft is neither
-    // signal, it is a state word.
-    expect(HEALTH_COLOR.draft).not.toBe(HEALTH_COLOR.down)
-    expect(HEALTH_COLOR.draft).not.toBe(HEALTH_COLOR.retired)
-    expect(HEALTH_COLOR.draft).not.toBe(HEALTH_COLOR.up)
+  it('carries the neutral tone, not a signal tone: a draft is not a fault', () => {
+    expect(HEALTH_TONE.draft).toBe('idle')
+    expect(HEALTH_TONE.draft).not.toBe(HEALTH_TONE.down)
+    expect(HEALTH_TONE.draft).not.toBe(HEALTH_TONE.up)
+  })
+})
+
+describe('the state a tile shows', () => {
+  const brain = (ok: boolean) => ({ agent: 'analyst', displayName: 'Analyst', ok, targets: [] })
+
+  it('gives each state one tone: running green, starting gold, a fault orange, the rest neutral', () => {
+    expect(HEALTH_TONE).toEqual({ up: 'ok', warming: 'warn', degraded: 'danger', down: 'danger', draft: 'idle', retired: 'idle' })
+  })
+
+  it('reads a running agent whose main model is unreachable as unhealthy', () => {
+    expect(shownHealth(def(), RUNNING, brain(false))).toBe('degraded')
+    expect(shownHealth(def(), RUNNING, brain(true))).toBe('up')
+    expect(shownHealth(def(), RUNNING)).toBe('up')
+  })
+
+  it('leaves every other state to the container', () => {
+    const warming = containers({ name: 'x', state: 'running', status: 'Up', health: 'starting' })
+    expect(shownHealth(def(), warming, brain(false))).toBe('warming')
+    expect(shownHealth(def(), null, brain(false))).toBe('draft')
+    expect(shownHealth(def({ enabled: false }), null, brain(false))).toBe('retired')
   })
 })
 

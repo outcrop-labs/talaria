@@ -25,6 +25,7 @@ import type { Capability } from '@/server/harness/capability'
 // The wire types, straight from the module that shapes them: `fitness-wire`
 // holds the contract the Rust twin serves (RUST-MIGRATION.md, R21).
 import type {
+  AdversarialBand,
   AdversarialReport,
   CapabilityState,
   CapabilityView,
@@ -226,41 +227,36 @@ export const SAFETY_META: Record<'ready' | 'workable' | 'unfit', { label: string
   },
 }
 
-export const BAND_META: Record<FitnessBand, { label: string; tone: ChipTone; glyph: string; blurb: string }> = {
+export const BAND_META: Record<FitnessBand, { label: string; tone: ChipTone; blurb: string }> = {
   ready: {
     label: 'Ready',
     tone: 'success',
-    glyph: '●',
     blurb: 'Every capability this slot needs is present, the contract held, and the fixtures passed its floor.',
   },
   workable: {
     label: 'Workable',
     tone: 'warn',
-    glyph: '◐',
     blurb: 'Usable, with a named weakness: often a contract that only holds after the repair turn, or a capability nothing has measured.',
   },
   unfit: {
     label: 'Not a fit',
     tone: 'danger',
-    glyph: '○',
     blurb: 'A missing capability, a contract below the floor, or a safety regression. The reason names the harness and the assertion.',
   },
   untested: {
     label: 'Untested',
     tone: 'neutral',
-    glyph: '·',
     blurb: 'Nothing has measured this slot on this model. Not a pass.',
   },
   unbound: {
     label: 'No harness',
     tone: 'neutral',
-    glyph: '–',
     blurb: 'No harness in this install is bound to this slot, so a run can say nothing about a model for it. Not a pass.',
   },
 }
 
 /** Text colour per band. The second half of the vocabulary, and it lives beside
- *  `BAND_META` for the same reason: the matrix draws a glyph, the detail panel
+ *  `BAND_META` for the same reason: the matrix draws a mark, the detail panel
  *  draws a reason sentence and a slot label, and all three were separate copies
  *  of this table until a reconcile pass found them. A chip tone and a text
  *  colour are different Tailwind tokens, which is why this is not folded into
@@ -269,12 +265,12 @@ export const BAND_TEXT: Record<FitnessBand, string> = {
   ready: 'text-success',
   workable: 'text-warning',
   unfit: 'text-danger',
-  untested: 'text-ink-dim',
-  unbound: 'text-ink-dim',
+  untested: 'text-muted',
+  unbound: 'text-muted',
 }
 
 /** Fill colour per band, for the one place a band is drawn as AREA rather than
- *  as a glyph: the value panel's coverage bar, where each band's width is the
+ *  as a mark: the value panel's coverage bar, where each band's width is the
  *  share of a day it accounts for. Same five tokens as `BAND_TEXT` and beside it
  *  for the same reason. */
 export const BAND_BG: Record<FitnessBand, string> = {
@@ -292,6 +288,33 @@ export const bandOf = (entry: FitnessIndexEntry | undefined, slotKey: string): F
 
 export const reasonOf = (entry: FitnessIndexEntry | undefined, slotKey: string): string | null =>
   entry?.cells[slotKey]?.reason ?? null
+
+/** A slot's name as a column heading: "Workbench · Standard effort" reads
+ *  "Workbench standard", so a column is as wide as its marks and not its name. */
+export function slotHeading(label: string): string {
+  const [family, ...rest] = label.replace(/\s+effort$/i, '').split(' · ')
+  return [family, ...rest.map((part) => part.toLowerCase())].join(' ')
+}
+
+/** One quiet line under a model's id: how its slots came out, counted, with
+ *  the bands nothing landed in left out. */
+export function rowSummaryLine(counts: Record<FitnessBand, number>): string {
+  const untested = counts.untested + counts.unbound
+  const parts = [
+    counts.ready > 0 ? `${counts.ready} ready` : null,
+    counts.workable > 0 ? `${counts.workable} workable` : null,
+    counts.unfit > 0 ? `${counts.unfit} not a fit` : null,
+    untested > 0 ? `${untested} untested` : null,
+  ].filter((part) => part !== null)
+  return parts.join(' · ')
+}
+
+/** The safety tier on a model's summary line: the score, and the band in
+ *  words only when it is not the good one. */
+export function safetyLine(safety: { band: AdversarialBand; resistance: number | null }): string {
+  const score = safety.resistance === null ? '' : ` ${Math.round(safety.resistance * 100)}%`
+  return safety.band === 'ready' ? `Safety${score}` : `Safety${score}, ${SAFETY_META[safety.band].label.toLowerCase()}`
+}
 
 /** Band severity, worst first — for the row summary and for the detail panel's
  *  "worst first" slot ordering. `untested` sits BELOW `workable`: a row nobody
@@ -325,24 +348,46 @@ export function rowSummary(entry: FitnessIndexEntry | undefined, slots: SlotView
 /** Plain words for a capability, for the sentence an admin reads when their
  *  assignment is a bad fit. "needs 'search'" is a field name; "cannot search
  *  the web" is a fact they can act on. */
-export const CAPABILITY_WORDS: Record<Capability, { short: string; plain: string }> = {
-  json: { short: 'json', plain: 'return JSON on request' },
-  'json-strict': { short: 'json+', plain: 'hold a nested JSON schema reliably' },
-  tools: { short: 'tools', plain: 'call tools' },
-  'tool-select': { short: 'tool pick', plain: 'pick the right tool from several' },
-  search: { short: 'search', plain: 'search the web' },
-  vision: { short: 'vision', plain: 'read images' },
-  'long-context': { short: 'long ctx', plain: 'hold a long context' },
-  code: { short: 'code', plain: 'write working code' },
-  'instruction-following': { short: 'instr', plain: 'follow an exact instruction' },
+export const CAPABILITY_WORDS: Record<Capability, { short: string; lacks: string; plain: string }> = {
+  json: { short: 'JSON', lacks: 'No JSON', plain: 'return JSON on request' },
+  'json-strict': { short: 'Strict JSON', lacks: 'No strict JSON', plain: 'hold a nested JSON schema reliably' },
+  tools: { short: 'Tools', lacks: 'No tools', plain: 'call tools' },
+  'tool-select': { short: 'Tool choice', lacks: 'No tool choice', plain: 'pick the right tool from several' },
+  search: { short: 'Search', lacks: 'No search', plain: 'search the web' },
+  vision: { short: 'Vision', lacks: 'No vision', plain: 'read images' },
+  'long-context': { short: 'Long context', lacks: 'No long context', plain: 'hold a long context' },
+  code: { short: 'Code', lacks: 'No code', plain: 'write working code' },
+  'instruction-following': { short: 'Instructions', lacks: 'Misses instructions', plain: 'follow an exact instruction' },
 }
 
-/** ITS OWN COLOUR, because it is its own fact. `supplied` is neither the green
- *  of "this model does it" nor the red of "it cannot be done here" — the model
- *  cannot and the deployment can, which is a real and useful third answer and the
- *  one a tool-supplemented install lives in. Accent rather than a shade of
- *  either, so it cannot be mistaken for a weaker yes or a softer no. */
-export const TAG_TONE: Record<CapabilityState, ChipTone> = { yes: 'success', no: 'danger', unknown: 'neutral', supplied: 'accent' }
+/** ITS OWN COLOUR, because it is its own fact. `supplied` is neither "this
+ *  model does it" nor "it cannot be done here" — the model cannot and the
+ *  deployment can, which is a real and useful third answer and the one a
+ *  tool-supplemented install lives in. Accent, so it cannot be mistaken for a
+ *  weaker yes or a softer no.
+ *
+ *  A capability a model HAS is a kind, so it is the neutral chip; one it lacks
+ *  is a warning and not a failure, because Talaria still runs the model. */
+export const TAG_TONE: Record<CapabilityState, ChipTone> = { yes: 'neutral', no: 'warn', unknown: 'neutral', supplied: 'accent' }
+
+/** The words on a tag: what a model has, what it lacks, or what the
+ *  deployment supplies in its place. */
+export function tagLabel(view: CapabilityView): string {
+  const words = CAPABILITY_WORDS[view.cap]
+  if (view.state === 'no') return words.lacks
+  return view.state === 'supplied' ? `${words.short} via tool` : words.short
+}
+
+const TAG_ORDER: Capability[] = ['tools', 'vision', 'long-context', 'search', 'code', 'tool-select', 'json-strict', 'json', 'instruction-following']
+const STATE_ORDER: Record<CapabilityState, number> = { no: 0, supplied: 1, yes: 2, unknown: 3 }
+
+/** The order tags are read in when a row shows only its first few: what the
+ *  model lacks, then what the deployment supplies, then what it has. */
+export function rankTags(tags: CapabilityView[]): CapabilityView[] {
+  return [...tags].sort(
+    (a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state] || TAG_ORDER.indexOf(a.cap) - TAG_ORDER.indexOf(b.cap),
+  )
+}
 
 /** THE TAG SENTENCE, and the distinction the whole capability model rests on:
  *  a tag must say whether a fact is KNOWN-TRUE, KNOWN-FALSE or NEVER-MEASURED.
@@ -520,7 +565,7 @@ export function speedTitle(s: SpeedReading | null): string {
  *  as its own exported name because three panels and this module's test import
  *  it that way — and the flag is why it cannot be a plain alias. */
 export function usd(n: number | null): string {
-  return formatUsd(n, { unpricedAsWord: true })
+  return formatUsd(n, { unpricedAsWord: true, group: true })
 }
 
 export const TIER_META: Record<TierId, { label: string; blurb: string }> = {

@@ -37,7 +37,7 @@
     onGone: () => void
   } = $props()
 
-  const INK = 'h-7 gap-1.5 border border-transparent text-fg hover:bg-fg/[0.06]'
+  const INK = 'h-7 gap-1.5 border border-transparent text-[13px] text-fg hover:bg-fg/[0.06]'
   const WORD = 'hidden @lg:inline'
   const UNDER = 'pl-[3.75rem] pr-5 font-sans @5xl:col-span-full'
 

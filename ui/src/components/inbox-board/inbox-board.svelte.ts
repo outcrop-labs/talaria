@@ -9,8 +9,9 @@ import { useHome } from '@/routes/app/home/home'
 import { useTicketAssignees } from './ticket-assignees.svelte'
 
 export const ACTION = { size: 'xs', voice: 'sans' } as const
-export const FILLED = 'h-7 gap-1.5 bg-fg px-2 text-surface hover:bg-fg/85 hover:brightness-100'
-export const GHOST = 'h-7 gap-1 px-1.5 hover:bg-hover'
+// 13px, where the shared sans voice draws an xs button's label at 12px: the Inbox's actions read at the size of its rows.
+export const FILLED = 'h-7 gap-1.5 bg-fg px-2 text-[13px] text-surface hover:bg-fg/85 hover:brightness-100'
+export const GHOST = 'h-7 gap-1 px-1.5 text-[13px] hover:bg-hover'
 export const LINK = 'text-[13px] font-medium text-fg underline-offset-4'
 export const LINK_HOVER = 'hover:underline focus-visible:underline'
 

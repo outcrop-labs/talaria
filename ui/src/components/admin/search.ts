@@ -101,7 +101,7 @@ export function renderSummary(cfg: AgentWebSearch): string {
   if (searxngUrl) parts.push('SEARXNG_URL')
   if (web.keyless_fallback === false) parts.push('keyless tiers off')
   else if (parts.length && cfg.allowKeylessPublicTiers) parts.push('keyless tiers allowed')
-  return parts.length ? parts.join(' · ') : "nothing rendered: Hermes resolves its own default"
+  return parts.length ? parts.join(' · ') : 'nothing sent: each agent uses its own default'
 }
 
 /** The line under the Search URL dots for the agents' probe, or null when
@@ -111,7 +111,7 @@ export function renderSummary(cfg: AgentWebSearch): string {
 export function agentProbeNote(s: SearchEndpoint): { tone: 'danger' | 'muted'; text: string } | null {
   if (!s.url || s.agentReachable === true) return null
   if (s.agentReachable === false) {
-    const where = [s.probedFrom && `probed in ${s.probedFrom}`, s.agentUrl && `dialling ${s.agentUrl}`]
+    const where = [s.probedFrom && `probed in ${s.probedFrom}`, s.agentUrl && `dialing ${s.agentUrl}`]
       .filter(Boolean)
       .join(', ')
     return { tone: 'danger', text: `From the agents${where ? ` (${where})` : ''}: ${s.agentError ?? 'the probe failed'}` }
