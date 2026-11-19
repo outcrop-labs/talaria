@@ -147,7 +147,7 @@ export function flowHint(service: CodingService): string {
         ? 'Open the link and approve. If your browser cannot reach this server, paste the code or the full redirect URL it lands on.'
         : 'Open the link and approve.'
     case 'custom':
-      return 'Follow the prompts — this service asks for a detail or two before it hands over the link.'
+      return 'Follow the prompts. This service asks for a detail or two before it hands over the link.'
     default:
       return 'Follow the prompts.'
   }

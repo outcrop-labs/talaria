@@ -1,16 +1,17 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import { CalendarClock } from '@lucide/svelte'
+  import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
-  import InfoTip from '@/components/ui/InfoTip.svelte'
-  import Materialize from '@/components/ui/Materialize.svelte'
+  import Modal from '@/components/ui/Modal.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
   import { getList } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
-  import { type CronJob, type CronMutationState, useCronMutations } from './agent-crons'
+  import { type CronFormHandle, type CronJob, type CronMutationState, useCronMutations } from './agent-crons'
   import CronForm from './CronForm.svelte'
+  import CronListSkeleton from './CronListSkeleton.svelte'
   import CronRow from './CronRow.svelte'
+  import CronTable from './CronTable.svelte'
 
   // One agent's cron jobs: list + create + edit/pause/run/delete. Reading is
   // open to anyone who can see the agent; every write belongs to its managers
@@ -27,6 +28,9 @@
     queryKey: key(),
     queryFn: (): Promise<CronJob[]> => getList<CronJob>(`/api/fleet/agents/${agentId}/crons`, 'jobs'),
   }))
+
+  let composing = $state(false)
+  let form = $state<CronFormHandle | null>(null)
 
   // What this panel renders about a mutation: the error inline under the rows,
   // and `busy` on every control. The hook drives both.
@@ -45,47 +49,56 @@
 
 {#snippet calendarIcon()}<CalendarClock size={22} />{/snippet}
 
-<!-- One job row's silhouette (see CronRow: dot + name + schedule, next-run
-     meta, then the three action tiles) — same px-3.5 py-3 frame. -->
-{#snippet cronRowSkeleton(i: number)}
-  <div aria-hidden="true" class="flex items-center gap-2.5 px-3.5 py-3">
-    <!-- Fixed geometry, so nothing about it is uncertain — a flat rail, not a skeleton (UI-CONVENTIONS, Loading). -->
-    <div class="h-2 w-2 shrink-0 rounded-full bg-line"></div>
-    <Skeleton class={`h-3 rounded-full ${['w-36', 'w-28', 'w-44'][i % 3]}`} />
-    <Skeleton class={`h-2.5 rounded-full ${['w-28', 'w-20', 'w-24'][i % 3]}`} />
-    <span class="ml-auto flex shrink-0 items-center gap-1">
-      <Skeleton class="h-7 w-7 rounded-md" />
-      <Skeleton class="h-7 w-7 rounded-md" />
-      <Skeleton class="h-7 w-7 rounded-md" />
-    </span>
-  </div>
-{/snippet}
-
 <div class="space-y-4">
-  <div class="flex items-center gap-1.5">
-    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Schedules</span>
-    <InfoTip text="Recurring jobs the agent runs on its own native scheduler; they keep firing even when Talaria is down." />
+  <div class="flex items-center gap-4">
+    <p class="min-w-0 flex-1 font-sans text-[13px] leading-5 text-muted">
+      Recurring work this agent starts by itself. It keeps running even when Talaria is down.
+    </p>
+    {#if canManage}
+      <Button variant="outline" size="sm" class="shrink-0" onclick={() => (composing = true)}>
+        New schedule
+      </Button>
+    {/if}
   </div>
-  <!-- Skeleton → content as one motion: row-shaped skeletons materialize into
-       the job rows. QueryState keeps owning ERROR and EMPTY; the bordered
-       frame only applies while there are rows (or their skeletons) to hold,
-       so the empty/error states render unframed as before. -->
-  <Materialize
-    loading={query.isLoading}
-    count={3}
-    class={query.isLoading || (query.data?.length ?? 0) > 0 ? 'divide-y divide-line rounded-lg border border-line' : undefined}
-  >
-    {#snippet skeleton(i)}{@render cronRowSkeleton(i)}{/snippet}
-    <QueryState {query} errorTitle="Schedules unavailable" errorVariant="compact">
-      {#snippet skeleton()}{@render cronRowSkeleton(0)}{/snippet}
-      {#snippet empty()}<EmptyState icon={calendarIcon} title="Nothing scheduled" hint={canManage ? 'Give it a recurring job below.' : "Only this agent's managers can schedule its jobs."} />{/snippet}
-      {#snippet children(jobs)}
+  <QueryState {query} errorTitle="Schedules unavailable" errorVariant="compact">
+    {#snippet skeleton()}<CronListSkeleton />{/snippet}
+    {#snippet empty()}
+      <EmptyState
+        icon={calendarIcon}
+        title="Nothing scheduled"
+        hint={canManage ? 'Give it recurring work with New schedule.' : "Only this agent's managers can schedule its work."}
+      />
+    {/snippet}
+    {#snippet children(jobs)}
+      <CronTable>
         {#each jobs as j (j.id)}
           <CronRow job={j} busy={ui.busy || !canManage} onAction={(a) => void act(agentId, j.id, a)} onEdit={(patch) => edit(agentId, j.id, patch)} />
         {/each}
-      {/snippet}
-    </QueryState>
-  </Materialize>
-  {#if canManage}<CronForm onCreate={(input) => create(agentId, input)} busy={ui.busy} />{/if}
-  {#if ui.err}<p transition:slide={{ duration: 150 }} class="text-xs text-danger">{ui.err}</p>{/if}
+      </CronTable>
+    {/snippet}
+  </QueryState>
+  {#if ui.err && !composing}<p transition:slide={{ duration: 150 }} class="font-sans text-[13px] leading-5 text-danger" role="alert">{ui.err}</p>{/if}
 </div>
+
+{#snippet composeFooter()}
+  <div class="flex justify-end gap-2">
+    <Button variant="ghost" size="sm" onclick={() => (composing = false)}>Cancel</Button>
+    <Button size="sm" disabled={!form?.canSubmit()} onclick={() => form?.submit()}>{ui.busy ? 'Creating' : 'Create schedule'}</Button>
+  </div>
+{/snippet}
+
+{#if composing}
+  <Modal open onClose={() => (composing = false)} title="New schedule" width="max-w-xl" footer={composeFooter}>
+    <CronForm
+      bind:this={form}
+      withActions={false}
+      onCreate={async (input) => {
+        const created = await create(agentId, input)
+        if (created) composing = false
+        return created
+      }}
+      busy={ui.busy}
+    />
+    {#if ui.err}<p transition:slide={{ duration: 150 }} class="mt-3 font-sans text-[13px] leading-5 text-danger" role="alert">{ui.err}</p>{/if}
+  </Modal>
+{/if}

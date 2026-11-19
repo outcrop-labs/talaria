@@ -11,7 +11,7 @@
 // the dock shell as some half-remembered preference.
 //
 // The manage sidebar used to keep an open/closed slot here too, for the pane
-// the gear slid out. It is docked on manage pages now (ManageSidebar), so
+// the gear slid out. It is docked on manage pages now (SettingsSidebar), so
 // there is no state to hold: where you are says whether it shows.
 import { readFlag, writeFlag } from '@/lib/persist'
 

@@ -1,12 +1,15 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import Checkbox from '@/components/ui/Checkbox.svelte'
-  import Chip from '@/components/ui/Chip.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
+  import NoticeRow from '@/components/admin/NoticeRow.svelte'
+  import RowStatus from '@/components/admin/RowStatus.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
-  import Skeleton from '@/components/ui/Skeleton.svelte'
-  import { useSavedFlash } from '@/components/ui/save-button.svelte'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import Toggle from '@/components/ui/Toggle.svelte'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
 
@@ -43,9 +46,9 @@
     queryFn: (): Promise<Body> => getJson<Body>('/api/admin/coding-accounts'),
   }))
   const data = $derived(query.data)
-  const savedFlash = useSavedFlash()
+  const autosave = useAutosave()
 
-  const save = async (patch: { enabled?: boolean; services?: string[] }) => {
+  const save = async (row: string, patch: { enabled?: boolean; services?: string[] }) => {
     const body = {
       enabled: patch.enabled ?? data?.enabled ?? false,
       services: patch.services ?? data?.permitted ?? [],
@@ -57,92 +60,83 @@
       return
     }
     await qc.invalidateQueries({ queryKey: ['admin-coding-accounts'] })
-    savedFlash.flash()
+    autosave.flash(row)
   }
 
   const toggleService = (id: string, on: boolean) => {
     const current = data?.permitted ?? []
-    void save({ services: on ? [...current, id] : current.filter((s) => s !== id) })
+    void save(id, { services: on ? [...current, id] : current.filter((s) => s !== id) })
   }
+
+  // The header's captions and each row's cells share these widths.
+  const FLOW = 'w-48 shrink-0'
+  const SWITCH = 'flex w-9 shrink-0 justify-end'
 
   /** The flow shape, in words an admin reads. */
   const flowLabel = (flow: string | null): string => {
     switch (flow) {
       case 'oauth-code':
-        return 'browser sign-in'
+        return 'Browser sign-in'
       case 'device-code':
-        return 'device code'
+        return 'Device code'
       case 'custom':
-        return 'provider-specific'
+        return 'Provider-specific'
       default:
-        return 'sign-in'
+        return 'Sign-in'
     }
   }
 </script>
 
-<Panel>
-  <SectionHeader
-    class="mb-4"
-    title="Coding accounts"
-    info="Lets a Developer Agent's coding harness run on a signed-in coding subscription (Claude Pro/Max, ChatGPT Codex, GitHub Copilot, Gemini…) instead of this org's Talaria gateway. One account per service, per agent, signed in by whoever can edit the agent; a ticket can pin a different one when a plan runs out. Credentials are sealed in this instance's database and never reach an agent's config. Note that harness spend on a subscription does not pass through the gateway, so it does not appear in Talaria's ledger — the provider's own dashboard is the record. The agent's own model is unaffected."
-  />
-  <QueryState query={query} errorTitle="Could not load the coding-account policy" errorVariant="compact">
-    {#snippet skeleton()}
-      <div class="flex flex-wrap items-center gap-3">
-        <Skeleton class="h-4 w-4" />
-        <Skeleton class="h-3 w-56 rounded-full" />
-      </div>
-    {/snippet}
-    {#snippet children(d)}
-      <div class="space-y-3">
-        <Checkbox
-          checked={d.enabled}
-          onChange={(on) => void save({ enabled: on })}
-          label="Allow agents to sign in to coding accounts"
-        />
+<SettingsSection
+  title="Coding subscriptions"
+  description="Let a developer agent's coding tool run on a signed-in subscription instead of your gateway."
+  info="One account per service, per agent, signed in by whoever can edit the agent. Credentials are stored encrypted on this instance and never reach an agent's config. Spend on a subscription does not pass through the gateway, so it is not in Talaria's ledger and the provider's own dashboard is the record. Turning a service off stops its accounts at once and jobs fall back to the gateway, but the credentials are kept, so turning it back on needs no new sign-in."
+>
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load the coding-account policy" errorVariant="compact">
+      {#snippet skeleton()}
+        <div class="px-5 py-4"><SkeletonRows rows={2} /></div>
+      {/snippet}
+      {#snippet children(d)}
+        <SettingsRow label="Allow sign-in" hint="Agents may sign in to the services you turn on below." saved={autosave.saved('enabled')}>
+          <Toggle checked={d.enabled} onChange={(on) => void save('enabled', { enabled: on })} title="Allow agents to sign in to coding accounts" />
+        </SettingsRow>
 
         {#if d.enabled}
-          <div class="space-y-1.5">
-            <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">
-              Services this organization permits
-            </span>
-            {#if d.rosterError}
-              <p class="text-xs text-warning">
-                The sign-in roster could not be read ({d.rosterError}). The services already permitted keep working;
-                this list fills in once the omp auth bridge is reachable.
-              </p>
-            {/if}
-            {#if d.services.length === 0 && !d.rosterError}
-              <p class="text-xs text-muted">No services available.</p>
-            {:else}
-              <div class="flex max-h-48 flex-wrap gap-1.5 overflow-y-auto">
-                {#each d.services as s (s.id)}
-                  <Chip
-                    onSelect={() => toggleService(s.id, !s.permitted)}
-                    selected={s.permitted}
-                    class="px-2.5 py-0.5 normal-case"
-                    title={s.unavailable
-                      ? 'Permitted, but the installed omp no longer offers it'
-                      : flowLabel(s.flow)}
-                  >
-                    {s.name}{#if s.unavailable}&nbsp;·&nbsp;unavailable{/if}
-                  </Chip>
-                {/each}
-              </div>
-            {/if}
-            {#if d.permitted.length === 0}
-              <p class="text-xs text-muted">
-                Nothing permitted yet, so no agent can sign in. Pick the services this organization allows.
-              </p>
-            {/if}
-            <p class="text-xs text-muted">
-              Removing a service stops its accounts driving any harness immediately — jobs fall back to the gateway —
-              but keeps the credentials, so re-permitting it does not need a fresh sign-in.
-            </p>
-          </div>
+          {#if d.rosterError}
+            <NoticeRow status="warn">
+              The list of services could not be read ({d.rosterError}). Services already allowed keep working.
+            </NoticeRow>
+          {/if}
+          {#if d.services.length === 0 && !d.rosterError}
+            <NoticeRow status="idle">No services available.</NoticeRow>
+          {:else if d.services.length > 0}
+            <SettingsHeaderRow label="Service">
+              <span class={FLOW}>Sign-in</span>
+              <span class={SWITCH}></span>
+            </SettingsHeaderRow>
+            {#each d.services as s (s.id)}
+              <SettingsRow saved={autosave.saved(s.id)} class="min-h-11 py-1.5">
+                {#snippet label()}<span class="text-[13px]">{s.name}</span>{/snippet}
+                <!-- The switch says allowed or off. Only a service the
+                     installed tool dropped needs a word of its own. -->
+                {#snippet meta()}
+                  {#if s.unavailable}
+                    <RowStatus status="warn" title="Allowed here, but the installed coding tool no longer offers it">No longer offered</RowStatus>
+                  {/if}
+                {/snippet}
+                <span class="{FLOW} font-sans text-[13px] leading-5 text-muted">{flowLabel(s.flow)}</span>
+                <span class={SWITCH}>
+                  <Toggle checked={s.permitted} onChange={(on) => toggleService(s.id, on)} title={`Allow ${s.name}`} />
+                </span>
+              </SettingsRow>
+            {/each}
+          {/if}
+          {#if d.permitted.length === 0}
+            <NoticeRow status="idle">No service is allowed yet, so no agent can sign in.</NoticeRow>
+          {/if}
         {/if}
-        {#if savedFlash.saved}<p class="text-xs text-success">Saved</p>{/if}
-      </div>
-    {/snippet}
-  </QueryState>
-</Panel>
+      {/snippet}
+    </QueryState>
+  </SettingsGroup>
+</SettingsSection>

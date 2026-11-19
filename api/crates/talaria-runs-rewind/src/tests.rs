@@ -1072,6 +1072,9 @@ fn the_column_rule_is_one_function() {
     );
 }
 
+/// `talaria_work_dispatch::holds::rewind_reserved` reads
+/// `checkpoint->'plan'->>'attemptRunId'` to keep the dispatcher off a
+/// generation a rewind reserved, so that spelling is a contract.
 #[tokio::test]
 async fn the_checkpoint_spelling_is_pinned() {
     let cp = at(Stage::Cut).await;

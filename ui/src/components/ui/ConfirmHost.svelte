@@ -11,6 +11,7 @@
   let inputRef = $state<HTMLInputElement | null>(null)
 
   const spec = $derived(dialog.active?.spec)
+  const voice = $derived(dialog.active?.voice)
   const isAlert = $derived(spec?.kind === 'alert')
   // The typed challenge: both prompts and danger confirms with `requireText`
   // gate the accept button on this matching exactly.
@@ -56,7 +57,7 @@
   }}
 />
 
-<Modal open={!!spec} onClose={cancel} title={spec?.title}>
+<Modal open={!!spec} onClose={cancel} title={spec?.title} {voice}>
   {#if spec?.message}
     <div class="whitespace-pre-line text-sm text-muted">{spec.message}</div>
   {/if}
@@ -80,7 +81,7 @@
   {#snippet footer()}
     <div class="flex justify-end gap-2">
       {#if !isAlert}
-        <Button bind:ref={cancelRef} variant="ghost" size="sm" onclick={cancel}>
+        <Button bind:ref={cancelRef} variant="ghost" size="sm" {voice} onclick={cancel}>
           {spec?.cancelLabel ?? 'Cancel'}
         </Button>
       {/if}
@@ -88,6 +89,7 @@
         bind:ref={answerRef}
         variant={spec?.danger ? 'danger-outline' : 'primary'}
         size="sm"
+        {voice}
         onclick={accept}
         disabled={spec?.kind === 'confirm' ? !unlocked : false}
       >

@@ -1,207 +1,156 @@
 <script lang="ts">
   import { createQuery } from '@tanstack/svelte-query'
-  import { navigateHref, p } from '@/router'
-  import Panel from '@/components/ui/Panel.svelte'
-  import QueryError from '@/components/ui/QueryError.svelte'
+  import { ChevronRight } from '@lucide/svelte'
+  import { p } from '@/router'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import Stat from '@/components/settings/Stat.svelte'
+  import StatStrip from '@/components/settings/StatStrip.svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
-  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
-  import StatCard from '@/components/ui/StatCard.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
-  import type { DotStatus } from '@/components/ui/chip'
-  import { getJson, getList } from '@/lib/fetch-json'
-  import { formatTokens } from '@/lib/cost.svelte'
-  import ActivityRow from '@/components/app/ActivityRow.svelte'
+  import { getList } from '@/lib/fetch-json'
+  import { formatCost, useCost } from '@/lib/cost.svelte'
+  import { actorLabel } from '@/components/observability/actor'
+  import { relativeTime } from '@/lib/fleet'
+  import ActiveAgents from '@/components/observability/ActiveAgents.svelte'
+  import { useAlerts } from '@/components/observability/alerts'
+  import DailyBars from '@/components/observability/DailyBars.svelte'
   import { useHost } from '@/components/observability/host'
+  import { fleetTrouble, useInference } from '@/components/observability/inference'
+  import { fact, factLine, factLink, sectionLink } from '@/components/observability/grammar'
   import type { ObsTab } from './observability'
 
-  // ── Overview: the cross-section — worst news first ──────────────────────────
-  interface OverviewAlert {
-    severity: 'critical' | 'warning' | 'info'
-    title: string
-    href: string
-  }
-  const SEV_STATUS: Record<OverviewAlert['severity'], DotStatus> = {
-    critical: 'danger',
-    warning: 'warn',
-    info: 'idle',
-  }
+  // Is the system healthy, and what is it costing: four numbers, each a
+  // doorway into the tab that owns it, the gateway and the latest activity as
+  // one line under them, then the two pictures only this page puts side by
+  // side. The alert list and the activity feed live on the Manage overview.
+  const tabHref = (tab: ObsTab) => p('/observability/:tab', { params: { tab } })
 
-  let { onOpen }: { onOpen: (t: ObsTab) => void } = $props()
-
-  // "all clear" is a CLAIM about the fleet. It may only come from a 200 that
-  // really carried no problems — a failed /api/alerts has to say so.
-  const alertsQuery = createQuery(() => ({
-    queryKey: ['alerts'],
-    queryFn: (): Promise<OverviewAlert[]> => getList<OverviewAlert>('/api/alerts', 'alerts'),
-    refetchInterval: 60_000,
-  }))
+  // "All clear" is a CLAIM about the fleet. It may only come from a 200 that
+  // really carried no problems. A failed /api/alerts has to say so.
+  const alertsQuery = useAlerts()
   const alerts = $derived(alertsQuery.data)
-  const alertsLoading = $derived(alertsQuery.isLoading)
-  const inferenceQuery = createQuery(() => ({
-    queryKey: ['inference'],
-    queryFn: () =>
-      getJson<{
-        live: {
-          generating: Array<{ agentModel: string; count: number }>
-          gateway: { requests: number; errors: number; p50: number | null }
-          fleet: { running: number; warming: number; unhealthy: number; down: number }
-        }
-      }>('/api/inference'),
-    refetchInterval: 15_000,
-  }))
-  const costQuery = createQuery(() => ({
-    queryKey: ['cost'],
-    queryFn: () =>
-      getJson<{ totals: { today: { prompt: number; completion: number; cost: number }; month: { cost: number } } }>('/api/cost'),
-    refetchInterval: 60_000,
-  }))
-  const cost = $derived(costQuery.data)
+  const critical = $derived((alerts ?? []).filter((a) => a.severity === 'critical').length)
+  const warnings = $derived((alerts ?? []).filter((a) => a.severity === 'warning').length)
+  const alertsLine = $derived.by(() => {
+    if (!alerts) return alertsQuery.isError ? 'Could not check' : undefined
+    const parts = [critical ? `${critical} critical` : null, warnings ? `${warnings} warning${warnings === 1 ? '' : 's'}` : null]
+    return parts.filter(Boolean).join(' · ') || 'All clear'
+  })
+
+  const inferenceQuery = useInference()
+  const live = $derived(inferenceQuery.data?.live)
+
+  const costQuery = useCost()
+  const cost = $derived(costQuery.data?.totals)
+  const perDay = $derived(costQuery.data?.perDay ?? [])
+
+  const hostQuery = useHost()
+  const host = $derived(hostQuery.data)
+  const hostLine = $derived.by(() => {
+    if (!host) return hostQuery.isError ? 'Could not read' : undefined
+    if (!host.available) return 'Not visible from this process'
+    const disk = host.mounts[0]
+    const memory = host.memory ? `Memory ${Math.round(host.memory.percent)}%` : null
+    const diskPart = disk ? `fullest disk ${Math.round(disk.percent)}%` : null
+    const line = [memory, diskPart].filter(Boolean).join(' · ')
+    return line ? line.charAt(0).toUpperCase() + line.slice(1) : undefined
+  })
+
+  // The same read, and cache key, as the Manage overview's feed.
   const auditQuery = createQuery(() => ({
     queryKey: ['home-activity', ''],
     queryFn: () =>
       getList<{ at: string; actor: string; detail: string; context: string; href: string }>('/api/activity', 'events'),
     refetchInterval: 30_000,
   }))
-  const audit = $derived(auditQuery.data)
-  const auditLoading = $derived(auditQuery.isLoading)
-
-  const live = $derived(inferenceQuery.data?.live)
-  const generating = $derived(live?.generating.reduce((n, g) => n + g.count, 0) ?? 0)
-  const fleetParts = $derived(
-    live
-      ? [
-          `${live.fleet.running} up`,
-          ...(live.fleet.warming ? [`${live.fleet.warming} warming`] : []),
-          ...(live.fleet.unhealthy ? [`${live.fleet.unhealthy} unhealthy`] : []),
-          ...(live.fleet.down ? [`${live.fleet.down} down`] : []),
-        ].join(' · ')
-      : null,
-  )
-  const problems = $derived((alerts ?? []).filter((a) => a.severity !== 'info'))
-  const hostQuery = useHost()
-  const host = $derived(hostQuery.data)
-  const hostSub = $derived.by(() => {
-    if (!host) return hostQuery.isError ? 'could not read' : undefined
-    if (!host.available) return 'not visible from this process'
-    const disk = host.mounts[0]
-    const mem = host.memory ? `mem ${Math.round(host.memory.percent)}%` : null
-    const diskPart = disk ? `${disk.mount} ${Math.round(disk.percent)}%` : null
-    return [diskPart, mem].filter(Boolean).join(' · ') || undefined
-  })
+  const latest = $derived(auditQuery.data?.[0])
+  const latestBy = $derived(latest ? [actorLabel(latest.actor), latest.context].filter(Boolean).join(' in ') : '')
 </script>
 
-<!-- data-obs-sections: the hook Observability's data-stagger-items selector
-     targets — this pane's three blocks cascade on the page entrance. -->
-<div class="space-y-6" data-obs-sections>
-  <!-- Worst news first: alerts strip -->
-  <Panel>
-    <button type="button" onclick={() => onOpen('alerts')} class="group -mx-1.5 mb-3 flex min-h-6 w-[calc(100%+0.75rem)] items-center gap-2 rounded px-1.5 text-left transition-colors duration-[120ms] dither-fill">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Alerts</span>
-      {#if alertsLoading}
-        <Skeleton class="h-3 w-8 rounded-full" />
-      {:else if alerts === undefined}
-        <!-- Unknown, not clear — the strip below carries the reason. -->
-        <span class="text-xs text-muted">unknown</span>
-      {:else if problems.length > 0}
-        <span class="rounded border border-warning/40 px-1.5 font-mono text-[10px] tracking-[0.05em] text-warning">{problems.length}</span>
-      {:else}
-        <span class="font-mono text-[10px] uppercase tracking-[0.05em] text-success">● all clear</span>
-      {/if}
-      <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors group-hover:text-accent">Open →</span>
-    </button>
-    {#if alertsLoading}
-      <SkeletonRows rows={2} />
-    {:else if alerts === undefined}
-      <QueryError
-        variant="inline"
-        error={alertsQuery.error}
-        title="Could not load alerts"
-        onRetry={() => void alertsQuery.refetch()}
-      />
-    {:else if problems.length > 0}
-      <ul class="space-y-1.5">
-        {#each problems.slice(0, 3) as a, i (i)}
-          <li class="flex items-center gap-2.5 text-sm">
-            <StatusDot status={SEV_STATUS[a.severity]} class="h-[7px] w-[7px]" />
-            <span class="min-w-0 flex-1 truncate font-sans text-fg">{a.title}</span>
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  </Panel>
+{#snippet pending()}<Skeleton class="my-1.5 h-5 w-16 rounded-full" />{/snippet}
 
-  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-    <!-- §8 stat blocks: big sans numeral + 10px mono uppercase label. Each tile
-         is a doorway into the section it summarizes — THE URL IS THE TAB, so
-         the card is an anchor to it (StatCard's href form), not a button that
-         happens to navigate. -->
-    <StatCard
-      label="Generating now"
-      href={p('/observability/:tab', { params: { tab: 'compute' } })}
-      sub={live ? (fleetParts ?? undefined) : undefined}
-    >
-      {#snippet value()}
-        {#if live}{generating}{:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
-      {/snippet}
-    </StatCard>
-    <StatCard
-      label="Gateway · 15 min"
-      href={p('/observability/:tab', { params: { tab: 'compute' } })}
-      sub={live
-        ? `${live.gateway.errors ? `${live.gateway.errors} errors` : 'no errors'}${live.gateway.p50 != null ? ` · p50 ${(live.gateway.p50 / 1000).toFixed(1)}s` : ''}`
-        : undefined}
-    >
-      {#snippet value()}
-        {#if live}{live.gateway.requests}{:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
-      {/snippet}
-    </StatCard>
-    <StatCard
-      label="Spend today"
-      href={p('/observability/:tab', { params: { tab: 'cost' } })}
-      sub={cost ? `${formatTokens(cost.totals.today.prompt + cost.totals.today.completion)} tokens · $${cost.totals.month.cost.toFixed(2)} this month` : undefined}
-    >
-      {#snippet value()}
-        {#if cost}${cost.totals.today.cost.toFixed(2)}{:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
-      {/snippet}
-    </StatCard>
-    <StatCard
-      label="Host"
-      href={p('/observability/:tab', { params: { tab: 'host' } })}
-      sub={hostSub}
-    >
-      {#snippet value()}
-        {#if host?.cpu}{Math.round(host.cpu.percent)}%
-        {:else if host && !host.available}—
-        {:else if hostQuery.isError}—
-        {:else}<Skeleton class="h-5 w-16 rounded-full" />{/if}
-      {/snippet}
-    </StatCard>
+<!-- data-obs-sections: the hook Observability's stagger selector targets, so
+     this pane's blocks cascade on the page entrance. -->
+<div class="space-y-8" data-obs-sections>
+  <div class="space-y-3">
+    <StatStrip>
+      <Stat label="Open alerts" href={tabHref('alerts')} sub={alertsLine}>
+        {#snippet value()}
+          {#if alerts}
+            <span class="flex items-center gap-2.5">
+              {critical + warnings}
+              <StatusDot status={critical ? 'danger' : warnings ? 'warn' : 'ok'} class="h-2 w-2" />
+            </span>
+          {:else if alertsQuery.isError}—{:else}{@render pending()}{/if}
+        {/snippet}
+      </Stat>
+      <Stat
+        label="Agents running"
+        href={tabHref('compute')}
+        sub={live ? fleetTrouble(live.fleet).join(' · ') || 'All healthy' : inferenceQuery.isError ? 'Could not read' : undefined}
+      >
+        {#snippet value()}
+          {#if live}{live.fleet.running}{:else if inferenceQuery.isError}—{:else}{@render pending()}{/if}
+        {/snippet}
+      </Stat>
+      <Stat label="Host CPU" href={tabHref('host')} sub={hostLine}>
+        {#snippet value()}
+          {#if host?.cpu}{Math.round(host.cpu.percent)}%
+          {:else if (host && !host.available) || hostQuery.isError}—
+          {:else}{@render pending()}{/if}
+        {/snippet}
+      </Stat>
+      <Stat
+        label="Spend today"
+        href={tabHref('cost')}
+        sub={cost ? `${formatCost(cost.month.cost ?? 0)} this month` : costQuery.isError ? 'Could not read' : undefined}
+      >
+        {#snippet value()}
+          {#if cost}{formatCost(cost.today.cost ?? 0)}{:else if costQuery.isError}—{:else}{@render pending()}{/if}
+        {/snippet}
+      </Stat>
+    </StatStrip>
+    <p class={factLine}>
+      <span class={fact}>
+        {#if live}
+          <a href={tabHref('compute')} class={factLink}><span class="tabular-nums text-fg">{live.gateway.requests.toLocaleString('en-US')}</span> gateway requests in the last 15 min</a>{#if live.gateway.errors}<span class="text-fg">, {live.gateway.errors.toLocaleString('en-US')} errors</span>{/if}
+        {:else if inferenceQuery.isError}
+          <a href={tabHref('compute')} class={factLink}>Gateway unavailable</a>
+        {:else}
+          <Skeleton class="inline-block h-3 w-40 rounded-full align-middle" />
+        {/if}
+      </span>
+      <span class={fact}>
+        {#if latest}
+          <a href={tabHref('audit')} class={factLink}>Last activity {relativeTime(latest.at)}</a>, {latestBy}
+        {:else if auditQuery.isError}
+          <a href={tabHref('audit')} class={factLink}>Activity unavailable</a>
+        {:else if auditQuery.data}
+          <a href={tabHref('audit')} class={factLink}>No activity yet</a>
+        {:else}
+          <Skeleton class="inline-block h-3 w-40 rounded-full align-middle" />
+        {/if}
+      </span>
+    </p>
   </div>
 
-  <Panel>
-    <button type="button" onclick={() => onOpen('audit')} class="group -mx-1.5 mb-3 flex min-h-6 w-[calc(100%+0.75rem)] items-center gap-2 rounded px-1.5 text-left transition-colors duration-[120ms] dither-fill">
-      <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Audit trail</span>
-      <span class="ml-auto font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors group-hover:text-accent">Open →</span>
-    </button>
-    {#if auditLoading}
-      <SkeletonRows rows={5} />
-    {:else if audit === undefined}
-      <!-- "Quiet so far." is a fact about the audit log, not about a failed
-           request — a broken /api/activity says broken. -->
-      <QueryError
-        variant="inline"
-        error={auditQuery.error}
-        title="Could not load the audit trail"
-        onRetry={() => void auditQuery.refetch()}
-      />
-    {:else if audit.length === 0}
-      <div class="text-xs text-muted">Quiet so far.</div>
-    {:else}
-      <ul>
-        {#each audit.slice(0, 6) as a, i (i)}
-          <ActivityRow actor={a.actor} detail={a.detail} at={a.at} onClick={() => a.href && void navigateHref(a.href)} />
-        {/each}
-      </ul>
-    {/if}
-  </Panel>
+  {#if perDay.length > 1}
+    <DailyBars days={perDay} href={tabHref('cost')} />
+  {/if}
+
+  {#if live}
+    <SettingsSection title="Busiest agents this hour">
+      {#snippet action()}
+        <a href={tabHref('compute')} class={sectionLink}>All active agents<ChevronRight size={14} /></a>
+      {/snippet}
+      <SettingsGroup>
+        {#if live.lastHour.length > 0}
+          <ActiveAgents {live} limit={3} />
+        {:else}
+          <p class="px-5 py-4 font-sans text-sm leading-5 text-muted">No agent has generated in the last hour.</p>
+        {/if}
+      </SettingsGroup>
+    </SettingsSection>
+  {/if}
 </div>
