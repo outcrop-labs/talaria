@@ -85,7 +85,11 @@ pub async fn get(
     let run_state: String = row.get("state");
     let phase: Option<String> = row.get("phase");
     let input: serde_json::Value = row.get("input");
-    let checkpoint: serde_json::Value = row.get("checkpoint");
+    // A session that has not persisted a turn (queued, or still in its first)
+    // has no checkpoint: NULL reads as no turn and no tail, never a decode panic.
+    let checkpoint: serde_json::Value = row
+        .get::<Option<serde_json::Value>, _>("checkpoint")
+        .unwrap_or_default();
     let agent_model = input
         .get("agentModel")
         .and_then(|v| v.as_str())
