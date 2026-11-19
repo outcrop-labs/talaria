@@ -5,6 +5,7 @@ import {
   layout,
   livePath,
   path,
+  refreshNotice,
   runIsLive,
   summarize,
   toolKind,
@@ -223,5 +224,34 @@ describe('clock', () => {
     [-5, '0:00'],
   ])('formats %d', (ms, text) => {
     expect(clock(ms)).toBe(text)
+  })
+})
+
+describe('refreshNotice', () => {
+  const read = { checkpoints: [{ seq: 1 }] }
+  const at = 1_700_000_000_000
+
+  it('says nothing once a read succeeds, so the next good read clears it', () => {
+    expect(refreshNotice({ isError: false, data: read, dataUpdatedAt: at, errorUpdatedAt: 0 })).toBeNull()
+  })
+
+  it('leaves a failure before the first good read to QueryError', () => {
+    expect(refreshNotice({ isError: true, data: undefined, dataUpdatedAt: 0, errorUpdatedAt: at })).toBeNull()
+  })
+
+  it.each([
+    [5_000, 'just now'],
+    [3 * 60_000, '3m ago'],
+    [2 * 3_600_000, '2h ago'],
+  ])('ages the kept rows by the last failed poll, %d ms after the good read', (gap, age) => {
+    expect(refreshNotice({ isError: true, data: read, dataUpdatedAt: at, errorUpdatedAt: at + gap })).toBe(
+      `Could not refresh, still trying. Last updated ${age}.`,
+    )
+  })
+
+  it('keeps an empty ledger that loaded, and flags it', () => {
+    expect(refreshNotice({ isError: true, data: { checkpoints: [] }, dataUpdatedAt: at, errorUpdatedAt: at + 60_000 })).toBe(
+      'Could not refresh, still trying. Last updated 1m ago.',
+    )
   })
 })

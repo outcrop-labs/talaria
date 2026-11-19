@@ -5,7 +5,7 @@
   import { Square } from '@lucide/svelte'
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import type { TabItem } from '@/components/ui/tabs'
-  import { fromLedger, runIsLive, type LedgerRow } from '@/lib/agent-checkpoints'
+  import { fromLedger, refreshNotice, runIsLive, type LedgerRow } from '@/lib/agent-checkpoints'
   import { getJson } from '@/lib/fetch-json'
   import { useStopWorkSession, useWorkSession, useWorkSessionHistory } from '@/lib/work-session.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
@@ -150,6 +150,8 @@
     else if (ledger.isSuccess) lastLedgerError = null
   })
   const ledgerError = $derived(ledger.data === undefined ? (ledger.isError ? ledger.error : lastLedgerError) : null)
+  // A failed poll over rows that loaded keeps the rows and says so, quietly.
+  const ledgerStale = $derived(refreshNotice(ledger))
   const retryLedger = () => {
     lastLedgerError = null
     void ledger.refetch()
@@ -307,6 +309,7 @@
               <SkeletonRows rows={3} />
             {/snippet}
             {#snippet children(data)}
+              {#if ledgerStale}<p role="status" class="mb-2 font-sans text-[11px] leading-4 text-muted">{ledgerStale}</p>{/if}
               <!-- Live only until the work log first answers. A failed read leaves the
                    run's state unknown, not live, and isFetched stays true through the
                    refetch that resets a query with no data to pending. -->

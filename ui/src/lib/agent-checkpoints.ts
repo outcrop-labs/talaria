@@ -1,3 +1,5 @@
+import { ago } from '@/lib/inbox-board'
+
 export type CheckpointStatus = 'running' | 'done' | 'failed' | 'stopped'
 
 export type ToolKind = 'turn' | 'search' | 'read' | 'edit' | 'shell' | 'test' | 'browser' | 'git' | 'other'
@@ -189,3 +191,21 @@ export function clock(ms: number) {
 }
 
 export const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+
+/** The quiet line over the live Checkpoints tab when a poll fails after rows
+ *  have loaded. The rows stay, because stale beats blank; this line says they
+ *  stopped moving, and since when, so a stuck poll does not read as a stuck
+ *  run. It is gone on the next good read. Before the first good read there is
+ *  no data, and the modal shows QueryError instead, so this answers null.
+ *  `errorUpdatedAt` is the clock: TanStack moves it on every failed poll, so
+ *  the age keeps counting with no timer of its own. `ago` is the same spelling
+ *  as `relativeTime`, from an elapsed time instead of the wall clock. */
+export function refreshNotice(q: {
+  isError: boolean
+  data: unknown
+  dataUpdatedAt: number
+  errorUpdatedAt: number
+}): string | null {
+  if (!q.isError || q.data === undefined) return null
+  return `Could not refresh, still trying. Last updated ${ago(q.errorUpdatedAt - q.dataUpdatedAt)}.`
+}
