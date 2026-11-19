@@ -1,15 +1,17 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
-  import { Trash2 } from '@lucide/svelte'
+  import SaveAction from '@/components/admin/SaveAction.svelte'
+  import { useExplicitSave } from '@/components/settings/autosave.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsHeaderRow from '@/components/settings/SettingsHeaderRow.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
+  import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import Button from '@/components/ui/Button.svelte'
-  import EmptyState from '@/components/ui/EmptyState.svelte'
   import Input from '@/components/ui/Input.svelte'
-  import Panel from '@/components/ui/Panel.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
-  import { cn } from '@/lib/cn'
   import { delJson, errorMessage, getList, postJson, putJson } from '@/lib/fetch-json'
   import { slide } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
@@ -29,6 +31,9 @@
     lastUsedAt: string | null
   }
 
+  // A password is typed and then committed with a button, so this tab's
+  // header never says every change saves by itself.
+  useExplicitSave()
   const qc = useQueryClient()
   const session = useSession()
   const me = $derived(session.data)
@@ -73,7 +78,7 @@
         password,
         ...(name.trim() ? { name: name.trim() } : {}),
       })
-      notice = `Account created for ${email.trim().toLowerCase()} — share the password over a channel other than the one it protects.`
+      notice = `Account created for ${email.trim().toLowerCase()}. Share the password somewhere other than that inbox.`
       email = ''
       password = ''
       name = ''
@@ -113,7 +118,7 @@
         title: 'Remove this password account?',
         // The person stays — say so, or the button reads as "delete user".
         message: own
-          ? 'Password sign-in for YOUR account stops working immediately. You stay signed in, and the person row stays — but unless you sign in with Google, there will be no way back in as you.'
+          ? 'Password sign-in for your own account stops working immediately. You stay signed in and your person row stays, but unless you sign in with Google there is no way back in as you.'
           : `${row.email} keeps their account and any Google sign-in, but can no longer sign in with email + password.`,
         confirmLabel: 'Remove account',
         danger: true,
@@ -132,120 +137,120 @@
     busy = false
     await refresh()
   }
+
+  // The header's captions and each row's cells share these widths.
+  const ROLE = 'w-[5.5rem] shrink-0'
+  const USED = 'w-[5.5rem] shrink-0'
+  const cell = 'font-sans text-[13px] leading-5 text-muted'
 </script>
 
-<Panel class="mb-4">
-  <SectionHeader
-    title="Password accounts"
-    info="Email + password sign-in, stored as scrypt hashes in the database — created here, never read back. The login screen offers the password form only while at least one account exists. Someone who signs in with Google can still be given a password as a fallback."
-  />
-  <div class="mb-3 flex flex-wrap items-center gap-2">
-    <Input size="sm" bind:value={email} placeholder="teammate@yourcompany.com" class="w-60" />
-    <Input
-      size="sm"
-      type="password"
-      bind:value={password}
-      placeholder="initial password (min 8)"
-      autocomplete="new-password"
-      class="w-52"
-      onkeydown={(e) => e.key === 'Enter' && void create()}
-    />
-    <Input size="sm" bind:value={name} placeholder="name (optional)" class="w-40" />
-    <Button size="sm" disabled={busy || !email.trim() || password.length < 8} onclick={() => void create()}>
-      {busy ? 'Working' : 'Add account'}
-    </Button>
-    {#if notice}<span class="min-w-0 truncate text-xs text-success">{notice}</span>{/if}
+{#snippet setForm(userId: string, key: string)}
+  <div transition:slide={{ duration: 150 }}>
+    <div class="flex items-center justify-end gap-3 border-t border-line-subtle px-5 py-3">
+      <Input
+        size="sm"
+        type="password"
+        aria-label="New password"
+        bind:value={newPassword}
+        placeholder="New password, 8 characters or more"
+        autocomplete="new-password"
+        class="w-[280px]"
+        onkeydown={(e) => e.key === 'Enter' && void submitSet(userId)}
+      />
+      <SaveAction always size="md" dirty={newPassword.length >= 8} {busy} onclick={() => void submitSet(userId)}>Save password</SaveAction>
+      <Button size="md" variant="ghost" onclick={() => openSet(key)}>Cancel</Button>
+    </div>
   </div>
-  {#if error}<div transition:slide={{ duration: 150 }} class="mb-2 text-xs text-danger">{error}</div>{/if}
-  <QueryState query={query} errorTitle="Could not load password accounts" errorVariant="inline">
-    {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
-    {#snippet children(data)}
-    <!-- The signed-in admin with no credential row: Google-only sign-in is one
-         revoked OAuth grant away from a lockout. Offer the fallback here, on
-         the surface that manages the other passwords. And note a failed read
-         never reaches any of this — "No accounts yet." decides whether the login
-         screen offers the password form at all (the invites panel keeps the same
-         rule), so QueryState's error branch owns that verdict. -->
-    {#if !mine}
-      <div class="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-line-subtle px-2 py-2">
-        <span class="min-w-0 flex-1 text-xs text-muted">
-          You sign in with Google. Set a password as a fallback for this account.
-        </span>
-        {#if open === 'me'}
-          <Input
-            size="sm"
-            type="password"
-            bind:value={newPassword}
-            placeholder="new password (min 8)"
-            autocomplete="new-password"
-            class="w-52"
-            onkeydown={(e) => e.key === 'Enter' && me && void submitSet(me.id)}
-          />
-          <Button size="sm" disabled={busy || newPassword.length < 8} onclick={() => me && void submitSet(me.id)}>Save</Button>
-          <Button variant="ghost" size="sm" onclick={() => openSet('me')}>Cancel</Button>
-        {:else}
-          <Button size="sm" variant="ghost" onclick={() => openSet('me')} disabled={busy}>Set your password</Button>
+{/snippet}
+
+<SettingsSection
+  title="Password sign-in"
+  description="People who can sign in with an email and password instead of Google."
+  info="Passwords are stored only as hashes and cannot be read back. The sign-in page shows the password form only while at least one account exists. Someone who signs in with Google can also be given a password as a second way in."
+>
+  <SettingsGroup>
+    <QueryState query={query} errorTitle="Could not load password accounts" errorVariant="compact">
+      {#snippet skeleton()}<div class="px-5 py-4"><SkeletonRows rows={2} /></div>{/snippet}
+      {#snippet children(data)}
+        <!-- The signed-in admin with no credential row: Google-only sign-in is one
+             revoked OAuth grant away from a lockout. Offer the fallback here, on
+             the surface that manages the other passwords. And note a failed read
+             never reaches any of this — "No accounts yet." decides whether the login
+             screen offers the password form at all (the invites panel keeps the same
+             rule), so QueryState's error branch owns that verdict. -->
+        <SettingsHeaderRow label="Account" menu>
+          <span class={ROLE}>Role</span>
+          <span class={USED}>Last used</span>
+        </SettingsHeaderRow>
+        <!-- A second way in is a choice, not a fault, so the row opens the
+             form and shows no button. -->
+        {#if !mine}
+          <div>
+            <SettingsRow
+              label="Your account"
+              hint="You sign in with Google, and a password gives you a second way in."
+              onOpen={() => openSet('me')}
+              openLabel="Set a password for your account"
+            >
+              <SettingsRowMenu
+                label="Actions for your account"
+                items={[{ label: open === 'me' ? 'Close' : 'Set a password', disabled: busy, onSelect: () => openSet('me') }]}
+              />
+            </SettingsRow>
+            {#if open === 'me' && me}{@render setForm(me.id, 'me')}{/if}
+          </div>
         {/if}
-      </div>
-    {/if}
-    {#if data.length === 0}
-      <EmptyState variant="inline" title="No password accounts — the login screen stays Google-only." class="font-sans" />
-    {:else}
-      <ul class="divide-y divide-line-subtle">
         {#each data as row (row.userId)}
-          <li class="-mx-2 space-y-2 rounded-md px-2 py-2 transition-colors dither-fill">
-            <div class="flex items-center gap-3 text-sm">
-              <span class="min-w-0 flex-1">
-                <span class="block truncate text-fg">{row.email}</span>
-                {#if row.name && row.name !== row.email}
-                  <span class="block truncate text-xs text-muted">{row.name}</span>
-                {/if}
+          <div>
+            <SettingsRow
+              label={row.email}
+              hint={row.name && row.name !== row.email ? row.name : undefined}
+              onOpen={() => openSet(row.userId)}
+              openLabel={`Set a password for ${row.email}`}
+            >
+              <span class="{ROLE} {cell}">{row.role === 'admin' ? 'Admin' : 'Member'}</span>
+              <span class="{USED} {cell} tabular-nums" title={row.lastUsedAt ? new Date(row.lastUsedAt).toLocaleString() : undefined}>
+                {row.lastUsedAt ? relativeTime(row.lastUsedAt) : 'Never'}
               </span>
-              <span
-                class={cn(
-                  'shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em]',
-                  row.role === 'admin' ? 'border-success/40 text-success' : 'border-line text-muted',
-                )}
-              >
-                {row.role}
-              </span>
-              <span class="shrink-0 font-mono text-[10px] tracking-[0.05em] text-muted" title="Last used">
-                {row.lastUsedAt ? `used ${relativeTime(row.lastUsedAt)}` : 'never used'}
-              </span>
-              <button
-                type="button"
-                class="shrink-0 text-xs text-muted underline-offset-2 transition-colors hover:text-fg hover:underline"
-                onclick={() => openSet(row.userId)}
-              >Set password</button>
-              <button
-                type="button"
-                title="Remove the password account (the person stays)"
-                onclick={() => void remove(row)}
-                class="shrink-0 text-muted transition-colors hover:text-danger"
-                disabled={busy}
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-            {#if open === row.userId}
-              <div class="flex items-center gap-2 pl-1">
-                <Input
-                  size="sm"
-                  type="password"
-                  bind:value={newPassword}
-                  placeholder="new password (min 8)"
-                  autocomplete="new-password"
-                  class="w-52"
-                  onkeydown={(e) => e.key === 'Enter' && void submitSet(row.userId)}
-                />
-                <Button size="sm" disabled={busy || newPassword.length < 8} onclick={() => void submitSet(row.userId)}>Save</Button>
-                <Button variant="ghost" size="sm" onclick={() => openSet(row.userId)}>Cancel</Button>
-              </div>
-            {/if}
-          </li>
+              <SettingsRowMenu
+                label={`Actions for ${row.email}`}
+                items={[
+                  { label: open === row.userId ? 'Keep the password' : 'Set a password', onSelect: () => openSet(row.userId) },
+                  'sep',
+                  { label: 'Remove password sign-in', danger: true, disabled: busy, onSelect: () => void remove(row) },
+                ]}
+              />
+            </SettingsRow>
+            {#if open === row.userId}{@render setForm(row.userId, row.userId)}{/if}
+          </div>
         {/each}
-      </ul>
+        {#if data.length === 0}
+          <SettingsRow label="No password accounts" hint="The sign-in page offers Google only." />
+        {/if}
+      {/snippet}
+    </QueryState>
+    <SettingsRow label="Add an account" hint="Give someone an email and a first password, with a name if you like." stacked>
+      <Input size="sm" type="email" aria-label="Email address" bind:value={email} placeholder="teammate@yourcompany.com" class="min-w-0 flex-1" />
+      <Input
+        size="sm"
+        type="password"
+        aria-label="First password"
+        bind:value={password}
+        placeholder="Password, 8 characters or more"
+        autocomplete="new-password"
+        class="min-w-0 flex-1"
+        onkeydown={(e) => e.key === 'Enter' && void create()}
+      />
+      <Input size="sm" aria-label="Name" bind:value={name} placeholder="Name" class="min-w-0 flex-1" />
+      <Button size="md" variant="outline" disabled={busy || !email.trim() || password.length < 8} onclick={() => void create()}>
+        {busy ? 'Working' : 'Add account'}
+      </Button>
+    </SettingsRow>
+    {#if notice}
+      <p transition:slide={{ duration: 150 }} class="px-5 py-3 font-sans text-[13px] leading-5 text-success">{notice}</p>
     {/if}
-    {/snippet}
-  </QueryState>
-</Panel>
+    {#if error}
+      <p transition:slide={{ duration: 150 }} class="px-5 py-3 font-sans text-[13px] leading-5 text-danger">{error}</p>
+    {/if}
+  </SettingsGroup>
+</SettingsSection>

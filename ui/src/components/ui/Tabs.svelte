@@ -2,6 +2,7 @@
   import { cn } from '@/lib/cn'
   import { focusGold } from '@/components/chat/chat-chrome'
   import { markCrossfade } from '@/lib/motion'
+  import { useUiVoice, type UiVoice } from '@/lib/ui-voice'
   import type { TabItem } from './tabs'
 
   // The one tab strip — Mercury tile tabs (boards `44Y-0`/`8A-0`): mono
@@ -11,13 +12,19 @@
     items,
     value,
     onChange,
+    voice,
     class: className,
   }: {
     items: ReadonlyArray<TabItem<T>>
     value: T
     onChange: (id: T) => void
+    /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
+    voice?: UiVoice
     class?: string
   } = $props()
+
+  const areaVoice = useUiVoice()
+  const sans = $derived((voice ?? areaVoice) === 'sans')
 
   // The raised tile is the mark that MOVES between tabs (ANIMATIONS.md): one
   // send/receive pair per strip. The button keeps a transparent border so the
@@ -25,34 +32,71 @@
   const [sendMark, receiveMark] = markCrossfade()
 </script>
 
-<div class={cn('relative flex items-center gap-1', className)}>
-  {#each items as t (t.id)}
-    <button
-      type="button"
-      onclick={() => onChange(t.id)}
-      data-active={value === t.id}
-      class={cn(
-        // The button carries the HOVER field only. The selected treatment
-        // lives on the mark span below, because that is the element that
-        // slides between cells — putting it here made the tile glide while
-        // the texture popped out of one cell and into the next.
-        'relative flex h-7 select-none items-center rounded-md border border-transparent px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
-        focusGold,
-        'dither-fill',
-        value === t.id ? 'text-fg' : 'text-muted hover:text-fg',
-      )}
-    >
-      {#if value === t.id}
-        <span
-          aria-hidden="true"
-          in:receiveMark={{ key: 'mark' }}
-          out:sendMark={{ key: 'mark' }}
-          class="dither-mark absolute -inset-px rounded-md border border-line bg-raised"
-        ></span>
-      {/if}
-      <span class="relative">
-        {#if typeof t.label === 'string'}{t.label}{:else}{@render t.label()}{/if}
-      </span>
-    </button>
-  {/each}
-</div>
+{#snippet face(t: TabItem<T>)}
+  {#if typeof t.label === 'string'}{t.label}{:else}{@render t.label()}{/if}{#if t.count !== undefined}<span class="ml-1.5 text-muted tabular-nums">{t.count}</span>{/if}
+{/snippet}
+
+{#if sans}
+  <!-- The strip scrolls sideways when it outgrows the column; the tablist
+       inside keeps the hairline the active bar sits on. -->
+  <div class={cn('overflow-x-auto', className)}>
+    <div role="tablist" class="flex w-max min-w-full gap-6 border-b border-line">
+      {#each items as t (t.id)}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={value === t.id}
+          onclick={() => onChange(t.id)}
+          data-active={value === t.id}
+          class={cn(
+            'relative -mb-px flex h-9 shrink-0 select-none items-center whitespace-nowrap font-sans text-[13.5px] font-medium transition-colors',
+            'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+            value === t.id ? 'text-fg' : 'text-muted hover:text-fg',
+          )}
+        >
+          {@render face(t)}
+          {#if value === t.id}
+            <span
+              aria-hidden="true"
+              in:receiveMark={{ key: 'mark' }}
+              out:sendMark={{ key: 'mark' }}
+              class="absolute inset-x-0 bottom-0 h-0.5 bg-accent"
+            ></span>
+          {/if}
+        </button>
+      {/each}
+    </div>
+  </div>
+{:else}
+  <div class={cn('relative flex items-center gap-1', className)}>
+    {#each items as t (t.id)}
+      <button
+        type="button"
+        onclick={() => onChange(t.id)}
+        data-active={value === t.id}
+        class={cn(
+          // The button carries the HOVER field only. The selected treatment
+          // lives on the mark span below, because that is the element that
+          // slides between cells — putting it here made the tile glide while
+          // the texture popped out of one cell and into the next.
+          'relative flex h-7 select-none items-center rounded-md border border-transparent px-2.5 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+          focusGold,
+          'dither-fill',
+          value === t.id ? 'text-fg' : 'text-muted hover:text-fg',
+        )}
+      >
+        {#if value === t.id}
+          <span
+            aria-hidden="true"
+            in:receiveMark={{ key: 'mark' }}
+            out:sendMark={{ key: 'mark' }}
+            class="dither-mark absolute -inset-px rounded-md border border-line bg-raised"
+          ></span>
+        {/if}
+        <span class="relative">
+          {@render face(t)}
+        </span>
+      </button>
+    {/each}
+  </div>
+{/if}

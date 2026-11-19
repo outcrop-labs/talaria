@@ -6,6 +6,7 @@
   import KbInlineAttachment from '@/components/kb/KbInlineAttachment.svelte'
   import { resolveChipTitles, type ChipEntity } from '@/lib/chips'
   import { renderMarkdown } from './markdown'
+  import { useUiVoice } from '@/lib/ui-voice'
 
   // Full markdown for chat — the unified pipeline + Mercury element styling
   // live in markdown.ts; this component renders the result and wires up the
@@ -100,10 +101,13 @@
         /* clipboard unavailable */
       })
   }
+
+  // The rendered HTML carries the mono chrome's classes. In the settings area styles.css restates them (`.md-sans`).
+  const sans = useUiVoice() === 'sans'
 </script>
 
 <!-- Rendered prose is a READING surface — sans (code re-asserts mono). -->
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -- reason: delegated click-to-copy on code blocks inside {@html}; the copy button itself is a real button -->
-<div bind:this={container} class={cn('select-text space-y-2 break-words font-sans', className)} onclick={oncopy}>
+<div bind:this={container} class={cn('select-text space-y-2 break-words font-sans', sans && 'md-sans', className)} onclick={oncopy}>
   {@html html}
 </div>

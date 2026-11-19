@@ -1,23 +1,19 @@
 <script lang="ts">
-  import Panel from '@/components/ui/Panel.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
+  import { cn } from '@/lib/cn'
   import { formatTokens, modelCostLabel, type CostOverview } from '@/lib/cost.svelte'
+  import { SERIES, SERVED_ORDER } from './series'
+  import ShareBar from './ShareBar.svelte'
+  import { table } from './grammar'
+  import ModelName from '@/components/models/ModelName.svelte'
+  import { useModelNames } from '@/components/models/model-names.svelte'
 
-  /** Segment colors: hue family = class (green local, chart-blue cloud — gold
-   *  stays reserved for action/attention, spec §1), lightness step = model
-   *  within the family. Identity is never color-alone — every segment has a
-   *  legend chip with the model name and exact tokens. */
-  const segmentColor = (cls: 'local' | 'cloud' | null, idxInClass: number): string => {
-    if (cls === null) return 'var(--theme-line)'
-    const base = cls === 'local' ? 'var(--theme-success)' : 'var(--theme-chart-1)'
-    const lighten = Math.min(idxInClass * 22, 66)
-    return lighten ? `color-mix(in oklab, ${base}, white ${lighten}%)` : base
-  }
-
-  /** The local-vs-cloud share, segmented by serving model. The three class
-   *  totals (local + cloud + unattributed) always reconcile with the 30-day
-   *  token tile. */
+  /** Where the last 30 days of tokens were served: the two classes as one
+   *  bar, then every model with its class, its share and what it cost. The
+   *  three class totals (local + cloud + unattributed) always reconcile with
+   *  the 30-day token tile. */
   let {
     split,
     perModel,
@@ -26,50 +22,78 @@
     perModel: CostOverview['perModel']
   } = $props()
 
+  const modelName = useModelNames()
   const total = $derived(split.local + split.cloud + split.other)
-  const attributed = $derived(split.local + split.cloud)
-  const segments = $derived.by(() => {
-    // Per-model segments in class order; lightness index counted within class.
-    let li = 0
-    let ci = 0
-    return perModel
-      .filter((m) => m.tokens > 0)
-      .map((m) => ({
-        ...m,
-        color: segmentColor(m.endpointClass, m.endpointClass === 'local' ? li++ : m.endpointClass === 'cloud' ? ci++ : 0),
-        label: m.llmModel ?? 'unattributed',
-      }))
-  })
+  const parts = $derived(SERVED_ORDER.filter((k) => split[k] > 0))
+  const percent = (n: number) => `${Math.round((n / total) * 100)}%`
+
+  // Largest first: the bars already rank the models, so the rows do too.
+  const models = $derived(perModel.filter((m) => m.tokens > 0).sort((a, b) => b.tokens - a.tokens))
+  const modelTokens = $derived(models.reduce((n, m) => n + m.tokens, 0))
 </script>
 
-<Panel>
-  <SectionHeader class="mb-2" title="Self-hosted vs cloud · 30 days" />
-  <p class="mb-4 font-sans text-xs text-muted">
-    {formatTokens(split.local)} on your own hardware · {formatTokens(split.cloud)} on cloud APIs{split.other > 0
-      ? ` · ${formatTokens(split.other)} unattributed`
-      : ''}{attributed > 0 ? ` · ${Math.round((split.local / total) * 100)}% self-hosted` : ''}
-  </p>
-  <div class="flex h-3 gap-0.5 overflow-hidden rounded-full" role="img" aria-label="Token share by serving model">
-    {#each segments as s (s.label)}
+<SettingsSection
+  title="Cost by model"
+  description="Where the last 30 days of tokens were served, and what each model cost."
+  info="Dollars are the provider's reported charge when it sends one. Otherwise they come from the provider's published price (the serving endpoint's own on OpenRouter when the call names it). Where nothing is published, they come from a price an admin set, or their note that the model is included in a plan ($0, labelled)."
+>
+  <SettingsGroup>
+    <div class="px-5 py-4">
+      <div class="flex flex-wrap items-center gap-x-6 gap-y-1 font-sans text-[13px] leading-5">
+        {#each parts as k (k)}
+          <span class="flex items-center gap-2 text-muted">
+            <StatusDot color={SERIES[k].color} class="h-2 w-2" />
+            {SERIES[k].label}
+            <span class="tabular-nums text-fg">{formatTokens(split[k])} tokens</span>
+            <span class="tabular-nums">{percent(split[k])}</span>
+          </span>
+        {/each}
+      </div>
       <div
-        title={`${s.label}: ${formatTokens(s.tokens)} tokens (${s.endpointClass ?? 'unattributed'})`}
-        style:width="{(s.tokens / total) * 100}%"
-        style:background={s.color}
-        style:min-width={s.tokens > 0 ? '4px' : '0'}
-      ></div>
-    {/each}
-  </div>
-  <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1.5 font-mono text-[11px] text-muted">
-    {#each segments as s (s.label)}
-      <span class="inline-flex items-center gap-1.5">
-        <StatusDot color={s.color} class="h-2 w-2" />
-        <span class="text-fg">{s.label}</span>
-        <span>
-          {formatTokens(s.tokens)} · {s.endpointClass ?? 'unattributed'}{s.endpointClass === 'cloud'
-            ? ` · ${modelCostLabel(s)}`
-            : ''}
-        </span>
-      </span>
-    {/each}
-  </div>
-</Panel>
+        class="mt-3 flex h-2.5 gap-0.5 overflow-hidden rounded-full"
+        role="img"
+        aria-label={`Tokens by where they were served: ${parts.map((k) => `${SERIES[k].label} ${percent(split[k])}`).join(', ')}`}
+      >
+        {#each parts as k (k)}
+          <div
+            title={`${SERIES[k].label}: ${formatTokens(split[k])} tokens, ${percent(split[k])}`}
+            class="min-w-1"
+            style:width="{(split[k] / total) * 100}%"
+            style:background={SERIES[k].color}
+          ></div>
+        {/each}
+      </div>
+    </div>
+    {#if models.length > 0}
+      <div class="overflow-x-auto">
+        <table class={table.root}>
+          <thead>
+            <tr>
+              <th class={table.th}>Model</th>
+              <th class={table.th}>Served by</th>
+              <th class={cn(table.th, 'w-[30%]')}>Share of tokens</th>
+              <th class={cn(table.th, table.num)}>Tokens</th>
+              <th class={cn(table.th, table.num)}>Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each models as m (m.llmModel ?? '?')}
+              {@const series = SERIES[m.endpointClass ?? 'other']}
+              <tr class={table.tr}>
+                <td class={cn(table.td, !m.llmModel && 'text-muted')}>
+                  {#if m.llmModel}<ModelName id={m.llmModel} name={modelName(m.llmModel)} />{:else}Unattributed{/if}
+                </td>
+                <td class={cn(table.td, 'whitespace-nowrap text-[13px] text-muted')}>{series.label}</td>
+                <td class={table.td}><ShareBar share={m.tokens / modelTokens} color={series.color} /></td>
+                <td class={cn(table.td, table.num)}>{formatTokens(m.tokens)}</td>
+                <td class={cn(table.td, table.num, m.endpointClass !== 'cloud' && 'text-muted')}>
+                  {m.endpointClass === 'cloud' ? modelCostLabel(m) : '—'}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    {/if}
+  </SettingsGroup>
+</SettingsSection>

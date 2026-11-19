@@ -36,7 +36,7 @@
         {...ACTION}
         variant="outline"
         title="Show these cards"
-        class={cn('h-6 gap-1.5 px-2.5 text-fg', WASH[kind.glyph] ?? 'border-line bg-surface')}
+        class={cn('h-6 gap-1.5 px-2.5 text-[13px] text-fg', WASH[kind.glyph] ?? 'border-line bg-surface')}
         onclick={() => onRing(kind.glyph)}
       >
         <StateGlyph glyph={kind.glyph} />
