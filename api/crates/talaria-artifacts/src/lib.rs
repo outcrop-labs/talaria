@@ -979,6 +979,9 @@ pub async fn set_artifact_official(
 }
 
 /// Record where an artifact was mirrored into Google Drive (last export wins).
+/// Only for a caller who may edit it: Pull from Google reads this file, and
+/// the `updated_at` bump is what an open editor's next save is checked
+/// against (the export route's header says why a reader's export must not).
 pub async fn record_google_export(
     pg: &PgPool,
     id: &str,
