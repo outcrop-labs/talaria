@@ -555,13 +555,18 @@ pub fn resolve(p: &BoardPref, ev: BoardEvent, c: &Candidate) -> Delivery {
     Delivery::Skip
 }
 
-/// Candidates folded by person (flags merged), first appearance kept.
+/// Candidates folded by person (flags merged), first appearance kept. An
+/// org-wide board's whole membership can be a candidate list, so by index.
 fn fold(candidates: &[Candidate]) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::with_capacity(candidates.len());
+    let mut at: HashMap<&str, usize> = HashMap::with_capacity(candidates.len());
     for c in candidates {
-        match out.iter_mut().find(|o| o.user_id == c.user_id) {
-            Some(o) => o.merge(c),
-            None => out.push(c.clone()),
+        match at.get(c.user_id.as_str()) {
+            Some(&i) => out[i].merge(c),
+            None => {
+                at.insert(c.user_id.as_str(), out.len());
+                out.push(c.clone());
+            }
         }
     }
     out
@@ -592,7 +597,7 @@ pub async fn listeners(
     folded
         .into_iter()
         .map(|c| {
-            let (row, default) = prefs.get(&c.user_id).cloned().unwrap_or((None, None));
+            let (row, default) = prefs.get(&c.user_id).cloned().unwrap_or_default();
             let (p, _) = effective(row.as_ref(), default.as_ref());
             let d = resolve(&p, ev, &c);
             (c, d)
@@ -722,11 +727,12 @@ pub async fn mention_listeners(
 
 /// The caller's default for every board, if they set one.
 pub async fn default_for(pg: &PgPool, user_id: &str) -> Result<Option<BoardPref>, sqlx::Error> {
-    let v: Option<Option<Value>> =
-        sqlx::query_scalar("select notify_prefs -> 'boards' from users where id = $1::uuid")
-            .bind(user_id)
-            .fetch_optional(pg)
-            .await?;
+    let v: Option<Option<Value>> = sqlx::query_scalar::<_, Option<Value>>(
+        "select notify_prefs -> 'boards' from users where id = $1::uuid",
+    )
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await?;
     Ok(v.flatten().as_ref().and_then(BoardPref::from_stored))
 }
 
@@ -830,13 +836,16 @@ pub fn registry_wire() -> Value {
             });
             json!({ "id": p.id(), "label": p.label(), "events": events, "scope": scope })
         }).collect::<Vec<_>>(),
-        "cadences": [Cadence::Instant, Cadence::Digest].iter().map(|c| json!({
+        "cadences": CADENCES.iter().map(|c| json!({
             "id": c.id(),
             "label": c.label(),
             "available": c.available(),
         })).collect::<Vec<_>>(),
     })
 }
+
+/// Every cadence, in wire order.
+const CADENCES: [Cadence; 2] = [Cadence::Instant, Cadence::Digest];
 
 /// One effective setting as the wire serves it: `{effective, source,
 /// stored}` — the expanded setting that applies, where it came from, and the

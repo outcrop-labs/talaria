@@ -637,7 +637,7 @@ async fn the_routes_write_only_the_callers_own_setting() {
         ("PUT", Some(json!({ "preset": "off" }))),
         ("DELETE", None),
     ] {
-        let (status, _) = call_json(&state, method, &path, Some(&eve_c), body).await;
+        let (status, _) = call_json(&state, method, &path, Some(eve_c.as_str()), body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method}");
     }
     // No session: 401.
@@ -648,7 +648,7 @@ async fn the_routes_write_only_the_callers_own_setting() {
         &state,
         "GET",
         "/api/boards/not-a-uuid/notify",
-        Some(&cy_c),
+        Some(cy_c.as_str()),
         None,
     )
     .await;
@@ -672,7 +672,7 @@ async fn the_routes_write_only_the_callers_own_setting() {
             "due-date reminders aren't available yet",
         ),
     ] {
-        let (status, out) = call_json(&state, "PUT", &path, Some(&cy_c), Some(body)).await;
+        let (status, out) = call_json(&state, "PUT", &path, Some(cy_c.as_str()), Some(body)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(out["error"], msg);
     }

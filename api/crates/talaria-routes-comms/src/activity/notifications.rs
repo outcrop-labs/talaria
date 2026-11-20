@@ -1182,7 +1182,7 @@ mod tests {
             p.boards.unwrap().unwrap().preset,
             talaria_notify::boards::Preset::Mentions
         );
-        assert!(patch(json!({ "boards": null })).unwrap().boards == Some(None));
+        assert_eq!(patch(json!({ "boards": null })).unwrap().boards, Some(None));
         assert_eq!(
             patch(json!({ "boards": { "preset": "custom" } })).unwrap_err(),
             "pick at least one event, or choose off"

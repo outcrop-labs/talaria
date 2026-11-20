@@ -116,7 +116,7 @@ pub async fn board_role(
 /// (talaria_notify::boards); the union is `board_role`'s, so nobody it names
 /// is someone `board_role` would refuse.
 pub async fn board_audience(pg: &sqlx::PgPool, board_id: &str) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
+    sqlx::query_scalar::<_, String>(
         "select user_id::text from board_members where board_id = $1::uuid \
          union \
          select tm.user_id::text from boards b join team_members tm on tm.team_id = b.team_id \
