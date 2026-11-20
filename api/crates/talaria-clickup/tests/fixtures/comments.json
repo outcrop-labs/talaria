@@ -1,0 +1,23 @@
+{
+  "comments": [
+    {
+      "id": "90120001",
+      "comment": [ { "text": "Looks good — shipping Friday" } ],
+      "comment_text": "Looks good — shipping Friday",
+      "user": { "id": 183, "username": "Dana Reyes", "initials": "DR", "email": "dana@example.com", "color": "#827718", "profilePicture": null },
+      "resolved": false,
+      "assignee": null,
+      "assigned_by": null,
+      "reactions": [],
+      "date": "1767100000000",
+      "reply_count": "1"
+    },
+    {
+      "id": 90120002,
+      "comment": [ { "text": "first " }, { "text": "line" } ],
+      "user": { "id": "184", "username": "Lee" },
+      "date": 1767000000000,
+      "reply_count": 0
+    }
+  ]
+}

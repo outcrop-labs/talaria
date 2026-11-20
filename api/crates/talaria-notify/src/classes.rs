@@ -54,6 +54,11 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
         "agent_blocked",
         "Repository request",
     ),
+    // A board's ClickUp sync stopped: its credential was refused, or the list
+    // is gone (talaria-board-sync). Nothing syncs until a board owner or an
+    // admin acts, so it is a Needs-you row that alerts — filed to the board's
+    // owners and the admins, never to the board's other members.
+    ("board-sync", "agent_blocked", "Board sync stopped"),
     ("workchain_turn", "workchain_turn", "Your turn"),
     // Someone pointed at you on purpose.
     ("mention", "mention", "Mentioned you"),

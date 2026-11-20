@@ -778,6 +778,8 @@ pub async fn open_notice(
             tags: &[],
             created_by: UPKEEP_ACTOR,
             status: pickup.as_deref(),
+            external_key: None,
+            quiet: false,
         },
     )
     .await

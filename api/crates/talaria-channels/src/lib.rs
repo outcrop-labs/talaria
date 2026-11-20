@@ -2275,6 +2275,142 @@ async fn insert_channel_row(
     Ok(message)
 }
 
+/// What landing an imported message did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Imported {
+    pub id: String,
+    /// False when a row with the same import key was already there.
+    pub inserted: bool,
+}
+
+/// A message copied from another tracker (the board sync's ClickUp comments,
+/// talaria-board-sync): `author_type` 'imported', `author` the self-describing
+/// label ("Dana Reyes (ClickUp)") — never resolved against users, so it can
+/// never land as a teammate — and the ORIGINAL time as `created_at`.
+///
+/// IDEMPOTENT ON `import_key` (the partial unique index on (channel_id,
+/// import_key)): a re-run finds the row and inserts nothing. The read first
+/// keeps a re-run from burning a seq; the conflict clause is the guarantee
+/// when two writers race.
+///
+/// NONE OF A POST'S FAN-OUT. No guard (it is not agent text), no mention or
+/// participant notification, no agent reply, no brief nudge and no rail ring:
+/// the people it names were told in the tracker it came from. Imported rows
+/// land only in ticket rooms, which every unread surface leaves out
+/// (`rail_room_sql!`'s `c.task_id is null`, `my_channels_cte`) — so they light
+/// no badge. The one event is the room's own, for whoever has it open.
+#[allow(clippy::too_many_arguments)] // the row's own columns, each named once
+pub async fn insert_imported_message(
+    deps: &NotifyDeps,
+    channel_id: &str,
+    author_label: &str,
+    content: &str,
+    created_at_ms: Option<i64>,
+    thread_root_id: Option<&str>,
+    import_key: &str,
+) -> Result<Imported, sqlx::Error> {
+    let mut tx = deps.pg.begin().await?;
+    let existing: Option<(String,)> = sqlx::query_as(
+        "select id::text from channel_messages where channel_id = $1::uuid and import_key = $2",
+    )
+    .bind(channel_id)
+    .bind(import_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some((id,)) = existing {
+        tx.rollback().await?;
+        return Ok(Imported {
+            id,
+            inserted: false,
+        });
+    }
+    let seq: i32 = sqlx::query_scalar(
+        "update channels set msg_seq = msg_seq + 1, updated_at = now() where id = $1::uuid returning msg_seq",
+    )
+    .bind(channel_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let row: Option<(String,)> = sqlx::query_as(
+        "insert into channel_messages \
+           (channel_id, seq, author_type, author, content, status, thread_root_id, import_key, created_at) \
+         values ($1::uuid, $2, 'imported', $3, $4, 'complete', $5::uuid, $6, \
+           coalesce(to_timestamp($7::bigint / 1000.0), now())) \
+         on conflict (channel_id, import_key) where import_key is not null do nothing \
+         returning id::text",
+    )
+    .bind(channel_id)
+    .bind(seq)
+    .bind(author_label)
+    .bind(content)
+    .bind(thread_root_id)
+    .bind(import_key)
+    .bind(created_at_ms)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((id,)) = row else {
+        // Lost the race to another writer: its row is the record.
+        tx.rollback().await?;
+        let (id,): (String,) = sqlx::query_as(
+            "select id::text from channel_messages where channel_id = $1::uuid and import_key = $2",
+        )
+        .bind(channel_id)
+        .bind(import_key)
+        .fetch_one(&deps.pg)
+        .await?;
+        return Ok(Imported {
+            id,
+            inserted: false,
+        });
+    };
+    tx.commit().await?;
+    publish_channel(
+        &deps.realtime,
+        channel_id,
+        &ChannelEvent {
+            kind_tag: "message",
+            message_id: Some(id.clone()),
+            seq: Some(seq as i64),
+            deleted: None,
+        },
+    );
+    Ok(Imported { id, inserted: true })
+}
+
+/// Mirror an edit made in the other tracker onto the imported row. True when
+/// the text changed; an unchanged text writes nothing.
+pub async fn update_imported_message(
+    deps: &NotifyDeps,
+    channel_id: &str,
+    import_key: &str,
+    content: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(String, i32)> = sqlx::query_as(
+        "update channel_messages set content = $3, edited_at = now() \
+         where channel_id = $1::uuid and import_key = $2 and author_type = 'imported' \
+           and content is distinct from $3 \
+         returning id::text, seq",
+    )
+    .bind(channel_id)
+    .bind(import_key)
+    .bind(content)
+    .fetch_optional(&deps.pg)
+    .await?;
+    let Some((id, seq)) = row else {
+        return Ok(false);
+    };
+    publish_channel(
+        &deps.realtime,
+        channel_id,
+        &ChannelEvent {
+            kind_tag: "message",
+            message_id: Some(id),
+            seq: Some(seq as i64),
+            deleted: None,
+        },
+    );
+    Ok(true)
+}
+
 /// The row an edit/delete/react targets, for permission checks.
 #[derive(Debug, Clone)]
 pub struct MessageRef {

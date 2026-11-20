@@ -402,6 +402,7 @@ pub async fn put(
         attachments,
         add_time_spent_seconds,
         status_note: None,
+        quiet: false,
         ask,
     };
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
