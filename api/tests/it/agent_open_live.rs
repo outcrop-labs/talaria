@@ -402,6 +402,158 @@ async fn a_google_link_opens_as_a_google_file() {
     let f = file(&listed, "google:1liveSheetForOpen").expect("the pane lists it");
     assert_eq!(f["googleType"], json!("spreadsheet"), "{f}");
     assert_eq!(f["touchedFor"], json!(owner), "{f}");
+    // Nothing named it — not the session, not the link — so it has no title,
+    // and the answer claims none.
+    assert_eq!(f["title"], Value::Null, "{f}");
+    assert!(body["file"].get("title").is_none(), "{body}");
+}
+
+/// A GOOGLE FILE LANDS WITH THE NAME ALREADY KNOWN: the title an earlier
+/// turn's chip gave it (the session's — what its pane already lists), else
+/// the text of the markdown link the agent passed. Nothing asks Google.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_google_file_lands_with_the_name_the_session_or_the_link_gives_it() {
+    let state = live_app_state().await;
+    let (owner, cookie) = member(&state, "google-name").await;
+    let (model, key) = fleet_agent(&state, "google-name").await;
+    let conv = create_conversation(&state.pg, &owner, &model, "Session", "work", None)
+        .await
+        .unwrap();
+    insert_user_message(
+        &state.pg,
+        &conv,
+        0,
+        "read the brief",
+        &json!([]),
+        Some(&owner),
+        &json!({}),
+    )
+    .await
+    .unwrap();
+    // The turn an hour ago that read the doc: its chip carries the title the
+    // Google answer gave.
+    let doc_url = "https://docs.google.com/document/d/1liveNamedDoc/edit";
+    sqlx::query(
+        "insert into messages (conversation_id, seq, role, content, status, chips, created_at) \
+         values ($1::uuid, 1, 'assistant', 'read it', 'complete', $2, now() - interval '1 hour')",
+    )
+    .bind(&conv)
+    .bind(
+        json!([{ "id": "source:named-doc", "kind": "source", "label": "Launch brief",
+                   "title": "Launch brief", "href": doc_url }]),
+    )
+    .execute(&state.pg)
+    .await
+    .unwrap();
+    insert_user_message(
+        &state.pg,
+        &conv,
+        2,
+        "open the brief and the numbers here",
+        &json!([]),
+        Some(&owner),
+        &json!({}),
+    )
+    .await
+    .unwrap();
+    let row = insert_streaming_assistant(&state.pg, &conv, 3, &json!({}))
+        .await
+        .unwrap();
+
+    // A bare link to a file the session named: the session's name.
+    let (status, body) = open(
+        &state,
+        &key,
+        json!({ "url": "https://docs.google.com/document/d/1liveNamedDoc/edit?usp=sharing" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["file"]["title"], json!("Launch brief"), "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|m| m.starts_with("Opened “Launch brief” in their pane.")),
+        "{body}"
+    );
+
+    // A markdown link to a file the session never named: the link's text.
+    let (status, body) = open(
+        &state,
+        &key,
+        json!({ "url": "[Q3 numbers](https://docs.google.com/spreadsheets/d/1liveLinkedSheet/edit#gid=0)" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["file"]["title"], json!("Q3 numbers"), "{body}");
+
+    // Both chips sit on the live row with their names…
+    let chips = chips_of(&state.pg, &row).await;
+    let titled = |id_part: &str| {
+        chips.as_array().and_then(|all| {
+            all.iter()
+                .find(|c| c["href"].as_str().is_some_and(|h| h.contains(id_part)))
+                .map(|c| c["title"].clone())
+        })
+    };
+    assert_eq!(
+        titled("1liveNamedDoc"),
+        Some(json!("Launch brief")),
+        "{chips}"
+    );
+    assert_eq!(
+        titled("1liveLinkedSheet"),
+        Some(json!("Q3 numbers")),
+        "{chips}"
+    );
+    // …and the person's pane lists both tabs by name.
+    let listed = files(&state, &cookie, &conv).await;
+    let named = |key: &str| file(&listed, key).map(|f| f["title"].clone());
+    assert_eq!(
+        named("google:1liveNamedDoc"),
+        Some(json!("Launch brief")),
+        "{listed:?}"
+    );
+    assert_eq!(
+        named("google:1liveLinkedSheet"),
+        Some(json!("Q3 numbers")),
+        "{listed:?}"
+    );
+
+    // A link whose text disagrees with the session's name: the session's.
+    let row2 = {
+        sqlx::query("update messages set status = 'complete' where id = $1::uuid")
+            .bind(&row)
+            .execute(&state.pg)
+            .await
+            .unwrap();
+        insert_user_message(
+            &state.pg,
+            &conv,
+            4,
+            "and the brief again",
+            &json!([]),
+            Some(&owner),
+            &json!({}),
+        )
+        .await
+        .unwrap();
+        insert_streaming_assistant(&state.pg, &conv, 5, &json!({}))
+            .await
+            .unwrap()
+    };
+    let (status, body) = open(
+        &state,
+        &key,
+        json!({ "url": format!("[Some other name]({doc_url})") }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["file"]["title"], json!("Launch brief"), "{body}");
+    assert!(
+        names(&chips_of(&state.pg, &row2).await, doc_url),
+        "the canonical url"
+    );
 }
 
 #[tokio::test]

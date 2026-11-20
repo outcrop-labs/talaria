@@ -1132,6 +1132,17 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
             let url = a["url"].as_str().map(str::trim).filter(|s| !s.is_empty());
+            // A markdown link, `[text](url)`, is read as its url, as
+            // production reads it (production also names a Google tab with
+            // the text; the sandbox records only which file opened).
+            let url = url.map(|u| {
+                u.strip_prefix('[')
+                    .and_then(|r| r.split_once("]("))
+                    .and_then(|(_, r)| r.strip_suffix(')'))
+                    .and_then(|r| r.split_whitespace().next())
+                    .map(|d| d.trim_start_matches('<').trim_end_matches('>'))
+                    .unwrap_or(u)
+            });
             let key = match (document_id, url) {
                 (None, None) => {
                     let files: Vec<Value> = w
@@ -2931,6 +2942,15 @@ mod tests {
         assert!(
             !s.dispatch("open_in_pane", &json!({ "documentId": doc.id }).to_string())
                 .is_error
+        );
+        assert_eq!(s.world.pane.len(), 2, "{:?}", s.world.pane);
+        // The same sheet as a markdown link is the same file, not a third tab.
+        assert!(
+            !s.dispatch(
+                "open_in_pane",
+                &json!({ "url": format!("[Budget]({sheet})") }).to_string()
+            )
+            .is_error
         );
         assert_eq!(s.world.pane.len(), 2, "{:?}", s.world.pane);
 

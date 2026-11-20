@@ -155,21 +155,19 @@ pub fn file_named_by(url: &str) -> Option<FileRef> {
     parse_google_file_url(url).map(FileRef::Google)
 }
 
-/// A Google chip's title. `title` when the producer set one; otherwise a
-/// `source` chip's label — unless that label is only the fallback a chip
-/// carries when nobody knew the title (the URL's host, the URL itself, or
-/// what the file is: "Google Doc").
-fn google_title(chip: &Value, url: &str) -> Option<String> {
-    if let Some(t) = str_of(chip, "title") {
-        return Some(t.to_string());
-    }
-    let label = str_of(chip, "label")?;
+/// Is this label only the fallback a link carries when nobody knew the
+/// file's title — the URL itself, the URL's host, or what the file is
+/// ("Google Doc")? Public because the agent door that opens a file in the
+/// pane reads a markdown link's text by the same rule.
+pub fn generic_google_label(label: &str, url: &str) -> bool {
+    let label = label.trim();
     let host = url
         .split("://")
         .nth(1)
         .and_then(|r| r.split(['/', '?', '#']).next())
         .unwrap_or("");
-    let generic = label == url
+    label.is_empty()
+        || label == url.trim()
         || label.eq_ignore_ascii_case(host)
         || [
             GoogleType::Document,
@@ -178,8 +176,18 @@ fn google_title(chip: &Value, url: &str) -> Option<String> {
             GoogleType::Drive,
         ]
         .iter()
-        .any(|t| label == t.noun());
-    (!generic).then(|| label.to_string())
+        .any(|t| label == t.noun())
+}
+
+/// A Google chip's title. `title` when the producer set one; otherwise a
+/// `source` chip's label — unless that label is only the fallback a chip
+/// carries when nobody knew the title (`generic_google_label`).
+fn google_title(chip: &Value, url: &str) -> Option<String> {
+    if let Some(t) = str_of(chip, "title") {
+        return Some(t.to_string());
+    }
+    let label = str_of(chip, "label")?;
+    (!generic_google_label(label, url)).then(|| label.to_string())
 }
 
 /// Every file a chip names — its `href`, and a `url` if it carries one.
@@ -316,6 +324,23 @@ pub fn candidates(
         }
     }
     out
+}
+
+/// The title the session already gives one Google file, by the same reading
+/// the pane's list makes (`candidates`): the newest title a chip on one of the
+/// messages gave it, else the one its pin carries. None when the session has
+/// never named it. The agent door that opens a Google file lands its chip with
+/// this title, so the tab reads as the file is called rather than "Google Doc".
+pub fn session_google_title(
+    messages: &[TrailMessage],
+    pinned: &Value,
+    file: &GoogleFile,
+) -> Option<String> {
+    let key = file.key();
+    candidates(messages, pinned, None)
+        .into_iter()
+        .find(|c| c.file.key() == key)
+        .and_then(|c| c.title)
 }
 
 /// The artifact ids the candidates name — what the route looks up.
@@ -823,5 +848,69 @@ mod tests {
             wire.ends_with(&format!(r#""lastTouchedAt":"t3","touchedFor":"{BEN}"}}"#)),
             "{wire}"
         );
+    }
+
+    #[test]
+    fn a_google_file_the_session_named_keeps_that_name_and_one_it_never_named_has_none() {
+        let sheet = GoogleFile {
+            id: "1budget".into(),
+            kind: GoogleType::Spreadsheet,
+        };
+        let messages = vec![
+            // A generic label is not a name: nobody knew the title yet.
+            msg(
+                "t1",
+                json!([{ "id": "source:aa", "kind": "source", "label": "Google Sheet",
+                         "href": "https://docs.google.com/spreadsheets/d/1budget/edit" }]),
+            ),
+            msg(
+                "t2",
+                json!([{ "id": "source:aa", "kind": "source", "label": "Budget",
+                         "href": "https://docs.google.com/spreadsheets/d/1budget/edit" }]),
+            ),
+            // Renamed later: the newest name wins, as in the pane's list.
+            msg(
+                "t3",
+                json!([{ "id": "source:aa", "kind": "source", "label": "Budget",
+                         "title": "Budget 2027",
+                         "href": "https://docs.google.com/spreadsheets/d/1budget/edit" }]),
+            ),
+        ];
+        assert_eq!(
+            session_google_title(&messages, &json!([]), &sheet).as_deref(),
+            Some("Budget 2027")
+        );
+        // Only the generic label so far: no name to land.
+        assert_eq!(
+            session_google_title(&messages[..1], &json!([]), &sheet),
+            None
+        );
+        // A pin that carries a title names a file no chip did.
+        let pinned = json!([{ "kind": "google", "id": "1pinned", "title": "Roadmap",
+                              "mime": "application/vnd.google-apps.document" }]);
+        let doc = GoogleFile {
+            id: "1pinned".into(),
+            kind: GoogleType::Document,
+        };
+        assert_eq!(
+            session_google_title(&[], &pinned, &doc).as_deref(),
+            Some("Roadmap")
+        );
+        // A file the session never mentioned has no name here.
+        let other = GoogleFile {
+            id: "1other".into(),
+            kind: GoogleType::Document,
+        };
+        assert_eq!(session_google_title(&messages, &pinned, &other), None);
+    }
+
+    #[test]
+    fn a_generic_label_is_the_url_its_host_or_what_the_file_is() {
+        let url = "https://docs.google.com/document/d/1doc/edit";
+        assert!(generic_google_label(url, url));
+        assert!(generic_google_label("docs.google.com", url));
+        assert!(generic_google_label("Google Doc", url));
+        assert!(generic_google_label("  ", url));
+        assert!(!generic_google_label("Launch plan", url));
     }
 }
