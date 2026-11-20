@@ -184,7 +184,20 @@
   const landedAttempt = $derived(
     ledger.data?.rewinds.find((r) => r.id === startedHere && r.state === 'done')?.attemptRunId ?? null,
   )
-  const rewindTo = async (data: RunLineage, target: { runId: string; seq: number }) => {
+  let opening = false
+  const rewindTo = async (polled: RunLineage, target: { runId: string; seq: number }) => {
+    if (opening) return
+    // The confirm says whether the ticket moves, and the rewind decides that
+    // from the ticket as it stands when it starts. Read the lineage again as
+    // the confirm opens rather than trust the last poll, which a reviewer's
+    // move a few seconds ago would make wrong. A failed read keeps the poll's.
+    opening = true
+    let data: RunLineage
+    try {
+      data = (await ledger.refetch()).data ?? polled
+    } finally {
+      opening = false
+    }
     const source = data.attempts.find((a) => a.runId === target.runId)
     const working = data.attempts.find((a) => a.runId !== target.runId && runIsLive(a.state))
     if (working) {
