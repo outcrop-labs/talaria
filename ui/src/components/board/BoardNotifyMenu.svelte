@@ -17,6 +17,7 @@
     clearBoardNotify,
     controlName,
     glyphOf,
+    presetChoice,
     presetLabel,
     putBoardNotify,
     refusalMessage,
@@ -80,7 +81,11 @@
       checked: e.preset === p,
       // Off says, before it is chosen, what still comes through.
       title: p === 'off' ? summary({ ...e, preset: 'off', events: [] }, registry, false) : undefined,
-      onSelect: () => put(writeFrom(e, { preset: p }, registry)),
+      // The checked preset is no change: a PUT would pin an inherited default.
+      onSelect: () => {
+        const w = presetChoice(e, p, registry)
+        if (w) put(w)
+      },
     }))
     // Custom is chosen event by event, on the tab.
     entries.push({ label: e.preset === 'custom' ? presetLabel(registry, 'custom') : `${presetLabel(registry, 'custom')}…`, checked: e.preset === 'custom', onSelect: onSettings })

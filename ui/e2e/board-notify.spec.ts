@@ -126,11 +126,21 @@ for (const theme of THEMES) {
       await expect(menuItem(page, 'Notification settings').locator('svg.lucide-settings')).toHaveCount(1)
       await expect(menuItem(page, 'Use my default')).toHaveCount(0)
       await expect(page.locator('[data-board-notify-source]')).toHaveText('The standard default.')
-      await page.keyboard.press('Escape')
+      // Choosing the checked entry is no change: nothing is written, and the
+      // board keeps following the default ("(your default)" stays). The PUTs
+      // are counted, so a write fired by that click shows up below.
+      const puts: string[] = []
+      page.on('request', (r) => {
+        if (r.method() === 'PUT' && new URL(r.url()).pathname === `/api/boards/${boardId}/notify`) puts.push(r.postData() ?? '')
+      })
+      await page.getByRole('menuitem', { name: '✓ Participating', exact: true }).click()
+      await expectBell(page, 'Board notifications: participating (your default)', 'bell')
+      expect(await notifyOf(api, boardId)).toMatchObject({ source: 'builtin', effective: { preset: 'participating' } })
 
       await pickFromBell(page, 'Mentions & assignments')
       await expectBell(page, 'Board notifications: mentions & assignments', 'at-sign')
       expect(await notifyOf(api, boardId)).toMatchObject({ source: 'board', effective: { preset: 'mentions' } })
+      expect(puts.map((b) => JSON.parse(b).preset)).toEqual(['mentions'])
       await pickFromBell(page, 'All activity')
       await expectBell(page, 'Board notifications: all activity', 'bell-ring')
       await pickFromBell(page, 'Off')

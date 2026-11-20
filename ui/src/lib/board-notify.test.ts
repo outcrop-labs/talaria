@@ -10,6 +10,7 @@ import {
   expandWrite,
   glyphOf,
   levelWords,
+  presetChoice,
   presetLabel,
   putBoardNotify,
   refusalMessage,
@@ -28,7 +29,8 @@ import { HttpError } from './fetch-json'
 afterEach(() => vi.unstubAllGlobals())
 
 // The registry as the server serves it today (talaria_notify::boards
-// registry_wire): Due and the daily digest listed, not yet available.
+// registry_wire): every event and cadence available — Due since the due-date
+// reminders, the daily digest since the board digest.
 const REGISTRY: BoardRegistry = {
   events: [
     { id: 'created', label: 'New ticket on the board', available: true, boardWideOnly: true },
@@ -36,7 +38,7 @@ const REGISTRY: BoardRegistry = {
     { id: 'status', label: 'Status change', available: true, boardWideOnly: false },
     { id: 'comment', label: 'Comment or reply', available: true, boardWideOnly: false },
     { id: 'mention', label: 'Mention', available: true, boardWideOnly: false },
-    { id: 'due', label: 'Due soon or overdue', available: false, boardWideOnly: false },
+    { id: 'due', label: 'Due soon or overdue', available: true, boardWideOnly: false },
     { id: 'completed', label: 'Ticket completed', available: true, boardWideOnly: false },
   ],
   presets: [
@@ -48,8 +50,16 @@ const REGISTRY: BoardRegistry = {
   ],
   cadences: [
     { id: 'instant', label: 'Instant', available: true },
-    { id: 'digest', label: 'Daily digest', available: false },
+    { id: 'digest', label: 'Daily digest', available: true },
   ],
+}
+
+// An older server's registry: Due and the daily digest listed, not yet
+// available (it refuses them), so the client must not offer or promise them.
+const OLDER: BoardRegistry = {
+  ...REGISTRY,
+  events: REGISTRY.events.map((e) => (e.id === 'due' ? { ...e, available: false } : e)),
+  cadences: REGISTRY.cadences.map((c) => (c.id === 'digest' ? { ...c, available: false } : c)),
 }
 
 const NO_CHANNELS = { alerts: null, email: null }
@@ -72,16 +82,14 @@ test('the quick presets are the menu, in order, worded by the registry', () => {
   for (const p of PRESETS) assert.ok(presetLabel(null, p).length > 0)
 })
 
-test('only what has a producer is offered: Due and the daily digest wait for theirs', () => {
-  assert.deepEqual(availableCadences(REGISTRY).map((c) => c.id), ['instant'])
-  assert.ok(!availableEvents(REGISTRY).some((e) => e.id === 'due'))
-  const shipped: BoardRegistry = {
-    ...REGISTRY,
-    events: REGISTRY.events.map((e) => ({ ...e, available: true })),
-    cadences: REGISTRY.cadences.map((c) => ({ ...c, available: true })),
-  }
-  assert.deepEqual(availableCadences(shipped).map((c) => c.id), ['instant', 'digest'])
-  assert.ok(availableEvents(shipped).some((e) => e.id === 'due'))
+test('only what has a producer is offered: today every event and cadence, on an older server not Due or the digest', () => {
+  assert.deepEqual(availableCadences(REGISTRY).map((c) => c.id), ['instant', 'digest'])
+  assert.deepEqual(
+    availableEvents(REGISTRY).map((e) => e.id),
+    ['created', 'assigned', 'status', 'comment', 'mention', 'due', 'completed'],
+  )
+  assert.deepEqual(availableCadences(OLDER).map((c) => c.id), ['instant'])
+  assert.ok(!availableEvents(OLDER).some((e) => e.id === 'due'))
   assert.deepEqual(availableCadences(null), [])
 })
 
@@ -124,9 +132,19 @@ test('the summary says what reaches you, over which tickets, when — and Off wh
     summary(expand('custom', 'digest', { events: ['comment'] }), REGISTRY, false),
     'Comment or reply — on tickets you’re in, rolled up once a day.',
   )
-  assert.match(summary(expand('all'), REGISTRY, false), /— on every ticket on the board, as it happens\.$/)
-  // Due has no producer yet: All covers it, the sentence does not promise it.
-  assert.doesNotMatch(summary(expand('all'), REGISTRY, false), /Due soon/)
+  // All names Due among what it brings, now that Due has a producer.
+  assert.equal(
+    summary(expand('all'), REGISTRY, false),
+    'New ticket on the board, Assigned to me, Status change, Comment or reply, Mention, Due soon or overdue and Ticket completed — on every ticket on the board, as it happens.',
+  )
+  // All on the digest: Due is rolled up with the rest; what points at you is not.
+  assert.equal(
+    summary(expand('all', 'digest'), REGISTRY, false),
+    'New ticket on the board, Status change, Comment or reply, Due soon or overdue and Ticket completed — on every ticket on the board, rolled up once a day; Assigned to me and Mention as it happens.',
+  )
+  // An older server with no Due producer: All covers it, the sentence does not promise it.
+  assert.match(summary(expand('all'), OLDER, false), /— on every ticket on the board, as it happens\.$/)
+  assert.doesNotMatch(summary(expand('all'), OLDER, false), /Due soon/)
   assert.match(summary(expand('off'), REGISTRY, true), /^Nothing from this board — assignments and @mentions included\. Approvals, and tickets you watch yourself, still reach you\.$/)
   assert.equal(summary(expand('custom', 'instant', { events: ['comment'] }), REGISTRY, false), 'Comment or reply — on tickets you’re in, as it happens.')
   // The board's own channels, only when the server serves them.
@@ -161,6 +179,26 @@ test('a change becomes the whole setting, keeping what was not touched', () => {
     preset: 'participating',
     cadence: 'instant',
     channels: { alerts: false, email: true },
+  })
+})
+
+test('choosing the preset already in effect sends nothing — an inherited default stays inherited', () => {
+  // Every quick preset × where it comes from: the checked entry is no write,
+  // so a board that follows the default keeps following it (source stays).
+  for (const p of QUICK_PRESETS) {
+    for (const cadence of CADENCES) {
+      const current = expand(p, cadence, { channels: { alerts: null, email: true } })
+      assert.equal(presetChoice(current, p, REGISTRY), null, `${p}/${cadence}`)
+      // Any other preset is the whole setting, as writeFrom builds it.
+      for (const other of QUICK_PRESETS.filter((x) => x !== p)) {
+        assert.deepEqual(presetChoice(current, other, REGISTRY), writeFrom(current, { preset: other }, REGISTRY), `${p}→${other}`)
+      }
+    }
+  }
+  // Leaving Custom for a named preset is a change.
+  assert.deepEqual(presetChoice(expand('custom', 'instant', { events: ['status'] }), 'participating', REGISTRY), {
+    preset: 'participating',
+    cadence: 'instant',
   })
 })
 

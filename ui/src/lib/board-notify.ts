@@ -283,6 +283,16 @@ export function writeFrom(
   return out
 }
 
+/** The write a quick preset menu sends (the bell, a Settings → Boards row),
+ *  or null when that preset is the one in effect: choosing the checked entry
+ *  changes nothing. A PUT there would store the inherited setting as the
+ *  board's own, so a board that follows the default would stop following it
+ *  — "(your default)" gone, "Use my default" offered — from a click that
+ *  looked like no change. */
+export function presetChoice(current: BoardEffective, preset: BoardPreset, registry?: BoardRegistry | null): BoardNotifyWrite | null {
+  return current.preset === preset ? null : writeFrom(current, { preset }, registry)
+}
+
 /** A write, expanded the way the server will answer it — what a form shows
  *  while the write is on its way. */
 export function expandWrite(w: BoardNotifyWrite, registry?: BoardRegistry | null): BoardEffective {

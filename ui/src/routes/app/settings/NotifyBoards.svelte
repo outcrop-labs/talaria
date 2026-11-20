@@ -19,13 +19,13 @@
     QUICK_PRESETS,
     clearBoardNotify,
     levelWords,
+    presetChoice,
     presetLabel,
     putBoardNotify,
     refusalMessage,
     saveBoardDefault,
     sourceWords,
     useNotifyBoards,
-    writeFrom,
     type BoardNotifyWrite,
     type NotifyBoardRow,
   } from '@/lib/board-notify'
@@ -90,7 +90,11 @@
     const entries: ContextMenuEntry[] = QUICK_PRESETS.map((p) => ({
       label: presetLabel(registry, p),
       checked: b.effective.preset === p,
-      onSelect: () => void onRow(b.id, () => putBoardNotify(b.id, writeFrom(b.effective, { preset: p }, registry))),
+      // The checked preset is no change: a PUT would pin an inherited default.
+      onSelect: () => {
+        const w = presetChoice(b.effective, p, registry)
+        if (w) void onRow(b.id, () => putBoardNotify(b.id, w))
+      },
     }))
     if (b.source === 'board') {
       entries.push('sep', { label: 'Use my default', onSelect: () => void onRow(b.id, () => clearBoardNotify(b.id)) })
