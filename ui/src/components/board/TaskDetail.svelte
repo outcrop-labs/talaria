@@ -245,6 +245,31 @@
     void qc.invalidateQueries({ queryKey: ['task', taskId] })
     void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
   }
+
+  // WATCHING. A watch is the watcher's own when they made it (or it predates
+  // anyone recording who did); one someone else added names them
+  // (`watcherOrigins`), because it does not carry the ticket through a board
+  // its watcher set to Off — "Watch it myself" makes it theirs (the server
+  // records the watcher as having added it). Emails compare case-blind, as
+  // the server stores the account's own spelling.
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+  const addedBy = (w: string) => data?.watcherOrigins?.find((o) => same(o.watcher, w))?.addedBy ?? null
+  const watching = $derived(!!me && !!data?.watchers.some((w) => same(w, me)))
+  const myOrigin = $derived(me ? addedBy(me) : null)
+  let watchBusy = $state(false)
+  const setWatch = async (on: boolean) => {
+    if (watchBusy || !me) return
+    watchBusy = true
+    try {
+      if (on) await watchTask(taskId, me)
+      else await unwatchTask(taskId, me)
+      refresh()
+    } catch (e) {
+      toastError(on ? 'Could not watch this ticket' : 'Could not stop watching this ticket', e)
+    } finally {
+      watchBusy = false
+    }
+  }
   const save = async (patch: Parameters<typeof updateTask>[1]) => {
     await updateTask(taskId, patch)
     refresh()
@@ -1025,19 +1050,35 @@
 
           <PropGroup label="People">
             <Prop label={`Watchers (${data!.watchers.length})`}>
-              <div class="space-y-1">
-                {#each data!.watchers as w (w)}<div class="truncate text-xs text-muted">{w}</div>{/each}
+              <div class="space-y-1" data-watchers>
+                {#each data!.watchers as w (w)}
+                  {@const by = addedBy(w)}
+                  <div class="min-w-0 text-xs text-muted" data-watcher={w}>
+                    <div class="truncate" title={w}>{w}</div>
+                    {#if by}<div class="truncate text-[11px]" title={`Added by ${by.name}`} data-watch-added-by>added by {by.name}</div>{/if}
+                  </div>
+                {/each}
                 {#if me}
-                  <button
-                    class="text-xs text-accent hover:underline"
-                    onclick={async () => {
-                      if (data!.watchers.includes(me)) await unwatchTask(taskId, me)
-                      else await watchTask(taskId, me)
-                      refresh()
-                    }}
-                  >
-                    {data!.watchers.includes(me) ? 'Unwatch' : 'Watch'}
-                  </button>
+                  <div class="flex flex-wrap items-center gap-x-3">
+                    {#if watching && myOrigin}
+                      <button
+                        class="text-xs text-accent hover:underline disabled:opacity-50"
+                        disabled={watchBusy}
+                        onclick={() => void setWatch(true)}
+                        data-watch-myself
+                      >
+                        Watch it myself
+                      </button>
+                    {/if}
+                    <button class="text-xs text-accent hover:underline disabled:opacity-50" disabled={watchBusy} onclick={() => void setWatch(!watching)} data-watch-toggle>
+                      {watching ? 'Unwatch' : 'Watch'}
+                    </button>
+                  </div>
+                  {#if watching && myOrigin}
+                    <p class="text-xs leading-4 text-muted" data-watch-note>
+                      {myOrigin.name} added your watch. One someone else adds doesn’t reach you on a board you’ve turned off — watch it yourself and it will.
+                    </p>
+                  {/if}
                 {/if}
               </div>
             </Prop>

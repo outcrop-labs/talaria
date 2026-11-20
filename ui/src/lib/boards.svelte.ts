@@ -256,11 +256,24 @@ export interface TaskUsage {
   perModel: Array<{ llmModel: string | null; tokens: number; cost: number | null; includedTokens?: number }>
 }
 
+/** Where a watch came from (`GET /api/tasks/{id}` `watcherOrigins`):
+ *  `addedBy` names whoever added it when that was someone other than the
+ *  watcher. Null for a person's own watch (and one from before anyone
+ *  recorded who added a watch). A watch someone else added does not carry the
+ *  ticket through a board its watcher set to Off; pressing Watch makes it
+ *  theirs. */
+export interface WatcherOrigin {
+  watcher: string
+  addedBy: { id: string; name: string } | null
+}
+
 export interface TaskFull {
   task: Task
   comments: TaskComment[]
   activity: TaskActivity[]
   watchers: string[]
+  /** Absent from an api older than it. */
+  watcherOrigins?: WatcherOrigin[]
   reviews: import('@/lib/task-const').QualityReview[]
   judgeReviews: JudgeReview[]
   blockedBy: TaskLink[]
