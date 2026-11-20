@@ -109,9 +109,15 @@ The center itself (the bell, the page, the settings, the status panel) is
   the push, together) and Email, each on, off, or as the matrix says — so one board's
   tickets can reach you by mail alone while another's pop up; the inbox keeps every
   notification either way. A setting changes
-  only what you receive. Set through the API for now (`/api/boards/{id}/notify`, `boards`
-  in `PATCH /api/notifications`); the board's own control and the Settings section follow.
-  The rules: [producers.md](./notifications/producers.md#each-board).
+  only what you receive. Set it on the board — the bell beside Board settings sets the
+  presets in one click and shows the value (its tooltip names it: "Board notifications:
+  participating (your default)"), and its Notification settings opens Board settings →
+  Notifications for Custom and the board's channels; a viewer has the bell and that tab
+  too — or in Settings → Notifications → Boards, which holds your default for every board
+  and lists every board's setting with where it comes from. A ticket you watch because
+  someone else added you says who, with **Watch it myself**: only a watch you made reaches
+  you on a board you turned off. The rules:
+  [producers.md](./notifications/producers.md#each-board).
 - **Do Not Disturb.** Pause from the account menu or the bell for 30 minutes, an hour, two
   hours, until 9:00 tomorrow in your time zone, until you resume, or until a time you pick;
   and set working hours, outside which notifications arrive quietly. Working hours are read

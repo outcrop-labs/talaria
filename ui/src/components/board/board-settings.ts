@@ -5,8 +5,26 @@
 // door elsewhere on the board (the sync chip's "Sync settings") writes the
 // param instead of reaching into the modal.
 
-export const SETTINGS_TABS = ['general', 'statuses', 'labels', 'people', 'agents', 'sync'] as const
+export const SETTINGS_TABS = ['general', 'statuses', 'labels', 'people', 'agents', 'sync', 'notifications'] as const
 export type SettingsTab = (typeof SETTINGS_TABS)[number]
+
+/** The tabs a board role sees, in strip order. Owners and editors configure
+ *  the board, so they see every tab. A viewer sees only their own
+ *  notification setting: the board's configuration is not theirs to change
+ *  (the api answers a viewer's writes 403), and the General and People tabs
+ *  are not read-only views. */
+export function tabsFor(role: string | null | undefined): readonly SettingsTab[] {
+  if (role === 'owner' || role === 'editor') return SETTINGS_TABS
+  if (role === 'viewer') return ['notifications']
+  return []
+}
+
+/** Whether Board settings opens for this role on this tab: only on a tab the
+ *  role sees — a link to a tab someone cannot see opens nothing, as an
+ *  unknown tab does. */
+export function opensOn(role: string | null | undefined, tab: SettingsTab | null | undefined): boolean {
+  return !!tab && tabsFor(role).includes(tab)
+}
 
 /** The tab a `?settings=` value names, or null when it names none — an unknown
  *  value opens nothing rather than a guess. */
@@ -22,6 +40,7 @@ export const SETTINGS_TAB_LABEL: Record<SettingsTab, string> = {
   people: 'people',
   agents: 'agents',
   sync: 'sync',
+  notifications: 'notifications',
 }
 
 /** The query string a ticket opened from inside the board's settings or the

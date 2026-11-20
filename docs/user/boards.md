@@ -70,6 +70,31 @@ watchers (**Watch** to follow a ticket).
 Right-click any ticket for the fast lane: move, priority, color, due date, assign to me,
 archive.
 
+## Notifications
+
+Each board has a bell in its header, beside **Board settings**: what you hear about this
+board's tickets. Its picture is the setting — a ringing bell for **All activity**, a bell
+for **Participating** (the tickets you're in: assigned to you, watched, created by you,
+commented on), **@** for **Mentions & assignments**, a crossed-out bell for **Off** — and
+hovering it says so ("Board notifications: participating (your default)"). Click it to
+change it in one go. **Off** silences the board's assignments and @mentions too;
+approvals still reach you, and so does a ticket you watch yourself.
+
+**Notification settings** in that menu opens **Board settings → Notifications**, for the
+rest: **Custom** (pick the events — new ticket, assigned to me, status change, comment or
+reply, mention, ticket completed — and whether they cover the tickets you're in or every
+ticket on the board), and the board's own **Alerts** (the pop-up banner and the push) and
+**Email** (the missed-activity email), each *From settings*, *On* or *Off*. Your inbox
+keeps every notification whatever you choose. **Use my default** puts the board back on
+your default. Anyone on the board has the bell and this tab, viewers included, and it only
+ever changes what reaches *you*.
+
+Your default for every board, and every board's setting at a glance, are in **Settings →
+Notifications → Boards**. A board you haven't set follows the default; a new board does too.
+
+A ticket you watch because someone else added you says who ("added by …"), with **Watch it
+myself**: only a watch you made yourself reaches you on a board you've turned off.
+
 **Moving a ticket to another board.** The ticket gets the new board's next reference
 (`PLAT-118` becomes `OPS-7`); the old reference and old links still open it. Comments,
 history, attachments and dependencies come along. It lands in the column of the same name,

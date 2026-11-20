@@ -197,6 +197,9 @@ less, until they choose, and a new board inherits the default by having no row.
    mention and assignment rows, even on a board set to Off. A watch an editor added for
    someone is involvement, not a choice, and does not wake a board they set to Off.
    Pressing Watch on such a watch makes it theirs; an editor's add never takes one back.
+   `GET /api/tasks/{id}` says which are which (`watcherOrigins: [{watcher, addedBy}]`,
+   `addedBy` naming whoever added a watch for someone else), so the ticket panel says
+   "added by …" and offers **Watch it myself**.
 3. The person's setting for the board, then their default, then the built-in.
 4. Then the channels: the setting's own where it chose one (Alerts for Desktop and Push,
    Email for Email), else the class matrix. Then
@@ -270,10 +273,32 @@ registry}` (any board role; anyone else 403); `PUT` `{preset, events?, scope?, c
 channels?}` replaces the caller's own row — the whole setting: a member it leaves out goes
 back to its default, so a client sends `stored` back with its change; `DELETE` goes back
 to the default. `GET
-/api/notifications/boards` → `{default, boards: [{id, name, role, effective, source}]}` for
-the boards the caller can see. `GET`/`PATCH /api/notifications` carry `boards` (the
+/api/notifications/boards` → `{default, boards: [{id, name, role, effective, source}],
+registry}` for the boards the caller can see (the registry too, so a person with no board
+yet can set their default). `GET`/`PATCH /api/notifications` carry `boards` (the
 default; `null` clears it). The registry (event, preset and cadence labels) is served,
 never a client-side list.
+
+**The controls** (feature `board-prefs`; the channel switches only with `board-channels`,
+a cadence or an event only once the registry marks it available):
+- The board's bell (`BoardNotifyMenu`), beside the Board settings gear, for every role:
+  value-faced — bell-ring, bell, @, bell-off, bell-dot for Custom, a clock mark for the
+  daily digest — named "Board notifications: <value>" (plus "(your default)" when the
+  board has no setting of its own), its tooltip the same words, a 32px target. Its menu
+  is the four presets, Custom… (the tab), the daily digest once served, Use my default
+  (only over a setting of the board's own) and the gear's Notification settings
+  (`?settings=notifications`). A preset keeps the cadence and the channels that applied.
+- Board settings → Notifications (`NotificationsTab`, `BoardNotifyForm`): the summary of
+  what reaches you and from which layer, the presets with what each covers, Custom's
+  events and scope (New ticket only over Every ticket), the cadence once a second is
+  served, Alerts and Email (From settings / On / Off), Use my default. Owners and editors
+  see it as the last of the seven tabs; a viewer's modal holds only it, is named
+  Notification settings, and opens on no other tab (`board-settings.ts` `tabsFor`) — the
+  Board settings gear stays the owners' and editors' (UI-CONVENTIONS "Who sees the door").
+- Settings → Notifications → Boards (`NotifyBoards`): the default for every board in the
+  same form (Back to the standard default clears it), then every board the person can
+  see — those with a setting of their own first — with where its setting comes from, a
+  quick preset change, Use my default and a door to the board's tab.
 
 ## Cancel safety (C30, C34)
 
