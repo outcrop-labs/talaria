@@ -2095,6 +2095,14 @@ pub fn router(state: AppState) -> Router {
             post(talaria_routes_comms::comms::agent_organize::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
+        // The agent puts an existing file in front of the person, in the pane
+        // beside the session it is answering — the same chip a create lands,
+        // so the pane follows it like any file the agent touched.
+        .route(
+            "/api/agent/open",
+            post(talaria_routes_comms::comms::agent_open::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
         .route(
             "/api/agent/chips",
             post(talaria_routes_comms::comms::chips_expose::post).fallback(|| async { method_not_allowed("POST") }),

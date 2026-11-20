@@ -98,17 +98,6 @@ fn google_approval_for(tool: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// A toolkit tool's own name, as the arms below spell it. A client may
-/// report an MCP tool under its server's prefix — Hermes as
-/// `mcp_talaria_triage_ticket`, a Claude-style client as
-/// `mcp__talaria__triage_ticket` — and an arm that matched only the bare
-/// spelling silently never fired for it.
-pub fn bare_tool_name(tool: &str) -> &str {
-    tool.strip_prefix("mcp__talaria__")
-        .or_else(|| tool.strip_prefix("mcp_talaria_"))
-        .unwrap_or(tool)
-}
-
 /// A ticket tool's answer was a REFUSAL: a 403 as the toolkit words it
 /// (`Talaria API 403: …`), or the api's own `{error}` body. Never a landed
 /// write's answer — `{ task, … }`, the ticket itself, whose title or
@@ -342,16 +331,22 @@ fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
+/// The platform links in one tool answer, as link chips: a string the href
+/// classifier accepts, or an object naming a ticket by `boardId` + `id`.
+///
+/// A LISTING IS NOT A TRAIL, so the walk never enters an array. A link chip
+/// says "this turn made or worked on this" — the ticket a call created, the
+/// one it moved. An array in an answer is a listing: `list_tickets`' rows,
+/// search hits, a ticket's comments or its similar tickets, each one only
+/// looked at. A chip per entry buried the one thing the turn was about under
+/// every row it read, on a transcript everyone in the thread sees. (Search
+/// pages are read separately, by `sources_from`, and Google files by
+/// `google_file_from`; neither goes through here.)
 fn walk_links(v: &Value, title: Option<&str>, out: &mut Vec<Value>) {
     match v {
         Value::String(s) => {
             if let Some(link) = classify_href(s) {
                 out.push(link_chip(&link, title));
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                walk_links(item, title, out);
             }
         }
         Value::Object(map) => {
@@ -824,6 +819,114 @@ fn parse_loose(raw: &str) -> Value {
     serde_json::from_str(&text).unwrap_or(Value::Null)
 }
 
+/// THE TOOLKIT'S OWN NAME FOR A TOOL, however the agent's MCP client spelled
+/// it. Hermes registers every MCP tool as `mcp__<server>__<tool>` and reports
+/// that registry name to the talaria-events plugin, which posts it to the
+/// tool-events door as it is — so a Talaria writer reaches this crate as
+/// `mcp__talaria__create_document`, never `create_document`, and every arm of
+/// `chips_from_tool` that keys on the toolkit's names missed it: a document
+/// an agent created landed no chip, so it never joined the session's files
+/// and never opened in the Work pane (seen on a live stack, Hermes v0.22.4).
+/// Only the toolkit's own server is stripped — it is always `talaria`
+/// (talaria-fleet-render renders it under that key and refuses an authored
+/// server of that name) — plus the single-underscore display spelling some
+/// Hermes surfaces use. Another server's tool keeps its prefix: a Google
+/// Workspace MCP tool is not a toolkit tool, and must not be read as one.
+pub fn bare_tool_name(tool: &str) -> &str {
+    let tool = tool.trim();
+    tool.strip_prefix("mcp__talaria__")
+        .or_else(|| tool.strip_prefix("mcp_talaria_"))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(tool)
+}
+
+/// THE ANSWER AN MCP TOOL GAVE, out of the envelope Hermes puts it in.
+///
+/// Hermes' MCP handler returns `json.dumps({"result": text})` for a tool's
+/// text content, and that envelope is the `result` the talaria-events plugin
+/// posts — so a toolkit writer's `{"artifact": {"id": …}}` reached
+/// `chips_from_tool` as one JSON string under `result`, and no arm keyed on an
+/// id, a title or a URL found anything (seen on a live stack, Hermes v0.22.4).
+/// Unwrapped here: a whole envelope gives back its string; one the plugin's
+/// 4000-char clamp cut short gives back as much of the string as arrived,
+/// decoded, for `parse_loose` to repair like any other truncated payload.
+/// Anything else — a native tool's answer, an object with other keys — is
+/// returned as it came.
+pub fn mcp_result_text(raw: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let t = raw.trim_start();
+    if let Ok(v) = serde_json::from_str::<Value>(t) {
+        if let Some(obj) = v.as_object()
+            && obj.len() == 1
+            && let Some(Value::String(inner)) = obj.get("result")
+        {
+            return Cow::Owned(inner.clone());
+        }
+        return Cow::Borrowed(raw);
+    }
+    match t
+        .strip_prefix("{\"result\": \"")
+        .or_else(|| t.strip_prefix("{\"result\":\""))
+    {
+        Some(rest) => Cow::Owned(json_string_prefix(rest)),
+        None => Cow::Borrowed(raw),
+    }
+}
+
+/// The decoded text of a JSON string body that may have been cut off: up to
+/// its closing quote, or to wherever the text ends. An escape cut in half is
+/// dropped rather than guessed at.
+fn json_string_prefix(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('b') => out.push('\u{8}'),
+                Some('f') => out.push('\u{c}'),
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if hex.len() < 4 {
+                        break;
+                    }
+                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(ch);
+                    }
+                }
+                Some(other) => out.push(other),
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The toolkit writers whose answer names the Talaria document they made or
+/// changed — the only calls whose document chip means the session TOUCHED
+/// that file (and so the Work pane lists it, `session_files`).
+fn writes_document(tool: &str) -> bool {
+    matches!(
+        tool,
+        "create_document"
+            | "create_sheet"
+            | "create_page"
+            | "save_image_artifact"
+            // The import answers `{ artifact, message }`: a NEW Talaria file,
+            // and the session that asked for it should see it like any other.
+            | "import_drive_file"
+            | "update_document"
+            // A surgical edit lands the same chip as a full rewrite: what the
+            // reader wants is a way into the document that just changed, and
+            // how much of it the agent resent is not their problem.
+            | "edit_document"
+    )
+}
+
 /// Chips implied by one completed tool call. Link-producing tools always
 /// emit a link chip, even when the result text never pasted the URL.
 /// Protected tools emit an approval chip instead of pretending the action
@@ -836,22 +939,22 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
     if let Some(link) = classify_href(result) {
         out.push(link_chip(&link, None));
     }
+    // A DOCUMENT A CALL ONLY MENTIONED IS NOT ONE IT OPENED. Every chip that
+    // names a Talaria document is a file of the session: the Work pane lists
+    // it and brings it forward for the person the turn is for. So a document
+    // link in a reader's answer — a `get_document`, a knowledge search whose
+    // hits carry `/artifacts?a=…` — must not land one, or grounding an answer
+    // on five documents opened five tabs and yanked the pane five times.
+    // Writers land theirs below; an existing file opens through
+    // `open_in_pane`, whose door lands its own chip.
+    if !writes_document(tool) {
+        out.retain(|c| c.get("entity").and_then(Value::as_str) != Some("document"));
+    }
 
     let title = first_title(&result_v).or_else(|| str_field(&args_v, "title"));
     let id = first_id(&result_v);
     match tool {
-        "create_document"
-        | "create_sheet"
-        | "create_page"
-        | "save_image_artifact"
-        // The import answers `{ artifact, message }`: a NEW Talaria file,
-        // and the session that asked for it should see it like any other.
-        | "import_drive_file"
-        | "update_document"
-        // A surgical edit lands the same chip as a full rewrite: what the
-        // reader wants is a way into the document that just changed, and how
-        // much of it the agent resent is not their problem.
-        | "edit_document" => {
+        t if writes_document(t) => {
             if let Some(id) = id.filter(|s| is_id(s)) {
                 // Only `edit_document` reports changes — a full rewrite's
                 // "change" is the whole body, which is not a diff anyone
@@ -1282,21 +1385,10 @@ async fn addressed_target(
     })
 }
 
-/// Where an agent's chips land. With a conversation named, that
-/// conversation's own turn (`addressed_target`). Without one: the agent's
-/// live streaming rows — conversation turns and channel turns alike — when
-/// there is exactly one; else its rows of the last 15 minutes regardless of
-/// status, when there is exactly one; else `Ambiguous` when several could be
-/// meant, and `Nowhere` when none could. Two rows are read per tier rather
-/// than one so "several" is observable without counting the table.
-pub async fn landing_target(
-    pg: &PgPool,
-    agent: &str,
-    conversation_id: Option<&str>,
-) -> Result<Target, sqlx::Error> {
-    if let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) {
-        return addressed_target(pg, agent, &id).await;
-    }
+/// The agent's LIVE rows: its streaming conversation replies and streaming
+/// channel replies of the last 15 minutes, up to two of each — two so that
+/// "several" is observable without counting the table.
+async fn live_rows(pg: &PgPool, agent: &str) -> Result<Vec<Landed>, sqlx::Error> {
     let mut live: Vec<Landed> = sqlx::query_as::<_, (String, String)>(
         "select m.id::text, m.conversation_id::text \
          from messages m join conversations c on c.id = m.conversation_id \
@@ -1331,6 +1423,25 @@ pub async fn landing_target(
             message_id,
         }),
     );
+    Ok(live)
+}
+
+/// Where an agent's chips land. With a conversation named, that
+/// conversation's own turn (`addressed_target`). Without one: the agent's
+/// live streaming rows — conversation turns and channel turns alike — when
+/// there is exactly one; else its rows of the last 15 minutes regardless of
+/// status, when there is exactly one; else `Ambiguous` when several could be
+/// meant, and `Nowhere` when none could. Two rows are read per tier rather
+/// than one so "several" is observable without counting the table.
+pub async fn landing_target(
+    pg: &PgPool,
+    agent: &str,
+    conversation_id: Option<&str>,
+) -> Result<Target, sqlx::Error> {
+    if let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) {
+        return addressed_target(pg, agent, &id).await;
+    }
+    let live = live_rows(pg, agent).await?;
     if !live.is_empty() {
         return Ok(unaddressed(live, Vec::new()));
     }
@@ -1373,6 +1484,48 @@ pub async fn landing_target(
         }),
     );
     Ok(unaddressed(Vec::new(), recent))
+}
+
+/// `landing_target` with no recent tier: the reply the agent is streaming
+/// NOW — in the conversation named, else its one live row anywhere (several
+/// are `Ambiguous`, none is `Nowhere`).
+///
+/// FOR A DOOR OR ROUTE THE AGENT REACHES INSIDE ITS OWN CALL: opening a file
+/// in the pane, or a create's or an edit's own chip. A tool call runs while its
+/// turn streams, so a finished turn is never the one asking. The recent tier
+/// exists for the tool-events door, whose frame can arrive a beat after the
+/// turn closed. Anywhere else, with no reply streaming (a cron run, whose row
+/// is written at delivery; a background job), it lands the file in the pane of
+/// whoever the agent last spoke to, and a document chip opens and takes focus
+/// there. A named id that is no conversation of this agent's with a streaming
+/// reply — a finished thread, a channel, another agent's — is `Nowhere`.
+pub async fn live_landing_target(
+    pg: &PgPool,
+    agent: &str,
+    conversation_id: Option<&str>,
+) -> Result<Target, sqlx::Error> {
+    let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) else {
+        return Ok(unaddressed(live_rows(pg, agent).await?, Vec::new()));
+    };
+    let row: Option<(String,)> = sqlx::query_as(
+        "select m.id::text \
+         from messages m join conversations c on c.id = m.conversation_id \
+         where c.id = $2::uuid and c.agent_model = $1 and m.role = 'assistant' \
+           and m.status = 'streaming' and m.streamed_at > now() - interval '15 minutes' \
+         order by m.seq desc limit 1",
+    )
+    .bind(agent)
+    .bind(&id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(match row {
+        Some((message_id,)) => Target::Found(Landed {
+            conversation_id: Some(id),
+            channel_id: None,
+            message_id,
+        }),
+        None => Target::Nowhere,
+    })
 }
 
 /// The unaddressed resolver as an Option, for the callers that have no
@@ -1528,6 +1681,33 @@ pub async fn surface_for_agent(
         return Ok(None);
     }
     let Some(landed) = speaking_target(pg, agent).await? else {
+        return Ok(None);
+    };
+    write_chips(pg, &landed, &chips).await?;
+    fan(pg, redis, &landed);
+    Ok(Some(landed))
+}
+
+/// Attach chips to the agent's LIVE turn only — exactly one streaming row,
+/// else nowhere (`live_landing_target`, unaddressed) — and tell the open
+/// thread to refetch. For a route that lands its own chip (a create, an
+/// edit), detached from any tool answer and naming no conversation.
+pub async fn surface_on_live_turn(
+    pg: &PgPool,
+    redis: Option<redis::aio::ConnectionManager>,
+    agent: &str,
+    chips: Vec<Value>,
+) -> Result<Option<Landed>, sqlx::Error> {
+    if chips.is_empty() || agent.is_empty() {
+        return Ok(None);
+    }
+    let target = live_landing_target(pg, agent, None).await?;
+    if let Target::Ambiguous { turns } = &target {
+        eprintln!(
+            "[chips] {agent} is streaming in {turns} places and the caller named none — dropped"
+        );
+    }
+    let Some(landed) = target.landed() else {
         return Ok(None);
     };
     write_chips(pg, &landed, &chips).await?;
@@ -2182,6 +2362,12 @@ pub async fn streaming_conversation_user(
 // the one it answers. And a tool call names only the channel, so two replies
 // this agent is streaming in one channel cannot be told apart: that is
 // `Several`, never the newer one's guess.
+//
+// NOT THE SAME QUESTION AS `talaria_conversations::turn_requester`, which
+// answers whose Work pane a file landed on a row belongs in — for any row,
+// finished ones too: the newest person's message strictly below that row, a
+// queued one never, a chip click counting as the person who clicked. Both
+// read `messages`; the policies differ on purpose, and each names the other.
 
 // The live window is the fifteen minutes every resolver in this file uses.
 // Conversation replies refresh `streamed_at` every ten seconds while they
@@ -3938,5 +4124,115 @@ mod tests {
             "/artifacts?a=9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2"
         );
         assert_eq!(doc["title"], "Imported plan");
+    }
+
+    #[test]
+    fn a_toolkit_tool_reads_by_its_own_name_whatever_the_mcp_client_called_it() {
+        for spelling in [
+            "create_document",
+            "mcp__talaria__create_document",
+            "mcp_talaria_create_document",
+            "  mcp__talaria__create_document ",
+        ] {
+            assert_eq!(bare_tool_name(spelling), "create_document", "{spelling:?}");
+        }
+        // Another server's tool is not the toolkit's, whatever it is called.
+        assert_eq!(
+            bare_tool_name("mcp__workspace__create_document"),
+            "mcp__workspace__create_document"
+        );
+        assert_eq!(bare_tool_name("mcp__talaria__"), "mcp__talaria__");
+        assert_eq!(bare_tool_name("web_search"), "web_search");
+    }
+
+    #[test]
+    fn an_mcp_answer_is_read_out_of_its_envelope_whole_or_cut_short() {
+        let inner = "{\n  \"artifact\": {\n    \"id\": \"9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2\",\n    \"title\": \"Launch plan\"\n  }\n}";
+        let whole = serde_json::to_string(&json!({ "result": inner })).unwrap();
+        assert_eq!(mcp_result_text(&whole), inner);
+        // Hermes' own spelling (json.dumps puts a space after the colon), cut
+        // by the plugin's clamp in the middle of the string.
+        let spaced = whole.replacen("\"result\":", "\"result\": ", 1);
+        let cut: String = spaced.chars().take(40).collect();
+        let prefix = mcp_result_text(&cut);
+        assert!(inner.starts_with(prefix.as_ref()), "{prefix:?}");
+        assert!(prefix.starts_with("{\n  \"artifact\""), "{prefix:?}");
+        // An escape cut in half is dropped, not guessed.
+        assert_eq!(json_string_prefix("ab\\"), "ab");
+        assert_eq!(json_string_prefix("a\\u00e9b\\u00"), "aéb");
+        // Not an envelope: as it came.
+        for raw in [
+            r#"{"artifact":{"id":"x"}}"#,
+            r#"{"result":5}"#,
+            r#"{"result":"x","more":1}"#,
+            "plain words",
+        ] {
+            assert_eq!(mcp_result_text(raw), raw);
+        }
+    }
+
+    /// A DOCUMENT A READER ONLY MENTIONED OPENS NOTHING. Every document chip
+    /// is a file of the session, which the Work pane lists and brings
+    /// forward, so only a writer's answer may land one — not a search whose
+    /// hits point at documents, and not a single read that carries a link.
+    #[test]
+    fn a_document_link_in_a_readers_answer_lands_no_chip() {
+        let (a, b) = (
+            "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2",
+            "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        );
+        let hits = format!(
+            r#"{{"hits":[{{"title":"Launch plan","snippet":"…","href":"/artifacts?a={a}"}},{{"title":"Pricing","href":"/artifacts?a={b}"}}]}}"#
+        );
+        let single = format!(
+            r#"{{"artifact":{{"id":"{a}","title":"Launch plan"}},"href":"/artifacts?a={a}"}}"#
+        );
+        let bare = format!("/artifacts?a={a}");
+        for (tool, result) in [
+            ("search_knowledge", hits.as_str()),
+            ("get_document", single.as_str()),
+            ("open_in_pane", single.as_str()),
+            ("get_document", bare.as_str()),
+        ] {
+            let chips = chips_from_tool(tool, "{}", result);
+            assert!(
+                chips.iter().all(|c| c["entity"] != "document"),
+                "{tool}: {chips:?}"
+            );
+        }
+        // A writer still lands its own — and only its own.
+        let made = chips_from_tool("create_document", "{}", &single);
+        let docs: Vec<&Value> = made.iter().filter(|c| c["entity"] == "document").collect();
+        assert_eq!(docs.len(), 1, "{made:?}");
+        assert_eq!(docs[0]["href"], format!("/artifacts?a={a}"));
+    }
+
+    /// A LISTING IS NOT A TRAIL. A ticket a call created or moved lands its
+    /// link; the rows a listing or a search returned land none — one chip
+    /// per row buried what the turn was about.
+    #[test]
+    fn a_listing_lands_no_link_per_row_and_a_single_answer_still_does() {
+        let rows = (0..5)
+            .map(|i| {
+                format!(r#"{{"id":"t-{i}","boardId":"b-1","ticketRef":"A-{i}","title":"Row {i}"}}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let listing = format!(r#"{{"tasks":[{rows}]}}"#);
+        assert!(
+            chips_from_tool("list_tickets", r#"{"boardId":"b-1"}"#, &listing).is_empty(),
+            "a listing"
+        );
+        let hits = r#"{"hits":[{"title":"A board","href":"/boards/b-1"},{"title":"A doc","href":"/knowledge?doc=k-1"}]}"#;
+        assert!(
+            chips_from_tool("search_knowledge", "{}", hits).is_empty(),
+            "search hits"
+        );
+        // A ticket's own answer still links it, whatever lists ride beside it.
+        let one = r#"{"task":{"id":"t-2","boardId":"b-1","title":"Fix the gate"},"subTasks":[{"id":"t-3","boardId":"b-1"}]}"#;
+        let chips = chips_from_tool("get_ticket", r#"{"taskId":"t-2"}"#, one);
+        let links: Vec<&Value> = chips.iter().filter(|c| c["kind"] == "link").collect();
+        assert_eq!(links.len(), 1, "{chips:?}");
+        assert_eq!(links[0]["href"], "/boards/b-1/t-2");
     }
 }

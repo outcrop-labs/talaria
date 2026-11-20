@@ -15,6 +15,7 @@ import {
   newestTouched,
   parseSessionFiles,
   resurfaced,
+  takesFocus,
   unhideFile,
   visibleFiles,
   type SessionFile,
@@ -212,4 +213,42 @@ test('opening a file by hand appends it to the pins, never twice', () => {
   const g = { kind: 'google' as const, id: 'g', mime: 'application/vnd.google-apps.document' }
   assert.deepEqual(appendPin([a], g), [a, g])
   assert.deepEqual(appendPin([a, g], a), [g, a], 'a re-pin moves to the end rather than duplicating')
+})
+
+test('the person a turn was for rides the list, and only a string does', () => {
+  const out = parseSessionFiles({
+    kind: 'work',
+    files: [
+      { key: 'artifact:1', kind: 'artifact', id: '1', title: 'One', source: 'touched', lastTouchedAt: T1, touchedFor: 'u-ana' },
+      { key: 'artifact:2', kind: 'artifact', id: '2', title: 'Two', source: 'touched', lastTouchedAt: T1, touchedFor: 7 },
+      { key: 'artifact:3', kind: 'artifact', id: '3', title: 'Three', source: 'pinned', lastTouchedAt: null },
+    ],
+  })
+  assert.equal(out.files[0]?.touchedFor, 'u-ana')
+  assert.equal('touchedFor' in out.files[1]!, false)
+  assert.equal('touchedFor' in out.files[2]!, false)
+})
+
+test('a change takes the pane only for the person the turn was for, or who opened it here', () => {
+  const forAna = art('a', T2, { touchedFor: 'u-ana' })
+  assert.equal(takesFocus(forAna, 'u-ana'), true)
+  // A teammate in the same session gets the tab listed, not their pane moved.
+  assert.equal(takesFocus(forAna, 'u-ben'), false)
+  assert.equal(takesFocus(forAna, null), false)
+  // A pin carries no author: it moves only the tab that just pinned it.
+  const pin = art('p', null)
+  assert.equal(takesFocus(pin, 'u-ana'), false)
+  assert.equal(takesFocus(pin, 'u-ana', new Set([pin.key])), true)
+})
+
+test('a file the agent brings back from an earlier turn resurfaces and is the one to focus', () => {
+  // Closed at its first touch; a newer turn names it again.
+  const was = art('a', T1, { touchedFor: 'u-ana' })
+  const now = art('a', T2, { touchedFor: 'u-ana' })
+  const other = art('b', T1)
+  assert.deepEqual(resurfaced({ [was.key]: T1 }, [now, other]), [was.key])
+  const changed = changedFiles([was, other], [now, other])
+  assert.deepEqual(changed.map((f) => f.key), [now.key])
+  assert.equal(focusTarget(changed.filter((f) => takesFocus(f, 'u-ana')))?.key, now.key)
+  assert.equal(focusTarget(changed.filter((f) => takesFocus(f, 'u-ben'))), null)
 })

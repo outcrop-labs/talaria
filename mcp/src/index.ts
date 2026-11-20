@@ -886,6 +886,23 @@ server.registerTool(
   async ({ documentId }) => ok(await api('GET', `/api/artifacts/${encodeURIComponent(documentId)}`)),
 )
 
+// A file that already exists, put in front of the person: the pane beside a
+// Work, Plan or Research session lists the files the conversation's chips name,
+// and this lands the same chip a create does — get_document lands none.
+server.registerTool(
+  'open_in_pane',
+  {
+    description:
+      "Open a file in the person's pane — the tabs beside a Work, Plan or Research session's chat — so you can both look at it and work on it. Use it when they ask to see, open or go through an existing file here ('open the plan so we can iterate on it'), or to bring back a file from earlier in this conversation. Pass documentId for a Talaria document, sheet, page or uploaded file (ids come from list_documents or search_knowledge), or url for a Talaria document link or a Google Doc, Sheet, Slides or Drive link — one of the two. Call it with neither to list the files already in this session, newest first. Files you create open by themselves; reading one with get_document does not open it. It opens with THEIR access: if they can read but not edit it, it opens view-only and the result says so — tell them. Knowledge-base docs and files in a workbench checkout are not files the pane shows.",
+    inputSchema: {
+      documentId: z.string().max(200).optional().describe('A Talaria document, sheet, page or uploaded file id — from list_documents, search_knowledge or this session\'s file list'),
+      url: z.string().max(2000).optional().describe('A Talaria document link (/artifacts?a=…) or a Google Docs, Sheets, Slides or Drive link'),
+      conversationId: z.string().uuid().optional().describe('The conversation you are answering in — your prompt\'s conversation line carries it. Pass it so the file opens in this thread and not another one you are also in.'),
+    },
+  },
+  async ({ documentId, url, conversationId }) => ok(await api('POST', '/api/agent/open', { documentId, url, conversationId })),
+)
+
 server.registerTool(
   'save_image_artifact',
   {

@@ -13,13 +13,13 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use crate::knowledge::kb_spaces_id::{editors_json, parse_editors};
-use talaria_agent_auth::{AgentSubject, agent_caller};
+use talaria_agent_auth::agent_caller;
 use talaria_api_facades::kb::perms::{
-    ITEM_ARTIFACT, can_edit_agent, can_edit_human, can_govern, can_read, can_read_agent,
-    list_editors, set_editors,
+    ITEM_ARTIFACT, can_edit_human, can_govern, can_read, list_editors, set_editors,
 };
 use talaria_api_facades::retrieval::artifact_routing::apply_artifact_routing;
 use talaria_api_facades::retrieval::{embed, qdrant};
+use talaria_artifacts::agent_access::{agent_edits_artifact, agent_reads_artifact};
 use talaria_artifacts::{
     ConditionalSave, SaveArtifactPatch, delete_artifact, get_artifact, guarded, index_plan_doc,
     save_artifact, save_artifact_content_if_unchanged, set_artifact_official, set_artifact_routing,
@@ -34,7 +34,6 @@ use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::{actor_of, require_user, who_of};
 use talaria_state::AppState;
 use talaria_uploads::{UploadViewer, can_access_upload};
-use talaria_users::is_elevated_assistant;
 
 struct PutBody {
     title: Option<String>,
@@ -176,34 +175,24 @@ pub(crate) async fn body_editor(
 
     let agent = agent_caller(&state.pg, headers).await?;
     if let Some(agent) = agent {
-        let name = agent.model.clone();
-        // Editor grant — or an admin-elevated assistant on any non-private artifact.
-        let elevated = artifact.visibility != "private"
-            && is_elevated_assistant(&state.pg, &AgentSubject::Caller(agent))
-                .await
-                .map_err(|e| {
-                    arm_failed(
-                        "[artifacts] elevation read failed",
-                        &artifact.id,
-                        "elevation",
-                        e,
-                    )
-                })?;
-        let team_ids = talaria_teams::team_ids_for_agent(&state.pg, &name)
+        // Editor grant — or an admin-elevated assistant on any non-private
+        // artifact. The rule is talaria-artifacts' (`agent_edits_artifact`),
+        // shared with the GET and the pane door.
+        let may = agent_edits_artifact(&state.pg, &agent, &g, &editors)
             .await
             .map_err(|e| {
                 arm_failed(
-                    "[artifacts] team membership read failed",
+                    "[artifacts] agent edit check failed",
                     &artifact.id,
-                    "team-membership-agent",
+                    "agent-edit",
                     e,
                 )
             })?;
-        if !(can_edit_agent(&name, &editors, &team_ids) || elevated) {
+        if !may {
             return Err(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         return Ok(Editor {
-            actor: name,
+            actor: agent.model,
             owner: false,
             human: None,
         });
@@ -266,33 +255,10 @@ pub async fn get(
     // for a personal assistant — its owner's own (can_read_agent's owner arm).
     let reader = agent_caller(&state.pg, &headers).await?;
     if let Some(reader) = reader {
-        let owner = match talaria_users::assistant_owner_for(
-            &state.pg,
-            &AgentSubject::Caller(reader.clone()),
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => return Ok(read_failed(&artifact.id, "owner resolve failed", e)),
-        };
-        let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &reader.model).await {
-            Ok(v) => v,
-            Err(e) => {
-                return Ok(read_failed(
-                    &artifact.id,
-                    "team membership read failed (agent)",
-                    e,
-                ));
-            }
-        };
-        if !can_read_agent(
-            &guarded(&artifact),
-            &reader.model,
-            owner.as_deref(),
-            &editors,
-            &team_ids,
-        ) {
-            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
+        match agent_reads_artifact(&state.pg, &reader, &guarded(&artifact), &editors).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+            Err(e) => return Ok(read_failed(&artifact.id, "agent read check failed", e)),
         }
         return Ok(
             Json(json!({ "artifact": artifact, "editors": editors_json(&editors) }))

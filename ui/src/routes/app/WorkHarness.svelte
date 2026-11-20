@@ -76,11 +76,14 @@
     hideFile,
     initialFocus,
     resurfaced,
+    takesFocus,
     unhideFile,
     useSessionFiles,
     visibleFiles,
     type SessionFile,
   } from '@/lib/session-files'
+  import { moveWouldDropEdits } from '@/lib/pane-edits'
+  import { bareToolName } from '@/lib/toolkit-tools'
   import {
     MODE_META,
     openResearchConversation,
@@ -377,6 +380,10 @@
   // with to find what is new. Plain rather than `$state` — it is bookkeeping
   // the effect below writes, and writing it must not re-run anything.
   const lastFiles = new Map<string, SessionFile[]>()
+  // The keys this tab just pinned by hand (New document, Open a Google file):
+  // a pin carries no author, so the refetch that lists it asks here whether it
+  // is THIS viewer's to focus. Plain bookkeeping, like `lastFiles`.
+  const openedHere = new Set<string>()
   const applyFiles = (id: string, kind: string, all: SessionFile[]) => {
     // A file this viewer closed comes back by itself once a newer message
     // touches it — compared with its touch time WHEN it was closed, so this
@@ -394,6 +401,8 @@
       // with its own document and lands there.
       const lead = kind === 'plan' ? [PLAN_TAB] : []
       seedTabs(id, [...lead, ...visible.map(fileTab)], kind === 'plan' ? PLAN_TAB.id : initialFocus(visible))
+      // Nothing listed here is news, so no hand-open claim on it survives.
+      for (const f of all) openedHere.delete(f.key)
       return
     }
     // A file the session no longer lists — deleted, or no longer readable —
@@ -403,16 +412,26 @@
     for (const tab of [...tabsFor(id).tabs]) {
       if ((tab.kind === 'artifact' || tab.kind === 'google') && !listed.has(tab.id)) closeTab(id, tab.id)
     }
-    // THE PANE FOLLOWS THE AGENT: a file listed for the first time, or touched
-    // again, comes back if it was closed and takes the pane — the newest touch
-    // wins when a turn touched several.
+    // THE PANE FOLLOWS THE AGENT — FOR THE PERSON IT IS WORKING FOR. A file
+    // listed for the first time, or touched again, comes back if it was closed
+    // and is on everyone's strip; it TAKES THE PANE only for the person the
+    // touching turn was for, or the tab that just opened it by hand
+    // (`takesFocus`) — the newest such touch wins when a turn touched several.
+    // Every member's tab re-reads the list live now, and a teammate reading or
+    // typing in another file of a shared session must not be moved.
     const changed = changedFiles(prev, all)
     for (const f of changed) unhideFile(id, f.key)
     // Every visible file has a tab (titles refreshed in place); none of this
     // moves anybody's reading.
     seedTabs(id, visibleFiles(files, hiddenFiles(id)).map(fileTab))
-    const target = focusTarget(changed)
+    const target = focusTarget(changed.filter((f) => takesFocus(f, me?.id, openedHere)))
+    for (const f of changed) openedHere.delete(f.key)
     if (!target) return
+    // NEVER OUT FROM UNDER AN EDIT — in a file, or in a plan's own document.
+    // Switching tabs unmounts the editor, and its autosave timer dies with it:
+    // the file stays on the strip, and the pane stays where the person is
+    // typing.
+    if (moveWouldDropEdits(tabsFor(id).active, target.key, livingDocId)) return
     if (target.key === reportKey) selectTab(id, REPORT_TAB)
     else syncTouched(id, fileTab(target))
   }
@@ -525,12 +544,20 @@
     const id = selectedSessionId
     if (!id || addingFile) return
     addingFile = true
+    let opened: string | null = null
+    let pinned = false
     try {
       const artifact = await createArtifact({ kind: 'doc', title: 'Untitled document' })
-      if (await pinToSession(id, { kind: 'artifact', id: artifact.id, title: artifact.title })) await refreshFiles(id)
+      opened = `artifact:${artifact.id}`
+      openedHere.add(opened)
+      pinned = await pinToSession(id, { kind: 'artifact', id: artifact.id, title: artifact.title })
+      if (pinned) await refreshFiles(id)
     } catch (e) {
       toastError('Could not create the document', e)
     } finally {
+      // A pin that never landed leaves no claim behind: a stale key would let
+      // a later touch on somebody else's turn take this viewer's pane.
+      if (opened && !pinned) openedHere.delete(opened)
       addingFile = false
     }
   }
@@ -562,10 +589,15 @@
       return
     }
     addingFile = true
+    const opened = `google:${hit.id}`
+    let pinned = false
     try {
       const file: PinnedFile = { kind: 'google', id: hit.id, ...(hit.mime ? { mime: hit.mime } : {}) }
-      if (await pinToSession(id, file)) await refreshFiles(id)
+      openedHere.add(opened)
+      pinned = await pinToSession(id, file)
+      if (pinned) await refreshFiles(id)
     } finally {
+      if (!pinned) openedHere.delete(opened)
       addingFile = false
     }
   }
@@ -627,12 +659,18 @@
     'update_google_doc',
     'append_google_doc',
     'import_drive_file',
+    // Opens an existing file in the pane: it lands the file's chip on this
+    // turn, so the list is re-read at once rather than at turn end.
+    'open_in_pane',
   ])
   const touchedArtifactIds = $derived([
     ...strip.tabs.filter((t) => t.kind === 'artifact').map((t) => t.ref ?? t.id),
     ...(livingDocId ? [livingDocId] : []),
   ])
-  const onToolDone = (name: string) => {
+  const onToolDone = (raw: string) => {
+    // The stream names a toolkit tool as the agent's MCP client registered it
+    // (`mcp__talaria__create_document`); the sets above use the toolkit's own.
+    const name = bareToolName(raw)
     if (MUTATES_ARTIFACT.has(name)) {
       // Invalidate rather than remount: a pane that IS showing one of these
       // keeps its scroll and any in-progress edit, and TanStack refetches the
@@ -1470,7 +1508,7 @@
                         title={sessionFiles.length > 0 ? 'Nothing open' : 'Nothing open yet'}
                         hint={sessionFiles.length > 0
                           ? 'Every file in this session is closed. Reopen one from All files, or open another.'
-                          : `Ask ${agentLabel} for a document, sheet or page and it opens here, or open one yourself.`}
+                          : `Ask ${agentLabel} for a document, sheet or page — or to open one you already have — and it opens here, or open one yourself.`}
                         action={filesEmptyActions}
                       />
                     </div>
@@ -1497,7 +1535,7 @@
                   <EmptyState
                     icon="◫"
                     title="Nothing open yet"
-                    hint={`Ask ${agentLabel} for a document, sheet or page and it opens here.`}
+                    hint={`Ask ${agentLabel} for a document, sheet or page — or to open one you already have — and it opens here.`}
                   />
                 </div>
                 <!-- THE WAYS IN, under the vignette and above the orphan runs:

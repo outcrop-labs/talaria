@@ -413,6 +413,12 @@ pub struct SandboxWorld {
     /// What the agent did to the session itself, if anything.
     #[serde(default)]
     pub layout: SandboxLayout,
+    /// The files the agent put in the person's pane with `open_in_pane`, as
+    /// the pane keys them (`artifact:<id>`, `google:<url>`), oldest first — so
+    /// a fixture can grade that "open the plan here" opened the plan rather
+    /// than pasting it into the chat.
+    #[serde(default)]
+    pub pane: Vec<String>,
     /// Files the agent has produced in its own workspace. `save_image_artifact`
     /// refuses a path that is not one of these — a model that saves a chart it
     /// never rendered is confabulating a file.
@@ -498,6 +504,8 @@ pub fn base_world() -> SandboxWorld {
         // Nor any organising: a conversation starts where the person left
         // it, and what the agent did to it is the thing a fixture reads back.
         layout: SandboxLayout::default(),
+        // And an empty pane: what the agent opens is what a fixture reads back.
+        pane: vec![],
         boards: vec![
             SandboxBoard {
                 id: "b-platform".into(),

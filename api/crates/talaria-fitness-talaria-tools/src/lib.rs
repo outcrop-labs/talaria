@@ -716,6 +716,28 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             assistant_only: false,
             needs_google: false,
         },
+        // AN EXISTING FILE, PUT IN FRONT OF THE PERSON. The pane lists the files
+        // the conversation's chips name, and reading one with get_document lands
+        // none — so "open the plan here" used to get the plan pasted into chat.
+        // The sandbox records what the agent opened (`world.pane`), so a fixture
+        // grades whether it opened the file instead of pasting it.
+        SandboxTool {
+            name: "open_in_pane",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Documents,
+            description: "Open a file in the person's pane — the tabs beside a Work, Plan or Research session's chat — so you can both look at it and work on it. Use it when they ask to see, open or go through an existing file here ('open the plan so we can iterate on it'), or to bring back a file from earlier in this conversation. Pass documentId for a Talaria document, sheet, page or uploaded file (ids come from list_documents or search_knowledge), or url for a Talaria document link or a Google Doc, Sheet, Slides or Drive link — one of the two. Call it with neither to list the files already in this session, newest first. Files you create open by themselves; reading one with get_document does not open it. It opens with THEIR access: if they can read but not edit it, it opens view-only and the result says so — tell them. Knowledge-base docs and files in a workbench checkout are not files the pane shows.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "documentId": str_schema("A Talaria document, sheet, page or uploaded file id — from list_documents, search_knowledge or this session's file list"),
+                    "url": str_schema("A Talaria document link (/artifacts?a=…) or a Google Docs, Sheets, Slides or Drive link"),
+                    "conversationId": str_schema("The conversation you are answering in — your prompt's conversation line carries it. Pass it so the file opens in this thread and not another one you are also in."),
+                },
+                "required": [],
+            }),
+            assistant_only: false,
+            needs_google: false,
+        },
         SandboxTool {
             name: "save_image_artifact",
             caller: ToolCaller::Hermes,
@@ -1826,9 +1848,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 84);
+        assert_eq!(TALARIA_TOOLS.len(), 85);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 84);
+        assert_eq!(names.len(), 85);
     }
 
     #[test]

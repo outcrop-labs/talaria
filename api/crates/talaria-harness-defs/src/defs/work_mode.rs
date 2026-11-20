@@ -122,7 +122,7 @@ pub struct WorkModeFixture {
     pub check: fn(&str, &CheckCtx) -> CheckResult,
 }
 
-/// FOUR FIXTURES. Small on purpose: this def grades what WORK_MODE_PROMPT asks
+/// FIVE FIXTURES. Small on purpose: this def grades what WORK_MODE_PROMPT asks
 /// that nothing else does, and every fixture that would have restated a
 /// `hermes_documents` or `hermes_google` case was left to those files instead.
 pub fn fixtures() -> Vec<WorkModeFixture> {
@@ -203,6 +203,33 @@ pub fn fixtures() -> Vec<WorkModeFixture> {
                 if hedged {
                     return CheckResult::Fail(
                         "said the new document was queued or awaiting approval — it created the document, nothing is waiting, and the person will watch for a card that never arrives"
+                            .into(),
+                    );
+                }
+                CheckResult::Pass
+            },
+        },
+        WorkModeFixture {
+            name: "opens the existing doc in the pane instead of pasting it",
+            band: EvalBand::Standard,
+            // THE ASK THE PANE COULD NOT ANSWER. "Open it here" is a request
+            // for the file beside the chat, and get_document only reads it —
+            // so the model that reaches for the read pastes the document into
+            // the message, which is exactly what the pane is there to spare
+            // the person. The prompt names open_in_pane for this.
+            input: input_json(
+                "Open the ledger design notes here so we can go through them together.",
+            ),
+            check: |v, ctx| {
+                if !ctx.any_call("open_in_pane") {
+                    return CheckResult::Fail(
+                        "never put the document in the pane — open_in_pane is the tool the work-mode prompt names for an existing file; reading it with get_document does not open it"
+                            .into(),
+                    );
+                }
+                if looks_like_a_pasted_document(v) {
+                    return CheckResult::Fail(
+                        "opened the document AND pasted it into the chat — it is in the pane beside the conversation"
                             .into(),
                     );
                 }
@@ -352,6 +379,7 @@ pub fn work_mode_harness() -> HarnessDefinition {
     let mut dry = DryRunDecl::tools(vec![
         "list_documents",
         "get_document",
+        "open_in_pane",
         "create_document",
         "update_document",
         "create_sheet",
@@ -450,6 +478,6 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "two fixtures share a name");
-        assert_eq!(before, 4, "the header says FOUR FIXTURES");
+        assert_eq!(before, 5, "the header says FIVE FIXTURES");
     }
 }

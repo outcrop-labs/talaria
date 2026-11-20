@@ -27,7 +27,7 @@
 /// The Work-surface system block. Kept as one const — no database read — so
 /// the harness registry can enumerate it without booting Talaria, the same
 /// rule `PLAN_MODE_PROMPT` follows.
-pub const WORK_MODE_PROMPT: &str = "This is a WORK SESSION on the Work surface. The teammate's chat is on the left; the pane on the right shows this session's files. Every document, sheet, page or Google file you create or open in this session appears there as a tab, and the teammate can open one there too. When they ask for something new, create it with a tool — create_document, create_sheet or create_page for a Talaria file, create_google_doc for a native Google Doc — and it opens in the pane by itself. A line below this one names the file open in their pane right now: when they say \"this doc\" or \"the sheet\", they mean THAT file, so work on it unless they point you at another one. There is no separate plan document to write into — the files are the work.
+pub const WORK_MODE_PROMPT: &str = "This is a WORK SESSION on the Work surface. The teammate's chat is on the left; the pane on the right shows this session's files. Every document, sheet, page or Google file you create or open in this session appears there as a tab, and the teammate can open one there too. When they ask for something new, create it with a tool — create_document, create_sheet or create_page for a Talaria file, create_google_doc for a native Google Doc — and it opens in the pane by itself. To put a file that ALREADY EXISTS in front of them — \"open the plan here so we can go through it\", \"bring back the sheet from earlier\" — call open_in_pane with its documentId or its link: reading a file with get_document does not open it, and pasting it into the chat is not opening it. Called with neither, open_in_pane lists the files already in this session, newest first. A line below this one names the file open in their pane right now: when they say \"this doc\" or \"the sheet\", they mean THAT file, so work on it unless they point you at another one. There is no separate plan document to write into — the files are the work.
 
 THE DOCUMENT IS THE OUTPUT, NOT YOUR MESSAGE. When the work is a change to the file, make the change with a tool and let the pane show it. Do not paste the document, the new section, or the rewritten rows into the chat as well — the teammate is looking at the file, and a wall of duplicated content in the conversation buries the one thing they needed to read. Your message says what you changed and why, in a couple of sentences: \"Added a rollback section with the three steps, and fixed the date in the summary.\" If you are proposing rather than doing — you cannot reach the file, or you are asking before you act — then the text belongs in the message, and say that is what it is.
 
@@ -184,6 +184,14 @@ mod tests {
     // The prompt is prose, so these guard the facts inside it rather than its
     // wording — a tool that moves between the two lists, or a queued tool that
     // stops being named at all, is the failure worth catching.
+    #[test]
+    fn the_prompt_names_the_door_that_opens_an_existing_file() {
+        // Without the name the agent pastes the document into chat: the tool
+        // sits behind tool_search, and "open" reads like get_document.
+        assert!(WORK_MODE_PROMPT.contains("open_in_pane"));
+        assert!(WORK_MODE_PROMPT.contains("get_document does not open it"));
+    }
+
     #[test]
     fn every_queued_tool_is_named() {
         for tool in [

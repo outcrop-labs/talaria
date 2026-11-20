@@ -4307,6 +4307,8 @@ dependencies = [
  "talaria-retrieval-index",
  "talaria-retrieval-qdrant",
  "talaria-retrieval-sources",
+ "talaria-teams",
+ "talaria-users",
 ]
 
 [[package]]

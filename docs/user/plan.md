@@ -52,10 +52,12 @@ each. Opening a session creates nothing.
 
 | What | How it behaves |
 | :--- | :--- |
-| A file the agent makes or opens | Every Talaria document, sheet or page and every Google file the agent creates, reads or edits in the session appears as a tab and takes the pane — the newest one it touched comes forward |
+| A file the agent makes or opens | Every Talaria document, sheet or page and every Google file the agent creates, edits or reads (a Google file) in the session appears as a tab and comes forward in **your** pane when the agent did it for you — a teammate sharing the session gets the tab without their pane moving, and nobody's pane moves while they have unsaved edits in another file |
+| An existing file you ask for | Say "open the launch plan here" and the agent puts that document (or a Google file you link) in the pane — including a file from earlier in the session you had closed. It opens with your access: one you can read but not edit opens **View only**. Knowledge-base docs open on the Knowledge page, not here |
 | A file you open | **New document** starts a blank one; **Open a Google file** takes a pasted Docs/Sheets/Slides/Drive link. Both stay in the session's list |
 | "This doc" | Every message tells the agent which tab you have open, so "this doc" or "the sheet" means the file in front of you. With nothing open, ask for a document, sheet or page and the agent creates one — it opens in the pane by itself |
-| Closing a tab | Hides that file for you in this session. It comes back when the agent touches it again, or reopen it from **All files (N)** at the end of the tab strip |
+| Closing a tab | Hides that file for you in this session. It comes back when the agent touches or opens it again, or reopen it from **All files (N)** at the end of the tab strip |
+| View only | A file you can read but not edit shows **View only** where the Read/Edit switch would be: no Edit, no upload, no delete. Ask its owner to make you an editor under Share & permissions |
 | Coming back later | The session reopens on the tab you were reading, else the file touched most recently. The list is the session's own record, so a reload loses nothing |
 
 There is no **Sync from chat** in a work session: its files are written by the agent's own
