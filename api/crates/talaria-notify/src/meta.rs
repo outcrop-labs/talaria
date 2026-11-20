@@ -147,6 +147,11 @@ pub mod group_key {
     pub fn task_comments(task_id: &str) -> String {
         format!("task:{task_id}:comments")
     }
+    /// A ticket's due-date reminders: "due soon", then "overdue", re-alert
+    /// the one open row (talaria-tasks `due`).
+    pub fn task_due(task_id: &str) -> String {
+        format!("task:{task_id}:due")
+    }
     /// A channel's messages, at level `all`.
     pub fn channel_activity(channel_id: &str) -> String {
         format!("channel:{channel_id}:activity")
@@ -224,6 +229,7 @@ mod tests {
         assert_eq!(group_key::thread("v1"), "thread:v1");
         assert_eq!(group_key::task_status("t1"), "task:t1:status");
         assert_eq!(group_key::task_comments("t1"), "task:t1:comments");
+        assert_eq!(group_key::task_due("t1"), "task:t1:due");
         assert_eq!(group_key::channel_activity("c1"), "channel:c1:activity");
         assert_eq!(group_key::channel_thread("m1"), "reply:m1");
         assert_eq!(group_key::mcp_down("s1"), "mcp:s1:down");

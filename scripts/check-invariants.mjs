@@ -345,6 +345,10 @@ const RULES = [
       // the per-recipient fan-outs: the ticket producers and the mention doors
       'api/crates/talaria-tasks/src/lib.rs',
       'api/crates/talaria-tasks/src/moving.rs',
+      // the due-date scan: asks whether anyone on a board could hear a reminder
+      // (`boards::due_possible`) before reading a ticket's audience, then files
+      // each recipient's row through `notify_ticket_event` — per recipient
+      'api/crates/talaria-tasks/src/due.rs',
       'api/crates/talaria-mentions/src/lib.rs',
       // the caller's own setting: one board, every board, the default
       'api/crates/talaria-routes-boards/src/boards/boards_id_notify.rs',

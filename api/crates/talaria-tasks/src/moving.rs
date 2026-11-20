@@ -1099,6 +1099,7 @@ fn spawn_move_notices(
             href: Some(format!("/boards/{}/{id}", m.to_board_id)),
             task_id: id.clone(),
             status_burst: None,
+            group_key: None,
         };
         let line = arrived.title.clone();
         let arrived_told = notify_ticket_event(
@@ -1129,6 +1130,7 @@ fn spawn_move_notices(
             href: None,
             task_id: id.clone(),
             status_burst: None,
+            group_key: None,
         };
         let line = gone.title.clone();
         let gone_told = notify_ticket_event(

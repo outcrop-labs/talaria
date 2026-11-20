@@ -255,7 +255,8 @@ list.
 **`features`** in the contract: `seq`, `classes`, `channels`, `dnd-store`,
 `presence-store`, `ack`, `devices`, `read-ids`, `channel-levels-store`. Each stream adds
 its own in its own module's `FEATURES` (the per-board settings: `board-prefs`, which also
-means `GET`/`PATCH /api/notifications` carry `boards`).
+means `GET`/`PATCH /api/notifications` carry `boards`; `task-due`, the due-date reminders
+a setting may name).
 
 ## The live stream (I-16, I-19)
 

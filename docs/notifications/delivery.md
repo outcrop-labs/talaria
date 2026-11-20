@@ -246,6 +246,7 @@ Two daily jobs, both leased:
 | `notify-retention` | 24 h | yes | aged rows and their inbox-focus rows |
 | `push-prune` | 24 h | yes | subscriptions of ended sessions, idle and failing ones |
 | `notification-mail` | 30 s | per instance | wave 1's outbox drain (one release, then retired) |
+| `task-due` | 15 min | yes (5 min) | the due-date reminders: tickets due within a day or just overdue, filed by each person's setting for the board ([producers.md](./producers.md#due-dates)) |
 
 The number in brackets is the job's `max_run_ms`. It is also how long a process killed
 mid-pass holds the job's lease, so it bounds how late the first deferred push or mail
@@ -253,11 +254,13 @@ after a crash can be. It is kept short on purpose: a pass that outlives it is re
 hung, and a second instance starting meanwhile is harmless, because every claim skips
 locked rows.
 
-Two environment variables exist for live tests only. Each logs a warning at boot:
+Three environment variables exist for live tests only. Each logs a warning at boot:
 
 - `TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS=<n>`: every mail delay and backoff step becomes n
   seconds, and the batcher ticks every 5 s.
 - `TALARIA_TEST_NOTIFY_DAILY_EVERY_MS=<n>`: both daily jobs run every n ms.
+- `TALARIA_TEST_TASK_DUE_EVERY_MS=<n>`: the due-date scan runs every n ms (its first run
+  after n ms).
 
 ## Features
 

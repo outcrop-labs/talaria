@@ -33,6 +33,7 @@ use talaria_tasks_types::DispatchTicket;
 
 mod asked;
 pub use asked::{AskPlace, Asker, Unproven, choose_ask, names_ticket};
+pub mod due;
 mod moving;
 pub use moving::{
     MoveError, MoveOutcome, MoveRequest, MoveSummary, Mover, PickRefusal, StatusHow, StatusPick,
@@ -363,6 +364,10 @@ struct TaskNotification {
     /// later one in the window updates the count and the body ("Moved 4 times
     /// — now in review") without ringing again. Past the window: a fresh row.
     status_burst: Option<String>,
+    /// One open row per person under this key, re-alerting with the newest
+    /// words (`Coalesce::Realert`): a ticket's due-date reminders
+    /// (`group_key::task_due`), so "overdue" takes over an unread "due soon".
+    group_key: Option<String>,
 }
 
 /// How long a ticket's status moves keep coalescing into one row: ten
@@ -428,8 +433,8 @@ async fn reword_status_row(
 }
 
 /// Who a ticket row says caused it (I-11): a person by their users.id when the
-/// actor string names one, the judge as the system, otherwise an agent by its
-/// model id.
+/// actor string names one, the judge or the due-date scan as the system,
+/// otherwise an agent by its model id.
 fn task_actor(actor: &str, self_id: Option<&str>) -> NotifyActor {
     match self_id {
         Some(id) => NotifyActor {
@@ -441,6 +446,11 @@ fn task_actor(actor: &str, self_id: Option<&str>) -> NotifyActor {
             kind: ActorKind::System,
             id: actor.to_string(),
             label: "Judge".to_string(),
+        },
+        None if actor == due::ACTOR => NotifyActor {
+            kind: ActorKind::System,
+            id: actor.to_string(),
+            label: due::ACTOR_LABEL.to_string(),
         },
         None => NotifyActor {
             kind: ActorKind::Agent,
@@ -634,6 +644,7 @@ async fn file_ticket_rows(
         let mut meta = NotifyMeta {
             entity: Some(NotifyEntity::new(entity::TASK, n.task_id.as_str())),
             actor: Some(who.clone()),
+            group_key: n.group_key.clone(),
             ..Default::default()
         };
         let mut body = n.body.clone();
@@ -813,6 +824,7 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
                 href: Some(href.clone()),
                 task_id: id.clone(),
                 status_burst: None,
+                group_key: None,
             };
             let line = assigned.title.clone();
             notify_ticket_event(
@@ -883,6 +895,7 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
                     href: Some(href.clone()),
                     task_id: id.clone(),
                     status_burst: Some(now),
+                    group_key: None,
                 };
                 let line = status.title.clone();
                 notify_ticket_event(
@@ -1380,6 +1393,7 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
                 href: Some(format!("/boards/{board_id}/{id_for_href}")),
                 task_id: id_for_href.clone(),
                 status_burst: None,
+                group_key: None,
             };
             let line = assigned.title.clone();
             let candidates: Vec<Candidate> = human_assignee_ids(&assignees)
@@ -3225,6 +3239,7 @@ pub async fn complete_quality_review(
                     href: Some(href),
                     task_id: id,
                     status_burst: Some(now),
+                    group_key: None,
                 }),
                 &line,
             )

@@ -5220,6 +5220,17 @@ alter table tasks drop column if exists conversation_id`,
   // from before this column, when the only Watch offered was a person's own,
   // so it counts as deliberate. Nullable, so roll-safe.
   `alter table task_watchers add column if not exists added_by text`,
+  // DUE-DATE REMINDERS (talaria-tasks `due`, docs/notifications/producers.md
+  // "Due dates"): the due date each threshold last fired for — due soon
+  // (within a day) and overdue — so each fires once per due date, and moving
+  // the due date re-arms both. Nullable, so roll-safe: the previous release
+  // never reads them.
+  `alter table tasks add column if not exists due_soon_for timestamptz`,
+  `alter table tasks add column if not exists overdue_for timestamptz`,
+  // The scan reads the open tickets whose due date sits in a two-day band
+  // around now, every 15 minutes: by due date, over the dated, unarchived ones.
+  `create index if not exists tasks_due_scan_idx on tasks (due_date)
+     where due_date is not null and archived_at is null`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

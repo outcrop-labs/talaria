@@ -99,8 +99,11 @@ The center itself (the bell, the page, the settings, the status panel) is
   quietly.
 - **Each board** can have its own setting: All activity, Participating (the tickets you are
   in — the default, and what everyone got before), Mentions & assignments, Off, or a custom
-  set of events (new ticket, assigned to me, status change, comment, mention, completed)
-  over the tickets you are in or the whole board. A board with no setting follows your
+  set of events (new ticket, assigned to me, status change, comment, mention, due soon or
+  overdue, completed) over the tickets you are in or the whole board. Due-date reminders
+  are opt-in — only All and a custom set name them — and come once when a ticket is due
+  within a day and once when it goes overdue
+  ([producers.md](./notifications/producers.md#due-dates)). A board with no setting follows your
   default for every board, and with no default, Participating. All files one notification
   per board for the tickets you are not in, counting its updates until you read it; it is
   quiet unless you turn on Board activity in the matrix. Off silences the board's
