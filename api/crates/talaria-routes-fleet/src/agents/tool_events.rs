@@ -73,8 +73,17 @@ fn named_session(body: &serde_json::Value) -> Option<&str> {
 /// straight onto a chip's label or detail — and a chip is the one thing here
 /// that PERSISTS, on the message row, and renders in the chat for everyone
 /// who can read the turn. Scrub first, then recognize.
+///
+/// AND RECOGNIZE BY THE TOOLKIT'S OWN NAME. The plugin posts the name Hermes
+/// registered the tool under — `mcp__talaria__create_document` — and the
+/// chip reader keys on `create_document`; without the strip a document an
+/// agent created never reached the session's files (`bare_tool_name`).
 fn chips_for(tool: &str, args: &str, result: &str) -> Vec<serde_json::Value> {
-    talaria_chips::chips_from_tool(tool, &scrub(args), &scrub(result))
+    talaria_chips::chips_from_tool(
+        talaria_chips::bare_tool_name(tool),
+        &scrub(args),
+        &scrub(result),
+    )
 }
 
 pub async fn post(
@@ -366,5 +375,23 @@ mod tests {
         // does not drop the page.
         assert_eq!(chips[0]["href"], "https://example.com/a");
         assert_eq!(chips[0]["label"], "token [redacted:key] works");
+    }
+
+    /// A WRITER REACHES THIS DOOR UNDER THE NAME HERMES GAVE IT. Seen on a
+    /// live stack: `mcp__talaria__create_document` created the document and
+    /// landed no chip, so it never opened in the Work pane.
+    #[test]
+    fn a_prefixed_toolkit_writer_still_lands_its_document_chip() {
+        let id = "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2";
+        let result = format!(r#"{{"id":"{id}","title":"Launch plan","kind":"doc"}}"#);
+        for name in ["create_document", "mcp__talaria__create_document"] {
+            let chips = chips_for(name, r#"{"title":"Launch plan"}"#, &result);
+            assert!(
+                chips
+                    .iter()
+                    .any(|c| c["href"] == format!("/artifacts?a={id}")),
+                "{name}: {chips:?}"
+            );
+        }
     }
 }

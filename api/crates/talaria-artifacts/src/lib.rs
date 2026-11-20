@@ -12,6 +12,8 @@ use sqlx::PgPool;
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_kb::perms::Guarded;
 
+pub mod agent_access;
+
 /// An artifact — the full row shape.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

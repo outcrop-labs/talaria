@@ -1120,6 +1120,73 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
             )
         }
 
+        // AN EXISTING FILE, PUT IN THE PERSON'S PANE. Production's rules, in the
+        // sandbox's terms: exactly one of documentId / url, or neither to list
+        // what the pane already holds; a Talaria id must be a document the
+        // world has; a link must be a Talaria document link or a Google file;
+        // a knowledge doc is refused with where it opens. What was opened is
+        // recorded in `world.pane` for a fixture to read back.
+        "open_in_pane" => {
+            let document_id = a["documentId"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let url = a["url"].as_str().map(str::trim).filter(|s| !s.is_empty());
+            let key = match (document_id, url) {
+                (None, None) => {
+                    let files: Vec<Value> = w
+                        .pane
+                        .iter()
+                        .rev()
+                        .map(|key| match key.strip_prefix("artifact:") {
+                            Some(id) => json!({ "documentId": id, "title": w.documents.iter().find(|d| d.id == id).map(|d| d.title.clone()) }),
+                            None => json!({ "url": key.trim_start_matches("google:") }),
+                        })
+                        .collect();
+                    return Ok(json!({ "ok": true, "files": files }));
+                }
+                (Some(_), Some(_)) => {
+                    return Err(refuse("give documentId or url — one of them, not both"));
+                }
+                (Some(id), None) => {
+                    let d = doc_of(w, &json!(id))?;
+                    format!("artifact:{}", d.id)
+                }
+                (None, Some(url)) => {
+                    if url.contains("/knowledge?doc=") {
+                        return Err(refuse(
+                            "that is not a link to a Talaria document or a Google file — knowledge docs open on the Knowledge page, not in the pane",
+                        ));
+                    }
+                    if let Some(id) = url.split("/artifacts?a=").nth(1) {
+                        let id = id.split(['&', '#']).next().unwrap_or("");
+                        let d = doc_of(w, &json!(id))?;
+                        format!("artifact:{}", d.id)
+                    } else if url.starts_with("https://docs.google.com/")
+                        || url.starts_with("https://drive.google.com/")
+                    {
+                        format!("google:{url}")
+                    } else {
+                        return Err(refuse(
+                            "that is not a link to a Talaria document or a Google file — the pane shows Talaria documents, sheets, pages and uploaded files, and Google Docs, Sheets, Slides and Drive files",
+                        ));
+                    }
+                }
+            };
+            if !w.pane.contains(&key) {
+                w.pane.push(key.clone());
+            }
+            let title = key
+                .strip_prefix("artifact:")
+                .and_then(|id| w.documents.iter().find(|d| d.id == id))
+                .map(|d| d.title.clone());
+            let message = match &title {
+                Some(t) => format!("Opened “{t}” in their pane."),
+                None => "Opened the file in their pane.".to_string(),
+            };
+            Ok(json!({ "ok": true, "file": { "key": key, "title": title }, "message": message }))
+        }
+
         "save_image_artifact" => {
             let path = req_str(&a["path"], "path")?;
             let lower = path.to_lowercase();
@@ -2034,6 +2101,7 @@ pub const BACKED_TOOLS: &[&str] = &[
     "edit_document",
     "todo",
     "organize_session",
+    "open_in_pane",
     "ask",
     "list_documents",
     "get_document",
@@ -2846,6 +2914,63 @@ mod tests {
     }
 
     #[test]
+    fn opens_an_existing_file_in_the_pane_and_refuses_what_the_pane_cannot_show() {
+        let mut s = sb();
+        let doc = s.world.documents[0].clone();
+        let opened = s.dispatch("open_in_pane", &json!({ "documentId": doc.id }).to_string());
+        assert!(!opened.is_error, "{}", opened.text);
+        assert!(opened.text.contains(&doc.title), "{}", opened.text);
+        assert_eq!(s.world.pane, vec![format!("artifact:{}", doc.id)]);
+
+        // A Google link opens too; a second open of the same file is one tab.
+        let sheet = "https://docs.google.com/spreadsheets/d/1sheet/edit";
+        assert!(
+            !s.dispatch("open_in_pane", &json!({ "url": sheet }).to_string())
+                .is_error
+        );
+        assert!(
+            !s.dispatch("open_in_pane", &json!({ "documentId": doc.id }).to_string())
+                .is_error
+        );
+        assert_eq!(s.world.pane.len(), 2, "{:?}", s.world.pane);
+
+        // With neither, it lists what is open — newest first.
+        let listed = s.dispatch("open_in_pane", "{}");
+        assert!(!listed.is_error, "{}", listed.text);
+        assert!(
+            listed.text.find("1sheet") < listed.text.find(&doc.id),
+            "{}",
+            listed.text
+        );
+
+        // Production's refusals.
+        let unknown = s.dispatch(
+            "open_in_pane",
+            &json!({ "documentId": "d-nope" }).to_string(),
+        );
+        assert!(unknown.is_error);
+        let both = s.dispatch(
+            "open_in_pane",
+            &json!({ "documentId": doc.id, "url": sheet }).to_string(),
+        );
+        assert!(
+            both.is_error && both.text.contains("one of them"),
+            "{}",
+            both.text
+        );
+        let kb = s.dispatch(
+            "open_in_pane",
+            &json!({ "url": "/knowledge?doc=k-1" }).to_string(),
+        );
+        assert!(
+            kb.is_error && kb.text.contains("Knowledge page"),
+            "{}",
+            kb.text
+        );
+        assert_eq!(s.world.pane.len(), 2, "a refused call opens nothing");
+    }
+
+    #[test]
     fn edits_part_of_a_document_and_holds_the_match_once_rule() {
         let mut s = sb();
         let plan = json!({
@@ -3625,7 +3750,7 @@ mod tests {
         }
         assert_eq!(
             catalog.len(),
-            84,
+            85,
             "the catalog size is asserted so a new tool crossing mcp/ fails loudly here first"
         );
     }

@@ -792,6 +792,27 @@ fn parse_loose(raw: &str) -> Value {
     serde_json::from_str(&text).unwrap_or(Value::Null)
 }
 
+/// THE TOOLKIT'S OWN NAME FOR A TOOL, however the agent's MCP client spelled
+/// it. Hermes registers every MCP tool as `mcp__<server>__<tool>` and reports
+/// that registry name to the talaria-events plugin, which posts it to the
+/// tool-events door as it is — so a Talaria writer reaches this crate as
+/// `mcp__talaria__create_document`, never `create_document`, and every arm of
+/// `chips_from_tool` that keys on the toolkit's names missed it: a document
+/// an agent created landed no chip, so it never joined the session's files
+/// and never opened in the Work pane (seen on a live stack, Hermes v0.22.4).
+/// Only the toolkit's own server is stripped — it is always `talaria`
+/// (talaria-fleet-render renders it under that key and refuses an authored
+/// server of that name) — plus the single-underscore display spelling some
+/// Hermes surfaces use. Another server's tool keeps its prefix: a Google
+/// Workspace MCP tool is not a toolkit tool, and must not be read as one.
+pub fn bare_tool_name(tool: &str) -> &str {
+    let tool = tool.trim();
+    tool.strip_prefix("mcp__talaria__")
+        .or_else(|| tool.strip_prefix("mcp_talaria_"))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(tool)
+}
+
 /// Chips implied by one completed tool call. Link-producing tools always
 /// emit a link chip, even when the result text never pasted the URL.
 /// Protected tools emit an approval chip instead of pretending the action
@@ -3489,5 +3510,24 @@ mod tests {
             "/artifacts?a=9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2"
         );
         assert_eq!(doc["title"], "Imported plan");
+    }
+
+    #[test]
+    fn a_toolkit_tool_reads_by_its_own_name_whatever_the_mcp_client_called_it() {
+        for spelling in [
+            "create_document",
+            "mcp__talaria__create_document",
+            "mcp_talaria_create_document",
+            "  mcp__talaria__create_document ",
+        ] {
+            assert_eq!(bare_tool_name(spelling), "create_document", "{spelling:?}");
+        }
+        // Another server's tool is not the toolkit's, whatever it is called.
+        assert_eq!(
+            bare_tool_name("mcp__workspace__create_document"),
+            "mcp__workspace__create_document"
+        );
+        assert_eq!(bare_tool_name("mcp__talaria__"), "mcp__talaria__");
+        assert_eq!(bare_tool_name("web_search"), "web_search");
     }
 }

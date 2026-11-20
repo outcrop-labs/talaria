@@ -553,7 +553,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_files.rs`](
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{kind, files}` | 200, 404 | — |
 
-**GET** — The session's files, oldest first appearance first: every Talaria document and Google file the conversation's chips name (`touched`, with `lastTouchedAt` the newest message naming it), then the teammate's pins (`pinned`), then a legacy work session's living document (`living`). Artifacts the caller cannot read are left out; at most 100 files.
+**GET** — The session's files, oldest first appearance first: every Talaria document and Google file the conversation's chips name (`touched`, with `lastTouchedAt` the newest message naming it and `touchedFor` the person that turn was for), then the teammate's pins (`pinned`), then a legacy work session's living document (`living`). Artifacts the caller cannot read are left out; at most 100 files.
 
 ## `/api/conversations/{id}/members`
 
