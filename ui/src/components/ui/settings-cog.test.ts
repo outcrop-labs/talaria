@@ -2,7 +2,6 @@
 // this on every pull request, while the browser proof (names, hit areas and
 // contrast in both themes, ui/e2e/settings-cog.spec.ts) runs in full mode only.
 import { render } from 'svelte/server'
-import { Settings } from '@lucide/svelte'
 import { describe, expect, it } from 'vitest'
 import SettingsButton from './SettingsButton.svelte'
 import { COG, SettingsGlyph, cogMenuIcon } from './settings-cog'
@@ -13,9 +12,11 @@ const html = (props: Record<string, unknown>) => render(SettingsButton, { props:
 const buttonTag = (body: string) => body.match(/<button\b[^>]*>/)?.[0] ?? ''
 
 describe('settings-cog', () => {
-  it('is one gear: lucide Settings, everywhere', () => {
-    expect(SettingsGlyph).toBe(Settings)
-    expect(cogMenuIcon[0]).toBe(Settings)
+  it('is one gear: lucide Settings, on the door, the menu entry and beside a label', () => {
+    // No lucide import here: scripts/settings-glyph.mjs allows the gear in
+    // settings-cog.ts alone, tests included.
+    expect(render(SettingsGlyph, { props: {} }).body).toMatch(/class="[^"]*\blucide-settings\b(?!-)/)
+    expect(cogMenuIcon[0]).toBe(SettingsGlyph)
     expect(cogMenuIcon[1]).toEqual({ size: COG.sm })
   })
 
