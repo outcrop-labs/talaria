@@ -53,11 +53,14 @@ pub async fn post(
     // moved to another board since the session started answers to that
     // board's editors, and the run's input still names the old one.
     let board: Option<(String,)> =
-        sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
+        match sqlx::query_as("select board_id::text from tasks where id = $1::uuid")
             .bind(&task_id)
             .fetch_optional(&state.pg)
             .await
-            .unwrap_or(None);
+        {
+            Ok(board) => board,
+            Err(e) => return Ok(internal("[runs/rewind] ticket read failed", e)),
+        };
     let Some((board_id,)) = board else {
         return Ok(house_error(StatusCode::NOT_FOUND, "not found"));
     };
