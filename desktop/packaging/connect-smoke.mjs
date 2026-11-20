@@ -46,8 +46,10 @@
 // px with no border, shadow, outline or overflow, because WebKit snapshots the
 // element's painted rect while the hotspot is measured from its border box:
 // any of those would grow or shift the image by a CSS px (2 device px at
-// scale 2). Missing DISPLAY, xdotool, xwininfo or xprop, or a GDK_SCALE
-// below 2, exits 2 before anything is launched.
+// scale 2). The page also sets the Talaria UI's shell hook, so the shell
+// keeps it up instead of calling it "not Talaria" mid-drag. Missing DISPLAY,
+// xdotool, xwininfo or xprop, or a GDK_SCALE below 2, exits 2 before
+// anything is launched.
 
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -140,6 +142,12 @@ const seenQuery = new Map() // path → the query of its latest request
 // The box `--drag-icon` drags (the header says why it is placed and styled
 // this way). Every page has it; only that phase touches it.
 const BOX = { width: 240, height: 120 }
+// With --drag-icon only: the page answers as a Talaria UI that is up
+// (desktop/src-tauri/src/loading.rs, PAGE_JS). Otherwise the shell judges it
+// "not Talaria" about 3 s after it loads and goes back to the launcher, which
+// can land in the middle of the drag. The plain connect smoke keeps the page
+// as it always was.
+const TALARIA_UI_UP = '\n  window.__TALARIA_DESKTOP__ = {}'
 const PAGE = `<!doctype html>
 <meta charset="utf-8">
 <title>Connect smoke</title>
@@ -154,7 +162,7 @@ const PAGE = `<!doctype html>
 </style>
 <p>The connect smoke's instance page.</p>
 <div id="drag-box" draggable="true">drag smoke</div>
-<script>
+<script>${dragIcon ? TALARIA_UI_UP : ''}
   const report = (path, values) => fetch(path + '?' + new URLSearchParams(values)).catch(() => {})
   const box = document.getElementById('drag-box')
   // Centred at whole CSS px: never a transform, never a fraction.
