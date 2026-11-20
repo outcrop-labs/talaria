@@ -5079,6 +5079,37 @@ alter table tasks drop column if exists conversation_id`,
      created_at timestamptz not null default now(),
      primary key (task_id, agent_model)
    )`,
+  // WORDS THE AGENT WROTE AND A PERSON ONLY CHOSE. Clicking an ask option or a
+  // tool chip sends the agent's own words as the person's message. The
+  // conversation twin rides `messages.metadata.drafted`; a channel row had
+  // nowhere to say it. An agent's review exit on a person's ask
+  // (talaria-tasks `asked`) never counts such a row as the ask. Defaulted,
+  // so roll-safe: the previous release neither reads nor writes it.
+  `alter table channel_messages add column if not exists drafted boolean not null default false`,
+  // ONE ASK, ONE EXIT. An agent takes a ticket out of review on a person's
+  // message at most once per (ticket, message): the key is the claim, taken
+  // before the write (update path) or under the move's row lock (board move),
+  // so two calls citing one message cannot both pass. message_id names a
+  // messages or channel_messages row, so it carries no foreign key. A new
+  // table, so roll-safe.
+  `create table if not exists task_asked_exits (
+     task_id uuid not null references tasks(id) on delete cascade,
+     message_id uuid not null,
+     agent_model text not null,
+     asked_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     primary key (task_id, message_id)
+   )`,
+  // THE MESSAGE A CHANNEL REPLY ANSWERS. An agent's streaming reply is
+  // inserted after the reply is decided (a relevance judgment in a ticket
+  // room), so "the newest person's row before the reply" can be someone who
+  // posted in that window, or the trigger of another reply streaming beside
+  // it. The reply now carries the id of the message it was started for, and
+  // an agent's review exit on a person's ask (talaria-chips `live_turn`)
+  // names exactly that message's author. It names a row in the same channel,
+  // which the channel's cascade already takes, so no foreign key. Nullable,
+  // so roll-safe: the previous release neither reads nor writes it.
+  `alter table channel_messages add column if not exists answers_message_id uuid`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

@@ -2,7 +2,9 @@
 // GET → full detail (task, comments, activity, watchers, reviews, judge,
 // links, usage; + workflows for an agent caller). PUT → update; the
 // human-in-the-loop guardrails live in update_task, not here — agents may
-// triage but cannot self-assign or move to done. DELETE → owner/editor.
+// triage but cannot self-assign or move to done, and take a ticket out of
+// review only on a person's proven ask (`conversationId`, the thread they
+// asked in; talaria-tasks `asked`). DELETE → owner/editor.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -25,7 +27,8 @@ use talaria_session::{SessionUser, require_user};
 use talaria_state::AppState;
 use talaria_task_const::{EFFORTS, PRIORITIES, TICKET_COLORS};
 use talaria_tasks::{
-    TaskActor, TaskDeps, TaskError, TaskPatch, delete_task, get_task, get_task_full, update_task,
+    AskClaim, TaskActor, TaskDeps, TaskError, TaskPatch, delete_task, get_task, get_task_full,
+    update_task,
 };
 use talaria_uploads::resolve_attachments;
 use talaria_workflows::MatchTarget;
@@ -136,8 +139,16 @@ fn refs_member(obj: &serde_json::Map<String, Value>) -> Result<Option<Vec<Messag
 /// edit. Carries the session user for the ref ACL (agents attach uploads but
 /// not knowledge/artifact refs — no session to check against).
 enum PatchActor {
-    Agent { model: String },
-    Human { actor: TaskActor, user: SessionUser },
+    /// `proven`: the caller's own key, not the legacy shared one — the only
+    /// caller whose `conversationId` can cite a person's ask.
+    Agent {
+        model: String,
+        proven: bool,
+    },
+    Human {
+        actor: TaskActor,
+        user: SessionUser,
+    },
 }
 
 pub async fn put(
@@ -177,6 +188,7 @@ pub async fn put(
             ));
         }
         PatchActor::Agent {
+            proven: caller.proven(),
             model: caller.model,
         }
     } else {
@@ -196,9 +208,9 @@ pub async fn put(
         );
         PatchActor::Human { actor, user }
     };
-    let (actor, session_user) = match who {
-        PatchActor::Agent { model } => (TaskActor::agent(model), None),
-        PatchActor::Human { actor, user } => (actor, Some(user)),
+    let (actor, session_user, proven_agent) = match who {
+        PatchActor::Agent { model, proven } => (TaskActor::agent(model), None, Some(proven)),
+        PatchActor::Human { actor, user } => (actor, Some(user), None),
     };
     let parsed = parse(&body);
     let obj = object_or_400(&parsed)?;
@@ -306,6 +318,21 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // Agents: the conversation or channel a person asked for this move out of
+    // review in. A claim update_task proves (talaria-tasks `asked`).
+    let conversation_id = match optional_uuid_member(obj, "conversationId") {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    // Only a claim, read only for a move out of review. A person's own write
+    // has no use for it, so theirs is ignored.
+    let ask = match (proven_agent, conversation_id) {
+        (Some(proven_caller), Some(thread_id)) => Some(AskClaim {
+            thread_id,
+            proven_caller,
+        }),
+        _ => None,
+    };
     // Human-in-the-loop guardrails (assignment, sign-off, archival) belong
     // to the ACTOR, not this route: update_task enforces them for every
     // caller, so nothing agent-specific happens here.
@@ -375,6 +402,7 @@ pub async fn put(
         attachments,
         add_time_spent_seconds,
         status_note: None,
+        ask,
     };
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     // A description that GAINS an @mention notifies the people it gains —

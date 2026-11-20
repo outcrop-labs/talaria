@@ -346,7 +346,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "triage_ticket",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — all refuse with 403, and assigning or marking done are human-only.",
+            description: "Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back on your own. Out of quality_review there is one way: the person you are answering asks you to send it back, and you pass conversationId so Talaria can prove that ask — never to done, failed or cancelled. Restarting your own blocked ticket, taking anything out of quality_review unasked, and any write at all to a ticket a person has taken off the table — all refuse with 403, and assigning or marking done are human-only.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -361,8 +361,9 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "color": one_of(TICKET_COLORS, "Color-code the ticket (shows on cards + gantt)"),
                     "status": one_of(
                         &["in_progress", "blocked", "quality_review"],
-                        "Forward only. in_progress is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and quality_review are one-way: a person moves it after that.",
+                        "Forward only. in_progress is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and quality_review are one-way: a person moves it after that, or asks you to (conversationId).",
                     ),
+                    "conversationId": str_schema("The thread you are answering — your prompt's thread line carries it. Pass it only when the person you are answering asked you to take this ticket out of review."),
                 },
                 "required": ["taskId"],
             }),
@@ -373,7 +374,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "move_ticket",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and agents it does not allow are unassigned — the result's moved field names both, so tell the person what changed. A move that would take a PERSON off the ticket (they are not on the new board) is refused with 403: a person moves it, or adds them to that board first. preview: true answers the same moved field without moving anything. A ticket that is closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD, in review, or blocked is a person's to move (403); so is moving one into a closed column or into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry.",
+            description: "Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and agents it does not allow are unassigned — the result's moved field names both, so tell the person what changed. A move that would take a PERSON off the ticket (they are not on the new board) is refused with 403: a person moves it, or adds them to that board first. preview: true answers the same moved field without moving anything. A ticket that is closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD, or blocked, is a person's to move (403), and so is one in review unless the person you are answering asked you to move it and you pass conversationId so Talaria can prove that ask. Moving a ticket into a closed column is refused, and so is moving it unasked into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -381,6 +382,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "boardId": str_schema("The board to move it to — an id from list_boards"),
                     "status": str_schema("A status key on the DESTINATION board. Leave it out and the move maps the ticket's column for you. Never a done column: a move does not close a ticket."),
                     "preview": bool_schema("true: answer what would change (new ref, column, dropped labels, unassigned) and move nothing"),
+                    "conversationId": str_schema("The thread you are answering — your prompt's thread line carries it. Pass it only when the person you are answering asked you to take this ticket out of review."),
                 },
                 "required": ["taskId", "boardId"],
             }),
@@ -400,7 +402,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "report_outcome",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Report the outcome of work on a ticket and hand it to the board's review column (\"Quality review\" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. Only ever on a live ticket.",
+            description: "Report the outcome of work on a ticket and hand it to the board's review column (\"Quality review\" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review it is the reviewer's, and triage_ticket takes it back out only when a person asks you to, so add anything further as a comment. Only ever on a live ticket.",
             parameters: json!({
                 "type": "object",
                 "properties": {

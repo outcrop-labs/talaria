@@ -208,7 +208,7 @@
   // and visibly interrupting the reply. Those messages are now held locally
   // and flushed the moment the id lands; if the first turn dies without ever
   // producing one, they are re-sent as a fresh turn instead of vanishing.
-  let held: Array<{ text: string; atts: Attachment[] }> = []
+  let held: Array<{ text: string; atts: Attachment[]; drafted?: boolean }> = []
   // Set when the READER stopped a turn (the send tile's stop face / Esc). The
   // server still finishes and persists its copy — history is the server's, by
   // design — but the transcript freezes what was on screen and the
@@ -579,7 +579,12 @@
   // poller's watch — goes the fresh path on purpose: the server demotes it to a
   // queue itself when a chained turn is already streaming, via the `queued`
   // event, and when one is not the fresh turn is exactly right.)
-  const send = async (text: string, intent: SendIntent = 'enter') => {
+  // `drafted`: the words were the agent's — an ask option or a tool chip the
+  // person clicked (`onInvoke`). The server marks the row, so it never stands
+  // in for the person's own ask (an agent's move out of review on a person's
+  // word, talaria-tasks `asked`). Rides every route below but steer, which a
+  // click never takes.
+  const send = async (text: string, intent: SendIntent = 'enter', drafted = false) => {
     if (!text && attachments.length === 0) return
     // You always see what you just said, even if you were reading history.
     stick.jump()
@@ -589,17 +594,17 @@
     composer?.clear()
 
     const route = sendRoute({ streaming, intent, hasConversation: !!convId, hasAttachments: atts.length > 0 })
-    if (route === 'fresh') return startTurn(text, atts, false)
+    if (route === 'fresh') return startTurn(text, atts, false, drafted)
     // The steer path draws its own row — whether the turn took the message or
     // only queued it is the server's answer, and the row says which.
     if (route === 'steer') return steer(text)
 
     messages.push({ role: 'user', content: text, attachments: atts, createdAt: new Date().toISOString() })
-    if (route === 'queue') void enqueue(text, atts)
+    if (route === 'queue') void enqueue(text, atts, drafted)
     // No conversation id yet — the first turn's response headers are the
     // only place it comes from. Hold locally; the flush happens the moment
     // the id lands (or the turn dies and the re-send path takes over).
-    else held.push({ text, atts })
+    else held.push({ text, atts, drafted })
   }
 
   /** The note a steered row wears. Derived from the row's stamp rather than
@@ -656,7 +661,7 @@
 
   /** Queue one message into the streaming turn. Never throws — a failed queue
    *  is a surfaced error, not a broken submit. */
-  const enqueue = async (text: string, atts: Attachment[]) => {
+  const enqueue = async (text: string, atts: Attachment[], drafted = false) => {
     try {
       await queueChatMessage({
         model: agentModel,
@@ -667,6 +672,7 @@
         ...splitAttachments(atts),
         kind,
         ...focusField(),
+        ...(drafted ? { drafted: true } : {}),
       })
     } catch (e) {
       error = (e as Error).message
@@ -682,10 +688,10 @@
     while (held.length > 0) {
       if (convId) {
         const m = held.shift()!
-        await enqueue(m.text, m.atts)
+        await enqueue(m.text, m.atts, m.drafted)
       } else if (!streaming) {
         const m = held.shift()!
-        await startTurn(m.text, m.atts, true)
+        await startTurn(m.text, m.atts, true, m.drafted)
         // startTurn either produced a conversation id (loop continues; the
         // rest queue behind the turn that just ran) or failed the same way
         // the first turn did — loop retries with the next held message.
@@ -730,7 +736,7 @@
 
   /** One streamed assistant turn. `shown` says the user's message is already
    *  in the transcript (the flush path put it there when it was sent). */
-  const startTurn = async (text: string, atts: Attachment[], shown: boolean) => {
+  const startTurn = async (text: string, atts: Attachment[], shown: boolean, drafted = false) => {
     // Synthetic rows carry the client's clock so the day divider places them
     // (R1); the post-turn sync swaps in the server's ids and times.
     const now = new Date().toISOString()
@@ -748,7 +754,7 @@
     let failed = false
     try {
       for await (const ev of streamChat(
-        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId, ...focusField(), turnId: turn },
+        { model: agentModel, conversationId: convId ?? undefined, content: text, tier: tier || undefined, effort: effort || undefined, ...splitAttachments(atts), kind, templateId, ...focusField(), turnId: turn, ...(drafted ? { drafted: true } : {}) },
         (meta) => {
           if (!convId) {
             convId = meta.conversationId
@@ -1063,7 +1069,7 @@
             reactions={reactionChips(m.reactions, viewer, agentName)}
             {onReact}
             onContextMenu={copyMenu(m)}
-            onInvoke={(text) => void send(text)}
+            onInvoke={(text) => void send(text, 'enter', true)}
             onDecided={() => void syncFromServer()}
           />
         {:else}
@@ -1079,7 +1085,7 @@
             reactions={reactionChips(m.reactions, viewer, agentName)}
             {onReact}
             onContextMenu={copyMenu(m)}
-            onInvoke={(text) => void send(text)}
+            onInvoke={(text) => void send(text, 'enter', true)}
             onDecided={() => void syncFromServer()}
           />
         {/if}

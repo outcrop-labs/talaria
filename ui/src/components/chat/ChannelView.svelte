@@ -237,12 +237,14 @@
     ].filter((m) => m.insert),
   )
 
-  const send = async (text: string, atts: Attachment[]) => {
+  // `drafted`: a chip or ask-option click — the agent's words, marked so they
+  // never stand in for the person's own ask (sendChannelMessage).
+  const send = async (text: string, atts: Attachment[], drafted = false) => {
     error = null
     stick.jump()
     try {
       const { attachmentIds, refs } = splitAttachments(atts)
-      await sendChannelMessage(channelId, text, attachmentIds, refs)
+      await sendChannelMessage(channelId, text, attachmentIds, refs, null, drafted)
     } catch (e) {
       error = (e as Error).message
     }
@@ -356,7 +358,7 @@
               {ctx}
               continued={continued.has(i)}
               onOpenThread={() => (threadRoot = m.threadRootId ?? m.id)}
-              onInvoke={(text) => void send(text, [])}
+              onInvoke={(text) => void send(text, [], true)}
               onDecided={() => void messagesQuery.refetch()}
               onContextMenu={(e) => menu.openMenu(e, rowMenuEntries(m, ctx, () => (threadRoot = m.id)))}
             />

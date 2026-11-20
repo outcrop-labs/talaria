@@ -178,7 +178,9 @@ describe('the agent approval card', () => {
 describe('unlock and invoke', () => {
   it('names the tools an approval unlocks', () => {
     expect(toolsUnlockedBy('gmail_send')).toEqual(['draft_email'])
-    expect(toolsUnlockedBy('ticket_move')).toEqual(['triage_ticket'])
+    // A ticket move IS the move; it grants no later call.
+    expect(toolsUnlockedBy('ticket_move')).toEqual([])
+    expect(toolsUnlockedBy('ticket_board_move')).toEqual([])
     expect(toolsUnlockedBy('unknown')).toEqual([])
     // A held Google Workspace MCP call's unlock is the chip's own <server>/<tool>.
     expect(toolsUnlockedBy('mcp_call')).toEqual([])

@@ -503,8 +503,10 @@ pub fn conversation_line(conversation_id: &str) -> Value {
         "role": "system",
         "content": format!(
             "THIS CONVERSATION'S ID: {conversation_id}. When a tool takes a conversationId \
-             (ask, todo, expose_tools), pass exactly this value so what you send lands in this \
-             thread and not another one you are also in."
+             (ask, todo, expose_tools, triage_ticket, move_ticket), pass exactly this value so \
+             what you send lands in this thread and not another one you are also in. For \
+             triage_ticket and move_ticket it is how a move out of review that the person \
+             here asked for is proven."
         ),
     })
 }
@@ -2530,6 +2532,14 @@ mod tests {
                     .unwrap_or_default()
                     .contains("conversationId")
             );
+            // The review-exit tools are named, so an agent asked to send a
+            // ticket back passes the thread the ask is proven against.
+            for tool in ["triage_ticket", "move_ticket"] {
+                assert!(
+                    system.as_deref().unwrap_or_default().contains(tool),
+                    "{tool}"
+                );
+            }
             assert_eq!(message, json!("hi"));
         }
 

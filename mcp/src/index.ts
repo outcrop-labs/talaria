@@ -13,7 +13,13 @@
 // patch, the exported `agent_ticket_refusal` for every door that never reaches
 // it):
 //   • blocked → in_progress   refused — only a person restarts parked work
-//   • anything out of review  refused — review is the human sign-off queue
+//   • anything out of review  refused — review is the human sign-off queue —
+//                             UNLESS the person the agent is answering asked
+//                             for it: the call passes conversationId (the
+//                             thread), and the API proves the ask (talaria-tasks
+//                             `asked`): that person can edit the board, their
+//                             message names the ticket, one move per message,
+//                             never to done / failed / cancelled
 //   • ANY write to work a person TOOK OFF THE TABLE — and that is THREE
 //                             conditions, not one:
 //                               · the status is CLOSED (done / failed / cancelled)
@@ -141,6 +147,16 @@ const LIVE_ONLY = `Only a LIVE ticket accepts it — one that is ${OFF_THE_TABLE
 /** For the status moves that ARE work (the active column, review): a workchain
  *  step waits for the step before it (`agent_safe_patch`'s chain clause). */
 const CHAIN_WAIT = 'A workchain step whose earlier step is still open waits its turn: moving it to the active column or to review returns 403 until a person signs that step off.'
+
+/** The one way an agent takes a ticket out of review: a person's ask, which the
+ *  API proves from the thread the call names (talaria-tasks `asked`). Said once,
+ *  for triage_ticket, move_ticket and report_outcome. */
+const ASKED_OUT_OF_REVIEW =
+  "Out of review (quality_review) there is ONE way: the person you are answering asks you to send the ticket back — for revisions, to blocked, back to work. Then pass conversationId (your prompt's thread line carries it) and Talaria proves the ask: that person can edit the board, and their own message (not an option you offered them) names the ticket by its ref or link, or was written in the ticket's own room. One move per message, and never to done, failed or cancelled — those stay the person's. Without a proven ask the move returns 403 and leaves the person an Approve card in your thread."
+
+/** The thread a review exit was asked in — the conversationId param, said once. */
+const ASKED_IN =
+  "The thread you are answering: your prompt's THIS CONVERSATION'S ID or THIS CHANNEL'S ID line. Pass it only when the person you are answering asked you to take this ticket out of review; Talaria proves the ask from it."
 
 /** Every ticket door accepts this. The assignment title shows the ref; list_tickets returns both. */
 const TICKET_ADDR =
@@ -537,7 +553,7 @@ server.registerTool(
   'triage_ticket',
   {
     description:
-      `Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. ${BOARD_STATUS_KEYS} So once you have parked or reported, stop moving the ticket. ${CHAIN_WAIT} ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
+      `Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back on your own. ${ASKED_OUT_OF_REVIEW} Restarting your own blocked ticket, and any write at all to a ticket a person has taken off the table — ${OFF_THE_TABLE} — are a person's call and return 403. ${BOARD_STATUS_KEYS} So once you have parked or reported, stop moving the ticket unless a person asks. ${CHAIN_WAIT} ${COMMENT_INSTEAD} Assigning and marking done are human-only.`,
     inputSchema: {
       taskId: z.string().describe(TICKET_ADDR),
       title: z.string().min(1).max(300).optional(),
@@ -553,8 +569,9 @@ server.registerTool(
         .max(64)
         .optional()
         .describe(
-          `A status key from this board — ${BOARD_STATUS_KEYS} Forward only: the active column (in_progress by default) is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and the review column (quality_review by default) are one-way: a person moves it after that.`,
+          `A status key from this board — ${BOARD_STATUS_KEYS} Forward only: the active column (in_progress by default) is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and the review column (quality_review by default) are one-way: a person moves it after that, or asks you to (conversationId).`,
         ),
+      conversationId: z.string().uuid().optional().describe(ASKED_IN),
     },
   },
   async ({ taskId, ...body }) => ok(await api('PUT', `/api/tasks/${encodeURIComponent(taskId)}`, body)),
@@ -564,7 +581,7 @@ server.registerTool(
   'move_ticket',
   {
     description:
-      `Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and agents it does not allow are unassigned — the result's moved field names both, so tell the person what changed. A move that would take a PERSON off the ticket (they are not on the new board) is refused with 403: a person moves it, or adds them to that board first. preview: true answers the same moved field without moving anything. A ticket that is ${OFF_THE_TABLE}, in review, or blocked is a person's to move (403); so is moving one into a closed column or into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry. ${COMMENT_INSTEAD}`,
+      `Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and agents it does not allow are unassigned — the result's moved field names both, so tell the person what changed. A move that would take a PERSON off the ticket (they are not on the new board) is refused with 403: a person moves it, or adds them to that board first. preview: true answers the same moved field without moving anything. A ticket that is ${OFF_THE_TABLE}, or blocked, is a person's to move (403), and so is one in review unless a person asked: ${ASKED_OUT_OF_REVIEW} Moving a ticket into a closed column is refused, and so is moving it unasked into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry. ${COMMENT_INSTEAD}`,
     inputSchema: {
       taskId: z.string().describe(TICKET_ADDR),
       boardId: z.string().describe('The board to move it to — an id from list_boards'),
@@ -576,6 +593,7 @@ server.registerTool(
           "A status key on the DESTINATION board. Leave it out and the move maps the ticket's column for you. Never a done column: a move does not close a ticket.",
         ),
       preview: z.boolean().optional().describe('true: answer what would change (new ref, column, dropped labels, unassigned) and move nothing'),
+      conversationId: z.string().uuid().optional().describe(ASKED_IN),
     },
   },
   async ({ taskId, ...body }) => ok(await api('POST', `/api/tasks/${encodeURIComponent(taskId)}/move`, body)),
@@ -598,7 +616,7 @@ server.registerTool(
   'report_outcome',
   {
     description:
-      `Report the outcome of work on a ticket and hand it to the board's review column ("Quality review" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. ${LIVE_ONLY} ${CHAIN_WAIT} ${COMMENT_INSTEAD}`,
+      `Report the outcome of work on a ticket and hand it to the board's review column ("Quality review" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review it is the reviewer's, and triage_ticket takes it back out only when a person asks you to, so add anything further as a comment. ${ASKED_OUT_OF_REVIEW} ${LIVE_ONLY} ${CHAIN_WAIT} ${COMMENT_INSTEAD}`,
     inputSchema: {
       taskId: z.string().describe(TICKET_ADDR),
       outcome: z.string().max(50_000).describe('What was accomplished'),
