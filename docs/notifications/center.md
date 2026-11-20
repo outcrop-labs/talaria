@@ -14,6 +14,7 @@ user-facing story and troubleshooting are in [`../NOTIFICATIONS.md`](../NOTIFICA
 | The matrix | `classes`, `channels`, `delivery.emailEnabled`, `emailFrequency` | `PATCH {channels}`, `PATCH {emailFrequency}`; the digest and the admin email switch as before |
 | DND | `dnd` (stored and evaluated: `active`, `until`, `reason`, `timeZone`), the profile's zone (`GET /api/me`) | `PATCH {dnd: {pausedUntil \| schedule \| allowNeedsYou}}` |
 | The status panel | `GET /api/push/devices`, `GET /api/me/presence`, `notify-status` (W2-R's setters), the shell bridge | `POST /api/notifications/test`, `DELETE /api/push/devices/{id}`, the shell's test |
+| Each board (the board's bell, Board settings → Notifications, Settings → Boards) | `GET /api/boards/{id}/notify`, `GET /api/notifications/boards`, `features` (`board-prefs`, `board-channels`) | `PUT`/`DELETE /api/boards/{id}/notify`, `PATCH {boards}` |
 
 Every list read sits under the query key `['notifications', …]`, so the live stream's
 invalidation of the bell refreshes the page's views too.
@@ -148,7 +149,10 @@ Nearing the end of what is loaded, `j` fetches the next page.
 - `ui/src/routes/app/Notifications.svelte`; `ui/src/route-table.ts` (`/notifications`)
 - `ui/src/routes/app/settings/NotificationsSection.svelte`, `NotifyMatrix.svelte`,
   `NotifySchedule.svelte`, `NotifyStatusPanel.svelte`, `NotifyDevices.svelte`,
-  `BrowserNotifications.svelte`
+  `BrowserNotifications.svelte`, `NotifyBoards.svelte` (Settings → Boards)
+- `ui/src/components/board/BoardNotifyMenu.svelte` (the board's bell),
+  `BoardNotifyForm.svelte`, `NotificationsTab.svelte`; `ui/src/lib/board-notify.ts` with
+  its test (the rules: [producers.md](./producers.md#each-board))
 - `ui/src/lib/notify-center.ts`, `notify-matrix.ts`, `notify-dnd.ts`, `notify-keys.ts`,
   each with its test; `notify-classes.ts` (the list retired)
 - `ui/e2e/notify-center-ui.spec.ts`: the bell, a 390 px window, the matrix, DND, the status
@@ -164,3 +168,7 @@ Nearing the end of what is loaded, `j` fetches the next page.
   labels, filters, devices, the alert target).
 - `ui/e2e/notify-center-ui.spec.ts` in Chromium and Firefox against a running stack; CI's
   e2e job runs it in Chromium.
+- `board-notify.test.ts` (every preset × cadence × source: glyph, name, words; the summary;
+  the whole-setting write) and `board-settings.test.ts` (which tabs a role sees);
+  `ui/e2e/board-notify.spec.ts` (the bell, the tab, Settings → Boards, a viewer, Watch it
+  myself, in both themes).

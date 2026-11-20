@@ -11,6 +11,7 @@
   import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsSection from '@/components/settings/SettingsSection.svelte'
+  import NotifyBoards from './NotifyBoards.svelte'
   import NotifyMatrix from './NotifyMatrix.svelte'
   import NotifySchedule from './NotifySchedule.svelte'
   import NotifyStatusPanel from './NotifyStatusPanel.svelte'
@@ -32,8 +33,9 @@
 
   // Settings → Notifications: how often missed activity is mailed and the
   // daily digest, where each kind of notification goes (its rows the server's
-  // class registry), Do Not Disturb (pause and working hours), and the status
-  // panel that says why something did or did not arrive. Every control
+  // class registry), what each board brings you (NotifyBoards), Do Not
+  // Disturb (pause and working hours), and the status panel that says why
+  // something did or did not arrive. Every control
   // autosaves on change (UI-CONVENTIONS: pickers apply immediately), the page
   // header says so and flashes Saved, and each control shows the server's
   // effective answer, so a rejected save can never look like it landed, and
@@ -262,6 +264,10 @@
       {@render refusal(matrixError)}
     </SettingsSection>
   {/if}
+
+  <!-- Each board: the default for every board, and every board's setting at a
+       glance (feature `board-prefs`; it renders nothing without it). -->
+  <NotifyBoards {features} />
 {/if}
 
 {#if data?.dnd}

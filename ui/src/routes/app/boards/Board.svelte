@@ -14,7 +14,8 @@
   import Workchains from '@/components/board/Workchains.svelte'
   import BoardSettingsModal from '@/components/board/BoardSettingsModal.svelte'
   import BoardSyncChip from '@/components/board/BoardSyncChip.svelte'
-  import { settingsTabOf, type SettingsTab } from '@/components/board/board-settings'
+  import BoardNotifyMenu from '@/components/board/BoardNotifyMenu.svelte'
+  import { opensOn, settingsTabOf, type SettingsTab } from '@/components/board/board-settings'
   import SavedViewSettings from '@/components/board/SavedViewSettings.svelte'
   import SettingsButton from '@/components/ui/SettingsButton.svelte'
   import FilterBar from '@/components/board/FilterBar.svelte'
@@ -75,8 +76,10 @@
      *  send someone, so it is a link, not component state. */
     chain?: string
     /** Board settings, open on this tab (board-settings.ts) — so a door such
-     *  as the sync chip's "Sync settings" is a link, and a shared URL opens
-     *  the same tab. Owners and editors only: the modal is not a viewer's. */
+     *  as the sync chip's "Sync settings" or the bell's "Notification
+     *  settings" is a link, and a shared URL opens the same tab. A viewer's
+     *  modal holds only their own Notifications tab, so a link to any other
+     *  tab opens nothing for them (`opensOn`). */
     settings?: SettingsTab
   }
 
@@ -549,6 +552,10 @@
           onSettings={canEdit ? () => setSearch({ settings: 'sync' }) : undefined}
         />
       {/if}
+      <!-- What this person hears about the board: every role, a viewer
+           included. Value-faced (its glyph is the level); its menu ends in
+           the Notifications tab. The gear stays the owners' and editors'. -->
+      <BoardNotifyMenu {boardId} onSettings={() => setSearch({ settings: 'notifications' })} />
       {#if canEdit}
         <SettingsButton size="md" label="Board settings" aria-haspopup="dialog" onclick={() => setSearch({ settings: 'general' })} />
       {/if}
@@ -642,7 +649,7 @@
 
     <BoardSettingsModal
       {board}
-      open={!!search.settings && canEdit}
+      open={opensOn(board.role, search.settings)}
       initialTab={search.settings}
       onTab={(t) => setSearch({ settings: t })}
       onClose={() => setSearch({ settings: undefined })}

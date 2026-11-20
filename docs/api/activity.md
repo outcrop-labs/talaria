@@ -259,9 +259,9 @@ Source: [`api/crates/talaria-routes-comms/src/activity/notifications_boards.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{default, boards}` | 200 | — |
+| GET | `session` | — | `{default, boards, registry}` | 200 | — |
 
-**GET** — The caller's default for every board and the effective setting of every board they can see: `{default, boards: [{id, name, role, effective, source}]}`.
+**GET** — The caller's default for every board and the effective setting of every board they can see: `{default, boards: [{id, name, role, effective, source}], registry}`.
 
 ## `/api/notifications/test`
 

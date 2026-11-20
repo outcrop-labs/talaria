@@ -3,13 +3,17 @@
 // Settings → Notifications "Boards" list (talaria_notify::boards):
 //
 //   { default: {effective, source, stored},
-//     boards: [{id, name, role, effective, source}] }
+//     boards: [{id, name, role, effective, source}],
+//     registry: {events, presets, cadences} }
 //
 // `source` says where each board's effective setting comes from ("board": the
 // caller's own setting for it; "default": their default; "builtin": neither).
 // The boards are the ones the caller's board list shows (live, not
 // archived), in its order — a setting for a board they can no longer see
-// stays stored, dormant, and is not listed. Sessions only.
+// stays stored, dormant, and is not listed. `registry` is the vocabulary the
+// default's form renders, labels included — the same one `GET
+// /api/boards/{id}/notify` serves, so a person with no board yet can still
+// set their default. Sessions only.
 
 use axum::Json;
 use axum::extract::State;
@@ -40,7 +44,7 @@ fn board_row(
     })
 }
 
-// doc: The caller's default for every board and the effective setting of every board they can see: `{default, boards: [{id, name, role, effective, source}]}`.
+// doc: The caller's default for every board and the effective setting of every board they can see: `{default, boards: [{id, name, role, effective, source}], registry}`.
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
     let boards = match list_boards(&state.pg, &user.id, false).await {
@@ -56,7 +60,6 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         Ok(v) => v,
         Err(e) => return Ok(internal("[notifications] board default read failed", e)),
     };
-    let (default_effective, default_source) = board_prefs::effective(None, default.as_ref());
     let rows: Vec<Value> = boards
         .iter()
         .map(|b| {
@@ -69,11 +72,21 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             )
         })
         .collect();
-    Ok(Json(json!({
-        "default": board_prefs::state_wire(&default_effective, default_source, default.as_ref()),
-        "boards": rows,
+    Ok(list_wire(default.as_ref(), rows).into_response())
+}
+
+/// The whole answer, from the caller's default and the listed rows. Pure.
+/// It answers `Json(json!({…}))` so the generated API reference reads the
+/// response's keys from this literal, and it sits below the handler: a
+/// `Json<…>` in the lines just above a handler reads to the generator as a
+/// request body.
+fn list_wire(default: Option<&BoardPref>, boards: Vec<Value>) -> Json<Value> {
+    let (default_effective, default_source) = board_prefs::effective(None, default);
+    Json(json!({
+        "default": board_prefs::state_wire(&default_effective, default_source, default),
+        "boards": boards,
+        "registry": board_prefs::registry_wire(),
     }))
-    .into_response())
 }
 
 #[cfg(test)]
@@ -111,6 +124,31 @@ mod tests {
         assert_eq!(
             r.as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
             ["id", "name", "role", "effective", "source"]
+        );
+    }
+
+    #[test]
+    fn the_list_carries_the_default_and_the_vocabulary() {
+        // No default and no board: the built-in, and still the registry — a
+        // person with no board yet sets their default from it.
+        let Json(w) = list_wire(None, Vec::new());
+        assert_eq!(w["default"]["source"], "builtin");
+        assert_eq!(w["boards"], json!([]));
+        assert_eq!(w["registry"], board_prefs::registry_wire());
+        let mentions = BoardPref::preset(Preset::Mentions, Cadence::Instant);
+        let Json(w) = list_wire(Some(&mentions), vec![json!({ "id": "b1" })]);
+        assert_eq!(
+            (
+                w["default"]["source"].as_str(),
+                w["default"]["effective"]["preset"].as_str()
+            ),
+            (Some("default"), Some("mentions"))
+        );
+        assert_eq!(w["boards"][0]["id"], "b1");
+        // The key order is the wire contract.
+        assert_eq!(
+            w.as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
+            ["default", "boards", "registry"]
         );
     }
 }

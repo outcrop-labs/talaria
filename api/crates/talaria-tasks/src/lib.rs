@@ -314,6 +314,9 @@ pub struct TaskFull {
     pub comments: Vec<TaskComment>,
     pub activity: Vec<TaskActivity>,
     pub watchers: Vec<String>,
+    /// Who added each of `watchers`, when it was someone else (the ticket
+    /// panel's "Added by …" and its "Watch it myself").
+    pub watcher_origins: Vec<WatcherOrigin>,
     pub reviews: Vec<QualityReview>,
     pub judge_reviews: Vec<talaria_judge::JudgeReview>,
     pub blocked_by: Vec<TaskLink>,
@@ -325,11 +328,19 @@ pub async fn get_task_full(pg: &PgPool, id: &str) -> Result<Option<TaskFull>, sq
     let Some(task) = get_task(pg, id).await? else {
         return Ok(None);
     };
-    let ((blocked_by, blocks), comments, activity, watchers, reviews, judge_reviews, usage) = tokio::try_join!(
+    let (
+        (blocked_by, blocks),
+        comments,
+        activity,
+        (watchers, watcher_origins),
+        reviews,
+        judge_reviews,
+        usage,
+    ) = tokio::try_join!(
         list_dependencies(pg, id),
         list_comments(pg, id),
         list_activity(pg, id),
-        list_watchers(pg, id),
+        list_watchers_with_origins(pg, id),
         list_reviews(pg, id),
         list_judge_reviews(pg, id),
         task_usage(pg, id),
@@ -339,6 +350,7 @@ pub async fn get_task_full(pg: &PgPool, id: &str) -> Result<Option<TaskFull>, sq
         comments,
         activity,
         watchers,
+        watcher_origins,
         reviews,
         judge_reviews,
         blocked_by,
@@ -2844,6 +2856,8 @@ struct ResolvedWatcher {
     /// added for someone is involvement, not a choice: it does not wake a
     /// board they set to Off (talaria_notify::boards).
     deliberate: bool,
+    /// Who added it (`task_watchers.added_by`, a users.id), as stored.
+    added_by: Option<String>,
 }
 
 async fn resolve_watchers(
@@ -2881,6 +2895,7 @@ async fn resolve_watchers(
             deliberate: added_by.as_deref().is_none_or(|by| by == user_id),
             watcher: w,
             user_id: user_id.clone(),
+            added_by,
         });
     }
     Ok(out)
@@ -2894,6 +2909,89 @@ pub async fn list_watchers(pg: &PgPool, task_id: &str) -> Result<Vec<String>, sq
         .into_iter()
         .map(|w| w.watcher)
         .collect())
+}
+
+/// Where one of a ticket's watches came from, as the ticket panel shows it.
+/// A watch someone else added is not the watcher's choice, so it does not
+/// carry the ticket through a board they set to Off
+/// (talaria_notify::boards); the panel says who added it and offers "Watch
+/// it myself", which makes it theirs (`add_watcher`).
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherOrigin {
+    /// The watcher, as `TaskFull::watchers` lists them.
+    pub watcher: String,
+    /// Who added it, when that was someone other than the watcher. None for
+    /// a watch the watcher made themselves, and for one from before anyone
+    /// recorded who added a watch — both count as their own.
+    pub added_by: Option<WatchAdder>,
+}
+
+/// The person who added someone else's watch.
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct WatchAdder {
+    pub id: String,
+    /// Their name, else their email; "a former member" once the account is
+    /// gone.
+    pub name: String,
+}
+
+/// The origins of resolved watches, from the adders' names. Pure.
+fn watcher_origins(
+    resolved: &[ResolvedWatcher],
+    names: &HashMap<String, String>,
+) -> Vec<WatcherOrigin> {
+    resolved
+        .iter()
+        .map(|w| WatcherOrigin {
+            watcher: w.watcher.clone(),
+            added_by: if w.deliberate {
+                None
+            } else {
+                w.added_by.as_ref().map(|id| WatchAdder {
+                    id: id.clone(),
+                    name: names
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| "a former member".into()),
+                })
+            },
+        })
+        .collect()
+}
+
+/// The ticket's watchers (`list_watchers`) and where each watch came from,
+/// from one resolution.
+pub async fn list_watchers_with_origins(
+    pg: &PgPool,
+    task_id: &str,
+) -> Result<(Vec<String>, Vec<WatcherOrigin>), sqlx::Error> {
+    let resolved = resolve_watchers(pg, task_id, None).await?;
+    let mut adders: Vec<String> = resolved
+        .iter()
+        .filter(|w| !w.deliberate)
+        .filter_map(|w| w.added_by.clone())
+        .collect();
+    adders.sort();
+    adders.dedup();
+    let mut names: HashMap<String, String> = HashMap::new();
+    if !adders.is_empty() {
+        let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "select id::text, name, email from users where id::text = any($1::text[])",
+        )
+        .bind(&adders)
+        .fetch_all(pg)
+        .await?;
+        for (id, name, email) in rows {
+            let shown = name
+                .filter(|n| !n.trim().is_empty())
+                .or(email.filter(|e| !e.trim().is_empty()))
+                .unwrap_or_else(|| "a former member".into());
+            names.insert(id, shown);
+        }
+    }
+    let origins = watcher_origins(&resolved, &names);
+    Ok((resolved.into_iter().map(|w| w.watcher).collect(), origins))
 }
 
 /// addWatcher's two answers: followed, or refused with the reason the
@@ -3897,5 +3995,53 @@ mod tests {
         // Off: nothing at all.
         let off = BoardPref::preset(Preset::Off, Cadence::Instant);
         assert!(assigned_and_moved(&off).is_empty());
+    }
+
+    #[test]
+    fn a_watch_names_who_added_it_only_when_it_was_someone_else() {
+        let w = |watcher: &str, user: &str, added_by: Option<&str>| ResolvedWatcher {
+            watcher: watcher.into(),
+            user_id: user.into(),
+            deliberate: added_by.is_none_or(|by| by == user),
+            added_by: added_by.map(str::to_string),
+        };
+        let resolved = [
+            // Their own watch: nobody else to name.
+            w("ann@x.test", "u-ann", Some("u-ann")),
+            // From before anyone recorded who added a watch: their own too.
+            w("bob@x.test", "u-bob", None),
+            // An editor added it: named, so the panel can offer "Watch it
+            // myself".
+            w("cy@x.test", "u-cy", Some("u-ed")),
+            // Added by an account that is gone: still someone else's watch.
+            w("dee@x.test", "u-dee", Some("u-gone")),
+        ];
+        let names = HashMap::from([("u-ed".to_string(), "Ed Editor".to_string())]);
+        let got = watcher_origins(&resolved, &names);
+        assert_eq!(
+            got.iter()
+                .map(|o| (
+                    o.watcher.as_str(),
+                    o.added_by
+                        .as_ref()
+                        .map(|a| (a.id.as_str(), a.name.as_str()))
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("ann@x.test", None),
+                ("bob@x.test", None),
+                ("cy@x.test", Some(("u-ed", "Ed Editor"))),
+                ("dee@x.test", Some(("u-gone", "a former member"))),
+            ]
+        );
+        // The wire spelling the ticket panel reads.
+        assert_eq!(
+            serde_json::to_value(&got[2]).unwrap(),
+            serde_json::json!({ "watcher": "cy@x.test", "addedBy": { "id": "u-ed", "name": "Ed Editor" } })
+        );
+        assert_eq!(
+            serde_json::to_value(&got[0]).unwrap(),
+            serde_json::json!({ "watcher": "ann@x.test", "addedBy": null })
+        );
     }
 }

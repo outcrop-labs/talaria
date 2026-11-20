@@ -303,7 +303,7 @@ async fn with_no_setting_every_producer_files_what_it_did() {
 #[ignore = "needs a live dev database and redis (ui/.env)"]
 async fn off_silences_the_board_for_that_person_only() {
     let state = live_app_state().await;
-    let (_ada, _, ada_c, _) = mint(&state, "Ada", "admin").await;
+    let (ada, _, ada_c, _) = mint(&state, "Ada", "admin").await;
     let (bob, bob_e, bob_c, bob_tok) = mint(&state, "Bob", "member").await;
     let (cy, cy_e, _, _) = mint(&state, "Cy", "member").await;
     let b = board(
@@ -403,6 +403,25 @@ async fn off_silences_the_board_for_that_person_only() {
         ["task-status"],
         "an editor-added watch does not wake a board set to Off"
     );
+    // The ticket names who added it, so Bob's panel can say "Added by Ada"
+    // and offer "Watch it myself".
+    let origin = |full: &Value| full["watcherOrigins"][0]["addedBy"].clone();
+    let full = ok(
+        &state,
+        "GET",
+        &format!("/api/tasks/{t3}"),
+        &bob_c,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(full["watchers"], json!([bob_e]));
+    assert_eq!(origin(&full)["id"], json!(ada));
+    assert!(
+        origin(&full)["name"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("Ada")),
+        "named by the account's name: {full}"
+    );
     // Bob presses Watch on it: now it is his.
     ok(
         &state,
@@ -419,6 +438,15 @@ async fn off_silences_the_board_for_that_person_only() {
             .await
             .unwrap();
     assert_eq!(added_by.as_deref(), Some(bob.as_str()));
+    let full = ok(
+        &state,
+        "GET",
+        &format!("/api/tasks/{t3}"),
+        &bob_c,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(origin(&full), Value::Null, "his own watch names nobody");
     ok(
         &state,
         "PUT",
@@ -859,6 +887,8 @@ async fn the_routes_write_only_the_callers_own_setting() {
     )
     .await;
     assert_eq!(listed["default"]["effective"]["preset"], "mentions");
+    // The vocabulary rides with the list, for the default's form.
+    assert_eq!(listed["registry"]["presets"][0]["id"], "all");
     let row = listed["boards"]
         .as_array()
         .unwrap()

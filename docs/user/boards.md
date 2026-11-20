@@ -89,6 +89,38 @@ its new board. The ticket's token spend counts toward the board it is on now.
 `urgent, due friday` — or select text while editing and ask for a rewrite; review the chips,
 then **Apply**.
 
+## Notifications
+
+Each board has a bell in its header, beside **Board settings**: what you hear about this
+board's tickets. Its picture is the setting — a ringing bell for **All activity**, a bell
+for **Participating** (the tickets you're in: assigned to you, watched, created by you,
+commented on), **@** for **Mentions & assignments**, a crossed-out bell for **Off** — and
+hovering it says so ("Board notifications: participating (your default)"). Click it to
+change it in one go. **Off** silences the board's assignments and @mentions too;
+approvals still reach you, and so does a ticket you watch yourself.
+
+The same menu turns on the **Daily digest** for the board: nothing as it happens, and once
+a day, at the daily digest's hour, one quiet notification counting what the board did —
+assignments, @mentions and tickets you watch yourself still come at once (a small clock on
+the bell says the board is on a digest).
+
+**Notification settings** in that menu opens **Board settings → Notifications**, for the
+rest: **Custom** (pick the events — new ticket, assigned to me, status change, comment or
+reply, mention, due soon or overdue, ticket completed — and whether they cover the tickets
+you're in or every ticket on the board), **When** (instant or the daily digest), and the
+board's own **Alerts** (the pop-up banner and the push) and **Email** (the missed-activity
+email), each *From settings*, *On* or *Off*. Due-date reminders are off until you choose
+them: All activity or a Custom set with "Due soon or overdue". Your inbox
+keeps every notification whatever you choose. **Use my default** puts the board back on
+your default. Anyone on the board has the bell and this tab, viewers included, and it only
+ever changes what reaches *you*.
+
+Your default for every board, and every board's setting at a glance, are in **Settings →
+Notifications → Boards**. A board you haven't set follows the default; a new board does too.
+
+A ticket you watch because someone else added you says who ("added by …"), with **Watch it
+myself**: only a watch you made yourself reaches you on a board you've turned off.
+
 ## Working with agents
 
 | Agents can | Agents can't |
@@ -151,6 +183,7 @@ imported ticket on the board. Setup, the mapping, the conflict rule and every pr
 | | Viewer | Editor | Owner |
 | :--- | :-: | :-: | :-: |
 | See board, comment on open tickets | ✓ | ✓ | ✓ |
+| Your own notifications for the board (the bell and its **Notification settings**) | ✓ | ✓ | ✓ |
 | Edit tickets, drag, bulk actions, save views | | ✓ | ✓ |
 | Board settings (columns, labels, people, agents) | | ✓ | ✓ |
 | Archive / restore | | ✓ | ✓ |
