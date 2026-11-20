@@ -3833,6 +3833,7 @@ dependencies = [
  "block2",
  "futures-lite",
  "gtk",
+ "libc",
  "libloading",
  "mac-notification-sys",
  "notify-rust",

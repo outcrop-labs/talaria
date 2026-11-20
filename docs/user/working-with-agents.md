@@ -41,7 +41,7 @@ default). Then the columns carry the rules:
 | Column rule | Meaning |
 | :--- | :--- |
 | **agent start** | Assignment in this column counts as approval — agents only pick up work sitting there |
-| **review** | Where agent work lands for sign-off. An agent may not sign off its own work, so it hands finished tickets here for a person |
+| **review** | Where agent work lands for sign-off. An agent may not sign off its own work, so it hands finished tickets here for a person — and takes one back out only when you ask it to ([Boards](./boards.md#working-with-agents)) |
 | Blocked | Always present; an agent stuck here is waiting on something |
 
 ### Reviewing an agent's ticket

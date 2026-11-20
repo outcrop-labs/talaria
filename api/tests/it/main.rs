@@ -85,6 +85,7 @@ mod streamed_at_liveness;
 mod subagent_events_live;
 mod task_move_live;
 mod task_refs_live;
+mod task_review_exit_live;
 mod teams_move_live;
 mod ticket_threads_live;
 mod tool_snapshots_live;

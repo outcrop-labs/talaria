@@ -38,7 +38,7 @@ use talaria_users::{assistant_owner_for, is_elevated_assistant};
 /// agent_work_refusal) — if those change, this list follows or it lies.
 const GUARDRAILS: [&str; 8] = [
     "agents cannot assign tickets — assignment is a human call",
-    "agents cannot take a ticket out of review — a person signs it off",
+    "agents cannot take a ticket out of review on their own — a person signs it off; when the person you are answering asks you to send it back, pass your thread's id as conversationId and the move goes through, never to a closed column",
     "agents cannot move a ticket out of blocked — a person restarts parked work",
     "agents cannot change a closed ticket (done / failed / cancelled); comments still land there",
     "agents cannot work an archived ticket — a person restores it first",
