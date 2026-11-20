@@ -21,9 +21,11 @@ pub struct SyncOptions {
     pub include_closed: bool,
     pub comments: bool,
     pub attachments: bool,
-    /// Tell apps that trigger on new tickets about imported ones. Off by
-    /// default: a first import of a long list would run such an app once per
-    /// ticket.
+    /// Tell apps about the sync's writes: `ticket.created` for an imported
+    /// ticket and `ticket.moved` for a move the sync makes. Off by default: a
+    /// first import of a long list would run such an app once per ticket (and
+    /// once more per closed task, made in the intake and then moved), and so
+    /// would a mapping edit that re-places tickets.
     pub notify_apps: bool,
 }
 
@@ -336,8 +338,11 @@ pub async fn save_item(pg: &PgPool, provider: &str, it: &Item) -> Result<(), sql
     Ok(())
 }
 
-/// A page of this board's linked items after `after` (keyset on the external
-/// id), filtered by one of the walks.
+/// A page of this CONNECTION's linked items after `after` (keyset on the
+/// external id), filtered by one of the walks. Scoped by `sync_id`, not by the
+/// board: a board that once synced another list keeps those tickets, and their
+/// items keep the old connection's id, so this list's sweep, remap and status
+/// never count them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Walk {
     /// Every linked item (the remap pass).
@@ -352,7 +357,7 @@ pub enum Walk {
 
 pub async fn walk_items(
     pg: &PgPool,
-    board_id: &str,
+    sync_id: &str,
     walk: Walk,
     run_id: &str,
     after: Option<&str>,
@@ -369,12 +374,12 @@ pub async fn walk_items(
         Walk::PendingParents => " and coalesce(applied->>'parentPending', '') <> ''",
     };
     let rows: Vec<RawItem> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{ITEM_SELECT} where board_id = $1::uuid and task_id is not null \
+        "{ITEM_SELECT} where sync_id = $1::uuid and task_id is not null \
            and ($2::text is null or external_id > $2){filter} \
            and ($3::text is not null) \
          order by external_id asc limit $4"
     )))
-    .bind(board_id)
+    .bind(sync_id)
     .bind(after)
     .bind(run_id)
     .bind(limit)
@@ -383,20 +388,20 @@ pub async fn walk_items(
     Ok(rows.into_iter().map(Item::from).collect())
 }
 
-/// How many linked, active items this board has, and how many this run's
-/// sweep did not see — the sweep guard's two numbers.
+/// How many linked, active items this connection has, and how many this
+/// run's sweep did not see — the sweep guard's two numbers.
 pub async fn unseen_counts(
     pg: &PgPool,
-    board_id: &str,
+    sync_id: &str,
     run_id: &str,
 ) -> Result<(i64, i64), sqlx::Error> {
     sqlx::query_as(
         "select count(*)::bigint, \
            count(*) filter (where seen_run is null or seen_run::text <> $2)::bigint \
-         from board_sync_items where board_id = $1::uuid and task_id is not null \
+         from board_sync_items where sync_id = $1::uuid and task_id is not null \
            and remote_state = 'active'",
     )
-    .bind(board_id)
+    .bind(sync_id)
     .bind(run_id)
     .fetch_one(pg)
     .await
@@ -435,9 +440,16 @@ pub async fn mark_seen(
 /// earned it completed; a mapping edit's flag clears only when the version it
 /// was raised at is the one this run applied (an edit made since stays
 /// pending for the next run).
+///
+/// ONLY A RUN THAT READ THE LIST SAYS HOW THE CONNECTION IS. A scheduled or
+/// manual run (`walked`) stamps last_synced_at and its problems replace the
+/// run-level ones. A remap (no ClickUp call) or a one-ticket re-sync does
+/// neither: a credential or list problem the last full run left stands, and
+/// the run's own problems, if any, are added to it.
 #[derive(Debug, Clone, Default)]
 pub struct Finish {
     pub watermark_ms: Option<i64>,
+    pub walked: bool,
     pub swept: bool,
     pub remap_version: Option<i32>,
     pub problems: Vec<Problem>,
@@ -447,11 +459,14 @@ pub async fn finish(pg: &PgPool, sync_id: &str, f: &Finish) -> Result<(), sqlx::
     sqlx::query(
         "update board_syncs set \
            watermark_ms = coalesce($2, watermark_ms), \
-           last_synced_at = now(), \
+           last_synced_at = case when $6 then now() else last_synced_at end, \
            last_sweep_at = case when $3 then now() else last_sweep_at end, \
            remap_pending = case when $4::int is not null and map_version = $4::int then false \
                                 else remap_pending end, \
-           run_problems = $5, updated_at = now() \
+           run_problems = case when $6 then $5::jsonb \
+             else run_problems || coalesce((select jsonb_agg(p.value) from jsonb_array_elements($5::jsonb) p \
+                                            where not run_problems @> jsonb_build_array(p.value)), '[]'::jsonb) end, \
+           updated_at = now() \
          where id = $1::uuid and state <> 'disconnected'",
     )
     .bind(sync_id)
@@ -459,24 +474,47 @@ pub async fn finish(pg: &PgPool, sync_id: &str, f: &Finish) -> Result<(), sqlx::
     .bind(f.swept)
     .bind(f.remap_version)
     .bind(serde_json::to_value(&f.problems).unwrap_or_else(|_| json!([])))
+    .bind(f.walked)
     .execute(pg)
     .await?;
     Ok(())
 }
 
-/// A run that stopped on a run-level problem records it, so the status says
-/// why without anyone reading the run row.
-pub async fn record_run_problems(
+/// A run that stopped on a run-level problem (the list is gone) records it,
+/// so the status says why without anyone reading the run row. True only when
+/// the connection did not already hold a problem of that kind: the
+/// transition, which alone files a notice. The connection stays active — a
+/// list made visible again resumes on its own — so until then every run stops
+/// here, and none of them tells anybody again. A run that finishes replaces
+/// the run-level problems, which re-arms the notice.
+pub async fn record_stop(
     pg: &PgPool,
     sync_id: &str,
-    problems: &[Problem],
-) -> Result<(), sqlx::Error> {
-    sqlx::query("update board_syncs set run_problems = $2, updated_at = now() where id = $1::uuid")
-        .bind(sync_id)
-        .bind(serde_json::to_value(problems).unwrap_or_else(|_| json!([])))
-        .execute(pg)
-        .await?;
-    Ok(())
+    problem: &Problem,
+) -> Result<bool, sqlx::Error> {
+    let r = sqlx::query(
+        "update board_syncs set run_problems = $2, updated_at = now() \
+         where id = $1::uuid and state <> 'disconnected' \
+           and not run_problems @> jsonb_build_array(jsonb_build_object('kind', $3::text))",
+    )
+    .bind(sync_id)
+    .bind(json!([problem]))
+    .bind(&problem.kind)
+    .execute(pg)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Whether this connection still holds its items — any state but
+/// disconnected. An item whose connection let go is free for another board.
+pub async fn connection_live(pg: &PgPool, sync_id: &str) -> Result<bool, sqlx::Error> {
+    let (live,): (bool,) = sqlx::query_as(
+        "select exists (select 1 from board_syncs where id = $1::uuid and state <> 'disconnected')",
+    )
+    .bind(sync_id)
+    .fetch_one(pg)
+    .await?;
+    Ok(live)
 }
 
 /// The token was refused by the GET /user probe: the sync waits for a person.
@@ -528,11 +566,11 @@ pub async fn set_last_run(pg: &PgPool, sync_id: &str, run_id: &str) -> Result<()
     Ok(())
 }
 
-/// The latest problems across this board's items, most recently synced
+/// The latest problems across this connection's items, most recently synced
 /// first, capped — the status projection's list — and the total.
 pub async fn item_problems(
     pg: &PgPool,
-    board_id: &str,
+    sync_id: &str,
     cap: i64,
 ) -> Result<(Vec<Problem>, i64), sqlx::Error> {
     let rows: Vec<(Value, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
@@ -543,18 +581,18 @@ pub async fn item_problems(
          cross join lateral jsonb_array_elements(i.problems) p \
          left join tasks t on t.id = i.task_id \
          left join boards b on b.id = t.board_id \
-         where i.board_id = $1::uuid and jsonb_array_length(i.problems) > 0 \
+         where i.sync_id = $1::uuid and jsonb_array_length(i.problems) > 0 \
          order by i.synced_at desc nulls last limit $2",
     )
-    .bind(board_id)
+    .bind(sync_id)
     .bind(cap)
     .fetch_all(pg)
     .await?;
     let (total,): (i64,) = sqlx::query_as(
         "select coalesce(sum(jsonb_array_length(problems)), 0)::bigint from board_sync_items \
-         where board_id = $1::uuid",
+         where sync_id = $1::uuid",
     )
-    .bind(board_id)
+    .bind(sync_id)
     .fetch_one(pg)
     .await?;
     let problems = rows
@@ -570,18 +608,19 @@ pub async fn item_problems(
     Ok((problems, total))
 }
 
-/// Tickets on this board whose ClickUp task is no longer active there, for
-/// the cards' chips: task id → archived | deleted | moved | hidden.
+/// Tickets this connection syncs whose ClickUp task is no longer active in
+/// its list, for the cards' chips: task id → archived | deleted | moved |
+/// hidden.
 pub async fn remote_states(
     pg: &PgPool,
-    board_id: &str,
+    sync_id: &str,
 ) -> Result<BTreeMap<String, String>, sqlx::Error> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "select task_id::text, remote_state from board_sync_items \
-         where board_id = $1::uuid and task_id is not null and remote_state <> 'active' \
+         where sync_id = $1::uuid and task_id is not null and remote_state <> 'active' \
          order by external_id limit 2000",
     )
-    .bind(board_id)
+    .bind(sync_id)
     .fetch_all(pg)
     .await?;
     Ok(rows.into_iter().collect())

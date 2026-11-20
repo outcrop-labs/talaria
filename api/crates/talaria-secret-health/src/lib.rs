@@ -955,8 +955,6 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
             Err(ClearError::Unknown)
         }
         "setting" => clear_setting_leaf(pg, n(0), &rest[1..].join(":")).await,
-        // A GitHub host's sealed leaf (`git-host:<id>:app.privateKeyEnc` or
-        // `…:pat.tokenEnc`) — the only two this store inventories.
         // A board's ClickUp sync token: cleared, the connection waits for a
         // board owner's new token — mapping, links and history kept.
         "board-sync" => run_clear(
@@ -968,6 +966,8 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
         )
         .await
         .map_err(ClearError::from),
+        // A GitHub host's sealed leaf (`git-host:<id>:app.privateKeyEnc` or
+        // `…:pat.tokenEnc`) — the only two this store inventories.
         "git-host" => {
             let path: Vec<String> = match rest[1..].join(":").as_str() {
                 "app.privateKeyEnc" => vec!["app".into(), "privateKeyEnc".into()],

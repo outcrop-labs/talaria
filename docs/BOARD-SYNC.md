@@ -57,9 +57,12 @@ in. The code is in `api/crates/talaria-board-sync` (the engine) and
 - `includeClosed` (default false): make tickets for tasks that are already closed in
   ClickUp. A ticket that exists always follows its task when the task closes.
 - `comments` (default true) and `attachments` (default true).
-- `notifyApps` (default false): tell apps that trigger on new tickets about imported
-  ones. It is off by default because a first import of a long list would otherwise run
-  such an app once per ticket.
+- `notifyApps` (default false): tell apps about the sync's writes — `ticket.created` for
+  an imported ticket and `ticket.moved` for a move the sync makes. It is off by default
+  because a first import of a long list would otherwise run such an app once per ticket,
+  and once more per closed task (made in the intake, then moved). A mapping change that
+  re-places tickets would too. Turn it on after the first import if an app should follow
+  ClickUp's changes.
 
 `intervalMinutes` is `null` (manual only), `15`, `60` (the default) or `1440`.
 
@@ -96,11 +99,17 @@ mapping says:
 - It never moves a ticket out of a working column while an agent's work session is live
   on it.
 - It never moves a ticket into a pickup column while the ticket has agent assignees. That
-  move would start their work, and the sync never starts agent work.
+  move would start their work, and the sync never starts an agent on the ticket it moves.
 - It never adds or removes agent assignees.
 
 When it holds a move, the ticket gets a `status-held` problem that says why. The next
 change in ClickUp asks again.
+
+One consequence is not held: a move into a done column is a done move like a person's.
+If the ticket is a step of a workchain, the chain hands on, and the next step's agents
+start as if a person had closed it. The board owner mapped that status to done and a
+person closed the task in ClickUp; map closed statuses elsewhere on a board whose
+workchains should wait for a sign-off in Talaria.
 
 ## What carries over
 
@@ -135,8 +144,9 @@ These problems clear on the next sync that resolves them.
 They are stored with `author_type` `imported` and their original time. The label never
 contains an email and is never matched against Talaria accounts, so an imported comment
 cannot land as a teammate's. Comments land oldest first, and a reply threads under its
-comment. An edit made in ClickUp is mirrored. A comment deleted in ClickUp stays. The sync
-reads at most the latest 1,000 comments of a task.
+comment. An edit made in ClickUp to a comment is mirrored; an edit to a reply is not,
+because replies are read once, when they arrive. A comment deleted in ClickUp stays. The
+sync reads at most the latest 1,000 comments of a task.
 
 **Attachments** over 25 MB are never downloaded. They are listed as problems with their
 ClickUp link. A fetch that fails is tried again on the next two runs and then listed.
@@ -173,8 +183,14 @@ The sync marks these tickets and never deletes one:
 - **A ticket moved to another Talaria board** keeps its link, and the sync leaves it alone.
 
 **One task, one board.** A ClickUp task syncs to at most one board per instance. A second
-board connected to the same list reports those tasks as already synced elsewhere. To move
-a list to another board, disconnect the first board, then delete or move its tickets.
+board connected to the same list skips those tasks and reports them (`other-board`). To
+move a list to another board:
+
+1. Disconnect the first board. While its connection is live, it keeps its tasks.
+2. On the first board, delete the tickets, or move them to the new board.
+3. Connect the new board, or press **Sync now** on it. A task whose ticket was deleted is
+   imported afresh, and a ticket moved to the new board is taken over where it sits, with
+   its history. A task whose ticket still sits on another board stays skipped.
 
 ## Cadence, and never silently stale
 
@@ -196,7 +212,9 @@ The status (`GET /api/boards/{id}/sync`) answers:
   now syncs then, and it still works;
 - a warning when the member who connected is no longer on the board, since their token
   still drives the sync;
-- the current problems: the first 50, and the total.
+- the current problems of this connection: the first 50, and the total. A remap or a
+  one-ticket re-sync reads nothing from the list, so it changes neither the last sync time
+  nor the run-level problems the last full run left.
 
 `POST /api/boards/{id}/sync/runs` (**Sync now**) answers the run already going, if there
 is one.
@@ -218,6 +236,12 @@ reading any task, so a dead token is never mistaken for "every task was deleted"
 `PUT /api/boards/{id}/sync/credential {token}` replaces the token and keeps the mapping,
 the links and the history. Clearing the credential in Admin → Secrets also puts the
 connection in `needs_credential`.
+
+When the token works but the list is gone, or its member can no longer see the list, the
+run stops with a `list-gone` problem and the same people get the same grouped
+notification, once. The connection stays active and keeps trying on its schedule, so it
+resumes on its own when the list is visible again. Until then each run stops quietly; the
+notification comes again only after a run has finished in between.
 
 A 401 on any other read (one task) means that task is out of the token's reach, not that
 the token is dead.
@@ -247,9 +271,9 @@ quiet:
 - Nobody is notified about imported tickets, assignments or moves. ClickUp already told
   its own people.
 - The board gets one live event per batch, not one per ticket.
-- Workchains still advance when a ticket lands in a done column.
-- Apps still hear that a ticket moved. They hear that a ticket was created only with
-  `notifyApps` on.
+- Workchains still advance when a ticket lands in a done column, and the next step's
+  agents start (see [What the sync will not move](#what-the-sync-will-not-move)).
+- Apps hear that a ticket was created or moved only with `notifyApps` on.
 
 Imported comments do not notify anyone and raise no unread badge. Ticket discussions are
 outside every unread count.
@@ -261,6 +285,8 @@ token. Every imported ticket, link and imported comment stays, and the tickets a
 editable and owned by Talaria. Afterwards the status answers with the list the board was
 disconnected from. Connecting the same list to the same board again re-attaches every
 ticket by its ClickUp id, with no duplicates, and the preview pre-fills the old mapping.
+Connecting a different list leaves the first list's tickets alone: they are not that
+list's, so its sweep, its problems and its card chips leave them out.
 
 ## How a run works
 

@@ -221,7 +221,12 @@ pub enum MoveVerdict {
 ///   · out of Blocked — a person unblocks a ticket;
 ///   · out of a working column while an agent's work session is live on it;
 ///   · into a pickup (agent-start) column while it has agent assignees —
-///     that would start their work, and the sync never starts agent work.
+///     that would start their work, and the sync never starts an agent on
+///     the ticket it moves.
+/// One consequence is NOT a guard: a close mapped to a done column is a done
+/// move like a person's, so a workchain step it closes hands on, and the next
+/// step's agents start as if a person had closed it (docs/BOARD-SYNC.md says
+/// so; the owner mapped the status and a person closed the task in ClickUp).
 pub fn guard_move(
     cur: &str,
     target: &str,
@@ -250,7 +255,7 @@ pub fn guard_move(
     }
     if has_agents && cols.agent_start(target) {
         return MoveVerdict::Hold(format!(
-            "ClickUp moved this to \"{to}\", which would start the agents assigned to it — the sync never starts agent work"
+            "ClickUp moved this to \"{to}\", which would start the agents assigned to it — the sync never starts them"
         ));
     }
     MoveVerdict::Move

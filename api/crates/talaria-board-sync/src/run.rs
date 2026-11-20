@@ -11,8 +11,10 @@
 //   sweep        (first sync's next run, every Sync now, at most daily on the
 //                schedule) every page, archived and not: marks what it sees,
 //                and RECONCILES — a task with no ticket yet (a page boundary
-//                the incremental walk slipped past) or a linked task newer
-//                than its item is processed from the page it is on.
+//                the incremental walk slipped past), a linked task newer
+//                than its item, or a task linked on another board (held
+//                there, or taken over once that board let go) is processed
+//                from the page it is on.
 //   missing      linked tasks the sweep did not see get one GET /task each:
 //                deleted, moved or hidden. A sweep that would mark more than a
 //                fifth (and more than ten) of them marks nothing and says so.
@@ -169,6 +171,17 @@ enum Halt {
 enum Flow {
     Continue,
     Yield(StepResult),
+}
+
+/// A task linked on another board, as `release` finds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Release {
+    /// That board still holds it.
+    Held,
+    /// That board let go and its ticket is gone: import it here afresh.
+    Fresh,
+    /// That board let go and a person moved its ticket here: adopted.
+    Adopted,
 }
 
 fn hash_text(s: &str) -> String {
@@ -577,10 +590,12 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
                 Pass::Sweep => {
                     let want = match known.get(&t.id) {
                         None => !t.archived && (!t.closed() || self.sync.options.include_closed),
-                        Some((updated, tomb, board)) => {
-                            !*tomb
-                                && *board == self.sync.board_id
-                                && (t.archived || t.updated_ms > *updated)
+                        // Linked on another board: process() holds it there
+                        // (and counts it), or takes it over once that board
+                        // let go.
+                        Some((_, _, board)) if *board != self.sync.board_id => true,
+                        Some((updated, tomb, _)) => {
+                            !*tomb && (t.archived || t.updated_ms > *updated)
                         }
                     };
                     if !want {
@@ -641,6 +656,12 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
     }
 
     async fn mark_archived(&mut self, t: &Task) -> Result<bool, Halt> {
+        // The task's own flag, not the query that found it: archived=true is
+        // ClickUp's filter, and a task it answers that says otherwise is not
+        // marked.
+        if !t.archived {
+            return Ok(false);
+        }
         let Some(mut item) = self.local.item(&t.id).await.map_err(Halt::Fatal)? else {
             return Ok(false);
         };
@@ -670,22 +691,70 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
         Ok(p.task_id)
     }
 
+    /// A task already linked on ANOTHER board. It stays there while that
+    /// board's connection still holds it, or while its ticket still sits on
+    /// another board. Once the connection let go (it was disconnected) the
+    /// link is free: a task whose ticket was deleted there is imported here
+    /// afresh, and a ticket a person moved to this board is adopted where it
+    /// sits — so "disconnect the first board, then delete its tickets or move
+    /// them here" really hands a list to another board.
+    async fn release(&self, it: &mut Item) -> Result<Release, Halt> {
+        if let Some(owner) = &it.sync_id
+            && self
+                .local
+                .connection_live(owner)
+                .await
+                .map_err(Halt::Fatal)?
+        {
+            return Ok(Release::Held);
+        }
+        let Some(task_id) = it.task_id.clone() else {
+            return Ok(Release::Fresh);
+        };
+        match self.local.ticket(&task_id).await.map_err(Halt::Fatal)? {
+            Some(tk) if tk.board_id == self.sync.board_id => {
+                it.board_id = self.sync.board_id.clone();
+                it.sync_id = Some(self.sync.id.clone());
+                it.problems.clear();
+                // Saved now: an unchanged task returns before its item is
+                // written again.
+                self.local.save_item(it).await.map_err(Halt::Fatal)?;
+                Ok(Release::Adopted)
+            }
+            // Still a ticket on another board (or one this read cannot see):
+            // the unique external_key would refuse a second ticket anyway.
+            _ => Ok(Release::Held),
+        }
+    }
+
     /// Upsert one task's ticket. Ok(true) when anything on the board changed.
     /// `detailed`: `t` came from GET /task (so its attachments are complete),
     /// not from a list page.
     async fn process(&mut self, t: &Task, force: bool, detailed: bool) -> Result<bool, Halt> {
         let board = self.sync.board_id.clone();
-        let existing = self.local.item(&t.id).await.map_err(Halt::Fatal)?;
-        if let Some(it) = &existing {
-            if it.board_id != board {
-                self.cp.counts.other_board += 1;
+        let mut existing = self.local.item(&t.id).await.map_err(Halt::Fatal)?;
+        let released = match existing.as_mut() {
+            Some(it) if it.board_id != board => Some(self.release(it).await?),
+            _ => None,
+        };
+        match released {
+            Some(Release::Held) => {
+                // Counted once per run: by the sweep when this run sweeps
+                // (it sees every task), else by the pass that met it.
+                if self.cp.pass == Pass::Sweep || !self.cp.sweep {
+                    self.cp.counts.other_board += 1;
+                }
                 return Ok(false);
             }
-            if it.tombstone() {
-                // Deleted in Talaria: never made again.
-                self.cp.counts.unchanged += 1;
-                return Ok(false);
-            }
+            Some(Release::Fresh) => existing = None,
+            Some(Release::Adopted) | None => {}
+        }
+        if let Some(it) = &existing
+            && it.tombstone()
+        {
+            // Deleted in Talaria: never made again.
+            self.cp.counts.unchanged += 1;
+            return Ok(false);
         }
 
         let mut problems: Vec<Problem> = Vec::new();
@@ -1060,6 +1129,17 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
                     Ok(()) => {
                         item.applied.status = Some(status.to_string());
                         item.applied.column = Some(col.to_string());
+                        // A quiet write emits no TicketMoved; the connection
+                        // decides whether apps hear the sync's moves.
+                        if self.sync.options.notify_apps {
+                            self.local.emit_moved(
+                                &self.sync.board_id,
+                                &ticket.id,
+                                &ticket.status,
+                                col,
+                                self.cols.meta.terminal(col),
+                            );
+                        }
                         Ok(true)
                     }
                     Err(why) => {
@@ -1191,7 +1271,9 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
     /// Gather the task's comments across pages, then land them OLDEST FIRST:
     /// a room is ordered by seq, assigned at insert, so newest-first inserts
     /// would reverse the history. A comment whose text changed in ClickUp is
-    /// mirrored; replies are read where the count grew. The count landed.
+    /// mirrored; replies are read where the count grew, and only then — a
+    /// reply edited in ClickUp afterwards is not mirrored (re-reading every
+    /// thread each run would cost a request per comment). The count landed.
     async fn import_comments(
         &self,
         t: &Task,
@@ -1318,10 +1400,7 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
             return Ok(Flow::Continue);
         }
         if !self.cp.guarded {
-            let (total, unseen) = self
-                .local
-                .unseen_counts(&self.sync.board_id, self.run_id)
-                .await?;
+            let (total, unseen) = self.local.unseen_counts(&self.sync.id, self.run_id).await?;
             self.cp.guarded = true;
             if unseen > SWEEP_GUARD_MIN && unseen * SWEEP_GUARD_SHARE > total {
                 self.run_problem(Problem::new(
@@ -1338,7 +1417,7 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
         let batch = self
             .local
             .walk(
-                &self.sync.board_id,
+                &self.sync.id,
                 Walk::Unseen,
                 self.run_id,
                 self.cp.cursor.as_deref(),
@@ -1434,7 +1513,7 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
         let batch = self
             .local
             .walk(
-                &self.sync.board_id,
+                &self.sync.id,
                 Walk::PendingAttachments,
                 self.run_id,
                 self.cp.cursor.as_deref(),
@@ -1520,7 +1599,7 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
         let batch = self
             .local
             .walk(
-                &self.sync.board_id,
+                &self.sync.id,
                 Walk::PendingParents,
                 self.run_id,
                 self.cp.cursor.as_deref(),
@@ -1577,7 +1656,7 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
         let batch = self
             .local
             .walk(
-                &self.sync.board_id,
+                &self.sync.id,
                 Walk::Linked,
                 self.run_id,
                 self.cp.cursor.as_deref(),
@@ -1663,17 +1742,18 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
             self.run_problem(Problem::new(
                 "other-board",
                 format!(
-                    "{n} task{} already sync{} to another board, so {} skipped",
+                    "{n} task{} already {} to another board, so {} skipped",
                     if n == 1 { "" } else { "s" },
-                    if n == 1 { "s" } else { "" },
+                    if n == 1 { "belongs" } else { "belong" },
                     if n == 1 { "it was" } else { "they were" }
                 ),
-                "A ClickUp task syncs to one board; disconnect the other board and delete or move its tickets first",
+                "A ClickUp task feeds one board: disconnect the other board's sync, then delete those tickets there or move them to this board — the next sync takes them over",
             ));
         }
         let walked = matches!(self.input.mode, Mode::Scheduled | Mode::Manual);
         let f = Finish {
             watermark_ms: walked.then_some(self.cp.started_at_ms),
+            walked,
             swept: self.cp.swept,
             remap_version: self.cp.remap_version,
             problems: self.cp.problems.clone(),

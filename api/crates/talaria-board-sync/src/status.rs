@@ -116,7 +116,7 @@ pub async fn board_sync_status(
             "fix": "Use Sync now",
         }));
     }
-    let (items, item_total) = item_problems(pg, board_id, PROBLEMS_CAP).await?;
+    let (items, item_total) = item_problems(pg, &sync.id, PROBLEMS_CAP).await?;
     let mut problems: Vec<Value> = sync
         .run_problems
         .iter()
@@ -158,7 +158,7 @@ pub async fn board_sync_status(
             "problems": problems,
             "problemCount": run_total + item_total,
             "statuses": sync.list_statuses,
-            "remoteStates": remote_states(pg, board_id).await?,
+            "remoteStates": remote_states(pg, &sync.id).await?,
             "createdAt": epoch_ms_to_iso(sync.created_ms),
         },
         "disconnected": null,

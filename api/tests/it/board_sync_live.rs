@@ -25,14 +25,17 @@ const PREFIX: &str = "board-sync-live";
 const BIG: i64 = 30 * 1024 * 1024;
 
 /// The stand-in's world. Tasks are served oldest first (the client asks
-/// `reverse=true`), all on page 0.
+/// `reverse=true`), all on page 0. `tasks` are list L1's, `tasks2` list L2's.
 #[derive(Default)]
 struct World {
     tasks: Vec<Value>,
+    tasks2: Vec<Value>,
     archived: Vec<Value>,
     comments: HashMap<String, Vec<Value>>,
     replies: HashMap<String, Vec<Value>>,
     token_dead: bool,
+    /// L1 is gone (or out of the token's sight): its reads answer 404.
+    list_gone: bool,
     hits: Vec<String>,
 }
 
@@ -62,6 +65,9 @@ fn answer(world: &Mutex<World>, base: &str, path: &str, query: &str) -> (u16, Va
     if w.token_dead && path.starts_with("/api/v2/") {
         return (401, json!({"err": "Token invalid", "ECODE": "OAUTH_025"}));
     }
+    if w.list_gone && path.starts_with("/api/v2/list/L1") {
+        return (404, json!({"err": "List not found", "ECODE": "ITEM_013"}));
+    }
     let seg: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match seg.as_slice() {
         ["api", "v2", "user"] => (
@@ -69,10 +75,11 @@ fn answer(world: &Mutex<World>, base: &str, path: &str, query: &str) -> (u16, Va
             json!({"user": {"id": 1, "username": "Sync Bot", "email": "bot@clickup.invalid"}}),
         ),
         ["api", "v2", "team"] => (200, json!({"teams": [{"id": "9001", "name": "Workspace"}]})),
-        ["api", "v2", "list", "L1"] => (
+        ["api", "v2", "list", lid] if *lid == "L1" || *lid == "L2" => (
             200,
             json!({
-                "id": "L1", "name": "Sprint", "task_count": w.tasks.len(),
+                "id": lid, "name": if *lid == "L1" { "Sprint" } else { "Backlog" },
+                "task_count": if *lid == "L1" { w.tasks.len() } else { w.tasks2.len() },
                 "space": {"id": "S1", "name": "Engineering"},
                 "folder": {"id": "F0", "name": "hidden", "hidden": true},
                 "statuses": [
@@ -83,9 +90,16 @@ fn answer(world: &Mutex<World>, base: &str, path: &str, query: &str) -> (u16, Va
                 ]
             }),
         ),
-        ["api", "v2", "list", "L1", "task"] => {
+        ["api", "v2", "list", lid, "task"] if *lid == "L1" || *lid == "L2" => {
             let page: u32 = q.get("page").and_then(|p| p.parse().ok()).unwrap_or(0);
-            let src = if q.get("archived").map(String::as_str) == Some("true") {
+            let none = Vec::new();
+            let src = if *lid == "L2" {
+                if q.get("archived").map(String::as_str) == Some("true") {
+                    &none
+                } else {
+                    &w.tasks2
+                }
+            } else if q.get("archived").map(String::as_str) == Some("true") {
                 &w.archived
             } else {
                 &w.tasks
@@ -115,6 +129,7 @@ fn answer(world: &Mutex<World>, base: &str, path: &str, query: &str) -> (u16, Va
                 .tasks
                 .iter()
                 .chain(w.archived.iter())
+                .chain(w.tasks2.iter())
                 .find(|t| t["id"] == *id)
                 .cloned();
             match found {
@@ -779,6 +794,172 @@ async fn a_board_syncs_from_a_clickup_list_end_to_end() {
         StatusCode::BAD_REQUEST,
         "no live connection, no re-sync"
     );
+
+    // ── the same board, another list: the first list's tickets stay out ────
+    cu.world.lock().unwrap().tasks2 = vec![cu_task(
+        &format!("F{tag}"),
+        "to do",
+        false,
+        1_700_000_006_000,
+        json!({"list": {"id": "L2"}}),
+    )];
+    let (status, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/boards/{board}/sync"),
+        Some(&cookie),
+        Some(json!({
+            "token": "pk_live_test_token_1234",
+            "listId": "L2",
+            "statusMap": {"to do": "inbox"},
+            "intervalMinutes": 60
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (state_s, err) = wait_run(&pg, body["runId"].as_str().unwrap()).await;
+    assert_eq!(state_s, "done", "{err:?}");
+    // Sync now sweeps. A's ticket came from L1, so L2's sweep must not read
+    // it as a task moved out of L2.
+    let (_, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/boards/{board}/sync/runs"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    let (state_s, err) = wait_run(&pg, body["runId"].as_str().unwrap()).await;
+    assert_eq!(state_s, "done", "{err:?}");
+    assert!(!ticket(&pg, &board, &format!("F{tag}")).await.is_null());
+    let (remote, list): (String, String) = sqlx::query_as(
+        "select i.remote_state, s.list_id from board_sync_items i \
+         join board_syncs s on s.id = i.sync_id where i.external_id = $1",
+    )
+    .bind(format!("A{tag}"))
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(remote, "active", "another list's sweep marked it");
+    assert_eq!(list, "L1", "it stays with the connection that synced it");
+    let (_, st) = call_json(
+        &state,
+        "GET",
+        &format!("/api/boards/{board}/sync"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert!(
+        !st["sync"]["problems"].to_string().contains("design.mov"),
+        "the old list's problems are not this connection's: {}",
+        st["sync"]["problems"]
+    );
+    let (status, _) = call_json(
+        &state,
+        "DELETE",
+        &format!("/api/boards/{board}/sync"),
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // ── another board takes L1 over once the first has let go ──────────────
+    let (board2,): (String,) = sqlx::query_as(
+        "insert into boards (name, owner_id) values ('Second sync board', $1::uuid) returning id::text",
+    )
+    .bind(&owner)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into board_members (board_id, user_id, role) values ($1::uuid, $2::uuid, 'owner')",
+    )
+    .bind(&board2)
+    .bind(&owner)
+    .execute(&pg)
+    .await
+    .unwrap();
+    let (status, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/boards/{board2}/sync"),
+        Some(&cookie),
+        Some(json!({
+            "token": "pk_live_test_token_1234",
+            "listId": "L1",
+            "statusMap": {"in progress": "in_progress", "to do": "inbox", "complete": "done"},
+            "intervalMinutes": 60
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (state_s, err) = wait_run(&pg, body["runId"].as_str().unwrap()).await;
+    assert_eq!(state_s, "done", "{err:?}");
+    // C's ticket was deleted on the first board: imported here afresh.
+    assert!(
+        !ticket(&pg, &board2, &format!("C{tag}")).await.is_null(),
+        "a task whose ticket the first board deleted imports on the second"
+    );
+    // A and D still have tickets on the first board: held there, and said so.
+    assert!(ticket(&pg, &board2, &format!("A{tag}")).await.is_null());
+    let (sync2, run_problems): (String, Value) = sqlx::query_as(
+        "select id::text, run_problems from board_syncs where board_id = $1::uuid and state <> 'disconnected'",
+    )
+    .bind(&board2)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(
+        run_problems.to_string().contains("other-board"),
+        "{run_problems}"
+    );
+
+    // ── the list goes: one notice, however many runs stop on it ────────────
+    cu.world.lock().unwrap().list_gone = true;
+    for _ in 0..2 {
+        let (status, body) = call_json(
+            &state,
+            "POST",
+            &format!("/api/boards/{board2}/sync/runs"),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (s, _) = wait_run(&pg, body["runId"].as_str().unwrap()).await;
+        assert_eq!(s, "error");
+    }
+    let (rows, count): (i64, i64) = sqlx::query_as(
+        "select count(*)::bigint, coalesce(sum(count), 0)::bigint from notifications \
+         where user_id = $1::uuid and kind = 'board-sync' and group_key = $2",
+    )
+    .bind(&owner)
+    .bind(format!("board-sync:{sync2}"))
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(
+        (rows, count),
+        (1, 1),
+        "one notice for a list that stays gone, not a re-alert per run"
+    );
+    let (sync_state, run_problems): (String, Value) =
+        sqlx::query_as("select state, run_problems from board_syncs where id = $1::uuid")
+            .bind(&sync2)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert_eq!(
+        sync_state, "active",
+        "it resumes on its own once the list is back"
+    );
+    assert!(
+        run_problems.to_string().contains("list-gone"),
+        "{run_problems}"
+    );
+    cu.world.lock().unwrap().list_gone = false;
 }
 
 #[tokio::test]

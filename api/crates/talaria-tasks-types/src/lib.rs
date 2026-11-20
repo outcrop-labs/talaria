@@ -197,8 +197,10 @@ pub struct TaskPatch {
     /// A MIRRORED write — a tracker sync copying a change somebody already made
     /// in the other tracker, where its own people were told. No person is told
     /// again (the status and assignment notices are skipped; the workchain
-    /// hand-off and the review-approval resolution still run), and no
-    /// per-ticket board event goes out: the writer publishes one per batch.
+    /// hand-off and the review-approval resolution still run), no per-ticket
+    /// board event goes out (the writer publishes one per batch), and no
+    /// TicketMoved reaches apps — the writer emits it itself when its
+    /// connection says apps should hear.
     pub quiet: bool,
 }
 

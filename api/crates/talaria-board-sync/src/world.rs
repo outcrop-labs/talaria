@@ -7,7 +7,8 @@
 // through talaria-tasks' create_task / update_task with the platform actor,
 // so board membership, activity lines, realtime, retrieval indexing and the
 // agent invariants all still apply. The sync's writes are QUIET (a mirrored
-// write tells nobody; the step publishes one board event per batch).
+// write tells nobody; the step publishes one board event per batch, and apps
+// hear its creates and moves only when the connection's notifyApps says so).
 
 use std::future::Future;
 
@@ -167,6 +168,9 @@ pub trait Local: Send + Sync {
     fn people(&self, board_id: &str) -> impl Future<Output = Result<People, String>> + Send;
     fn item(&self, external_id: &str) -> impl Future<Output = Result<Option<Item>, String>> + Send;
     fn save_item(&self, item: &Item) -> impl Future<Output = Result<(), String>> + Send;
+    /// Whether a connection still holds its items (any state but
+    /// disconnected).
+    fn connection_live(&self, sync_id: &str) -> impl Future<Output = Result<bool, String>> + Send;
     fn ticket(&self, task_id: &str) -> impl Future<Output = Result<Option<Ticket>, String>> + Send;
     fn create(
         &self,
@@ -209,9 +213,10 @@ pub trait Local: Send + Sync {
         task_id: &str,
         text: &str,
     ) -> impl Future<Output = Result<(), String>> + Send;
+    /// A page of the connection's own items (store::walk_items).
     fn walk(
         &self,
-        board_id: &str,
+        sync_id: &str,
         walk: Walk,
         run_id: &str,
         after: Option<&str>,
@@ -225,7 +230,7 @@ pub trait Local: Send + Sync {
     ) -> impl Future<Output = Result<Vec<(String, Option<i64>, bool, String)>, String>> + Send;
     fn unseen_counts(
         &self,
-        board_id: &str,
+        sync_id: &str,
         run_id: &str,
     ) -> impl Future<Output = Result<(i64, i64), String>> + Send;
     fn record_list(
@@ -241,7 +246,7 @@ pub trait Local: Send + Sync {
         problem: &Problem,
     ) -> impl Future<Output = Result<(), String>> + Send;
     /// A run-level problem that stops the run (the list is gone): recorded,
-    /// and the same notice.
+    /// and the same notice — on the transition only.
     fn run_stopped(
         &self,
         sync: &SyncRow,
@@ -254,6 +259,9 @@ pub trait Local: Send + Sync {
     /// Apps hear TicketCreated for an imported ticket (only when the
     /// connection says they should).
     fn emit_created(&self, board_id: &str, task_id: &str);
+    /// Apps hear TicketMoved for a move the sync made (only when the
+    /// connection says they should — a quiet write emits none itself).
+    fn emit_moved(&self, board_id: &str, task_id: &str, from: &str, to: &str, closed: bool);
 }
 
 // ── The real Talaria ─────────────────────────────────────────────────────────
@@ -365,6 +373,10 @@ impl Local for Real {
 
     async fn save_item(&self, item: &Item) -> Result<(), String> {
         store::save_item(&self.pg, PROVIDER, item).await.map_err(db)
+    }
+
+    async fn connection_live(&self, sync_id: &str) -> Result<bool, String> {
+        store::connection_live(&self.pg, sync_id).await.map_err(db)
     }
 
     async fn ticket(&self, task_id: &str) -> Result<Option<Ticket>, String> {
@@ -552,13 +564,13 @@ impl Local for Real {
 
     async fn walk(
         &self,
-        board_id: &str,
+        sync_id: &str,
         walk: Walk,
         run_id: &str,
         after: Option<&str>,
         limit: i64,
     ) -> Result<Vec<Item>, String> {
-        store::walk_items(&self.pg, board_id, walk, run_id, after, limit)
+        store::walk_items(&self.pg, sync_id, walk, run_id, after, limit)
             .await
             .map_err(db)
     }
@@ -574,8 +586,8 @@ impl Local for Real {
             .map_err(db)
     }
 
-    async fn unseen_counts(&self, board_id: &str, run_id: &str) -> Result<(i64, i64), String> {
-        store::unseen_counts(&self.pg, board_id, run_id)
+    async fn unseen_counts(&self, sync_id: &str, run_id: &str) -> Result<(i64, i64), String> {
+        store::unseen_counts(&self.pg, sync_id, run_id)
             .await
             .map_err(db)
     }
@@ -601,10 +613,15 @@ impl Local for Real {
     }
 
     async fn run_stopped(&self, sync: &SyncRow, problem: &Problem) -> Result<(), String> {
-        store::record_run_problems(&self.pg, &sync.id, std::slice::from_ref(problem))
+        // Only the transition files the notice, as with a refused credential.
+        // The connection stays active, so every scheduled run until the list
+        // is visible again stops here — and tells nobody again.
+        if store::record_stop(&self.pg, &sync.id, problem)
             .await
-            .map_err(db)?;
-        self.notify_stewards(sync, problem).await?;
+            .map_err(db)?
+        {
+            self.notify_stewards(sync, problem).await?;
+        }
         self.publish(&sync.board_id);
         Ok(())
     }
@@ -629,6 +646,16 @@ impl Local for Real {
         talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketCreated {
             ticket_id: task_id.to_string(),
             board_id: board_id.to_string(),
+        });
+    }
+
+    fn emit_moved(&self, board_id: &str, task_id: &str, from: &str, to: &str, closed: bool) {
+        talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {
+            ticket_id: task_id.to_string(),
+            board_id: board_id.to_string(),
+            from: from.to_string(),
+            to: to.to_string(),
+            closed,
         });
     }
 }

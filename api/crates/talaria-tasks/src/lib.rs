@@ -611,10 +611,12 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             // re-derives from the DB inside the call, so a retried write
             // re-derives the same answer and files nothing new, and a
             // notification failure never costs the ticket write it rode in
-            // on. Human sign-off is the only trigger by construction: agents
-            // cannot land a terminal column (agent_safe_patch), so the chain
-            // advances only when a person moves the column. The successors it
-            // made ready are offered to work dispatch.
+            // on. Agents cannot land a terminal column (agent_safe_patch), so
+            // the chain advances when a person moves the column — or when a
+            // tracker sync mirrors a close a person made over there into the
+            // done column a board owner mapped it to (a quiet write,
+            // talaria-board-sync; docs/BOARD-SYNC.md says so). The successors
+            // it made ready are offered to work dispatch, either way.
             let chain = deps.clone();
             let board_id = cur.board_id.clone();
             let task_id = id.clone();
@@ -1706,14 +1708,18 @@ pub async fn update_task(
         };
         log_activity(pg, id, &who.id, "status", &moved).await?;
         // Apps whose triggers name the move hear it: ids and column keys,
-        // never the ticket's text (talaria-platform-events).
-        talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {
-            ticket_id: id.to_string(),
-            board_id: cur.board_id.clone(),
-            from: cur.status.clone(),
-            to: next_status.clone(),
-            closed: meta.terminal(&next_status),
-        });
+        // never the ticket's text (talaria-platform-events). A mirrored
+        // write's writer emits it itself, when its connection says apps
+        // should hear the sync's moves.
+        if !patch.quiet {
+            talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {
+                ticket_id: id.to_string(),
+                board_id: cur.board_id.clone(),
+                from: cur.status.clone(),
+                to: next_status.clone(),
+                closed: meta.terminal(&next_status),
+            });
+        }
         // The watchers' notice and the workchain hand-off went out with the
         // commit (`spawn_update_notices`).
     }

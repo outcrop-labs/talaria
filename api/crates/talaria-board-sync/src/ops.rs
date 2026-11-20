@@ -228,13 +228,19 @@ pub async fn connect(
         }
         Err(e) => return Err(OpError::internal("connect insert", e)),
     };
-    // A reconnect of the same list re-attaches this board's items (and so its
-    // tickets, by external_key) to the new connection.
+    // RECONNECTING THE SAME LIST re-attaches this board's items from that
+    // list (and so their tickets, by external_key) to the new connection.
+    // Items from another list this board once synced keep their old
+    // connection: they are not this list's, so its sweep, remap and status
+    // never count them.
     if let Err(e) = sqlx::query(
-        "update board_sync_items set sync_id = $1::uuid where board_id = $2::uuid and provider = 'clickup'",
+        "update board_sync_items i set sync_id = $1::uuid from board_syncs s \
+         where s.id = i.sync_id and s.board_id = $2::uuid and s.list_id = $3 \
+           and s.state = 'disconnected' and i.board_id = $2::uuid and i.provider = 'clickup'",
     )
     .bind(&id)
     .bind(board_id)
+    .bind(&list.id)
     .execute(&state.pg)
     .await
     {

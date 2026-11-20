@@ -201,6 +201,10 @@ struct LocalState {
     /// create and the move): the step errors, nothing after it lands.
     crash_next_move: bool,
     creates: usize,
+    /// Connections that were disconnected (every other id is live).
+    dead_syncs: Vec<String>,
+    /// TicketMoved the sync emitted itself: (task id, to, closed).
+    moved: Vec<(String, String, bool)>,
 }
 
 #[derive(Clone)]
@@ -317,6 +321,9 @@ impl Local for FakeLocal {
     async fn save_item(&self, item: &Item) -> Result<(), String> {
         self.with(|s| s.items.insert(item.external_id.clone(), item.clone()));
         Ok(())
+    }
+    async fn connection_live(&self, sync_id: &str) -> Result<bool, String> {
+        Ok(self.with(|s| !s.dead_syncs.iter().any(|d| d == sync_id)))
     }
     async fn ticket(&self, task_id: &str) -> Result<Option<Ticket>, String> {
         Ok(self.with(|s| s.tickets.get(task_id).cloned()))
@@ -450,7 +457,7 @@ impl Local for FakeLocal {
     }
     async fn walk(
         &self,
-        board_id: &str,
+        sync_id: &str,
         walk: Walk,
         run_id: &str,
         after: Option<&str>,
@@ -459,7 +466,7 @@ impl Local for FakeLocal {
         Ok(self.with(|s| {
             s.items
                 .values()
-                .filter(|i| i.board_id == board_id && i.task_id.is_some())
+                .filter(|i| i.sync_id.as_deref() == Some(sync_id) && i.task_id.is_some())
                 .filter(|i| after.is_none_or(|a| i.external_id.as_str() > a))
                 .filter(|i| match walk {
                     Walk::Linked => true,
@@ -499,13 +506,15 @@ impl Local for FakeLocal {
             out
         }))
     }
-    async fn unseen_counts(&self, board_id: &str, run_id: &str) -> Result<(i64, i64), String> {
+    async fn unseen_counts(&self, sync_id: &str, run_id: &str) -> Result<(i64, i64), String> {
         Ok(self.with(|s| {
             let linked: Vec<&Item> = s
                 .items
                 .values()
                 .filter(|i| {
-                    i.board_id == board_id && i.task_id.is_some() && i.remote_state == "active"
+                    i.sync_id.as_deref() == Some(sync_id)
+                        && i.task_id.is_some()
+                        && i.remote_state == "active"
                 })
                 .collect();
             let unseen = linked
@@ -549,6 +558,9 @@ impl Local for FakeLocal {
     }
     fn publish(&self, _board_id: &str) {}
     fn emit_created(&self, _board_id: &str, _task_id: &str) {}
+    fn emit_moved(&self, _board_id: &str, task_id: &str, _from: &str, to: &str, closed: bool) {
+        self.with(|s| s.moved.push((task_id.into(), to.into(), closed)));
+    }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -987,6 +999,10 @@ async fn remap_moves_only_the_tickets_still_where_the_old_mapping_put_them() {
         None,
         "a remap moves no watermark"
     );
+    assert!(
+        !local.with(|s| s.finishes.last().unwrap().walked),
+        "a remap read nothing from ClickUp, so it says nothing about the connection's health"
+    );
 }
 
 #[tokio::test]
@@ -1191,4 +1207,166 @@ async fn files_come_from_the_detail_read_never_from_a_list_page() {
             .len(),
         1
     );
+}
+
+/// Disconnect the fake's connection and connect another: a new id, `list`,
+/// on `board`, never synced. Items keep the old connection's id, as
+/// ops::connect leaves an item from another list.
+fn reconnect(local: &FakeLocal, id: &str, board: &str, list: &str) {
+    local.with(|s| {
+        let sync = s.sync.as_mut().unwrap();
+        s.dead_syncs.push(sync.id.clone());
+        sync.id = id.into();
+        sync.board_id = board.into();
+        sync.list_id = list.into();
+        sync.watermark_ms = None;
+        sync.last_sweep_ms = None;
+    });
+}
+
+fn quiet_options(local: &FakeLocal) {
+    local.with(|s| {
+        let o = &mut s.sync.as_mut().unwrap().options;
+        o.comments = false;
+        o.attachments = false;
+    });
+}
+
+#[tokio::test]
+async fn a_board_that_synced_another_list_keeps_those_tickets_out_of_this_lists_sweep() {
+    let local = FakeLocal::new(&[("x", "doing")]);
+    quiet_options(&local);
+    let old: Vec<Task> = (0..20)
+        .map(|i| task(&format!("t{i:02}"), "x", 10))
+        .collect();
+    let remote = FakeRemote::new(old);
+    drive(&local, &remote, &input("manual")).await;
+    // The same board, another list: five tasks of its own.
+    reconnect(&local, "sync-2", "board-1", "L2");
+    remote.0.lock().unwrap().tasks = (0..5).map(|i| task(&format!("u{i}"), "x", 10)).collect();
+    drive(&local, &remote, &input("manual")).await; // its first sync
+    drive(&local, &remote, &input("manual")).await; // a sweep
+    let last = local.with(|s| s.finishes.last().unwrap().clone());
+    assert!(last.swept);
+    assert!(
+        !last.problems.iter().any(|p| p.kind == "sweep-held"),
+        "the old list's twenty tickets are not this list's missing tasks: {:?}",
+        last.problems
+    );
+    assert_eq!(local.item_of("t00").unwrap().remote_state, "active");
+    assert_eq!(
+        local.item_of("t00").unwrap().sync_id.as_deref(),
+        Some("sync-1")
+    );
+    assert!(local.ticket_of("u4").is_some());
+}
+
+#[tokio::test]
+async fn another_board_takes_a_list_over_once_the_first_lets_go() {
+    let local = FakeLocal::new(&[("x", "doing")]);
+    quiet_options(&local);
+    let remote = FakeRemote::new(vec![
+        task("a", "x", 10),
+        task("b", "x", 10),
+        task("c", "x", 10),
+    ]);
+    drive(&local, &remote, &input("manual")).await;
+    let b_ticket = local.ticket_of("b").unwrap().id;
+    // On the first board: a's ticket deleted, b's moved to the second board.
+    local.with(|s| {
+        let a = s.items["a"].task_id.clone().unwrap();
+        s.tickets.remove(&a);
+        s.keys.remove("clickup:a");
+        s.items.get_mut("a").unwrap().task_id = None; // on delete set null
+        s.tickets.get_mut(&b_ticket).unwrap().board_id = "board-2".into();
+    });
+    // The second board connects while the first still syncs: all held.
+    let first = local.with(|s| s.sync.clone().unwrap());
+    local.with(|s| {
+        let sync = s.sync.as_mut().unwrap();
+        sync.id = "sync-2".into();
+        sync.board_id = "board-2".into();
+        sync.watermark_ms = None;
+    });
+    drive(&local, &remote, &input("manual")).await;
+    assert_eq!(local.with(|s| s.creates), 3, "nothing taken while held");
+    let problems = local.with(|s| s.finishes.last().unwrap().problems.clone());
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.kind == "other-board" && p.detail.starts_with("3 tasks")),
+        "{problems:?}"
+    );
+    // The first board disconnects: a is made afresh on the second board, b's
+    // ticket is adopted where it sits, c (still a ticket there) stays held.
+    local.with(|s| {
+        s.dead_syncs.push(first.id.clone());
+        let sync = s.sync.as_mut().unwrap();
+        sync.watermark_ms = None;
+    });
+    drive(&local, &remote, &input("manual")).await;
+    let a = local.item_of("a").unwrap();
+    assert_eq!(a.board_id, "board-2");
+    assert_eq!(a.sync_id.as_deref(), Some("sync-2"));
+    assert_eq!(local.ticket_of("a").unwrap().board_id, "board-2");
+    assert_eq!(local.with(|s| s.creates), 4, "a is made again, once");
+    let b = local.item_of("b").unwrap();
+    assert_eq!(b.board_id, "board-2");
+    assert_eq!(
+        b.task_id.as_deref(),
+        Some(b_ticket.as_str()),
+        "adopted, not re-made"
+    );
+    assert_eq!(local.item_of("c").unwrap().board_id, "board-1");
+    // A sweeping run that also meets c in its incremental walk counts it once.
+    remote.0.lock().unwrap().tasks[2] = task("c", "x", 50_000_000);
+    drive(&local, &remote, &input("manual")).await;
+    let last = local.with(|s| s.finishes.last().unwrap().clone());
+    assert!(last.swept);
+    assert!(
+        last.problems
+            .iter()
+            .any(|p| p.kind == "other-board" && p.detail.starts_with("1 task already belongs")),
+        "{:?}",
+        last.problems
+    );
+}
+
+#[tokio::test]
+async fn the_archived_pass_marks_only_a_task_that_says_it_is_archived() {
+    let local = FakeLocal::new(&[("x", "doing")]);
+    quiet_options(&local);
+    let remote = FakeRemote::new(vec![task("a", "x", 10)]);
+    // The archived=true query answers a task whose own flag says active.
+    remote.0.lock().unwrap().archived = vec![task("a", "x", 10)];
+    drive(&local, &remote, &input("manual")).await;
+    drive(&local, &remote, &input("manual")).await;
+    assert_eq!(local.item_of("a").unwrap().remote_state, "active");
+}
+
+#[tokio::test]
+async fn apps_hear_the_syncs_moves_only_when_the_connection_says_so() {
+    for notify in [false, true] {
+        let local = FakeLocal::new(&[("complete", "done")]);
+        quiet_options(&local);
+        local.with(|s| {
+            let o = &mut s.sync.as_mut().unwrap().options;
+            o.include_closed = true;
+            o.notify_apps = notify;
+        });
+        let remote = FakeRemote::new(vec![task("a", "complete", 10)]);
+        drive(&local, &remote, &input("manual")).await;
+        assert_eq!(local.ticket_of("a").unwrap().status, "done");
+        let moved = local.with(|s| s.moved.clone());
+        if notify {
+            assert_eq!(moved.len(), 1, "{moved:?}");
+            assert_eq!(moved[0].1, "done");
+            assert!(moved[0].2, "closed");
+        } else {
+            assert!(
+                moved.is_empty(),
+                "a closed task's import tells no app: {moved:?}"
+            );
+        }
+    }
 }
