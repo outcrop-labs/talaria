@@ -1312,6 +1312,45 @@ pub fn conversation_hint(body: &Value) -> Option<String> {
         .find_map(|s| talaria_params::uuid_canonical(s.trim()))
 }
 
+/// The conversation a plugin's frame was made in: `conversation_hint`, else
+/// the conversation the frame's Hermes session names
+/// (`talaria_conversations::session_conversation`).
+///
+/// THE DEFAULT CHAT PATH SENDS NO UUID. An agent without pinned sessions
+/// answers on Hermes' completions arm, where the session the plugin stamps on
+/// every frame is Hermes' own `api-<16 hex>` digest. `conversation_hint`
+/// rightly refuses it as an address, so every chip from that path landed
+/// unaddressed — on the agent's one live turn, and nowhere at all the moment
+/// it was answering in two places (two people, two Work sessions, a channel
+/// reply), with only a log line to say so. The chat transport records that
+/// key against its conversation when the stream opens (`usage_attributions`,
+/// source `chat`), and the failure-verdict path already reads it back; this
+/// is the same read for the chips. The parent's session is asked when the
+/// frame has no session of its own (a subagent hook's `parentSessionId`).
+///
+/// A KEY THAT NAMES NOTHING IS NOT AN ADDRESS: no row, another agent's row,
+/// a row whose conversation is not this agent's. The answer is None and the
+/// caller keeps today's unaddressed rule — exactly one live turn, else
+/// nothing — so a stray id can never land a chip on a thread it guessed.
+pub async fn session_hint(
+    pg: &PgPool,
+    agent: &str,
+    body: &Value,
+) -> Result<Option<String>, sqlx::Error> {
+    if let Some(id) = conversation_hint(body) {
+        return Ok(Some(id));
+    }
+    let session = ["sessionId", "parentSessionId"]
+        .iter()
+        .filter_map(|key| body.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|s| !s.is_empty());
+    match session {
+        Some(session) => talaria_conversations::session_conversation(pg, agent, session).await,
+        None => Ok(None),
+    }
+}
+
 /// The rule, pure: one candidate is the target, several are an ambiguity,
 /// none is "look further". Live rows are asked first and only when nothing
 /// is live does the recent tier count — a turn that closed a moment before
