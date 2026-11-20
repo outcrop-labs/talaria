@@ -3,8 +3,8 @@
 // gear — value-faced, named "Board notifications: <value>", at least 24×24,
 // readable in both Mercury themes — its one-click presets and its door to
 // Board settings → Notifications (`?settings=notifications`); the tab's
-// form (Custom events and scope, the board's own Alerts and Email, Use my
-// default); Settings → Notifications → Boards (the default for every board
+// form (Custom events and scope, due dates, the daily digest, the board's own
+// Alerts and Email, Use my default); Settings → Notifications → Boards (the default for every board
 // and each board's state, with a quick change and Use my default); a viewer,
 // whose modal holds only their own setting; and the ticket panel's "Added by
 // … / Watch it myself". Every write is read back through the api and across
@@ -152,6 +152,16 @@ for (const theme of THEMES) {
       await pickFromBell(page, 'Use my default')
       await expectBell(page, 'Board notifications: participating (your default)', 'bell')
       expect((await notifyOf(api, boardId)).source).not.toBe('board')
+
+      // The daily digest (#771): one click on, a clock on the bell, one click off.
+      await pickFromBell(page, 'Daily digest')
+      await expectBell(page, 'Board notifications: participating, daily digest', 'bell')
+      await expect(bellOf(page).locator('svg.lucide-clock')).toHaveCount(1)
+      expect((await notifyOf(api, boardId)).effective).toMatchObject({ preset: 'participating', cadence: 'digest' })
+      await pickFromBell(page, 'Daily digest')
+      await expectBell(page, 'Board notifications: participating', 'bell')
+      await expect(bellOf(page).locator('svg.lucide-clock')).toHaveCount(0)
+      expect((await notifyOf(api, boardId)).effective.cadence).toBe('instant')
     })
 
     test('the Notifications tab: Custom events and scope, the board’s own Alerts and Email, Use my default', async ({ page, request }) => {
@@ -184,6 +194,15 @@ for (const theme of THEMES) {
         events: ['created', 'assigned', 'status', 'mention', 'completed'],
       })
       await expectBell(page, 'Board notifications: custom', 'bell-dot')
+      // Due dates (#773) are a choice of their own.
+      await custom.getByRole('checkbox', { name: 'Due soon or overdue' }).check()
+      await expect.poll(async () => (await notifyOf(api, boardId)).effective.events).toContain('due')
+      // When: the daily digest, and back.
+      await form.getByRole('button', { name: 'Daily digest', exact: true }).click()
+      await expect.poll(async () => (await notifyOf(api, boardId)).effective.cadence).toBe('digest')
+      await expect(form.locator('[data-board-notify-summary]')).toContainText('rolled up once a day; Assigned to me and Mention as it happens.')
+      await form.getByRole('button', { name: 'Instant', exact: true }).click()
+      await expect.poll(async () => (await notifyOf(api, boardId)).effective.cadence).toBe('instant')
 
       // The board's own channels.
       await form.locator('[data-board-notify-channel="alerts"]').getByRole('button', { name: 'Off', exact: true }).click()
