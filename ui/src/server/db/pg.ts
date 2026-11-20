@@ -5221,13 +5221,13 @@ alter table tasks drop column if exists conversation_id`,
   // so it counts as deliberate. Nullable, so roll-safe.
   `alter table task_watchers add column if not exists added_by text`,
   // A BOARD'S OWN CHANNELS for one person (talaria_notify::boards, part 2):
-  // Desktop, Push and Email as they choose them for this board's rows, each
-  // NULL where the class matrix (Settings → Notifications) decides. In-app is
-  // not a column: every row lands in the inbox whatever anyone chose.
-  // Nullable, so roll-safe: the previous release never reads them.
+  // Alerts (the banner and the push, together) and Email as they choose them
+  // for this board's rows, each NULL where the class matrix (Settings →
+  // Notifications) decides. In-app is not a column: every row lands in the
+  // inbox whatever anyone chose. Nullable, so roll-safe: the previous release
+  // never reads them.
   `alter table board_notify_prefs
-     add column if not exists desktop boolean,
-     add column if not exists push boolean,
+     add column if not exists alerts boolean,
      add column if not exists email boolean`,
   // THE OVERRIDE A ROW WAS FILED WITH (I-26): the channels a producer decided
   // for this person in place of the matrix — their setting for the board a

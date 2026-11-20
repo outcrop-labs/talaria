@@ -51,7 +51,8 @@ and nothing at send time reads a board setting.
 **I-24, amended again (I-26, a board's own channels).** `NotifyMeta` gains `channels:
 ChannelOverride {desktop, push, email}` — each `Option<bool>`, `None` (the default) being
 the class matrix — so a producer can file one person's row on the channels that person
-chose for its board. Every `NotifyMeta` literal spreads `..Default::default()`, so every
+chose for its board (a board's Alerts sets Desktop and Push together, its Email sets
+Email; producers.md "A board's own channels"). Every `NotifyMeta` literal spreads `..Default::default()`, so every
 producer compiles untouched and files exactly as before. The write path's UPSERT gains
 three binds (`$18`–`$20`), stored in three new nullable columns, `notifications.
 desktop_override`, `push_override` and `email_override`: a `Realert` coalesce takes this
@@ -269,7 +270,8 @@ list.
 **`features`** in the contract: `seq`, `classes`, `channels`, `dnd-store`,
 `presence-store`, `ack`, `devices`, `read-ids`, `channel-levels-store`. Each stream adds
 its own in its own module's `FEATURES` (the per-board settings: `board-prefs`, which also
-means `GET`/`PATCH /api/notifications` carry `boards`).
+means `GET`/`PATCH /api/notifications` carry `boards`; and `board-channels`, a board's own
+Alerts and Email, carried on its rows as I-26's override).
 
 ## The live stream (I-16, I-19)
 

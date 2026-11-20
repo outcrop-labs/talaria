@@ -105,9 +105,10 @@ The center itself (the bell, the page, the settings, the status panel) is
   per board for the tickets you are not in, counting its updates until you read it; it is
   quiet unless you turn on Board activity in the matrix. Off silences the board's
   assignments and @mentions too, but a ticket you watch yourself still reaches you, and
-  approvals always do. A board can also have its own channels — Desktop, Push and Email,
-  each on, off, or as the matrix says — so one board's tickets can reach you by mail alone
-  while another's pop up; the inbox keeps every notification either way. A setting changes
+  approvals always do. A board can also have its own channels — Alerts (the banner and
+  the push, together) and Email, each on, off, or as the matrix says — so one board's
+  tickets can reach you by mail alone while another's pop up; the inbox keeps every
+  notification either way. A setting changes
   only what you receive. Set through the API for now (`/api/boards/{id}/notify`, `boards`
   in `PATCH /api/notifications`); the board's own control and the Settings section follow.
   The rules: [producers.md](./notifications/producers.md#each-board).

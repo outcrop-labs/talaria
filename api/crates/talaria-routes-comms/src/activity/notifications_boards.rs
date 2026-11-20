@@ -98,11 +98,11 @@ mod tests {
         // Each board's own channels are listed with it (null: the matrix).
         assert_eq!(
             r["effective"]["channels"],
-            json!({ "desktop": null, "push": null, "email": null })
+            json!({ "alerts": null, "email": null })
         );
         let mailed = mentions
             .clone()
-            .with_channels(talaria_notify::boards::ChannelOverride {
+            .with_channels(talaria_notify::boards::BoardChannels {
                 email: Some(true),
                 ..Default::default()
             });

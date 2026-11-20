@@ -14,9 +14,10 @@
 //            own row for this board, replaced (an upsert on their row — never
 //            anyone else's); answers as GET. `events` and `scope` are
 //            Custom's alone; a cadence or an event with no producer yet is
-//            refused. `channels` is `{desktop?, push?, email?}`, each a bool
-//            or null — how this board's rows reach the caller where it is
-//            not their Settings → Notifications matrix (feature
+//            refused. `channels` is `{alerts?, email?}`, each a bool or null
+//            — how this board's rows reach the caller where it is not their
+//            Settings → Notifications matrix: `alerts` is the banner and the
+//            push together, `email` the missed-activity mail (feature
 //            `board-channels`; in-app is not a choice). A PUT is the whole
 //            setting: a member it leaves out goes back to its default.
 //   DELETE → the caller's row is gone and the board follows their default
@@ -94,7 +95,7 @@ pub async fn get(
     Ok(answer(&state, &user_id, &id).await)
 }
 
-// doc: `{preset, events?, scope?, cadence?, channels?}` → replaces the caller's own setting for this board; answers as GET. `events` and `scope` only with `custom`; `channels` is `{desktop?, push?, email?}`, each bool or null (null: the matrix decides).
+// doc: `{preset, events?, scope?, cadence?, channels?}` → replaces the caller's own setting for this board; answers as GET. `events` and `scope` only with `custom`; `channels` is `{alerts?, email?}`, each bool or null (null: the matrix decides); `alerts` is the banner and the push together.
 pub async fn put(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -167,7 +168,7 @@ mod tests {
         // stored (only the chosen ones), and they come with their layer — a
         // row's channels are the row's, never the default's.
         let mailed = BoardPref::preset(Preset::Mentions, Cadence::Instant).with_channels(
-            talaria_notify::boards::ChannelOverride {
+            talaria_notify::boards::BoardChannels {
                 email: Some(true),
                 ..Default::default()
             },
@@ -175,12 +176,12 @@ mod tests {
         let w = wire(Some(&mailed), Some(&all));
         assert_eq!(
             w["effective"]["channels"],
-            json!({ "desktop": null, "push": null, "email": true })
+            json!({ "alerts": null, "email": true })
         );
         assert_eq!(w["stored"]["channels"], json!({ "email": true }));
         assert_eq!(
             w["default"]["effective"]["channels"],
-            json!({ "desktop": null, "push": null, "email": null })
+            json!({ "alerts": null, "email": null })
         );
         let w = wire(None, Some(&mailed));
         assert_eq!(

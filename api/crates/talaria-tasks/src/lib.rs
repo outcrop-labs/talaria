@@ -3793,7 +3793,13 @@ mod tests {
         let decide = |ev: Ev, cs: &[Candidate]| {
             split(
                 cs.iter()
-                    .map(|c| (c.clone(), board_prefs::resolve(p, ev, c), p.channels))
+                    .map(|c| {
+                        (
+                            c.clone(),
+                            board_prefs::resolve(p, ev, c),
+                            p.channels.overrides(),
+                        )
+                    })
                     .collect(),
             )
         };

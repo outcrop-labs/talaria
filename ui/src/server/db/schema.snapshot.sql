@@ -479,8 +479,7 @@ CREATE TABLE public.board_notify_prefs (
     scope text,
     cadence text DEFAULT 'instant'::text NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    desktop boolean,
-    push boolean,
+    alerts boolean,
     email boolean
 );
 CREATE TABLE public.board_statuses (

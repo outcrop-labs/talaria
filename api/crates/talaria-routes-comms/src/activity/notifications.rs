@@ -1192,9 +1192,11 @@ mod tests {
             "Invalid input: expected object, received string"
         );
         // The default carries a board's own channels the same way.
-        let p = patch(json!({ "boards": { "preset": "all", "channels": { "email": false } } }))
-            .unwrap();
-        assert_eq!(p.boards.unwrap().unwrap().channels.email, Some(false));
+        let p = patch(json!({ "boards": { "preset": "all",
+                                          "channels": { "alerts": true, "email": false } } }))
+        .unwrap();
+        let c = p.boards.unwrap().unwrap().channels;
+        assert_eq!((c.alerts, c.email), (Some(true), Some(false)));
         assert_eq!(
             patch(json!({ "boards": { "preset": "all", "channels": { "inApp": false } } }))
                 .unwrap_err(),

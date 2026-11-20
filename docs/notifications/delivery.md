@@ -71,9 +71,11 @@ email  = Email && emailEnabled && !quiet && frequency != off
   newer message on its unread row) behaves like a `Realert` coalesce, mail included.
 - **A producer's channel override** (`NotifyMeta::channels`, I-26) replaces the class's
   Desktop, Push or Email for this one row and this one person, each channel on its own; a
-  channel it leaves `None` is the matrix's. Today one producer sets it: the ticket fan-outs,
-  from the recipient's setting for the board ([producers.md](./producers.md#each-board)).
-  Everything after the channels is unchanged — DND, working hours, the instance switches,
+  channel it leaves `None` is the matrix's. Today two producers set it: the ticket
+  fan-outs and the ticket @mention door (talaria-mentions), each from the recipient's
+  setting for the board — Alerts for Desktop and Push together, Email for Email
+  ([producers.md](./producers.md#each-board)). Everything after the channels is
+  unchanged — DND, working hours, the instance switches,
   the email frequency, `quiet` and `skip_push` still win — and the legacy route reads the
   channels that applied. The override is stored on the row (`desktop_override`,
   `push_override`, `email_override`, null where the matrix decided), beside the delivery

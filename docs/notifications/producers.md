@@ -23,6 +23,7 @@ timed mute. Every producer files through `add_notification_with` and the convent
 | Flag | Means |
 |---|---|
 | `board-prefs` | The ticket producers obey each person's setting for a board (below, "Each board"), and `GET`/`PUT`/`DELETE /api/boards/{id}/notify`, `GET /api/notifications/boards` and the `boards` default in `GET`/`PATCH /api/notifications` are served. |
+| `board-channels` | A board setting and the `boards` default accept and serve `channels: {alerts, email}` (below, "A board's own channels"), and the rows a board's fan-outs file carry that person's choice as their channel override (I-26). |
 
 ## The producers
 
@@ -156,13 +157,18 @@ board; `participating` is assigned, status, comment, mention and completed over 
 refused until their producers ship.
 
 **A board's own channels** (feature `board-channels`). A setting may also say how this
-board's rows reach the person: `channels: {desktop, push, email}`, each on, off, or null —
-null, the default, is the class matrix in Settings → Notifications. They are the matrix's
-own channels, so the same words mean the same thing; in-app is not one of them (every row
-lands in the inbox — `inApp: false` is refused, as in the matrix). Set Desktop and Push
-off and Email on and the board's rows reach the person by mail alone, filed read once the
-mail is accepted (the legacy email-only route); set Desktop on and the quiet board-activity
-row pops up. They change no decision about WHO gets a row, only how it reaches them, and
+board's rows reach the person: `channels: {alerts, email}`, each on, off, or null — null,
+the default, is the class matrix in Settings → Notifications. `alerts` is the banner and
+the push together: on, the board's rows pop up and push; off, they land in the inbox
+alone. `email` is the missed-activity mail. Two choices, as the per-board design decided
+— in-app and email — with the in-app one named for what it does: every row lands in the
+inbox whatever anyone chose, so in-app itself is not a choice (`inApp: false` is refused,
+as in the matrix), and push is not a board choice of its own (the matrix keeps its
+per-class Push). The row carries them as the matrix's own channels: `alerts` sets Desktop
+and Push together (`BoardChannels::overrides`). Set Alerts off and Email on and the
+board's rows reach the person by mail alone, filed read once the mail is accepted (the
+legacy email-only route); set Alerts on and the quiet board-activity row pops up. They
+change no decision about WHO gets a row, only how it reaches them, and
 they apply to every row the board's fan-outs file for that person — per-ticket rows,
 @mentions, the board-activity row, and the rows a deliberate watch carries through Off.
 Decided once, at fan-out like the rest: the producer files the row with them
@@ -192,7 +198,8 @@ less, until they choose, and a new board inherits the default by having no row.
    someone is involvement, not a choice, and does not wake a board they set to Off.
    Pressing Watch on such a watch makes it theirs; an editor's add never takes one back.
 3. The person's setting for the board, then their default, then the built-in.
-4. Then the channels: the setting's own where it chose one, else the class matrix. Then
+4. Then the channels: the setting's own where it chose one (Alerts for Desktop and Push,
+   Email for Email), else the class matrix. Then
    everything else, unchanged: DND, working hours, the instance switches and the email
    frequency.
 

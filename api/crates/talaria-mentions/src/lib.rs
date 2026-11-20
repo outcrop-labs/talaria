@@ -100,7 +100,7 @@ impl TicketScope {
 
 /// Each kept recipient's channels for their mention row, where their setting
 /// for the ticket's board chose some (absent: the class matrix).
-type BoardChannels = HashMap<String, ChannelOverride>;
+type ChannelsByPerson = HashMap<String, ChannelOverride>;
 
 /// The recipients a ticket's board settings keep: everyone, off a ticket;
 /// on one, the people whose setting for its board files the mention (a board
@@ -111,7 +111,7 @@ async fn by_board<'a>(
     notify: &NotifyDeps,
     to: Vec<&'a Mentionee>,
     opts: &MentionOpts,
-) -> (Vec<&'a Mentionee>, BoardChannels) {
+) -> (Vec<&'a Mentionee>, ChannelsByPerson) {
     let Some(t) = &opts.ticket else {
         return (to, HashMap::new());
     };
@@ -264,7 +264,7 @@ fn mention_meta(
     sender: &MentionSender<'_>,
     opts: &MentionOpts,
     user_id: &str,
-    channels: &BoardChannels,
+    channels: &ChannelsByPerson,
 ) -> NotifyMeta {
     NotifyMeta {
         quiet: opts.quiet.contains(user_id),
@@ -306,7 +306,7 @@ async fn notify_these(
     where_: &str,
     href: &str,
     opts: &MentionOpts,
-    channels: &BoardChannels,
+    channels: &ChannelsByPerson,
 ) -> Vec<String> {
     let mut told = Vec::new();
     for m in to {
@@ -454,7 +454,7 @@ mod tests {
             ..Default::default()
         };
         let person = MentionSender::of("u-1", "Ada");
-        let none = BoardChannels::new();
+        let none = ChannelsByPerson::new();
         let m = mention_meta(&person, &opts, "muted", &none);
         assert!(m.quiet && m.group_key.is_none());
         assert!(m.channels.is_none(), "off a board: the matrix");
@@ -481,7 +481,7 @@ mod tests {
             email: Some(true),
             ..Default::default()
         };
-        let chosen: BoardChannels = [("ada".to_string(), email)].into_iter().collect();
+        let chosen: ChannelsByPerson = [("ada".to_string(), email)].into_iter().collect();
         assert_eq!(mention_meta(&person, &opts, "ada", &chosen).channels, email);
         assert!(
             mention_meta(&person, &opts, "cy", &chosen)
