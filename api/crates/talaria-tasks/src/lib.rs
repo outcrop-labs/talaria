@@ -910,32 +910,42 @@ async fn mentioned_among(pg: &PgPool, ids: &[String], content: &str) -> HashSet<
         .collect()
 }
 
-/// Of `among`, the people a new ticket's description @mentions whose mention
-/// row the create door files — the same question that door asks: board
-/// members (its roster, `talaria_boards::list_members`) the text names, by
-/// the mention producers' token rules, kept by their setting for the board
-/// (`mention_listeners`). A roster read that fails answers nobody, as the
-/// door then files nothing.
-async fn create_mentions_land(
+/// Of `ids`, the people a ticket's text @mentions whose mention row lands —
+/// the question its mention door asks: on the door's roster, named by the
+/// text (the mention producers' token rules), kept by their setting for the
+/// board (`mention_listeners`). The roster is the board's direct members
+/// (`talaria_boards::list_members`): the comment route's and the create
+/// door's, and the task room's too whenever the board has a direct member
+/// (its roster falls back to the team only when nobody is). So a team-leg
+/// member is told by no mention row and stays in the caller's fan-out — a
+/// row too many in that one corner, never none. A roster read that fails
+/// answers nobody, for the same reason.
+async fn ticket_mentions_land(
     pg: &PgPool,
     board_id: &str,
     task_id: &str,
-    among: &[Candidate],
+    ids: &[String],
     text: &str,
 ) -> HashSet<String> {
+    if ids.is_empty() || !text.contains('@') {
+        return HashSet::new();
+    }
     let roster: HashSet<String> = match talaria_boards::list_members(pg, board_id).await {
         Ok(m) => m.into_iter().map(|m| m.user_id).collect(),
         Err(e) => {
-            tracing::error!("tasks: create mention roster read failed: {e}");
+            tracing::error!("tasks: ticket mention roster read failed: {e}");
             return HashSet::new();
         }
     };
-    let ids: Vec<String> = among
+    let on_roster: Vec<String> = ids
         .iter()
-        .filter(|c| roster.contains(&c.user_id))
-        .map(|c| c.user_id.clone())
+        .filter(|u| roster.contains(*u))
+        .cloned()
         .collect();
-    let named: Vec<String> = mentioned_among(pg, &ids, text).await.into_iter().collect();
+    let named: Vec<String> = mentioned_among(pg, &on_roster, text)
+        .await
+        .into_iter()
+        .collect();
     board_prefs::mention_listeners(pg, board_id, task_id, &named).await
 }
 
@@ -1020,18 +1030,13 @@ pub async fn notify_comment_participants(
     let rest = bystanders(pg, &meta.board_id, &people, &HashSet::new()).await;
     people.extend(rest);
     // Whoever the comment @mentions is told by the mention producer; their
-    // mention row is the louder one, so they are left out here — asked with
-    // the mention producers' own token rules. Only when that row lands: the
-    // mention producer asks the same per-person board setting
-    // (`mention_listeners`), and someone whose setting drops @mentions but
-    // keeps comments hears the comment here instead of nothing.
+    // mention row is the louder one, so they are left out here — only when
+    // that row lands (`ticket_mentions_land`): someone whose setting drops
+    // @mentions but keeps comments, or who is on no mention door's roster (a
+    // team-leg member), hears the comment here instead of nothing.
     let ids: Vec<String> = people.iter().map(|c| c.user_id.clone()).collect();
-    let mentioned: Vec<String> = mentioned_among(pg, &ids, content)
-        .await
-        .into_iter()
-        .collect();
     let mention_lands =
-        board_prefs::mention_listeners(pg, &meta.board_id, &meta.task_id, &mentioned).await;
+        ticket_mentions_land(pg, &meta.board_id, &meta.task_id, &ids, content).await;
     people.retain(|c| !mention_lands.contains(&c.user_id));
     let (ticket, activity) = split(
         board_prefs::listeners(
@@ -1368,8 +1373,9 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
             if let Some(text) = &mention_text
                 && !fresh.is_empty()
             {
+                let ids: Vec<String> = fresh.iter().map(|c| c.user_id.clone()).collect();
                 let lands =
-                    create_mentions_land(&notify.pg, &board_id, &id_for_href, &fresh, text).await;
+                    ticket_mentions_land(&notify.pg, &board_id, &id_for_href, &ids, text).await;
                 fresh.retain(|c| !lands.contains(&c.user_id));
             }
             notify_ticket_event(

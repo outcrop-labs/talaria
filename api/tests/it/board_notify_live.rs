@@ -958,13 +958,16 @@ async fn a_setting_survives_leaving_and_rejoining() {
 }
 
 // A team's members see its boards with no member row of their own: they can
-// set a board and the board's whole audience includes them.
+// set a board and the board's whole audience includes them. No ticket
+// mention door has them on its roster, so a comment that @mentions one is no
+// reason to leave them out of the comment's fan-out: they hear it on their
+// board row, never nothing.
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (ui/.env)"]
 async fn a_team_member_sets_and_obeys_a_board_setting() {
     let state = live_app_state().await;
     let (ada, _, ada_c, _) = mint(&state, "Ada", "admin").await;
-    let (dee, _, dee_c, _) = mint(&state, "Dee", "member").await;
+    let (dee, _, dee_c, dee_tok) = mint(&state, "Dee", "member").await;
     let team: String = sqlx::query_scalar(
         "insert into teams (name, created_by) values ($1, $2::uuid) returning id::text",
     )
@@ -1005,11 +1008,33 @@ async fn a_team_member_sets_and_obeys_a_board_setting() {
     .unwrap();
     assert_eq!(direct, 0, "Dee is on the board through the team alone");
     set(&state, &b, &dee_c, json!({ "preset": "all" })).await;
-    ticket(&state, &b, &ada_c, json!({ "title": "For the team" })).await;
+    let t = ticket(&state, &b, &ada_c, json!({ "title": "For the team" })).await;
     assert!(eventually!(
         on_board(&state, &dee, &b)
             .await
             .first()
             .is_some_and(|r| r.kind == "board-activity" && r.body.contains("For the team"))
     ));
+    ok(
+        &state,
+        "POST",
+        &format!("/api/tasks/{t}/comments"),
+        &ada_c,
+        json!({ "content": format!("@{dee_tok} have a look") }),
+    )
+    .await;
+    assert!(eventually!(
+        on_board(&state, &dee, &b)
+            .await
+            .first()
+            .is_some_and(|r| r.count == 2)
+    ));
+    settle().await;
+    let rows = on_board(&state, &dee, &b).await;
+    assert_eq!(
+        kinds(&rows),
+        ["board-activity"],
+        "no mention row (no door has a team-leg member on its roster), and the comment counted"
+    );
+    assert!(rows[0].body.contains("commented"), "{:?}", rows[0]);
 }

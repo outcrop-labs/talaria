@@ -196,8 +196,8 @@ assigns leaves that move's audience only if their `task-assigned` row was filed,
 person a comment @mentions leaves the comment fan-out only if their mention row lands
 (`boards::mention_listeners`, the same question the mention door asks). A new ticket's
 "New ticket" board row skips whoever its `task-assigned` row reached and whoever its
-description @mentions whose mention row lands (the create door's roster and the same
-question). A Custom set that keeps comments but drops @mentions hears the @mentioning
+description @mentions whose mention row lands (the door's roster — the board's direct
+members — and the same question). A Custom set that keeps comments but drops @mentions hears the @mentioning
 comment as a comment; a set that keeps status but drops assignments hears a patch that
 assigns and moves them as one status row.
 
@@ -212,7 +212,9 @@ reached them.
 at fan-out, as before, so a setting is dormant while its person cannot see the board; it is
 kept when they leave and applies again when they rejoin (the dormant-watcher rule). It goes
 when the person or the board is deleted. A team's members can set a board; they still get
-no ticket @mention rows (the mention doors read `board_members`, as before this existed).
+no ticket @mention rows (the mention doors read `board_members`, as before this existed),
+so a comment or a new ticket that @mentions one does not count as having told them: they
+hear it as the comment, or on their board row, by their setting — never nothing.
 
 **Humans only.** Rows go to people; the routes are session-only; agents are only ever
 actors (excluded as before). There is no MCP tool.
