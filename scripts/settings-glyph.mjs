@@ -9,15 +9,20 @@
 //
 // WHAT IT FLAGS, per file, by the lucide name the import resolves to (an
 // `as` alias renames nothing):
-//   · a named import from '@lucide/svelte' whose name contains Settings, Cog
-//     or Sliders — Settings, Settings2, Cog, SlidersHorizontal, Sliders (the
-//     alias of sliders-vertical), ColumnsSettings and Columns3Cog (a column
-//     gear), UserCog and the rest of the *Cog family, and the SettingsIcon /
-//     LucideSettings spellings;
+//   · a named import OR re-export from '@lucide/svelte' whose name contains
+//     Settings, Cog or Sliders — Settings, Settings2, Cog, SlidersHorizontal,
+//     Sliders (the alias of sliders-vertical), ColumnsSettings and Columns3Cog
+//     (a column gear), UserCog and the rest of the *Cog family, and the
+//     SettingsIcon / LucideSettings spellings. A re-export
+//     (`export { Settings as Gear } from '@lucide/svelte'`) is the cheapest
+//     second home for the gear: every view could then import `Gear` from it;
+//   · `export * from '@lucide/svelte'` (or `export * as L`), which re-exports
+//     the gear with everything else;
 //   · the same names read off a namespace import (`import * as L`, then
 //     `L.Settings`) or off lucide's `icons` map (`icons.Cog`);
-//   · a deep import, '@lucide/svelte/icons/<slug>', whose slug contains
-//     settings, cog or sliders;
+//   · a deep import or re-export, '@lucide/svelte/icons/<slug>' or
+//     '@lucide/svelte/dist/icons/<slug>', whose slug contains settings, cog
+//     or sliders;
 //   · lucide's gear path data pasted into a file (`M9.671 4.136`, and
 //     `M12.22 2h-.44` from older releases) — an inline SVG copy.
 // The sliders are flagged ON PURPOSE, though they read as adjust or filter:
@@ -25,9 +30,10 @@
 // door comes back. A sliders control that is not a settings door says so with
 // its allowlist entry below.
 //
-// KNOWN LIMITS. `icons[name]` with a computed name, and lucide's `Icon` fed a
-// hand-written iconNode that is not lucide's gear path, are not seen. Neither
-// exists in the tree.
+// KNOWN LIMITS. `icons[name]` with a computed name, a dynamic
+// `import('@lucide/svelte')` (its members are read off a value, not an import
+// statement), and lucide's `Icon` fed a hand-written iconNode that is not
+// lucide's gear path, are not seen. None exists in the tree.
 //
 // No imports: plain string work, runnable with no install like the rest of
 // scripts/. check-invariants.mjs wires it to the tree, after selfTest().
@@ -70,16 +76,22 @@ export function scanSettingsGlyphs(src) {
     seen.add(key)
     hits.push({ line: lineOf(src, index), name, text })
   }
-  // Named imports, multi-line included: `import { A, B as C } from '@lucide/svelte'`.
+  // Named imports and re-exports, multi-line included:
+  // `import { A, B as C } from '@lucide/svelte'`, `export { A as B } from …`.
   const maps = []
-  for (const m of src.matchAll(new RegExp(`import\\s+(?:type\\s+)?\\{([^}]*)\\}\\s*from\\s*${LUCIDE}`, 'g'))) {
-    for (const piece of m[1].split(',')) {
+  for (const m of src.matchAll(new RegExp(`\\b(import|export)\\s+(?:type\\s+)?\\{([^}]*)\\}\\s*from\\s*${LUCIDE}`, 'g'))) {
+    const verb = m[1]
+    for (const piece of m[2].split(',')) {
       const t = piece.trim().replace(/^type\s+/, '')
       if (!t) continue
       const [name, local] = t.split(/\s+as\s+/).map((x) => x.trim())
-      if (name === 'icons') maps.push(local ?? name)
-      else if (GEAR_NAME.test(name)) hit(m.index, name, `import { ${t} } from '@lucide/svelte'`)
+      if (name === 'icons' && verb === 'import') maps.push(local ?? name)
+      else if (GEAR_NAME.test(name)) hit(m.index, name, `${verb} { ${t} } from '@lucide/svelte'`)
     }
+  }
+  // A star re-export hands the gear on with every other icon.
+  for (const m of src.matchAll(new RegExp(`\\bexport\\s+\\*\\s+(?:as\\s+[A-Za-z_$][\\w$]*\\s+)?from\\s*${LUCIDE}`, 'g'))) {
+    hit(m.index, 'export *', `${m[0].replace(/\s+/g, ' ')} (re-exports the gear)`)
   }
   // Namespace imports, and lucide's own `icons` map, read by member.
   for (const m of src.matchAll(new RegExp(`import\\s+\\*\\s+as\\s+([A-Za-z_$][\\w$]*)\\s+from\\s*${LUCIDE}`, 'g'))) maps.push(m[1])
@@ -89,9 +101,9 @@ export function scanSettingsGlyphs(src) {
       if (GEAR_NAME.test(name)) hit(m.index, name, `${ns}.${name}`)
     }
   }
-  // Deep imports by icon slug.
-  for (const m of src.matchAll(/['"]@lucide\/svelte\/icons\/([\w-]+)(?:\.js|\.svelte)?['"]/g)) {
-    if (GEAR_SLUG.test(m[1])) hit(m.index, m[1], `@lucide/svelte/icons/${m[1]}`)
+  // Deep imports (and re-exports) by icon slug, the package's dist/ path too.
+  for (const m of src.matchAll(/['"]@lucide\/svelte\/((?:dist\/)?icons)\/([\w-]+)(?:\.js|\.svelte)?['"]/g)) {
+    if (GEAR_SLUG.test(m[2])) hit(m.index, m[2], `@lucide/svelte/${m[1]}/${m[2]}`)
   }
   // A pasted gear.
   for (const p of GEAR_PATHS) {
@@ -146,6 +158,12 @@ export function selfTest() {
   expect('the sliders and the old board glyph', names("import { Settings2, SlidersHorizontal, Sliders } from '@lucide/svelte'"), ['Settings2', 'SlidersHorizontal', 'Sliders'])
   expect('the gear-badged family', names("import { ColumnsSettings, Columns3Cog, UserCog, SettingsIcon, LucideCog } from \"@lucide/svelte\""), ['ColumnsSettings', 'Columns3Cog', 'UserCog', 'SettingsIcon', 'LucideCog'])
   expect('a deep import', names("import Cog from '@lucide/svelte/icons/cog'"), ['cog'])
+  expect('a deep import from dist', names("import Gear from '@lucide/svelte/dist/icons/settings.svelte'"), ['settings'])
+  expect('a re-export', names("export { Settings } from '@lucide/svelte'"), ['Settings'])
+  expect('an aliased, multi-line re-export', names("export {\n  Check,\n  Settings as Gear,\n} from '@lucide/svelte'"), ['Settings'])
+  expect('a deep re-export', names("export { default as Gear } from '@lucide/svelte/icons/settings'"), ['settings'])
+  expect('a star re-export', names("export * from '@lucide/svelte'\nexport * as L from \"@lucide/svelte\""), ['export *', 'export *'])
+  expect('a re-export that is not a gear', names("export { Check, Plus } from '@lucide/svelte'"), [])
   expect('a namespace import', names("import * as L from '@lucide/svelte'\n<L.Settings size={14} />\n<L.Check />"), ['Settings'])
   expect("lucide's icons map", names("import { icons } from '@lucide/svelte'\nconst G = icons.Cog\nconst H = icons['Settings2']"), ['Cog', 'Settings2'])
   expect('pasted path data', names('<svg><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0" /></svg>'), ['path data'])
