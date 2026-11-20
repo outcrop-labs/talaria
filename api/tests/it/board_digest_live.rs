@@ -419,7 +419,12 @@ async fn a_digest_board_files_one_row_a_day_and_one_mail() {
         "2 new \u{b7} 1 moved \u{b7} 1 completed \u{b7} 1 comment"
     );
     assert_eq!(row.alert.as_deref(), Some("feed"), "a digest never rings");
-    assert_eq!(row.group_key, Some(format!("board:{b}:digest")));
+    let today = seam::local_day(&state.pg, &bob, now).await.unwrap();
+    assert_eq!(
+        row.group_key,
+        Some(format!("board:{b}:digest:{today}")),
+        "one row per board per local day"
+    );
     assert_eq!(row.entity_type.as_deref(), Some("board"));
     assert_eq!(row.count, 1);
 
