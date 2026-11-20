@@ -404,4 +404,70 @@ mod tests {
             );
         }
     }
+
+    /// What the plugin posts, for an answer the toolkit gave: the name Hermes
+    /// registered and the `{"result": …}` envelope around the toolkit's text.
+    fn as_hermes_posts(tool: &str, answer: &serde_json::Value) -> (String, String) {
+        let text = serde_json::to_string_pretty(answer).expect("plain data");
+        let enveloped = serde_json::to_string(&json!({ "result": text })).expect("plain data");
+        (format!("mcp__talaria__{tool}"), enveloped)
+    }
+
+    /// READING OUT OF THE ENVELOPE MUST NOT OPEN WHAT A READER FOUND. Once
+    /// the envelope is unwrapped, every link in every toolkit answer reaches
+    /// the chip reader — and a document chip is a file of the session, which
+    /// the pane lists and brings forward. A knowledge search whose hits point
+    /// at documents lands none of them.
+    #[test]
+    fn an_enveloped_knowledge_search_opens_none_of_the_documents_it_found() {
+        let hits: Vec<serde_json::Value> = [
+            "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2",
+            "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+            "7e2a1d90-5c34-4b6f-8a11-2d4e9f0b3c77",
+        ]
+        .iter()
+        .map(|id| {
+            json!({
+                "collection": "artifacts",
+                "sourceType": "artifact",
+                "sourceId": id,
+                "title": "A document",
+                "snippet": "what it says",
+                "href": format!("/artifacts?a={id}"),
+            })
+        })
+        .collect();
+        let (name, result) = as_hermes_posts("search_knowledge", &json!({ "hits": hits }));
+        let chips = chips_for(&name, r#"{"query":"launch"}"#, &result);
+        assert!(chips.iter().all(|c| c["entity"] != "document"), "{chips:?}");
+    }
+
+    /// Nor does a ticket listing land one link per ticket it returned.
+    #[test]
+    fn an_enveloped_ticket_listing_lands_no_chip_per_ticket() {
+        let board = "b7c1d2e3-0000-4000-8000-000000000001";
+        let tasks: Vec<serde_json::Value> = (0..6)
+            .map(|i| {
+                json!({
+                    "id": format!("a1b2c3d4-0000-4000-8000-00000000000{i}"),
+                    "boardId": board,
+                    "ticketRef": format!("A-{i}"),
+                    "title": format!("Ticket {i}"),
+                    "status": "inbox",
+                })
+            })
+            .collect();
+        let (name, result) = as_hermes_posts("list_tickets", &json!({ "tasks": tasks }));
+        let chips = chips_for(&name, &format!(r#"{{"boardId":"{board}"}}"#), &result);
+        assert!(chips.is_empty(), "{chips:?}");
+        // A ticket the agent created still links, through the same envelope.
+        let created = json!({ "task": { "id": "a1b2c3d4-0000-4000-8000-0000000000aa", "boardId": board, "title": "New" } });
+        let (name, result) = as_hermes_posts("create_ticket", &created);
+        let chips = chips_for(&name, "{}", &result);
+        assert_eq!(chips.len(), 1, "{chips:?}");
+        assert_eq!(
+            chips[0]["href"],
+            format!("/boards/{board}/a1b2c3d4-0000-4000-8000-0000000000aa")
+        );
+    }
 }

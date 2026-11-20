@@ -690,3 +690,150 @@ async fn a_document_the_agent_creates_joins_the_session_whatever_its_length() {
     let f = file(&listed, &format!("artifact:{id}")).expect("the pane lists it");
     assert_eq!(f["touchedFor"], json!(owner), "{f}");
 }
+
+/// One POST /api/artifacts through the REAL router with an agent's key;
+/// answers the new document's id.
+async fn agent_creates(state: &AppState, key: &str, title: &str) -> String {
+    use tower::ServiceExt;
+    let body = json!({ "kind": "doc", "title": title, "body": "a short body" });
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/artifacts")
+        .header("x-api-key", key)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap();
+    let res = talaria_api::routes::router(state.clone())
+        .oneshot(req)
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let raw = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: Value = serde_json::from_slice(&raw).unwrap();
+    created["artifact"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string()
+}
+
+/// A CREATE WITH NO LIVE TURN OPENS NOTHING. A cron run or a background job
+/// creates a document while no reply of the agent's is streaming. The
+/// unaddressed resolver's recent tier would land it on whichever thread the
+/// agent last spoke in — and a document chip opens the file in that
+/// person's pane. The create route lands only on a live turn.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_create_with_no_live_turn_lands_on_no_recent_thread() {
+    let state = live_app_state().await;
+    let (owner, cookie) = member(&state, "detached").await;
+    let (model, key) = fleet_agent(&state, "detached").await;
+    // The agent answered this person a moment ago; that reply is finished.
+    let (conv, row) = live_turn(&state, &owner, &model, "work").await;
+    sqlx::query("update messages set status = 'complete' where id = $1::uuid")
+        .bind(&row)
+        .execute(&state.pg)
+        .await
+        .unwrap();
+    // The recent tier sees that row: an unaddressed landing would pick it.
+    let target = talaria_chips::landing_target(&state.pg, &model, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        target.landed().map(|l| l.message_id),
+        Some(row.clone()),
+        "the setup: one recent thread"
+    );
+
+    let id = agent_creates(&state, &key, "Nightly digest").await;
+    // The chip would land detached, a beat after the answer: wait it out.
+    tokio::time::sleep(std::time::Duration::from_millis(1_500)).await;
+    let href = format!("/artifacts?a={id}");
+    assert!(
+        !names(&chips_of(&state.pg, &row).await, &href),
+        "no chip on the finished reply"
+    );
+    let listed = files(&state, &cookie, &conv).await;
+    assert!(
+        file(&listed, &format!("artifact:{id}")).is_none(),
+        "{listed:?}"
+    );
+}
+
+/// An assistant row, finished, at `seq` — optionally carrying the
+/// responsible person a cron turn stamps on its own row.
+async fn finished_reply(pg: &PgPool, conv: &str, seq: i32, stamped: Option<&str>) -> String {
+    let row = insert_streaming_assistant(pg, conv, seq, &json!({}))
+        .await
+        .unwrap();
+    sqlx::query(
+        "update messages set status = 'complete', author_user_id = $2::uuid where id = $1::uuid",
+    )
+    .bind(&row)
+    .bind(stamped)
+    .execute(pg)
+    .await
+    .unwrap();
+    row
+}
+
+/// WHO A ROW WAS FOR, in the two cases the first reading got wrong.
+/// Unattributed means the owner on both sides: a reply to a person's message
+/// with no author is the owner's, never an older collaborator's further
+/// back. And a cron turn's own row names the person who set it up.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn unattributed_means_the_owner_and_a_cron_turn_is_its_creators() {
+    use talaria_api::conversations::turn_requester;
+    let state = live_app_state().await;
+    let (owner, _) = member(&state, "attr-owner").await;
+    let (mate, _) = member(&state, "attr-mate").await;
+    let (model, _) = fleet_agent(&state, "attr").await;
+    let conv = create_conversation(&state.pg, &owner, &model, "Shared", "work", None)
+        .await
+        .unwrap();
+    share(&state.pg, &conv, &mate).await;
+    let pg = &state.pg;
+
+    insert_user_message(pg, &conv, 0, "hi", &json!([]), Some(&owner), &json!({}))
+        .await
+        .unwrap();
+    // A cron turn the collaborator scheduled, landing after the owner spoke.
+    let cron = finished_reply(pg, &conv, 1, Some(&mate)).await;
+    assert_eq!(turn_requester(pg, &cron).await.unwrap(), Some(mate.clone()));
+
+    insert_user_message(
+        pg,
+        &conv,
+        2,
+        "open my notes",
+        &json!([]),
+        Some(&mate),
+        &json!({}),
+    )
+    .await
+    .unwrap();
+    let theirs = finished_reply(pg, &conv, 3, None).await;
+    assert_eq!(
+        turn_requester(pg, &theirs).await.unwrap(),
+        Some(mate.clone())
+    );
+
+    // A person's message with no author: the owner's.
+    let unattributed = insert_user_message(pg, &conv, 4, "and this", &json!([]), None, &json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        turn_requester(pg, &unattributed).await.unwrap(),
+        Some(owner.clone())
+    );
+    let reply = insert_streaming_assistant(pg, &conv, 5, &json!({}))
+        .await
+        .unwrap();
+    assert_eq!(
+        turn_requester(pg, &reply).await.unwrap(),
+        Some(owner.clone()),
+        "a reply to the unattributed message is the owner's, not the collaborator's above it"
+    );
+}

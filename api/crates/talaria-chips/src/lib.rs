@@ -331,16 +331,22 @@ fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
+/// The platform links in one tool answer, as link chips: a string the href
+/// classifier accepts, or an object naming a ticket by `boardId` + `id`.
+///
+/// A LISTING IS NOT A TRAIL, so the walk never enters an array. A link chip
+/// says "this turn made or worked on this" — the ticket a call created, the
+/// one it moved. An array in an answer is a listing: `list_tickets`' rows,
+/// search hits, a ticket's comments or its similar tickets, each one only
+/// looked at. A chip per entry buried the one thing the turn was about under
+/// every row it read, on a transcript everyone in the thread sees. (Search
+/// pages are read separately, by `sources_from`, and Google files by
+/// `google_file_from`; neither goes through here.)
 fn walk_links(v: &Value, title: Option<&str>, out: &mut Vec<Value>) {
     match v {
         Value::String(s) => {
             if let Some(link) = classify_href(s) {
                 out.push(link_chip(&link, title));
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                walk_links(item, title, out);
             }
         }
         Value::Object(map) => {
@@ -900,6 +906,27 @@ fn json_string_prefix(s: &str) -> String {
     out
 }
 
+/// The toolkit writers whose answer names the Talaria document they made or
+/// changed — the only calls whose document chip means the session TOUCHED
+/// that file (and so the Work pane lists it, `session_files`).
+fn writes_document(tool: &str) -> bool {
+    matches!(
+        tool,
+        "create_document"
+            | "create_sheet"
+            | "create_page"
+            | "save_image_artifact"
+            // The import answers `{ artifact, message }`: a NEW Talaria file,
+            // and the session that asked for it should see it like any other.
+            | "import_drive_file"
+            | "update_document"
+            // A surgical edit lands the same chip as a full rewrite: what the
+            // reader wants is a way into the document that just changed, and
+            // how much of it the agent resent is not their problem.
+            | "edit_document"
+    )
+}
+
 /// Chips implied by one completed tool call. Link-producing tools always
 /// emit a link chip, even when the result text never pasted the URL.
 /// Protected tools emit an approval chip instead of pretending the action
@@ -912,22 +939,22 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
     if let Some(link) = classify_href(result) {
         out.push(link_chip(&link, None));
     }
+    // A DOCUMENT A CALL ONLY MENTIONED IS NOT ONE IT OPENED. Every chip that
+    // names a Talaria document is a file of the session: the Work pane lists
+    // it and brings it forward for the person the turn is for. So a document
+    // link in a reader's answer — a `get_document`, a knowledge search whose
+    // hits carry `/artifacts?a=…` — must not land one, or grounding an answer
+    // on five documents opened five tabs and yanked the pane five times.
+    // Writers land theirs below; an existing file opens through
+    // `open_in_pane`, whose door lands its own chip.
+    if !writes_document(tool) {
+        out.retain(|c| c.get("entity").and_then(Value::as_str) != Some("document"));
+    }
 
     let title = first_title(&result_v).or_else(|| str_field(&args_v, "title"));
     let id = first_id(&result_v);
     match tool {
-        "create_document"
-        | "create_sheet"
-        | "create_page"
-        | "save_image_artifact"
-        // The import answers `{ artifact, message }`: a NEW Talaria file,
-        // and the session that asked for it should see it like any other.
-        | "import_drive_file"
-        | "update_document"
-        // A surgical edit lands the same chip as a full rewrite: what the
-        // reader wants is a way into the document that just changed, and how
-        // much of it the agent resent is not their problem.
-        | "edit_document" => {
+        t if writes_document(t) => {
             if let Some(id) = id.filter(|s| is_id(s)) {
                 // Only `edit_document` reports changes — a full rewrite's
                 // "change" is the whole body, which is not a diff anyone
@@ -1358,21 +1385,10 @@ async fn addressed_target(
     })
 }
 
-/// Where an agent's chips land. With a conversation named, that
-/// conversation's own turn (`addressed_target`). Without one: the agent's
-/// live streaming rows — conversation turns and channel turns alike — when
-/// there is exactly one; else its rows of the last 15 minutes regardless of
-/// status, when there is exactly one; else `Ambiguous` when several could be
-/// meant, and `Nowhere` when none could. Two rows are read per tier rather
-/// than one so "several" is observable without counting the table.
-pub async fn landing_target(
-    pg: &PgPool,
-    agent: &str,
-    conversation_id: Option<&str>,
-) -> Result<Target, sqlx::Error> {
-    if let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) {
-        return addressed_target(pg, agent, &id).await;
-    }
+/// The agent's LIVE rows: its streaming conversation replies and streaming
+/// channel replies of the last 15 minutes, up to two of each — two so that
+/// "several" is observable without counting the table.
+async fn live_rows(pg: &PgPool, agent: &str) -> Result<Vec<Landed>, sqlx::Error> {
     let mut live: Vec<Landed> = sqlx::query_as::<_, (String, String)>(
         "select m.id::text, m.conversation_id::text \
          from messages m join conversations c on c.id = m.conversation_id \
@@ -1407,6 +1423,25 @@ pub async fn landing_target(
             message_id,
         }),
     );
+    Ok(live)
+}
+
+/// Where an agent's chips land. With a conversation named, that
+/// conversation's own turn (`addressed_target`). Without one: the agent's
+/// live streaming rows — conversation turns and channel turns alike — when
+/// there is exactly one; else its rows of the last 15 minutes regardless of
+/// status, when there is exactly one; else `Ambiguous` when several could be
+/// meant, and `Nowhere` when none could. Two rows are read per tier rather
+/// than one so "several" is observable without counting the table.
+pub async fn landing_target(
+    pg: &PgPool,
+    agent: &str,
+    conversation_id: Option<&str>,
+) -> Result<Target, sqlx::Error> {
+    if let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) {
+        return addressed_target(pg, agent, &id).await;
+    }
+    let live = live_rows(pg, agent).await?;
     if !live.is_empty() {
         return Ok(unaddressed(live, Vec::new()));
     }
@@ -1604,6 +1639,41 @@ pub async fn surface_for_agent(
         return Ok(None);
     }
     let Some(landed) = speaking_target(pg, agent).await? else {
+        return Ok(None);
+    };
+    write_chips(pg, &landed, &chips).await?;
+    fan(pg, redis, &landed);
+    Ok(Some(landed))
+}
+
+/// Attach chips to the agent's LIVE turn only — exactly one streaming row,
+/// else nowhere — and tell the open thread to refetch.
+///
+/// FOR A ROUTE THAT LANDS ITS OWN CHIP (a create, an edit), detached from any
+/// tool answer and naming no conversation. `surface_for_agent`'s recent tier
+/// exists for the tool-events door, whose frame can arrive a beat after the
+/// turn closed; a route runs INSIDE the call, so a turn that is not streaming
+/// is not the one the call belongs to. With no live row — a cron run, whose
+/// reply row is written at delivery; a background job — the recent tier would
+/// land the file on whichever single thread the agent spoke in during the
+/// last 15 minutes, and since a document chip is a file of the session, it
+/// would open and take focus in an unrelated person's Work pane.
+pub async fn surface_on_live_turn(
+    pg: &PgPool,
+    redis: Option<redis::aio::ConnectionManager>,
+    agent: &str,
+    chips: Vec<Value>,
+) -> Result<Option<Landed>, sqlx::Error> {
+    if chips.is_empty() || agent.is_empty() {
+        return Ok(None);
+    }
+    let target = unaddressed(live_rows(pg, agent).await?, Vec::new());
+    if let Target::Ambiguous { turns } = &target {
+        eprintln!(
+            "[chips] {agent} is streaming in {turns} places and the caller named none — dropped"
+        );
+    }
+    let Some(landed) = target.landed() else {
         return Ok(None);
     };
     write_chips(pg, &landed, &chips).await?;
@@ -2258,6 +2328,12 @@ pub async fn streaming_conversation_user(
 // the one it answers. And a tool call names only the channel, so two replies
 // this agent is streaming in one channel cannot be told apart: that is
 // `Several`, never the newer one's guess.
+//
+// NOT THE SAME QUESTION AS `talaria_conversations::turn_requester`, which
+// answers whose Work pane a file landed on a row belongs in — for any row,
+// finished ones too: the newest person's message strictly below that row, a
+// queued one never, a chip click counting as the person who clicked. Both
+// read `messages`; the policies differ on purpose, and each names the other.
 
 // The live window is the fifteen minutes every resolver in this file uses.
 // Conversation replies refresh `streamed_at` every ten seconds while they
@@ -4059,5 +4135,70 @@ mod tests {
         ] {
             assert_eq!(mcp_result_text(raw), raw);
         }
+    }
+
+    /// A DOCUMENT A READER ONLY MENTIONED OPENS NOTHING. Every document chip
+    /// is a file of the session, which the Work pane lists and brings
+    /// forward, so only a writer's answer may land one — not a search whose
+    /// hits point at documents, and not a single read that carries a link.
+    #[test]
+    fn a_document_link_in_a_readers_answer_lands_no_chip() {
+        let (a, b) = (
+            "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2",
+            "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        );
+        let hits = format!(
+            r#"{{"hits":[{{"title":"Launch plan","snippet":"…","href":"/artifacts?a={a}"}},{{"title":"Pricing","href":"/artifacts?a={b}"}}]}}"#
+        );
+        let single = format!(
+            r#"{{"artifact":{{"id":"{a}","title":"Launch plan"}},"href":"/artifacts?a={a}"}}"#
+        );
+        let bare = format!("/artifacts?a={a}");
+        for (tool, result) in [
+            ("search_knowledge", hits.as_str()),
+            ("get_document", single.as_str()),
+            ("open_in_pane", single.as_str()),
+            ("get_document", bare.as_str()),
+        ] {
+            let chips = chips_from_tool(tool, "{}", result);
+            assert!(
+                chips.iter().all(|c| c["entity"] != "document"),
+                "{tool}: {chips:?}"
+            );
+        }
+        // A writer still lands its own — and only its own.
+        let made = chips_from_tool("create_document", "{}", &single);
+        let docs: Vec<&Value> = made.iter().filter(|c| c["entity"] == "document").collect();
+        assert_eq!(docs.len(), 1, "{made:?}");
+        assert_eq!(docs[0]["href"], format!("/artifacts?a={a}"));
+    }
+
+    /// A LISTING IS NOT A TRAIL. A ticket a call created or moved lands its
+    /// link; the rows a listing or a search returned land none — one chip
+    /// per row buried what the turn was about.
+    #[test]
+    fn a_listing_lands_no_link_per_row_and_a_single_answer_still_does() {
+        let rows = (0..5)
+            .map(|i| {
+                format!(r#"{{"id":"t-{i}","boardId":"b-1","ticketRef":"A-{i}","title":"Row {i}"}}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let listing = format!(r#"{{"tasks":[{rows}]}}"#);
+        assert!(
+            chips_from_tool("list_tickets", r#"{"boardId":"b-1"}"#, &listing).is_empty(),
+            "a listing"
+        );
+        let hits = r#"{"hits":[{"title":"A board","href":"/boards/b-1"},{"title":"A doc","href":"/knowledge?doc=k-1"}]}"#;
+        assert!(
+            chips_from_tool("search_knowledge", "{}", hits).is_empty(),
+            "search hits"
+        );
+        // A ticket's own answer still links it, whatever lists ride beside it.
+        let one = r#"{"task":{"id":"t-2","boardId":"b-1","title":"Fix the gate"},"subTasks":[{"id":"t-3","boardId":"b-1"}]}"#;
+        let chips = chips_from_tool("get_ticket", r#"{"taskId":"t-2"}"#, one);
+        let links: Vec<&Value> = chips.iter().filter(|c| c["kind"] == "link").collect();
+        assert_eq!(links.len(), 1, "{chips:?}");
+        assert_eq!(links[0]["href"], "/boards/b-1/t-2");
     }
 }

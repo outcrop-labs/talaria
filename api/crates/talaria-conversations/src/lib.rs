@@ -914,19 +914,39 @@ pub async fn list_plan_members(
 }
 
 /// WHO A MESSAGE WAS FOR, as one SQL expression over a `messages` row
-/// aliased `m` joined to its conversation aliased `c`: a person's own message
-/// is theirs (an unattributed one, the owner's); an agent's reply belongs to the author of the newest person's
-/// message BEFORE it (by seq — a collaborator's message queued behind a live
-/// reply has a higher seq than the reply, so it never counts); with no such
-/// author, the conversation's owner. A macro because the statement has to
-/// stay a literal for sqlx, and two readers use it.
+/// aliased `m` joined to its conversation aliased `c`. A macro because the
+/// statement has to stay a literal for sqlx, and two readers use it.
+///
+/// - A person's own message is theirs.
+/// - An agent's reply carrying a responsible person is theirs: a cron turn
+///   stamps the person who set the schedule up on its own row
+///   (talaria-cron-output), and nobody chatting asked for it.
+/// - Any other reply belongs to whoever sent the newest person's message
+///   BEFORE it, by seq. A collaborator's message queued behind a live reply
+///   has a higher seq than the reply, so it never counts.
+/// - With no such message, the conversation's owner.
+///
+/// UNATTRIBUTED MEANS THE OWNER, everywhere: a person's message with no
+/// author is the owner's whether it is the row itself or the one a reply
+/// answers — a reply to it is never credited to an older collaborator's
+/// message further back.
+///
+/// NOT `talaria_chips::live_turn`, on purpose. That reader answers "which
+/// person's words is this LIVE turn answering" for the review-exit proof: the
+/// user rows after the last finished reply, queued and steered ones included,
+/// and chip or ask-option clicks excluded (words the agent drafted prove no
+/// ask). This one answers "whose pane does a file this row landed belong in",
+/// for any row, finished ones too (the files trail reads every row): the
+/// newest person's message strictly below the row, queued ones excluded, and
+/// a click counts — the person who clicked is the person waiting.
 macro_rules! requester_of_m {
     () => {
         "(case when m.role = 'user' then coalesce(m.author_user_id, c.user_id) \
            else coalesce( \
-             (select u.author_user_id from messages u \
+             m.author_user_id, \
+             (select coalesce(u.author_user_id, c.user_id) from messages u \
                where u.conversation_id = m.conversation_id and u.role = 'user' \
-                 and u.seq < m.seq and u.author_user_id is not null \
+                 and u.seq < m.seq \
                order by u.seq desc limit 1), \
              c.user_id) end)::text"
     };
@@ -977,7 +997,8 @@ pub async fn conversation_file_trail(
 }
 
 /// Who one message was for — the person an agent's reply answers
-/// (`requester_of_m!`). None when the message does not exist.
+/// (`requester_of_m!`, which says why this is not `talaria_chips::live_turn`).
+/// None when the message does not exist.
 pub async fn turn_requester(pg: &PgPool, message_id: &str) -> Result<Option<String>, sqlx::Error> {
     let row: Option<(Option<String>,)> = sqlx::query_as(concat!(
         "select ",

@@ -157,14 +157,18 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
 /// whole body, so a document of any length lost its id there and never joined
 /// the session's files — never opened in the Work pane. Same chip id, so
 /// whichever lands second merges onto the first. Detached: the create already
-/// happened, and a turn-less create (a cron) has nowhere to land, which is
-/// ordinary.
+/// happened.
+///
+/// ONLY ON A LIVE TURN (`surface_on_live_turn`). A create with no streaming
+/// reply — a cron run, a background job — lands nothing, rather than opening
+/// the file in the pane of whoever the agent last spoke to.
 fn land_created_chip(state: &AppState, agent: &str, artifact: &Artifact) {
     let chip = talaria_chips::document_chip(&artifact.id, Some(&artifact.title), None);
     let (state, agent) = (state.clone(), agent.to_string());
     tokio::spawn(async move {
         let redis = state.redis().await.ok();
-        if let Err(e) = talaria_chips::surface_for_agent(&state.pg, redis, &agent, vec![chip]).await
+        if let Err(e) =
+            talaria_chips::surface_on_live_turn(&state.pg, redis, &agent, vec![chip]).await
         {
             tracing::warn!("[artifacts] create chip surface failed for {agent}: {e}");
         }
