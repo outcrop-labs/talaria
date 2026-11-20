@@ -516,7 +516,8 @@ async fn notify_ticket_event(
 }
 
 /// The decisions, as (per-ticket rows, board-activity rows). Skipped people
-/// and people held for a digest (no producer yet) are in neither.
+/// and people held for the daily board digest (which counts the event later,
+/// from the board's records) are in neither.
 fn split(decided: Vec<(Candidate, Delivery)>) -> (Vec<String>, Vec<String>) {
     let (mut ticket, mut activity) = (Vec::new(), Vec::new());
     for (c, d) in decided {

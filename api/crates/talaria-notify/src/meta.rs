@@ -186,6 +186,11 @@ pub mod group_key {
     pub fn board_activity(board_id: &str) -> String {
         format!("board:{board_id}:activity")
     }
+    /// A board a person hears as a daily digest: one open row per board, the
+    /// newest day's counts replacing an unread one (talaria-digest, I-25).
+    pub fn board_digest(board_id: &str) -> String {
+        format!("board:{board_id}:digest")
+    }
     /// One board sync's health (a rejected credential, a failed run): a
     /// second failure refreshes the open row instead of filing another.
     pub fn board_sync(sync_id: &str) -> String {
@@ -234,6 +239,7 @@ mod tests {
         );
         assert_eq!(group_key::agent_design("d1"), "agent-design:d1");
         assert_eq!(group_key::board_activity("b1"), "board:b1:activity");
+        assert_eq!(group_key::board_digest("b1"), "board:b1:digest");
         assert_eq!(group_key::board_sync("s1"), "board-sync:s1");
         assert_eq!(entity::AGENT_DESIGN, "agent_design");
         assert_eq!(

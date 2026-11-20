@@ -775,6 +775,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     }));
     talaria_digest::register_digest_job(real_digest_deps(state, rt.clone()));
     talaria_digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
+    // The daily board digest: one row per board a person hears as a digest,
+    // and their "Your boards" mail, in the daily digest's slot.
+    talaria_digest::boards::register_board_digest_job(
+        talaria_digest::boards::real_board_digest_deps(state, rt.clone()),
+    );
     talaria_notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
     // The delivery engine's jobs (docs/notifications/delivery.md): the
     // presence-deferred push, the missed-activity mail batcher, and the two

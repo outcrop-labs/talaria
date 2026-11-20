@@ -831,10 +831,6 @@ async fn the_routes_write_only_the_callers_own_setting() {
             "new tickets reach you only with scope board — nobody is in a ticket before it exists",
         ),
         (
-            json!({ "preset": "all", "cadence": "digest" }),
-            "a daily digest isn't available yet",
-        ),
-        (
             json!({ "preset": "custom", "events": ["due"], "scope": "board" }),
             "due-date reminders aren't available yet",
         ),

@@ -103,7 +103,11 @@ The center itself (the bell, the page, the settings, the status panel) is
   over the tickets you are in or the whole board. A board with no setting follows your
   default for every board, and with no default, Participating. All files one notification
   per board for the tickets you are not in, counting its updates until you read it; it is
-  quiet unless you turn on Board activity in the matrix. Off silences the board's
+  quiet unless you turn on Board activity in the matrix. A board set to a daily digest
+  files nothing as it happens (what points at you still does) and, once a day at the
+  daily digest's hour, one notification counting its new tickets, moves, completions and
+  comments since your last digest, plus a "Your boards" email when Board activity's Email
+  is on. Off silences the board's
   assignments and @mentions too, but a ticket you watch yourself still reaches you, and
   approvals always do. A setting changes only what you receive. Set through the API for
   now (`/api/boards/{id}/notify`, `boards` in `PATCH /api/notifications`); the board's own

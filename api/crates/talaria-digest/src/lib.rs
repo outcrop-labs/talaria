@@ -38,6 +38,8 @@
 //      private email subject to an admin who could not have approved it
 //      anyway.
 
+pub mod boards;
+
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -496,6 +498,14 @@ struct DigestState {
 /// window beats two emails.
 const SEND_WINDOW_HOURS: i64 = 2;
 
+/// Whether a local hour is inside the send window that opens at the
+/// configured hour (`SEND_WINDOW_HOURS` long, never wrapping past midnight).
+/// The daily digest and the daily board digest (`boards.rs`) both ask it, so
+/// the two mails always share one slot.
+pub fn in_send_window(local_hour: i64, config_hour: i64) -> bool {
+    local_hour >= config_hour && local_hour < config_hour + SEND_WINDOW_HOURS
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DigestRunResult {
     pub considered: usize,
@@ -632,8 +642,7 @@ pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResul
 
     for person in &people {
         let moment = local_moment(&recipient_zone(person, &config), now_ms);
-        let in_window = (moment.hour as i64) >= config.hour
-            && (moment.hour as i64) < config.hour + SEND_WINDOW_HOURS;
+        let in_window = in_send_window(moment.hour as i64, config.hour);
         if !in_window || sent_on.get(&person.id).is_some_and(|d| *d == moment.date) {
             if !in_window {
                 result.skipped_outside_window += 1;
@@ -1523,9 +1532,7 @@ mod tests {
 
     #[test]
     fn the_send_window_starts_at_the_hour_and_never_wraps() {
-        let in_window = |hour: i64, config_hour: i64| {
-            hour >= config_hour && hour < config_hour + SEND_WINDOW_HOURS
-        };
+        let in_window = in_send_window;
         // An 08:00 workspace: 08:00 and 09:59 local are in, 07:59 and 10:00
         // are not, and an instance that boots at 22:00 stays quiet.
         assert!(in_window(8, 8));

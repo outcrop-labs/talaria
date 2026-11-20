@@ -12,7 +12,8 @@
 //   PUT    { preset, events?, scope?, cadence? } → the caller's own row for
 //            this board, replaced (an upsert on their row — never anyone
 //            else's); answers as GET. `events` and `scope` are Custom's
-//            alone; a cadence or an event with no producer yet is refused.
+//            alone; an event with no producer yet is refused. A `digest`
+//            cadence puts the board on the daily board digest.
 //   DELETE → the caller's row is gone and the board follows their default
 //            again; answers as GET.
 //

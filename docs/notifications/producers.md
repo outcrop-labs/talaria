@@ -141,6 +141,8 @@ board move, creation with its assignment, the comment fan-out, and the four tick
 @mention doors (the create and edit of a description, the comment route, a post in the
 ticket's room) through `MentionOpts.ticket`. Nothing at send time reads it: the deferred
 push and the mail batcher keep reading the class matrix, as they do for a channel level.
+The one other reader is the daily board digest (below), once a day, for one person's own
+boards.
 
 **The setting** is a preset — `all`, `participating`, `mentions`, `off` — or `custom`:
 chosen events over a scope. The events are `created` (a ticket appeared on the board,
@@ -151,8 +153,9 @@ audience — watchers, assigned people, the creator, earlier commenters) or `boa
 ticket). Presets are stored by name and expanded when read: `all` is every event over the
 board; `participating` is assigned, status, comment, mention and completed over mine;
 `mentions` is assigned and mention; `off` is nothing. `created` needs scope `board`
-(nobody is in a ticket before it exists). `due` and the `digest` cadence are listed but
-refused until their producers ship.
+(nobody is in a ticket before it exists). `due` is listed but refused until its producer
+ships. The cadence is `instant` (as it happens) or `digest` (the daily board digest,
+below).
 
 **Where it is stored.** One row per person per board in `board_notify_prefs` — a table,
 not a `board_members` column, because a team's members see its boards with no member row
@@ -200,6 +203,38 @@ description @mentions whose mention row lands (the door's roster — the board's
 members — and the same question). A Custom set that keeps comments but drops @mentions hears the @mentioning
 comment as a comment; a set that keeps status but drops assignments hears a patch that
 assigns and moves them as one status row.
+
+**The daily digest.** A board heard at cadence `digest` files nothing as things happen: the
+resolver answers `Digest` and the producers drop it — except what points at the person
+(an assignment, an @mention) and the news of a ticket they watch themselves, which still
+come at once. Once a day the `board-digest` job (`talaria-digest` `boards.rs`) reads the
+board's own records and files one row per board. It runs in the daily digest's slot: the
+`digest_config` hour in the person's own zone, a 15-minute tick, a two-hour window that never
+wraps. The row counts, over the stretch since the person's last digest (the first covers a
+day, none more than two): **new** tickets (created on the board or moved onto it — only for a
+setting over the whole board), tickets **moved** (not into a done column), tickets
+**completed**, **comments**, and — once due-date reminders have a producer — tickets **due
+soon** or **overdue**. Each only when the setting wants that event, over the tickets it
+covers (`mine`: watching, assigned, created, and for a comment having commented before; or
+the whole board). Never counted: the person's own actions, a tracker sync's writes
+(`talaria_tasks_types::MIRROR_ACTORS`), archived tickets, and the moves, completions and
+comments of a ticket they watch themselves. Only the boards the person's board list shows
+today — a board they lost is dormant — and only counts and the board's name. Read at the
+slot, not queued: a change of setting applies to the next digest, and the counts are a rollup
+that can differ slightly from what instant rows would have said (a ticket counts once per
+line however often it moved).
+
+The row: kind `board-digest`, class `board_activity`, `group_key::board_digest`, Realert (a
+newer digest replaces an unread one), entity `board`, href `/boards/<id>`, body like
+`3 new · 8 moved · 2 completed · 11 comments`. It is filed **quiet** — a digest never rings,
+and its email is not the missed-activity batcher's but one **"Your boards"** mail listing
+every board with something to report, sent when the person's Board activity Email is on and
+their email frequency is not Never, through `send_gated_mail` (the instance switch holds it).
+Nothing to report, nothing sent. The ledger, `board_digest_state` (one row per person), is
+written as the pass goes: the rows are filed and marked first, then the mail; a mail that
+failed or was held is offered again on the next tick inside the window without filing the
+rows twice, and a tick inside the same window files nothing. It is a separate mail from the
+approvals digest, at the same hour. Feature `board-digest`.
 
 **A board move** tells the destination's audience by their setting for the destination,
 the people who hear the destination in full that a ticket arrived (`created`), the people
@@ -277,9 +312,9 @@ count.
 ## Contract notes
 
 - No new kind was needed for the 2026-10 producers: every kind filed here was already in
-  `classes.rs`'s `KIND_CLASS`. The per-board settings added one, `board-activity`, in a new
-  Following class `board_activity` (not in `ORIGINAL_CLASSES`, so the C27 digest freeze
-  holds).
+  `classes.rs`'s `KIND_CLASS`. The per-board settings added `board-activity` and the daily
+  board digest's `board-digest`, both in a new Following class `board_activity` (not in
+  `ORIGINAL_CLASSES`, so the C27 digest freeze holds).
 - The @mention token rules moved from `talaria-mentions` into `talaria-notify`'s
   `threads.rs` (`mention_tokens`, `user_mention_tokens`, `answers_to_tokens`), so a ticket's
   comment participants can leave out the people a comment names without a new crate edge

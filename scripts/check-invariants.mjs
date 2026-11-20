@@ -346,6 +346,8 @@ const RULES = [
       'api/crates/talaria-tasks/src/lib.rs',
       'api/crates/talaria-tasks/src/moving.rs',
       'api/crates/talaria-mentions/src/lib.rs',
+      // the daily board digest: one person's own boards, one row each
+      'api/crates/talaria-digest/src/boards.rs',
       // the caller's own setting: one board, every board, the default
       'api/crates/talaria-routes-boards/src/boards/boards_id_notify.rs',
       'api/crates/talaria-routes-comms/src/activity/notifications_boards.rs',
