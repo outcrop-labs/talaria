@@ -401,6 +401,8 @@
       // with its own document and lands there.
       const lead = kind === 'plan' ? [PLAN_TAB] : []
       seedTabs(id, [...lead, ...visible.map(fileTab)], kind === 'plan' ? PLAN_TAB.id : initialFocus(visible))
+      // Nothing listed here is news, so no hand-open claim on it survives.
+      for (const f of all) openedHere.delete(f.key)
       return
     }
     // A file the session no longer lists — deleted, or no longer readable —
@@ -542,13 +544,20 @@
     const id = selectedSessionId
     if (!id || addingFile) return
     addingFile = true
+    let opened: string | null = null
+    let pinned = false
     try {
       const artifact = await createArtifact({ kind: 'doc', title: 'Untitled document' })
-      openedHere.add(`artifact:${artifact.id}`)
-      if (await pinToSession(id, { kind: 'artifact', id: artifact.id, title: artifact.title })) await refreshFiles(id)
+      opened = `artifact:${artifact.id}`
+      openedHere.add(opened)
+      pinned = await pinToSession(id, { kind: 'artifact', id: artifact.id, title: artifact.title })
+      if (pinned) await refreshFiles(id)
     } catch (e) {
       toastError('Could not create the document', e)
     } finally {
+      // A pin that never landed leaves no claim behind: a stale key would let
+      // a later touch on somebody else's turn take this viewer's pane.
+      if (opened && !pinned) openedHere.delete(opened)
       addingFile = false
     }
   }
@@ -580,11 +589,15 @@
       return
     }
     addingFile = true
+    const opened = `google:${hit.id}`
+    let pinned = false
     try {
       const file: PinnedFile = { kind: 'google', id: hit.id, ...(hit.mime ? { mime: hit.mime } : {}) }
-      openedHere.add(`google:${hit.id}`)
-      if (await pinToSession(id, file)) await refreshFiles(id)
+      openedHere.add(opened)
+      pinned = await pinToSession(id, file)
+      if (pinned) await refreshFiles(id)
     } finally {
+      if (!pinned) openedHere.delete(opened)
       addingFile = false
     }
   }
