@@ -1486,6 +1486,48 @@ pub async fn landing_target(
     Ok(unaddressed(Vec::new(), recent))
 }
 
+/// `landing_target` with no recent tier: the reply the agent is streaming
+/// NOW — in the conversation named, else its one live row anywhere (several
+/// are `Ambiguous`, none is `Nowhere`).
+///
+/// FOR A DOOR OR ROUTE THE AGENT REACHES INSIDE ITS OWN CALL: opening a file
+/// in the pane, or a create's or an edit's own chip. A tool call runs while its
+/// turn streams, so a finished turn is never the one asking. The recent tier
+/// exists for the tool-events door, whose frame can arrive a beat after the
+/// turn closed. Anywhere else, with no reply streaming (a cron run, whose row
+/// is written at delivery; a background job), it lands the file in the pane of
+/// whoever the agent last spoke to, and a document chip opens and takes focus
+/// there. A named id that is no conversation of this agent's with a streaming
+/// reply — a finished thread, a channel, another agent's — is `Nowhere`.
+pub async fn live_landing_target(
+    pg: &PgPool,
+    agent: &str,
+    conversation_id: Option<&str>,
+) -> Result<Target, sqlx::Error> {
+    let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) else {
+        return Ok(unaddressed(live_rows(pg, agent).await?, Vec::new()));
+    };
+    let row: Option<(String,)> = sqlx::query_as(
+        "select m.id::text \
+         from messages m join conversations c on c.id = m.conversation_id \
+         where c.id = $2::uuid and c.agent_model = $1 and m.role = 'assistant' \
+           and m.status = 'streaming' and m.streamed_at > now() - interval '15 minutes' \
+         order by m.seq desc limit 1",
+    )
+    .bind(agent)
+    .bind(&id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(match row {
+        Some((message_id,)) => Target::Found(Landed {
+            conversation_id: Some(id),
+            channel_id: None,
+            message_id,
+        }),
+        None => Target::Nowhere,
+    })
+}
+
 /// The unaddressed resolver as an Option, for the callers that have no
 /// conversation to name: an ambiguity is a dropped chip, logged — never a
 /// guess at somebody else's thread.
@@ -1647,17 +1689,9 @@ pub async fn surface_for_agent(
 }
 
 /// Attach chips to the agent's LIVE turn only — exactly one streaming row,
-/// else nowhere — and tell the open thread to refetch.
-///
-/// FOR A ROUTE THAT LANDS ITS OWN CHIP (a create, an edit), detached from any
-/// tool answer and naming no conversation. `surface_for_agent`'s recent tier
-/// exists for the tool-events door, whose frame can arrive a beat after the
-/// turn closed; a route runs INSIDE the call, so a turn that is not streaming
-/// is not the one the call belongs to. With no live row — a cron run, whose
-/// reply row is written at delivery; a background job — the recent tier would
-/// land the file on whichever single thread the agent spoke in during the
-/// last 15 minutes, and since a document chip is a file of the session, it
-/// would open and take focus in an unrelated person's Work pane.
+/// else nowhere (`live_landing_target`, unaddressed) — and tell the open
+/// thread to refetch. For a route that lands its own chip (a create, an
+/// edit), detached from any tool answer and naming no conversation.
 pub async fn surface_on_live_turn(
     pg: &PgPool,
     redis: Option<redis::aio::ConnectionManager>,
@@ -1667,7 +1701,7 @@ pub async fn surface_on_live_turn(
     if chips.is_empty() || agent.is_empty() {
         return Ok(None);
     }
-    let target = unaddressed(live_rows(pg, agent).await?, Vec::new());
+    let target = live_landing_target(pg, agent, None).await?;
     if let Target::Ambiguous { turns } = &target {
         eprintln!(
             "[chips] {agent} is streaming in {turns} places and the caller named none — dropped"

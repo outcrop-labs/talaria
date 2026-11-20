@@ -21,6 +21,14 @@ describe('pane edits', () => {
     releaseNew()
     expect(hasUnsavedEdits('a2')).toBe(false)
   })
+  it('reads an editor whose answer throws as holding edits', () => {
+    const release = holdEdits('a3', () => {
+      throw new Error('torn down')
+    })
+    expect(hasUnsavedEdits('a3')).toBe(true)
+    release()
+    expect(hasUnsavedEdits('a3')).toBe(false)
+  })
   it('guards a plan document tab by the plan document, and an artifact tab by its file', () => {
     let typing = true
     const releasePlan = holdEdits('plan-doc', () => typing)

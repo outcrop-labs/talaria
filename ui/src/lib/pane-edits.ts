@@ -21,13 +21,16 @@ export function holdEdits(id: string, unsaved: () => boolean): () => void {
   }
 }
 
-/** Does the editor showing artifact `id` hold edits a tab switch would lose? */
+/** Does the editor showing artifact `id` hold edits a tab switch would lose?
+ *  An editor whose answer throws is taken as holding some: the pane staying
+ *  put costs a tab the person can click, and moving it could cost their
+ *  keystrokes. */
 export const hasUnsavedEdits = (id: string | null | undefined): boolean => {
   if (!id) return false
   try {
     return holders.get(id)?.() ?? false
   } catch {
-    return false
+    return true
   }
 }
 

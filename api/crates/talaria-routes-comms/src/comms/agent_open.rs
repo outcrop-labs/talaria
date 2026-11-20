@@ -6,9 +6,11 @@
 // reads — but reading a Talaria document with `get_document` lands nothing,
 // and nothing else an agent could call put an existing file there. So "open
 // the plan here so we can iterate on it" got the plan pasted into chat. This
-// door lands THE SAME CHIP a create or an edit lands, on the turn the agent is
-// speaking in, and the pane already follows chips: no table, no new event, no
-// new pane code path, and nothing special-cased by document type.
+// door lands THE SAME CHIP a create or an edit lands, on the reply the agent is
+// streaming now, and the pane already follows chips: no table, no new event, no
+// new pane code path, and nothing special-cased by document type. A finished
+// turn is never the target: a cron run or a job has no streaming reply, and
+// gets 409 rather than opening the file in whoever's pane it last spoke in.
 //
 // WHOSE PANE, AND WHOSE ACCESS. The file opens for the person the turn is for:
 // the author of the newest person's message before the landing row (a
@@ -46,7 +48,7 @@ use talaria_body::{optional_max_string_member, parse};
 use talaria_chips::session_files::{FileRef, SessionFile, file_named_by};
 use talaria_chips::{
     Landed, Target, classify_href, conversation_hint, document_chip, google_file_chip, land_chips,
-    landing_target,
+    live_landing_target,
 };
 use talaria_conversations::turn_requester;
 use talaria_error::{house_error, internal, object_or_400};
@@ -261,15 +263,18 @@ pub async fn post(
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
     let hint = conversation_hint(&parsed);
-    let landed = match landing_target(&state.pg, &caller.model, hint.as_deref()).await {
+    // THE TURN STREAMING NOW, never the recent tier: a cron run or a job has
+    // no streaming reply, and the recent tier would open the file in the pane
+    // of whoever the agent last spoke to (`live_landing_target`).
+    let landed = match live_landing_target(&state.pg, &caller.model, hint.as_deref()).await {
         Ok(target @ Target::Ambiguous { .. }) => {
             return Ok(house_error(
                 StatusCode::CONFLICT,
                 &target.ambiguity().unwrap_or_default(),
             ));
         }
-        // A CHANNEL TURN, OR NO TURN AT ALL: a channel reply has no pane, and
-        // outside a turn there is nobody to open it for.
+        // A CHANNEL TURN, OR NO TURN STREAMING: a channel reply has no pane,
+        // and outside a live turn there is nobody to open it for.
         Ok(target) => match target.landed().filter(|l| l.conversation_id.is_some()) {
             Some(landed) => landed,
             None => return Ok(house_error(StatusCode::CONFLICT, NO_CONVERSATION)),
@@ -448,7 +453,7 @@ async fn open_artifact(
         (Err(e), _) | (_, Err(e)) => return Ok(internal("[open] agent access read failed", e)),
     };
     // Nothing of a file the agent cannot read reaches it — not on the chip
-    // (the transcript resolves a missing title per viewer), not in the answer.
+    // (a chip with no title reads as its kind, "Document"), not in the answer.
     let title = you_can_read.then_some(artifact.title.as_str());
     let chip = document_chip(&artifact.id, title, None);
     let already = match already_on(&state.pg, landed, &chip).await {

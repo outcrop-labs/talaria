@@ -718,14 +718,15 @@ async fn agent_creates(state: &AppState, key: &str, title: &str) -> String {
         .to_string()
 }
 
-/// A CREATE WITH NO LIVE TURN OPENS NOTHING. A cron run or a background job
-/// creates a document while no reply of the agent's is streaming. The
-/// unaddressed resolver's recent tier would land it on whichever thread the
-/// agent last spoke in — and a document chip opens the file in that
-/// person's pane. The create route lands only on a live turn.
+/// WITH NO LIVE TURN, NEITHER A CREATE NOR AN OPEN LANDS. A cron run or a
+/// background job works while no reply of the agent's is streaming. The
+/// unaddressed resolver's recent tier would land its file on whichever thread
+/// the agent last spoke in — and a document chip opens the file in that
+/// person's pane. The create route and the open door land only on a live
+/// turn; the door answers 409, named conversation or not.
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (ui/.env)"]
-async fn a_create_with_no_live_turn_lands_on_no_recent_thread() {
+async fn with_no_live_turn_neither_a_create_nor_an_open_lands_on_a_recent_thread() {
     let state = live_app_state().await;
     let (owner, cookie) = member(&state, "detached").await;
     let (model, key) = fleet_agent(&state, "detached").await;
@@ -758,6 +759,23 @@ async fn a_create_with_no_live_turn_lands_on_no_recent_thread() {
     assert!(
         file(&listed, &format!("artifact:{id}")).is_none(),
         "{listed:?}"
+    );
+
+    // The open door: nobody is waiting on a finished turn.
+    let doc = artifact(&state.pg, &owner, "Daily report", "doc", "org", "owner").await;
+    for body in [
+        json!({ "documentId": doc }),
+        json!({ "documentId": doc, "conversationId": conv }),
+    ] {
+        let (status, answer) = open(&state, &key, body.clone()).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}: {answer}");
+    }
+    assert!(
+        !names(
+            &chips_of(&state.pg, &row).await,
+            &format!("/artifacts?a={doc}")
+        ),
+        "no open on the finished reply"
     );
 }
 
