@@ -7,7 +7,8 @@
 // next sync is five minutes past with nothing running; `schedulerArmed` false
 // says this instance runs no schedule (TALARIA_SCHEDULER=off), so only Sync
 // now syncs; a connector no longer on the board is a warning, because their
-// ClickUp token still drives the sync.
+// ClickUp token still drives the sync; a paused sync names who paused it and
+// when (`pausedBy`, `pausedAt`), since nothing syncs until an owner resumes.
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -72,6 +73,23 @@ async fn connector(pg: &PgPool, sync: &SyncRow) -> Result<Value, sqlx::Error> {
     })
 }
 
+/// The person who paused the sync, while it is paused (or while a credential
+/// that died during the pause waits to be replaced). Null when nobody is on
+/// record: the account was deleted, or the pause predates the record.
+async fn pauser(pg: &PgPool, sync: &SyncRow) -> Result<Value, sqlx::Error> {
+    let Some(uid) = sync.paused_by.as_ref().filter(|_| sync.paused_ms.is_some()) else {
+        return Ok(Value::Null);
+    };
+    let row: Option<(String, Option<String>, Option<String>)> =
+        sqlx::query_as("select id::text, name, email from users where id = $1::uuid")
+            .bind(uid)
+            .fetch_optional(pg)
+            .await?;
+    Ok(row
+        .map(|(id, name, email)| json!({ "id": id, "name": name, "email": email }))
+        .unwrap_or(Value::Null))
+}
+
 /// `{sync, disconnected}`: the live connection's projection (or null), and —
 /// when there is none — the last one this board had, so its imported tickets
 /// can say where they came from.
@@ -100,6 +118,7 @@ pub async fn board_sync_status(
         None => Value::Null,
     };
     let connected_by = connector(pg, &sync).await?;
+    let paused_by = pauser(pg, &sync).await?;
     let mut warnings: Vec<Value> = Vec::new();
     if connected_by.get("onBoard") == Some(&Value::Bool(false)) {
         warnings.push(json!({
@@ -154,6 +173,8 @@ pub async fn board_sync_status(
             "liveRun": live.map(|(id, phase)| json!({ "id": id, "phase": phase })),
             "lastRun": last,
             "connectedBy": connected_by,
+            "pausedBy": paused_by,
+            "pausedAt": iso(sync.paused_ms),
             "warnings": warnings,
             "problems": problems,
             "problemCount": run_total + item_total,

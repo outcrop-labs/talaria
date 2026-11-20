@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('@tanstack/svelte-query', () => ({ createQuery: vi.fn() }))
 
 import {
+  actorLabel,
   ago,
   cadenceId,
   cadenceLabel,
@@ -17,6 +18,8 @@ import {
   lastRunNote,
   mappingRows,
   mappingTargets,
+  pausedHint,
+  pausedLine,
   pollWhileLive,
   remoteStateLabel,
   resyncOutcome,
@@ -58,6 +61,8 @@ function sync(over: Partial<BoardSync> = {}): BoardSync {
     liveRun: null,
     lastRun: { id: 'r1', state: 'done', error: null, result: null, finishedAt: iso(-12 * MIN) },
     connectedBy: null,
+    pausedBy: null,
+    pausedAt: null,
     warnings: [],
     problems: [],
     problemCount: 0,
@@ -145,9 +150,51 @@ describe('chipView — never silently stale', () => {
     expect(off.detail).toMatch(/Scheduled syncs are off/)
   })
 
-  it('paused holds the schedule only, and says Sync now still runs', () => {
-    expect(chipView(sync({ state: 'paused' }), NOW).detail).toMatch(/scheduled syncs are held; Sync now still runs\. Last synced 12m ago/)
+  it('paused freezes the sync: it says who paused it, when, and who resumes it', () => {
+    const paused = sync({
+      state: 'paused',
+      pausedBy: { id: 'u1', name: 'Olive Owner', email: 'olive@example.invalid' },
+      pausedAt: iso(-5 * MIN),
+    })
+    // The owner can resume; everyone else is told who can.
+    expect(chipView(paused, NOW, { canResume: true }).detail).toBe(
+      'Paused by Olive Owner · 5m ago — resume to sync. Last synced 12m ago.',
+    )
+    expect(chipView(paused, NOW).detail).toBe(
+      'Paused by Olive Owner · 5m ago — nothing syncs until a board owner resumes it. Last synced 12m ago.',
+    )
+    // Nobody is told that Sync now still runs: it does not.
+    expect(chipView(paused, NOW).detail).not.toMatch(/Sync now/)
     expect(chipView(sync({ state: 'paused', lastSyncedAt: null }), NOW).detail).toMatch(/has not synced yet/)
+  })
+
+  it('paused outranks the last run’s failure, but a dead credential and a live remap outrank paused', () => {
+    const failed = { id: 'r', state: 'error' as const, error: 'boom', result: null, finishedAt: null }
+    expect(chipView(sync({ state: 'paused', lastRun: failed }), NOW).text).toBe('paused')
+    const gone = [{ kind: 'list-gone', detail: 'gone', fix: 'x' }]
+    expect(chipView(sync({ state: 'paused', problems: gone }), NOW).text).toBe('paused')
+    // A mapping edit's remap runs while paused, and says so.
+    expect(chipView(sync({ state: 'paused', liveRun: { id: 'r', phase: 'Applying the new status mapping' } }), NOW).text).toBe('syncing')
+    expect(chipView(sync({ state: 'needs_credential', pausedAt: iso(-MIN) }), NOW).text).toBe('needs a new token')
+  })
+
+  it('names who paused it from what is on record', () => {
+    expect(pausedLine({ pausedBy: { id: 'u', name: 'Olive Owner', email: 'o@x.invalid' }, pausedAt: iso(-3 * 60 * MIN) }, NOW)).toBe(
+      'Paused by Olive Owner · 3h ago',
+    )
+    // No name on the account: the email.
+    expect(pausedLine({ pausedBy: { id: 'u', name: null, email: 'o@x.invalid' }, pausedAt: iso(-10_000) }, NOW)).toBe(
+      'Paused by o@x.invalid · just now',
+    )
+    // A pause from before the record, or by an account since deleted.
+    expect(pausedLine({ pausedBy: null, pausedAt: null }, NOW)).toBe('Paused')
+    expect(pausedLine({ pausedBy: null, pausedAt: iso(-2 * MIN) }, NOW)).toBe('Paused · 2m ago')
+  })
+
+  it('the disabled Sync now and re-sync say why, and who resumes it', () => {
+    const p = { pausedBy: { id: 'u', name: 'Olive Owner', email: null }, pausedAt: iso(-MIN) }
+    expect(pausedHint(p, NOW, false)).toBe('Paused by Olive Owner · 1m ago — a board owner resumes it in Board settings → Sync')
+    expect(pausedHint(p, NOW, true)).toBe('Paused by Olive Owner · 1m ago — resume it in Board settings → Sync to sync again')
   })
 
   it('with the schedule off on the instance, a scheduled connection names the switch, not an overdue run', () => {
@@ -161,6 +208,15 @@ describe('chipView — never silently stale', () => {
     expect(fresh.detail).toMatch(/Scheduled syncs are off/)
     // A manual connection is not scheduled, so the switch is not its story.
     expect(chipView(sync({ schedulerArmed: false, intervalMinutes: null }), NOW).tone).toBe('ok')
+  })
+})
+
+describe('the sync as an actor', () => {
+  it('reads the sync’s id as its name, and leaves everyone else alone', () => {
+    expect(actorLabel('clickup-sync')).toBe('ClickUp sync')
+    expect(actorLabel('olive@example.invalid')).toBe('olive@example.invalid')
+    expect(actorLabel(null)).toBeNull()
+    expect(actorLabel(undefined)).toBeUndefined()
   })
 })
 

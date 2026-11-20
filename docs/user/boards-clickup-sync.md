@@ -19,7 +19,8 @@ no configuration file to edit. The engine behind it is described in
 | Change where a status lands | Board settings → sync → **Status mapping** → pick the column → **Save mapping** |
 | Pull one ticket from ClickUp again | Open the ticket → **Re-sync from ClickUp** (the circular-arrows button in its header) |
 | Replace the token | Board settings → sync → **Replace credential** |
-| Pause, or change how often it syncs | Board settings → sync → **Pause** / **Schedule** |
+| Freeze the sync for a while | Board settings → sync → **Pause**. Nothing syncs until an owner presses **Resume** (see [Pausing](#pausing)) |
+| Change how often it syncs | Board settings → sync → **Schedule** |
 | Stop syncing | Board settings → sync → Danger zone → **Disconnect** |
 
 ## Before you start: the token
@@ -55,6 +56,7 @@ running (the sync tab then warns that your token still drives it).
        step hands on as if a person had closed it. Map closed statuses elsewhere if your
        workchains should wait for a sign-off in Talaria;
      - the sync moves tickets into **review** and **Blocked**, but never out of them.
+       Neither move hands a workchain step on: only a done column does.
    - **The first tasks, as they would land**, with the column each goes to under the mapping
      as you have it now.
    - **Assignees, matched by email.** A ClickUp assignee whose email belongs to a member of
@@ -115,7 +117,7 @@ The chip beside the gear always says where the sync stands:
 | **synced 12m ago** | All is well. Open it for the next sync time |
 | **syncing** | A sync is running; the panel shows what it is doing, page by page |
 | **not synced yet** | The first sync has not finished |
-| **paused** | An owner paused the schedule. **Sync now** and a ticket's re-sync still run. Board settings → sync → **Resume** |
+| **paused** | An owner froze the sync. The panel says who and when ("Paused by Dana Reyes · 5m ago"). Nothing syncs until an owner presses **Resume** |
 | **sync overdue** (amber) | A scheduled sync is more than five minutes late. Press **Sync now** |
 | **needs a new token** (red) | ClickUp refused the token — see below |
 | **list not found** (red) | The list was deleted, or the token's member can no longer see it |
@@ -127,6 +129,25 @@ your instance, the chip says so (amber, not "overdue") and **Sync now** still wo
 The panel's **Last run** line is the latest run of any kind. After a ticket's **Re-sync from
 ClickUp** or a mapping change it names that run ("latest run re-synced one ticket") rather
 than reading as the board's last sync, which is the time on the **Last sync** line.
+
+## Pausing
+
+**Pause** freezes the sync. Use it while you fix the status mapping, or to take a last
+import before you archive the board. While the sync is paused:
+
+- no scheduled sync runs;
+- **Sync now** and a ticket's **Re-sync from ClickUp** are off, for owners and editors
+  alike. Talaria refuses them even if they are asked for another way;
+- a sync that was running when you pressed **Pause** stops.
+
+The chip, its panel and the sync tab tell everyone on the board who paused the sync and
+when. You can still change the status mapping while the sync is paused. Tickets move to
+the new mapping at once, without reading ClickUp. You can also change the schedule,
+replace the token or disconnect.
+
+A board owner presses **Resume**, in the chip's panel or in Board settings → sync. The
+schedule starts again, and **Sync now** works again. The next sync picks up everything
+that changed in ClickUp while the sync was paused.
 
 ## Problems, and how to fix each
 
@@ -150,8 +171,8 @@ owners and the instance's admins get one notification.
 
 A board owner then opens Board settings → sync, pastes a new token, and presses
 **Replace credential**. The mapping, the links between tasks and tickets, and the history are
-all kept, and a sync starts at once. You can also replace a working token the same way, for
-example to move to a dedicated integration member.
+all kept, and a sync starts at once (a paused sync stays paused). You can also replace a
+working token the same way, for example to move to a dedicated integration member.
 
 Admins can see the stored credential, and clear it, in **Admin → Secrets**.
 
@@ -188,8 +209,8 @@ then carries on where it stopped.
 | | Viewer | Editor | Owner |
 | :--- | :-: | :-: | :-: |
 | See the chip, the problems and a ticket's ClickUp link | ✓ | ✓ | ✓ |
-| Sync now, Re-sync from ClickUp | | ✓ | ✓ |
+| Sync now, Re-sync from ClickUp (not while paused) | | ✓ | ✓ |
 | Open Board settings → sync (read-only for an editor) | | ✓ | ✓ |
-| Connect, change the mapping or schedule, pause, replace the token, disconnect | | | ✓ |
+| Connect, change the mapping or schedule, pause and resume, replace the token, disconnect | | | ✓ |
 
 Admins see the stored token's health, and can clear it, in **Admin → Secrets**.

@@ -5274,6 +5274,17 @@ alter table tasks drop column if exists conversation_id`,
      mailed_on text,
      updated_at timestamptz not null default now()
    )`,
+  // WHO PAUSED A BOARD'S CLICKUP SYNC, AND WHEN (talaria-board-sync ops.rs
+  // `update`, docs/BOARD-SYNC.md "Pausing"). A pause freezes the sync: no
+  // scheduled run, no Sync now, no one-ticket re-sync. So the board says who
+  // froze it and since when, to every member. Set when the state flips to
+  // paused and cleared on resume. A credential that dies while the sync is
+  // paused leaves them set, so a replaced token returns the sync to paused,
+  // not active. Nullable ADD COLUMNs, so roll-safe: the previous release
+  // never reads them.
+  `alter table board_syncs
+     add column if not exists paused_by uuid references users(id) on delete set null,
+     add column if not exists paused_at timestamptz`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

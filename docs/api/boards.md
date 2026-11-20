@@ -373,6 +373,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync.rs`](../../
 | `statusMap` | `status_map` |  |
 | `options` | `options` |  |
 | `intervalMinutes` | `interval` |  |
+| `paused` | `bool?` | true freezes the sync until an owner resumes it; false resumes it. |
 
 ## `/api/boards/{id}/sync/browse`
 
@@ -399,9 +400,9 @@ source.
 Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_credential.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync_credential.rs)
 
 > PUT /api/boards/{id}/sync/credential {token} — replace the sync's ClickUp
-> token: when the member who connected it left, or ClickUp refused it. The
-> new token must be able to read the connected list. The mapping, the links
-> and the history stay; a sync waiting for a credential resumes and runs at
+> token. Owner only; the new token must read the connected list. A sync that
+> waits for a credential turns active and runs at once — or returns to paused
+> when it was paused as the token died. Answers {sync}. For when the member
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -441,8 +442,8 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_runs.rs`](.
 
 > POST /api/boards/{id}/sync/runs — Sync now: start a sync of the board's
 > ClickUp list (it always reconciles every task), or answer the run already
-> going. Owner or editor. Answers {runId, live}: `live` true when the run
-> was already under way. 409 while the sync waits for a new credential.
+> going. Owner or editor; 409 while paused or waiting for a new credential.
+> Answers {runId, live}: `live` true when the run was already under way.
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |

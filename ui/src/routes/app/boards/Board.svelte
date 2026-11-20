@@ -486,7 +486,7 @@
           onclick={() => applyView(sv)}
           oncontextmenu={canEdit ? (e) => viewTabContextMenu(e, sv) : undefined}
           class={cn(
-            'flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+            'flex min-h-6 items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
             focusGold,
             search.v === sv.id
               ? 'border-[var(--theme-accent-border)] bg-raised text-fg'
@@ -512,7 +512,7 @@
           onclick={() => void saveCurrentAsView()}
           title="Save the current layout, grouping, and filters as a named view"
           class={cn(
-            'flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg',
+            'flex min-h-6 items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg',
             focusGold,
           )}
         >

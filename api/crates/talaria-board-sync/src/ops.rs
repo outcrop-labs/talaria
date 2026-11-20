@@ -4,8 +4,18 @@
 // sentence on refusal — never ClickUp's own words.
 //
 // WHO: any member reads the status; an owner connects, edits the mapping and
-// cadence, replaces the credential, browses, previews and disconnects; an
-// owner or editor presses Sync now or re-syncs a ticket.
+// cadence, pauses and resumes, replaces the credential, browses, previews and
+// disconnects; an owner or editor presses Sync now or re-syncs a ticket.
+//
+// A PAUSE FREEZES THE SYNC. While paused nothing reads ClickUp: the schedule
+// claims only active connections (job.rs), Sync now and a one-ticket re-sync
+// answer 409 with PAUSED, pressing Pause cancels the live run that reads
+// ClickUp, and a run that raced all of that stops at its next step (run.rs).
+// An owner pauses to fix a mapping or to take a last import before archiving,
+// and an editor's Sync now must not undo that. The pause records who and when
+// (paused_by, paused_at) for the board to show. A mapping edit still applies
+// while paused, through a remap run that reads nothing from ClickUp, and
+// Disconnect works from any state.
 
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -41,6 +51,10 @@ impl OpError {
 }
 
 type OpResult<T> = Result<T, OpError>;
+
+/// The refusal of a Sync now or a one-ticket re-sync on a paused sync.
+pub const PAUSED: &str =
+    "the ClickUp sync is paused — a board owner resumes it in Board settings → Sync";
 
 /// The two gates. A non-member is refused like a missing board.
 pub async fn require_role(
@@ -317,52 +331,41 @@ pub async fn update(
         }
         None => None,
     };
-    let remap = map.as_ref().is_some_and(|m| *m != sync.status_map);
     if input.paused == Some(false) && sync.state == "needs_credential" {
         return Err(OpError::new(
             409,
             "the sync needs a new credential before it can resume",
         ));
     }
-    let state_next = match input.paused {
-        Some(true) if sync.state == "active" => "paused",
-        Some(false) if sync.state == "paused" => "active",
-        _ => sync.state.as_str(),
-    };
-    let interval = input.interval_minutes.unwrap_or(sync.interval_minutes);
-    sqlx::query(
-        "update board_syncs set \
-           status_map = coalesce($2, status_map), \
-           map_version = map_version + case when $3 then 1 else 0 end, \
-           remap_pending = remap_pending or $3, \
-           options = coalesce($4, options), \
-           interval_minutes = $5, \
-           next_sync_at = case when $5::int is null or $6 <> 'active' then null \
-                               when $7 then now() + ($5::int * interval '1 minute') \
-                               else next_sync_at end, \
-           state = $6, updated_at = now() \
-         where id = $1::uuid",
-    )
-    .bind(&sync.id)
-    .bind(
-        map.as_ref()
+    // The write works the state, and whether the map changed, out from the
+    // row it locks, not from the read above: a mapping or schedule edit that
+    // read the sync a moment before someone pressed Pause leaves the pause in
+    // place, and a map saved over another owner's edit still remaps.
+    let edit = store::SyncEdit {
+        status_map: map
+            .as_ref()
             .map(|m| serde_json::to_value(m).unwrap_or_else(|_| json!({}))),
-    )
-    .bind(remap)
-    .bind(
-        input
+        options: input
             .options
             .as_ref()
             .map(|o| serde_json::to_value(o).unwrap_or_else(|_| json!({}))),
-    )
-    .bind(interval)
-    .bind(state_next)
-    .bind(
-        input.interval_minutes.is_some() || state_next != sync.state || sync.next_sync_ms.is_none(),
-    )
-    .execute(&state.pg)
-    .await
-    .map_err(|e| OpError::internal("sync update", e))?;
+        interval_minutes: input.interval_minutes,
+        paused: input.paused,
+    };
+    let (state_now, interval, remap) = store::write_edit(&state.pg, &sync.id, user_id, &edit)
+        .await
+        .map_err(|e| OpError::internal("sync update", e))?
+        .ok_or_else(|| OpError::new(404, "this board is not connected to ClickUp"))?;
+    // The freeze takes hold now, not at the live run's next step: a run that
+    // reads ClickUp is cancelled (its in-flight step stops at its next await).
+    // A remap run is the owner's own mapping edit and reads nothing; it
+    // finishes.
+    if input.paused == Some(true)
+        && state_now == "paused"
+        && let Err(e) = crate::cancel_live_reads(state, board_id, "the sync was paused").await
+    {
+        tracing::warn!("[board-sync] live run not cancelled on pause of {board_id}: {e}");
+    }
     audit(
         state,
         user_id,
@@ -372,7 +375,7 @@ pub async fn update(
             "statusMap": map,
             "options": input.options,
             "intervalMinutes": interval,
-            "state": state_next,
+            "state": state_now,
         }),
     )
     .await;
@@ -393,6 +396,10 @@ pub async fn update(
 
 // ── credential ──────────────────────────────────────────────────────────────
 
+/// A new token, the mapping, links and history kept. A sync waiting for a
+/// credential turns active and runs, unless it was paused when the old token
+/// died (paused_at is set): then it returns to paused, with no next sync,
+/// because only Resume lifts a pause.
 pub async fn replace_credential(
     state: &AppState,
     board_id: &str,
@@ -419,8 +426,10 @@ pub async fn replace_credential(
         .map_err(|e| OpError::internal("seal", e))?;
     sqlx::query(
         "update board_syncs set credential_sealed = $2, credential_hint = $3, credential_account = $4, \
-           state = case when state = 'needs_credential' then 'active' else state end, \
-           next_sync_at = case when interval_minutes is null then null \
+           state = case when state <> 'needs_credential' then state \
+                        when paused_at is not null then 'paused' else 'active' end, \
+           next_sync_at = case when interval_minutes is null or state = 'paused' \
+                                    or paused_at is not null then null \
                                else now() + (interval_minutes * interval '1 minute') end, \
            run_problems = '[]'::jsonb, updated_at = now() \
          where id = $1::uuid",
@@ -489,7 +498,7 @@ pub async fn disconnect(state: &AppState, board_id: &str, user_id: &str) -> OpRe
 // ── runs ────────────────────────────────────────────────────────────────────
 
 /// Sync now: the live run if one is going, else a new manual run (which
-/// always sweeps).
+/// always sweeps). Refused while the sync waits for a credential or is paused.
 pub async fn sync_now(state: &AppState, board_id: &str, user_id: &str) -> OpResult<Started> {
     require_role(state, user_id, board_id, false).await?;
     let sync = live_sync(&state.pg, board_id)
@@ -502,12 +511,16 @@ pub async fn sync_now(state: &AppState, board_id: &str, user_id: &str) -> OpResu
             "the sync needs a new credential — a board owner replaces it",
         ));
     }
+    if sync.state == "paused" {
+        return Err(OpError::new(409, PAUSED));
+    }
     start_run(state, &sync, Mode::Manual, None)
         .await
         .map_err(|e| OpError::internal("sync now", e))
 }
 
-/// Re-sync one ticket from ClickUp, forced.
+/// Re-sync one ticket from ClickUp, forced. Refused while the sync waits for
+/// a credential, is paused, or is running.
 pub async fn resync_ticket(state: &AppState, task_id: &str, user_id: &str) -> OpResult<String> {
     let board_id = talaria_tasks::task_board_id(&state.pg, task_id)
         .await
@@ -528,6 +541,9 @@ pub async fn resync_ticket(state: &AppState, task_id: &str, user_id: &str) -> Op
             409,
             "the sync needs a new credential — a board owner replaces it",
         ));
+    }
+    if sync.state == "paused" {
+        return Err(OpError::new(409, PAUSED));
     }
     if live_run(&state.pg, &board_id)
         .await

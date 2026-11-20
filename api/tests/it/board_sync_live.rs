@@ -5,13 +5,20 @@
 // dials and every assertion is on those paths — another process on this host
 // may poll a loopback port's `GET /`.
 //
+// The module's tests run in parallel, and the ClickUp base is one process-wide
+// env var: each test that syncs holds CLICKUP while it points the client at its
+// own stand-in (`point_at`). Each such test also reads its own list ids, so a
+// scheduler tick that starts another board's sync never answers for it. They
+// all share one runtime (`RT`), because the runs engine keeps the first
+// AppState it is armed with.
+//
 // House rule: #[ignore]d, never CI's default job.
 //
 //   DATABASE_URL=postgres://… REDIS_URL=redis://… TALARIA_SECRET_KEY=… \
 //     cargo test -p talaria-api --test it board_sync_live:: -- --ignored
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
@@ -24,12 +31,46 @@ use crate::support::{call_json, live_app_state, minted_member_with_email};
 const PREFIX: &str = "board-sync-live";
 const BIG: i64 = 30 * 1024 * 1024;
 
+/// One stand-in at a time (see the header).
+static CLICKUP: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Every test here runs on this one runtime, never a runtime of its own. The
+/// runs engine keeps the first AppState that starts a sync for the life of
+/// the process (`arm_sync_step` is a OnceLock), and a pool lives on the
+/// runtime that opened it: with a runtime per test, each run started after
+/// the first such test ended found that runtime gone, and its step failed
+/// with "pool timed out while waiting for an open connection".
+static RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the module's runtime")
+});
+
+/// Point the ClickUp client at this stand-in, for as long as the guard lives.
+async fn point_at(cu: &StandIn) -> tokio::sync::MutexGuard<'static, ()> {
+    let guard = CLICKUP.lock().await;
+    // SAFETY: written under CLICKUP, before this test's first ClickUp call;
+    // every other test in this module that reads them waits on the same lock.
+    unsafe {
+        std::env::set_var("TALARIA_FETCH_ALLOW_HOSTS", "127.0.0.1");
+        std::env::set_var(talaria_clickup::BASE_ENV, format!("{}/api/v2", cu.base));
+    }
+    guard
+}
+
 /// The stand-in's world. Tasks are served oldest first (the client asks
-/// `reverse=true`), all on page 0. `tasks` are list L1's, `tasks2` list L2's.
+/// `reverse=true`), all on page 0. `tasks` are list L1's, `tasks2` list L2's,
+/// and `lists` holds any other list a test names (its own id, so nothing
+/// another board's sync reads can touch it).
 #[derive(Default)]
 struct World {
     tasks: Vec<Value>,
     tasks2: Vec<Value>,
+    lists: HashMap<String, Vec<Value>>,
+    /// Every answer waits this long first: a run that is still in flight when
+    /// the test acts.
+    delay_ms: u64,
     archived: Vec<Value>,
     comments: HashMap<String, Vec<Value>>,
     replies: HashMap<String, Vec<Value>>,
@@ -69,7 +110,44 @@ fn answer(world: &Mutex<World>, base: &str, path: &str, query: &str) -> (u16, Va
         return (404, json!({"err": "List not found", "ECODE": "ITEM_013"}));
     }
     let seg: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let after: i64 = q
+        .get("date_updated_gt")
+        .and_then(|d| d.parse().ok())
+        .unwrap_or(0);
+    let newer = |t: &&Value| {
+        t["date_updated"]
+            .as_str()
+            .and_then(|d| d.parse::<i64>().ok())
+            .unwrap_or(0)
+            > after
+    };
     match seg.as_slice() {
+        ["api", "v2", "list", lid] if w.lists.contains_key(*lid) => (
+            200,
+            json!({
+                "id": lid, "name": format!("List {lid}"),
+                "task_count": w.lists[*lid].len(),
+                "space": {"id": "S1", "name": "Engineering"},
+                "folder": {"id": "F0", "name": "hidden", "hidden": true},
+                "statuses": [
+                    {"status": "to do", "type": "open", "orderindex": 0},
+                    {"status": "in progress", "type": "custom", "orderindex": 1},
+                    {"status": "ready for review", "type": "custom", "orderindex": 2},
+                    {"status": "blocked", "type": "custom", "orderindex": 3},
+                    {"status": "complete", "type": "closed", "orderindex": 4}
+                ]
+            }),
+        ),
+        ["api", "v2", "list", lid, "task"] if w.lists.contains_key(*lid) => {
+            let first = q.get("page").map(String::as_str).unwrap_or("0") == "0";
+            let live = q.get("archived").map(String::as_str) != Some("true");
+            let tasks: Vec<Value> = if first && live {
+                w.lists[*lid].iter().filter(newer).cloned().collect()
+            } else {
+                vec![]
+            };
+            (200, json!({"tasks": tasks, "last_page": true}))
+        }
         ["api", "v2", "user"] => (
             200,
             json!({"user": {"id": 1, "username": "Sync Bot", "email": "bot@clickup.invalid"}}),
@@ -104,21 +182,8 @@ fn answer(world: &Mutex<World>, base: &str, path: &str, query: &str) -> (u16, Va
             } else {
                 &w.tasks
             };
-            let after: i64 = q
-                .get("date_updated_gt")
-                .and_then(|d| d.parse().ok())
-                .unwrap_or(0);
             let tasks: Vec<Value> = if page == 0 {
-                src.iter()
-                    .filter(|t| {
-                        t["date_updated"]
-                            .as_str()
-                            .and_then(|d| d.parse::<i64>().ok())
-                            .unwrap_or(0)
-                            > after
-                    })
-                    .cloned()
-                    .collect()
+                src.iter().filter(newer).cloned().collect()
             } else {
                 vec![]
             };
@@ -130,6 +195,7 @@ fn answer(world: &Mutex<World>, base: &str, path: &str, query: &str) -> (u16, Va
                 .iter()
                 .chain(w.archived.iter())
                 .chain(w.tasks2.iter())
+                .chain(w.lists.values().flatten())
                 .find(|t| t["id"] == *id)
                 .cloned();
             match found {
@@ -200,6 +266,10 @@ async fn stand_in() -> StandIn {
                     .unwrap_or("")
                     .to_string();
                 let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+                let delay = w.lock().unwrap().delay_ms;
+                if delay > 0 {
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                }
                 let (status, ctype, body): (u16, &str, Vec<u8>) =
                     if let Some(name) = path.strip_prefix("/files/") {
                         w.lock().unwrap().hits.push(path.to_string());
@@ -298,17 +368,16 @@ async fn imported(pg: &PgPool, board: &str) -> Vec<(String, String, String, Opti
     .unwrap()
 }
 
-#[tokio::test]
+#[test]
 #[ignore]
-async fn a_board_syncs_from_a_clickup_list_end_to_end() {
+fn a_board_syncs_from_a_clickup_list_end_to_end() {
+    RT.block_on(a_board_syncs_from_a_clickup_list_end_to_end_run());
+}
+
+async fn a_board_syncs_from_a_clickup_list_end_to_end_run() {
     crate::support::wire_boot_seams();
     let cu = stand_in().await;
-    // SAFETY: set once, before the first ClickUp call, to the values every
-    // reader in this binary may see.
-    unsafe {
-        std::env::set_var("TALARIA_FETCH_ALLOW_HOSTS", "127.0.0.1");
-        std::env::set_var(talaria_clickup::BASE_ENV, format!("{}/api/v2", cu.base));
-    }
+    let _clickup = point_at(&cu).await;
     let state = live_app_state().await;
     let pg = state.pg.clone();
     let tag = uuid::Uuid::new_v4().simple().to_string();
@@ -1003,9 +1072,13 @@ async fn a_board_syncs_from_a_clickup_list_end_to_end() {
     cu.world.lock().unwrap().list_gone = false;
 }
 
-#[tokio::test]
+#[test]
 #[ignore]
-async fn an_imported_message_lands_once_per_import_key() {
+fn an_imported_message_lands_once_per_import_key() {
+    RT.block_on(an_imported_message_lands_once_per_import_key_run());
+}
+
+async fn an_imported_message_lands_once_per_import_key_run() {
     let state = live_app_state().await;
     let pg = state.pg.clone();
     let tag = uuid::Uuid::new_v4().simple().to_string();
@@ -1072,9 +1145,13 @@ async fn an_imported_message_lands_once_per_import_key() {
     assert_eq!(at, 1_700_000_000_000, "the original time");
 }
 
-#[tokio::test]
+#[test]
 #[ignore]
-async fn the_secret_inventory_lists_and_clears_a_sync_credential() {
+fn the_secret_inventory_lists_and_clears_a_sync_credential() {
+    RT.block_on(the_secret_inventory_lists_and_clears_a_sync_credential_run());
+}
+
+async fn the_secret_inventory_lists_and_clears_a_sync_credential_run() {
     let state = live_app_state().await;
     let pg = state.pg.clone();
     let tag = uuid::Uuid::new_v4().simple().to_string();
@@ -1125,4 +1202,676 @@ async fn the_secret_inventory_lists_and_clears_a_sync_credential() {
             .unwrap();
     assert_eq!(state_s, "needs_credential");
     assert!(cipher.is_none());
+}
+
+// ── shared by the pause and workchain tests ─────────────────────────────────
+
+/// A board on the shipped default columns, its owner, and an editor and a
+/// viewer, each named (a pause says who paused). Answers (board, owner id,
+/// [owner, editor, viewer] cookies).
+async fn board_with_people(
+    state: &talaria_state::AppState,
+    tag: &str,
+    name: &str,
+) -> (String, String, [String; 3]) {
+    let pg = &state.pg;
+    let mut ids = Vec::new();
+    let mut cookies = Vec::new();
+    for (who, label) in [
+        ("owner", "Olive Owner"),
+        ("editor", "Eddie Editor"),
+        ("viewer", "Vera Viewer"),
+    ] {
+        let email = format!("{PREFIX}-{who}-{tag}@example.invalid");
+        let (id, cookie) = minted_member_with_email(state, PREFIX, &email).await;
+        sqlx::query("update users set name = $2 where id = $1::uuid")
+            .bind(&id)
+            .bind(label)
+            .execute(pg)
+            .await
+            .unwrap();
+        ids.push(id);
+        cookies.push(cookie);
+    }
+    let (board,): (String,) = sqlx::query_as(
+        "insert into boards (name, owner_id) values ($1, $2::uuid) returning id::text",
+    )
+    .bind(name)
+    .bind(&ids[0])
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    for (uid, role) in ids.iter().zip(["owner", "editor", "viewer"]) {
+        sqlx::query(
+            "insert into board_members (board_id, user_id, role) values ($1::uuid, $2::uuid, $3)",
+        )
+        .bind(&board)
+        .bind(uid)
+        .bind(role)
+        .execute(pg)
+        .await
+        .unwrap();
+    }
+    let owner = ids[0].clone();
+    let [o, e, v]: [String; 3] = cookies.try_into().unwrap();
+    (board, owner, [o, e, v])
+}
+
+/// Replace one task of a stand-in list (status, name, …) as ClickUp would
+/// after an edit there.
+fn set_task(cu: &StandIn, list: &str, task: Value) {
+    let mut w = cu.world.lock().unwrap();
+    let tasks = w.lists.get_mut(list).unwrap();
+    let slot = tasks.iter_mut().find(|t| t["id"] == task["id"]).unwrap();
+    *slot = task;
+}
+
+/// Hits on any path of this list, task reads included.
+fn list_hits(cu: &StandIn, list: &str, tasks: &[&str]) -> usize {
+    let w = cu.world.lock().unwrap();
+    w.hits
+        .iter()
+        .filter(|h| {
+            h.starts_with(&format!("/api/v2/list/{list}"))
+                || tasks
+                    .iter()
+                    .any(|t| h.starts_with(&format!("/api/v2/task/{t}")))
+        })
+        .count()
+}
+
+async fn sync_runs(pg: &PgPool, board: &str) -> i64 {
+    let (n,): (i64,) = sqlx::query_as(
+        "select count(*)::bigint from runs where kind = 'clickup-sync' and subject_id = $1",
+    )
+    .bind(board)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    n
+}
+
+/// Sync now as this person, to the end of its run.
+async fn synced(state: &talaria_state::AppState, board: &str, cookie: &str) -> Value {
+    let (status, body) = call_json(
+        state,
+        "POST",
+        &format!("/api/boards/{board}/sync/runs"),
+        Some(cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let run = body["runId"].as_str().unwrap().to_string();
+    let (s, err) = wait_run(&state.pg, &run).await;
+    assert_eq!(s, "done", "{err:?}");
+    let (result,): (Option<Value>,) = sqlx::query_as("select result from runs where id = $1::uuid")
+        .bind(&run)
+        .fetch_one(&state.pg)
+        .await
+        .unwrap();
+    result.unwrap_or(Value::Null)
+}
+
+// ── pause freezes the sync ───────────────────────────────────────────────────
+
+#[test]
+#[ignore]
+fn a_pause_freezes_the_sync_until_an_owner_resumes_it() {
+    RT.block_on(a_pause_freezes_the_sync_until_an_owner_resumes_it_run());
+}
+
+async fn a_pause_freezes_the_sync_until_an_owner_resumes_it_run() {
+    crate::support::wire_boot_seams();
+    let cu = stand_in().await;
+    let _clickup = point_at(&cu).await;
+    let state = live_app_state().await;
+    let pg = state.pg.clone();
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let list = format!("P{tag}");
+    let task_id = format!("PA{tag}");
+    let (board, owner, [own, ed, view]) = board_with_people(&state, &tag, "Pause board").await;
+    cu.world.lock().unwrap().lists.insert(
+        list.clone(),
+        vec![cu_task(
+            &task_id,
+            "to do",
+            false,
+            1_900_000_000_000,
+            json!({"list": {"id": list}}),
+        )],
+    );
+    let (status, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({
+            "token": "pk_pause_test_token_9876",
+            "listId": list,
+            "statusMap": {"to do": "inbox", "in progress": "in_progress"},
+            "intervalMinutes": 15
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (s, err) = wait_run(&pg, body["runId"].as_str().unwrap()).await;
+    assert_eq!(s, "done", "{err:?}");
+    let original = format!("ClickUp task {task_id}");
+    assert_eq!(ticket(&pg, &board, &task_id).await["title"], original);
+    let ticket_id = ticket(&pg, &board, &task_id).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // ClickUp renames the task; every later read would bring the new name.
+    set_task(
+        &cu,
+        &list,
+        cu_task(
+            &task_id,
+            "to do",
+            false,
+            1_900_000_100_000,
+            json!({"list": {"id": list}, "name": "Renamed in ClickUp while paused"}),
+        ),
+    );
+
+    // ── Pause stops the run already in flight ──────────────────────────────
+    // An editor's Sync now, slowed so it is mid-walk when the owner pauses.
+    cu.world.lock().unwrap().delay_ms = 1_500;
+    let (status, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/boards/{board}/sync/runs"),
+        Some(&ed),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let in_flight = body["runId"].as_str().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"paused": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let sync = &body["sync"];
+    assert_eq!(sync["state"], "paused");
+    assert_eq!(sync["pausedBy"]["id"], owner.as_str(), "{sync}");
+    assert_eq!(sync["pausedBy"]["name"], "Olive Owner");
+    assert!(sync["pausedAt"].is_string(), "{sync}");
+    assert!(
+        sync["nextSyncAt"].is_null(),
+        "a paused sync has no next sync"
+    );
+    let (s, _) = wait_run(&pg, &in_flight).await;
+    assert!(
+        s == "cancelled" || s == "done",
+        "the run in flight ended on the pause, not by finishing: {s}"
+    );
+    cu.world.lock().unwrap().delay_ms = 0;
+    // A request the cancelled run sent before the pause is still answering
+    // (slowly): let it land before anything counts ClickUp's hits.
+    tokio::time::sleep(Duration::from_millis(2_000)).await;
+    assert_eq!(
+        ticket(&pg, &board, &task_id).await["title"],
+        original,
+        "the run in flight applied nothing after the pause"
+    );
+
+    // Replacing the token keeps the pause, with no next sync and no run. (It
+    // asks ClickUp whether the new token works — a check, not a sync.)
+    let runs = sync_runs(&pg, &board).await;
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync/credential"),
+        Some(&own),
+        Some(json!({"token": "pk_pause_second_token_5432"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"]["state"], "paused");
+    assert!(body["sync"]["nextSyncAt"].is_null(), "{}", body["sync"]);
+    assert_eq!(sync_runs(&pg, &board).await, runs);
+
+    // ── nothing reads ClickUp while paused ─────────────────────────────────
+    let hits = list_hits(&cu, &list, &[&task_id]);
+    let runs = sync_runs(&pg, &board).await;
+
+    // The schedule: overdue on paper, and the scheduler's tick still starts
+    // nothing — it claims only active connections.
+    sqlx::query(
+        "update board_syncs set next_sync_at = now() - interval '10 minutes' \
+         where board_id = $1::uuid and state <> 'disconnected'",
+    )
+    .bind(&board)
+    .execute(&pg)
+    .await
+    .unwrap();
+    talaria_board_sync::job::tick(&state).await.unwrap();
+    assert_eq!(
+        sync_runs(&pg, &board).await,
+        runs,
+        "the schedule started a run"
+    );
+
+    // Sync now and a one-ticket re-sync: refused, for the owner and the
+    // editor alike, with the sentence that says who resumes it.
+    for cookie in [&own, &ed] {
+        let (status, body) = call_json(
+            &state,
+            "POST",
+            &format!("/api/boards/{board}/sync/runs"),
+            Some(cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], talaria_board_sync::ops::PAUSED);
+        let (status, body) = call_json(
+            &state,
+            "POST",
+            &format!("/api/tasks/{ticket_id}/resync"),
+            Some(cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], talaria_board_sync::ops::PAUSED);
+    }
+    // A run that raced the pause (started on another instance a moment
+    // before) stops at its first step.
+    let row = talaria_board_sync::store::live_sync(&pg, &board)
+        .await
+        .unwrap()
+        .unwrap();
+    let raced = talaria_board_sync::start_run(&state, &row, talaria_board_sync::Mode::Manual, None)
+        .await
+        .unwrap();
+    let (s, err) = wait_run(&pg, raced.id()).await;
+    assert_eq!(s, "done", "{err:?}");
+    let (result,): (Option<Value>,) = sqlx::query_as("select result from runs where id = $1::uuid")
+        .bind(raced.id())
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(result.unwrap()["stopped"], "the sync is paused");
+
+    // Every member sees who paused it, and an editor cannot resume it.
+    let (status, st) = call_json(
+        &state,
+        "GET",
+        &format!("/api/boards/{board}/sync"),
+        Some(&view),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(st["sync"]["state"], "paused");
+    assert_eq!(st["sync"]["pausedBy"]["name"], "Olive Owner");
+    let (status, _) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&ed),
+        Some(json!({"paused": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // The owner's mapping edit still applies, with no ClickUp read: a remap.
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"statusMap": {"to do": "blocked", "in progress": "in_progress"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // An edit that names no pause leaves it: the state, who pressed it and
+    // the empty next sync come from the row the write changes, not from a
+    // read made before someone pressed Pause.
+    assert_eq!(body["sync"]["state"], "paused", "{}", body["sync"]);
+    assert_eq!(body["sync"]["pausedBy"]["name"], "Olive Owner");
+    assert!(body["sync"]["nextSyncAt"].is_null(), "{}", body["sync"]);
+    let end = Instant::now() + Duration::from_secs(60);
+    while ticket(&pg, &board, &task_id).await["status"] != "blocked" && Instant::now() < end {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(ticket(&pg, &board, &task_id).await["status"], "blocked");
+    if let Some((id, _)) = talaria_board_sync::live_run(&pg, &board).await.unwrap() {
+        wait_run(&pg, &id).await;
+    }
+    assert_eq!(
+        list_hits(&cu, &list, &[&task_id]),
+        hits,
+        "ClickUp was read while the sync was paused"
+    );
+    assert_eq!(ticket(&pg, &board, &task_id).await["title"], original);
+
+    // A schedule edit keeps the pause too, and takes effect on Resume.
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"intervalMinutes": 60})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"]["state"], "paused", "{}", body["sync"]);
+    assert_eq!(body["sync"]["intervalMinutes"], 60);
+    assert_eq!(body["sync"]["pausedBy"]["id"], owner.as_str());
+    assert!(body["sync"]["nextSyncAt"].is_null(), "{}", body["sync"]);
+
+    // ── Resume: active, the record cleared, and Sync now reads again ───────
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"paused": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"]["state"], "active");
+    assert!(body["sync"]["pausedBy"].is_null());
+    assert!(body["sync"]["pausedAt"].is_null());
+    assert!(
+        body["sync"]["nextSyncAt"].is_string(),
+        "the schedule is back"
+    );
+    synced(&state, &board, &ed).await;
+    assert_eq!(
+        ticket(&pg, &board, &task_id).await["title"],
+        "Renamed in ClickUp while paused",
+        "the editor's Sync now after Resume applies what ClickUp changed"
+    );
+    assert!(list_hits(&cu, &list, &[&task_id]) > hits);
+    let (status, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/tasks/{ticket_id}/resync"),
+        Some(&ed),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (s, err) = wait_run(&pg, body["runId"].as_str().unwrap()).await;
+    assert_eq!(s, "done", "{err:?}");
+
+    let (status, _) = call_json(
+        &state,
+        "DELETE",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+// ── workchains: only a move into a done column hands a step on ──────────────
+
+/// The real push side, the way the process wires it at boot (talaria-jobs):
+/// a write's detached dispatch offer reaches work dispatch, so a step that
+/// becomes ready enqueues a real work-session row for its agent.
+fn wire_dispatch() {
+    let _ = talaria_tasks_types::BUILD_DISPATCH
+        .set(std::sync::Arc::new(talaria_work_dispatch::dispatch_deps));
+    let _ = talaria_tasks_types::MAYBE_DISPATCH_TICKET.set(std::sync::Arc::new(
+        |pg, dispatch, ticket, only_agents| {
+            Box::pin(async move {
+                let Some(deps) = dispatch else { return };
+                talaria_work_dispatch::maybe_dispatch_ticket(
+                    &pg,
+                    &deps,
+                    &ticket,
+                    only_agents.as_deref(),
+                )
+                .await;
+            })
+        },
+    ));
+}
+
+async fn work_sessions(pg: &PgPool, task: &str) -> i64 {
+    let (n,): (i64,) = sqlx::query_as(
+        "select count(*)::bigint from runs where kind = 'work-session' and subject_id = $1",
+    )
+    .bind(task)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    n
+}
+
+async fn step_blocked(pg: &PgPool, board: &str, task: &str) -> bool {
+    let meta = talaria_statuses::status_meta(pg, board).await.unwrap();
+    let metas = HashMap::from([(board.to_string(), meta)]);
+    talaria_tasks::workchain_blocked(pg, &metas, &[task.to_string()])
+        .await
+        .unwrap()
+        .contains(task)
+}
+
+#[test]
+#[ignore]
+fn only_a_sync_move_into_a_done_column_hands_a_workchain_step_on() {
+    RT.block_on(only_a_sync_move_into_a_done_column_hands_a_workchain_step_on_run());
+}
+
+async fn only_a_sync_move_into_a_done_column_hands_a_workchain_step_on_run() {
+    crate::support::wire_boot_seams();
+    wire_dispatch();
+    let cu = stand_in().await;
+    let _clickup = point_at(&cu).await;
+    let state = live_app_state().await;
+    let pg = state.pg.clone();
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let list = format!("W{tag}");
+    let ext = format!("WA{tag}");
+    let (board, _owner, [own, _, _]) = board_with_people(&state, &tag, "Chain board").await;
+    let at = |n: i64| 1_900_000_000_000 + n * 1_000;
+    let task = |status: &str, n: i64| {
+        cu_task(
+            &ext,
+            status,
+            status == "complete",
+            at(n),
+            json!({"list": {"id": list}}),
+        )
+    };
+    cu.world
+        .lock()
+        .unwrap()
+        .lists
+        .insert(list.clone(), vec![task("to do", 0)]);
+    let (status, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({
+            "token": "pk_chain_test_token_2468",
+            "listId": list,
+            "statusMap": {
+                "to do": "inbox",
+                "in progress": "in_progress",
+                "ready for review": "quality_review",
+                "blocked": "blocked",
+                "complete": "done"
+            },
+            "intervalMinutes": null
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (s, err) = wait_run(&pg, body["runId"].as_str().unwrap()).await;
+    assert_eq!(s, "done", "{err:?}");
+    let pred = ticket(&pg, &board, &ext).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The successor: a Talaria ticket for an agent, waiting in a pickup
+    // column behind the synced step — every dispatch gate but the chain's
+    // says go.
+    let model = format!("{PREFIX}-chain-{tag}");
+    sqlx::query(
+        "insert into agent_defs (slug, department, model, display_name) \
+         values ($1, 'personal', $1, 'Chain Successor Agent')",
+    )
+    .bind(&model)
+    .execute(&pg)
+    .await
+    .unwrap();
+    sqlx::query("insert into board_agents (board_id, agent_model) values ($1::uuid, $2)")
+        .bind(&board)
+        .bind(&model)
+        .execute(&pg)
+        .await
+        .unwrap();
+    let (succ,): (String,) = sqlx::query_as(
+        "insert into tasks (board_id, title, status, priority, created_by, assignees) \
+         values ($1::uuid, 'Successor step', 'assigned', 'medium', 'user', $2::jsonb) returning id::text",
+    )
+    .bind(&board)
+    .bind(json!([model]))
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    let (status, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/boards/{board}/workchains"),
+        Some(&own),
+        Some(json!({"name": "Sync hand-off"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let chain = body["workchain"]["id"].as_str().unwrap().to_string();
+    for step in [&pred, &succ] {
+        let (status, body) = call_json(
+            &state,
+            "POST",
+            &format!("/api/workchains/{chain}/steps"),
+            Some(&own),
+            Some(json!({"taskId": step})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    assert!(step_blocked(&pg, &board, &succ).await);
+
+    // Every move that is not a close: the step stays live, the successor
+    // stays blocked, and nothing is offered to its agent.
+    let mut n = 0;
+    for (clickup, column, person_first) in [
+        ("ready for review", "quality_review", None),
+        // A close while the ticket sits in review is held: leaving review is
+        // the reviewer's call, so it is not a close here either.
+        ("complete", "quality_review", None),
+        ("blocked", "blocked", Some("inbox")),
+        // Out of Blocked is a person's call: held.
+        ("in progress", "blocked", None),
+        ("in progress", "in_progress", Some("inbox")),
+    ] {
+        if let Some(col) = person_first {
+            // A person moves the ticket on in Talaria first.
+            sqlx::query("update tasks set status = $2 where id = $1::uuid")
+                .bind(&pred)
+                .bind(col)
+                .execute(&pg)
+                .await
+                .unwrap();
+        }
+        n += 1;
+        set_task(&cu, &list, task(clickup, n));
+        synced(&state, &board, &own).await;
+        assert_eq!(
+            ticket(&pg, &board, &ext).await["status"],
+            column,
+            "ClickUp \"{clickup}\""
+        );
+        // The hand-off and its dispatch are detached from the write: give a
+        // leaked one time to land before saying it did not.
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        assert!(
+            step_blocked(&pg, &board, &succ).await,
+            "ClickUp \"{clickup}\" handed the step on"
+        );
+        assert_eq!(
+            work_sessions(&pg, &succ).await,
+            0,
+            "ClickUp \"{clickup}\" started the successor's agent"
+        );
+    }
+    let (paused,): (bool,) =
+        sqlx::query_as("select paused from task_workchains where id = $1::uuid")
+            .bind(&chain)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert!(!paused, "no sync move pauses the chain");
+
+    // The close, mapped to done, outside review and Blocked: a done move like
+    // a person's — the step hands on and the successor's agent is offered it.
+    set_task(&cu, &list, task("complete", n + 1));
+    synced(&state, &board, &own).await;
+    let p = ticket(&pg, &board, &ext).await;
+    assert_eq!(p["status"], "done");
+    assert!(
+        p["approved_at"].is_null(),
+        "the sync never signs anything off"
+    );
+    let (line,): (String,) = sqlx::query_as(
+        "select description from task_activity where task_id = $1::uuid \
+         and description like 'moved to done%' order by created_at desc limit 1",
+    )
+    .bind(&pred)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(line, "moved to done (closed in ClickUp)");
+    let end = Instant::now() + Duration::from_secs(15);
+    while work_sessions(&pg, &succ).await == 0 && Instant::now() < end {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        !step_blocked(&pg, &board, &succ).await,
+        "the step handed on"
+    );
+    assert_eq!(
+        work_sessions(&pg, &succ).await,
+        1,
+        "the successor's agent was offered the work once"
+    );
+
+    sqlx::query("delete from runs where kind = 'work-session' and subject_id = $1")
+        .bind(&succ)
+        .execute(&pg)
+        .await
+        .unwrap();
+    sqlx::query("delete from agent_defs where model = $1")
+        .bind(&model)
+        .execute(&pg)
+        .await
+        .unwrap();
+    let (status, _) = call_json(
+        &state,
+        "DELETE",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
 }

@@ -83,7 +83,16 @@
   import WorkbenchTicker from './WorkbenchTicker.svelte'
   import RunDetailModal from './RunDetailModal.svelte'
   import { useWorkSession } from '@/lib/work-session.svelte'
-  import { clickupTaskId, clickupTaskUrl, resyncOutcome, resyncTicket, syncKey, useBoardSync } from '@/lib/board-sync'
+  import {
+    actorLabel,
+    clickupTaskId,
+    clickupTaskUrl,
+    pausedHint,
+    resyncOutcome,
+    resyncTicket,
+    syncKey,
+    useBoardSync,
+  } from '@/lib/board-sync'
   import { pushToast, toastError } from '@/lib/toast.svelte'
   import RemoteStateChip from './RemoteStateChip.svelte'
 
@@ -364,12 +373,13 @@
   // same read as the header chip's) says whether that task is still active in
   // ClickUp and whether the board still syncs; "Re-sync from ClickUp" forces
   // this one ticket to ClickUp's values (docs/BOARD-SYNC.md) and is an owner's
-  // or editor's, like Sync now.
+  // or editor's, like Sync now — and, like it, off while the sync is paused.
   const syncQuery = useBoardSync(() => board.id)
   const boardSync = $derived(syncQuery.data?.sync ?? null)
   const clickupId = $derived(clickupTaskId(t?.externalKey))
   const remoteState = $derived(t ? boardSync?.remoteStates[t.id] : undefined)
-  const openedBy = $derived(t?.createdBy === 'clickup-sync' ? 'ClickUp sync' : t?.createdBy)
+  const openedBy = $derived(actorLabel(t?.createdBy))
+  const resyncPaused = $derived(boardSync?.state === 'paused')
   // The re-sync this view started: its run, the ticket it is for, and when
   // the POST answered — a projection read before then predates the run and
   // says nothing about it. `resyncPending` covers the POST itself, so a
@@ -543,8 +553,8 @@
             {#if clickupId && boardSync && canEdit}
               <IconButton
                 size="sm"
-                title={resyncing || resyncPending ? 'Re-syncing from ClickUp…' : boardSync.liveRun ? 'A sync is running on this board — re-sync when it finishes' : boardSync.state === 'needs_credential' ? 'The board’s sync needs a new token — a board owner replaces it in Board settings → Sync' : 'Re-sync from ClickUp'}
-                disabled={!!resyncing || resyncPending || !!boardSync.liveRun || boardSync.state === 'needs_credential'}
+                title={resyncing || resyncPending ? 'Re-syncing from ClickUp…' : resyncPaused ? `Re-sync from ClickUp is off: ${pausedHint(boardSync, Date.now(), board.role === 'owner')}` : boardSync.liveRun ? 'A sync is running on this board — re-sync when it finishes' : boardSync.state === 'needs_credential' ? 'The board’s sync needs a new token — a board owner replaces it in Board settings → Sync' : 'Re-sync from ClickUp'}
+                disabled={!!resyncing || resyncPending || resyncPaused || !!boardSync.liveRun || boardSync.state === 'needs_credential'}
                 onclick={() => void resync()}
                 data-resync
               >
@@ -744,7 +754,7 @@
             <ul class="min-h-0 flex-1 space-y-1 overflow-y-auto px-5 py-3" use:listStagger>
               {#each data!.activity as a (a.id)}
                 <li in:fade={{ duration: 150 }} out:fade={QUICK} class="flex items-center gap-2 text-xs text-muted">
-                  <span class="font-mono text-[11px] tracking-[0.05em] text-accent">{a.actor}</span>
+                  <span class="font-mono text-[11px] tracking-[0.05em] text-accent">{actorLabel(a.actor)}</span>
                   <span class="min-w-0 flex-1 truncate font-sans">{a.description}</span>
                   <span class="shrink-0 font-mono text-[10px] tracking-[0.05em]">{relativeTime(a.createdAt)}</span>
                 </li>

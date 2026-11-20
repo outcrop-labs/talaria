@@ -6,10 +6,14 @@
 // pinned by board-sync.test.ts.
 //
 // WHO: any board member reads the status (the chip, a ticket's source line);
-// an owner connects, edits the mapping and cadence, replaces the credential and
-// disconnects; an owner or editor presses Sync now or re-syncs one ticket. The
-// server enforces every one of those — the UI only stops offering what it
-// would refuse.
+// an owner connects, edits the mapping and cadence, pauses and resumes,
+// replaces the credential and disconnects; an owner or editor presses Sync now
+// or re-syncs one ticket — never while the sync is paused. The server enforces
+// every one of those — the UI only stops offering what it would refuse.
+//
+// A PAUSE FREEZES THE SYNC (talaria-board-sync ops.rs): no scheduled run, no
+// Sync now, no ticket re-sync until an owner resumes it. Every surface says who
+// paused it and when (`pausedLine`), and how it resumes.
 
 import { createQuery } from '@tanstack/svelte-query'
 import { delJson, getJson, postJson, putJson } from '@/lib/fetch-json'
@@ -91,6 +95,9 @@ export interface BoardSync {
   liveRun: { id: string; phase: string } | null
   lastRun: SyncRun | null
   connectedBy: { id: string; name: string | null; email: string | null; onBoard: boolean } | null
+  /** Who paused the sync, while it is paused; null when nobody is on record. */
+  pausedBy: { id: string; name: string | null; email: string | null } | null
+  pausedAt: string | null
   warnings: SyncWarning[]
   problems: SyncProblem[]
   problemCount: number
@@ -310,11 +317,26 @@ export interface ChipView {
 
 const runProblem = (sync: BoardSync, kind: string) => sync.problems.find((p) => p.kind === kind && !p.ticketId)
 
+/** "Paused by Olive Owner · 5m ago": who froze the sync and since when, as much
+ *  of it as is on record (a pause from before the record says only "Paused"). */
+export function pausedLine(sync: Pick<BoardSync, 'pausedBy' | 'pausedAt'>, now: number): string {
+  const who = sync.pausedBy?.name || sync.pausedBy?.email || null
+  const when = ago(sync.pausedAt, now)
+  return `Paused${who ? ` by ${who}` : ''}${when ? ` · ${when}` : ''}`
+}
+
+/** Why Sync now and a ticket's re-sync are off while the sync is paused — the
+ *  engine's 409 in the reader's terms. `canResume`: the reader is an owner. */
+export function pausedHint(sync: Pick<BoardSync, 'pausedBy' | 'pausedAt'>, now: number, canResume: boolean): string {
+  return `${pausedLine(sync, now)} — ${canResume ? 'resume it in Board settings → Sync to sync again' : 'a board owner resumes it in Board settings → Sync'}`
+}
+
 /** What the board's chip says, most urgent first: a dead credential, a run
- *  going, a list that is gone, a failed run, paused, the schedule switched off
+ *  going, paused, a list that is gone, a failed run, the schedule switched off
  *  on this instance, overdue, then the last sync. NEVER SILENTLY STALE — every
- *  state the projection can be in has words here. */
-export function chipView(sync: BoardSync, now: number): ChipView {
+ *  state the projection can be in has words here. `canResume` (the reader is a
+ *  board owner) picks how a paused sync's sentence ends. */
+export function chipView(sync: BoardSync, now: number, opts: { canResume?: boolean } = {}): ChipView {
   if (sync.state === 'needs_credential') {
     return {
       tone: 'danger',
@@ -325,6 +347,17 @@ export function chipView(sync: BoardSync, now: number): ChipView {
   if (sync.liveRun) {
     return { tone: 'live', text: 'syncing', detail: sync.liveRun.phase || 'Starting the sync' }
   }
+  const last = ago(sync.lastSyncedAt, now)
+  if (sync.state === 'paused') {
+    // A PAUSE FREEZES THE SYNC: nothing runs until an owner resumes it, so it
+    // outranks what the last run said (that comes back on Resume, if it still
+    // holds). A live run while paused is a mapping edit's remap, above.
+    return {
+      tone: 'idle',
+      text: 'paused',
+      detail: `${pausedLine(sync, now)} — ${opts.canResume ? 'resume to sync' : 'nothing syncs until a board owner resumes it'}. ${last ? `Last synced ${last}.` : 'It has not synced yet.'}`,
+    }
+  }
   const gone = runProblem(sync, 'list-gone')
   if (gone) return { tone: 'danger', text: 'list not found', detail: gone.detail }
   if (sync.lastRun?.state === 'error') {
@@ -332,16 +365,6 @@ export function chipView(sync: BoardSync, now: number): ChipView {
       tone: 'danger',
       text: 'last sync failed',
       detail: sync.lastRun.error ? `The last sync failed: ${sync.lastRun.error}` : 'The last sync failed.',
-    }
-  }
-  const last = ago(sync.lastSyncedAt, now)
-  if (sync.state === 'paused') {
-    // Pausing holds the SCHEDULE only (run.rs stops a scheduled run of a paused
-    // sync, nothing else): Sync now and a ticket's re-sync still run.
-    return {
-      tone: 'idle',
-      text: 'paused',
-      detail: `Paused: scheduled syncs are held; Sync now still runs. ${last ? `Last synced ${last}.` : 'It has not synced yet.'}`,
     }
   }
   // Before `overdue`: with the schedule off on this instance nothing advances
@@ -528,6 +551,15 @@ export function runSummary(result: Record<string, unknown> | null | undefined): 
 }
 
 // ── A synced ticket ─────────────────────────────────────────────────────────
+
+/** Who the sync is on a ticket: its `createdBy` and the actor of its activity
+ *  lines (talaria-board-sync SYNC_ACTOR). */
+export const SYNC_ACTOR = 'clickup-sync'
+
+/** A ticket's actor as a person reads it: the sync's id is "ClickUp sync". */
+export function actorLabel<T extends string | null | undefined>(actor: T): T | 'ClickUp sync' {
+  return actor === SYNC_ACTOR ? 'ClickUp sync' : actor
+}
 
 /** The ClickUp task id behind a ticket's `externalKey` ('clickup:<id>'), or null. */
 export function clickupTaskId(externalKey: string | null | undefined): string | null {
