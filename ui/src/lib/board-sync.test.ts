@@ -14,10 +14,12 @@ import {
   clickupTaskId,
   clickupTaskUrl,
   landsIn,
+  lastRunNote,
   mappingRows,
   mappingTargets,
   pollWhileLive,
   remoteStateLabel,
+  resyncOutcome,
   runSummary,
   sameMap,
   statusMapOf,
@@ -142,6 +144,24 @@ describe('chipView — never silently stale', () => {
     expect(off.tone).toBe('warn')
     expect(off.detail).toMatch(/Scheduled syncs are off/)
   })
+
+  it('paused holds the schedule only, and says Sync now still runs', () => {
+    expect(chipView(sync({ state: 'paused' }), NOW).detail).toMatch(/scheduled syncs are held; Sync now still runs\. Last synced 12m ago/)
+    expect(chipView(sync({ state: 'paused', lastSyncedAt: null }), NOW).detail).toMatch(/has not synced yet/)
+  })
+
+  it('with the schedule off on the instance, a scheduled connection names the switch, not an overdue run', () => {
+    // Nothing advances next_sync_at while the scheduler is off, so the
+    // projection's `overdue` stays true for good — the switch is the reason.
+    const off = chipView(sync({ schedulerArmed: false, overdue: true, nextSyncAt: iso(-3 * 60 * MIN) }), NOW)
+    expect(off).toMatchObject({ tone: 'warn', text: 'synced 12m ago' })
+    expect(off.detail).toMatch(/Scheduled syncs are off on this instance — use Sync now/)
+    const fresh = chipView(sync({ schedulerArmed: false, overdue: true, lastSyncedAt: null }), NOW)
+    expect(fresh).toMatchObject({ tone: 'warn', text: 'not synced yet' })
+    expect(fresh.detail).toMatch(/Scheduled syncs are off/)
+    // A manual connection is not scheduled, so the switch is not its story.
+    expect(chipView(sync({ schedulerArmed: false, intervalMinutes: null }), NOW).tone).toBe('ok')
+  })
 })
 
 describe('polling', () => {
@@ -223,6 +243,28 @@ describe('runs and tickets', () => {
     expect(runSummary({ checked: 8 })).toBe('8 checked, nothing changed')
     expect(runSummary({ stopped: 'the sync is paused' })).toBe('Stopped: the sync is paused.')
     expect(runSummary(null)).toBeNull()
+  })
+
+  it('a ticket or remap run is named for what it was, not read as the board’s last sync', () => {
+    expect(lastRunNote({ mode: 'manual', created: 2, checked: 2 })).toBe('2 new')
+    expect(lastRunNote({ mode: 'scheduled', checked: 8 })).toBe('8 checked, nothing changed')
+    expect(lastRunNote({ mode: 'ticket', updated: 1, checked: 1 })).toBe('latest run re-synced one ticket')
+    expect(lastRunNote({ mode: 'remap', updated: 3 })).toBe('latest run applied the mapping (3 updated)')
+    expect(lastRunNote({ mode: 'remap' })).toBe('latest run applied the mapping')
+    expect(lastRunNote({ stopped: 'the sync is paused' })).toBe('Stopped: the sync is paused.')
+    expect(lastRunNote(null)).toBeNull()
+  })
+
+  it('a re-sync is over when its run finished, or when a later run took the latest slot', () => {
+    const run = (id: string, state: 'running' | 'done' | 'error' | 'cancelled') =>
+      ({ id, state, error: null, result: null, finishedAt: null }) as const
+    expect(resyncOutcome(sync({ liveRun: { id: 'rs', phase: 'x' }, lastRun: run('rs', 'running') }), 'rs')).toBe('going')
+    expect(resyncOutcome(sync({ lastRun: run('rs', 'done') }), 'rs')).toBe('done')
+    expect(resyncOutcome(sync({ lastRun: run('rs', 'error') }), 'rs')).toBe('error')
+    expect(resyncOutcome(sync({ lastRun: run('rs', 'cancelled') }), 'rs')).toBe('error')
+    // The schedule held back behind the re-sync started the moment it ended.
+    expect(resyncOutcome(sync({ liveRun: { id: 'next', phase: 'x' }, lastRun: run('next', 'running') }), 'rs')).toBe('ended')
+    expect(resyncOutcome(sync({ lastRun: run('next', 'done') }), 'rs')).toBe('ended')
   })
 
   it('reads the ClickUp task behind a ticket and links to it', () => {

@@ -22,8 +22,8 @@
     disconnectBoardSync,
     mappingRows,
     mappingTargets,
+    lastRunNote,
     replaceSyncCredential,
-    runSummary,
     sameMap,
     statusMapOf,
     syncIntake,
@@ -152,7 +152,7 @@
     { key: 'notifyApps', label: 'Tell apps about synced tickets', hint: 'Apps on this board hear ticket.created and ticket.moved for the sync’s writes.' },
   ]
   const fullTime = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : undefined)
-  const summary = $derived(runSummary(sync.lastRun?.result))
+  const summary = $derived(lastRunNote(sync.lastRun?.result))
 </script>
 
 <div class="space-y-5" data-sync-connected data-sync-state={sync.state}>
@@ -189,8 +189,8 @@
           <Button
             variant="outline"
             size="sm"
-            disabled={!!busy || !!sync.liveRun || sync.state !== 'active'}
-            title={sync.state === 'paused' ? 'Resume the sync first' : sync.state === 'needs_credential' ? 'The sync needs a new token first' : undefined}
+            disabled={!!busy || !!sync.liveRun || sync.state === 'needs_credential'}
+            title={sync.state === 'needs_credential' ? 'The sync needs a new token first' : sync.state === 'paused' ? 'Paused holds only the schedule — Sync now still runs' : undefined}
             onclick={() => void runNow()}
           >
             {sync.liveRun ? 'Syncing…' : 'Sync now'}

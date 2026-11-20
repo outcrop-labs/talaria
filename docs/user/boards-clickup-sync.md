@@ -115,14 +115,18 @@ The chip beside the gear always says where the sync stands:
 | **synced 12m ago** | All is well. Open it for the next sync time |
 | **syncing** | A sync is running; the panel shows what it is doing, page by page |
 | **not synced yet** | The first sync has not finished |
-| **paused** | An owner paused it. Board settings → sync → **Resume** |
+| **paused** | An owner paused the schedule. **Sync now** and a ticket's re-sync still run. Board settings → sync → **Resume** |
 | **sync overdue** (amber) | A scheduled sync is more than five minutes late. Press **Sync now** |
 | **needs a new token** (red) | ClickUp refused the token — see below |
 | **list not found** (red) | The list was deleted, or the token's member can no longer see it |
 | **last sync failed** (red) | The panel says why |
 
 A number on the chip is how many problems are open. When scheduled syncs are switched off on
-your instance, the chip says so and **Sync now** still works.
+your instance, the chip says so (amber, not "overdue") and **Sync now** still works.
+
+The panel's **Last run** line is the latest run of any kind. After a ticket's **Re-sync from
+ClickUp** or a mapping change it names that run ("latest run re-synced one ticket") rather
+than reading as the board's last sync, which is the time on the **Last sync** line.
 
 ## Problems, and how to fix each
 

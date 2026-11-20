@@ -1,8 +1,10 @@
 <script lang="ts">
   import { ExternalLink } from '@lucide/svelte'
   import Button from '@/components/ui/Button.svelte'
+  import { searchParams } from 'sv-router'
   import { navigate } from '@/router'
   import type { SyncProblem } from '@/lib/board-sync'
+  import { ticketSearch } from './board-settings'
 
   // The sync's CURRENT problems — what a person can act on now, not a log:
   // per ticket (an unmapped status, an assignee who is not on the board, a file
@@ -27,9 +29,11 @@
 
   let all = $state(false)
   const visible = $derived(all ? problems : problems.slice(0, shown))
+  // The board's view and filters ride along (the ticket overlays the view it
+  // was opened from); only the settings modal's own `?settings=` is dropped.
   const openTicket = (taskId: string) => {
     onLeave?.()
-    void navigate('/boards/:boardId/:taskId', { params: { boardId, taskId } })
+    void navigate('/boards/:boardId/:taskId', { params: { boardId, taskId }, search: ticketSearch(searchParams.toString()) })
   }
 </script>
 

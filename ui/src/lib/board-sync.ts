@@ -311,9 +311,9 @@ export interface ChipView {
 const runProblem = (sync: BoardSync, kind: string) => sync.problems.find((p) => p.kind === kind && !p.ticketId)
 
 /** What the board's chip says, most urgent first: a dead credential, a run
- *  going, a list that is gone, a failed run, paused, overdue, then the last
- *  sync. NEVER SILENTLY STALE — every state the projection can be in has
- *  words here. */
+ *  going, a list that is gone, a failed run, paused, the schedule switched off
+ *  on this instance, overdue, then the last sync. NEVER SILENTLY STALE — every
+ *  state the projection can be in has words here. */
 export function chipView(sync: BoardSync, now: number): ChipView {
   if (sync.state === 'needs_credential') {
     return {
@@ -336,7 +336,23 @@ export function chipView(sync: BoardSync, now: number): ChipView {
   }
   const last = ago(sync.lastSyncedAt, now)
   if (sync.state === 'paused') {
-    return { tone: 'idle', text: 'paused', detail: last ? `Paused. Last synced ${last}.` : 'Paused before its first sync.' }
+    // Pausing holds the SCHEDULE only (run.rs stops a scheduled run of a paused
+    // sync, nothing else): Sync now and a ticket's re-sync still run.
+    return {
+      tone: 'idle',
+      text: 'paused',
+      detail: `Paused: scheduled syncs are held; Sync now still runs. ${last ? `Last synced ${last}.` : 'It has not synced yet.'}`,
+    }
+  }
+  // Before `overdue`: with the schedule off on this instance nothing advances
+  // next_sync_at (only the scheduler's claim does), so every scheduled
+  // connection reads overdue for good — the reason is the switch, not a late run.
+  if (sync.intervalMinutes != null && !sync.schedulerArmed) {
+    return {
+      tone: 'warn',
+      text: last ? `synced ${last}` : 'not synced yet',
+      detail: `${last ? `Last synced ${last}.` : 'It has not synced yet.'} Scheduled syncs are off on this instance — use Sync now.`,
+    }
   }
   if (sync.overdue) {
     return {
@@ -348,13 +364,6 @@ export function chipView(sync: BoardSync, now: number): ChipView {
   if (!last) return { tone: 'idle', text: 'not synced yet', detail: 'The first sync has not finished yet.' }
   if (sync.intervalMinutes == null) {
     return { tone: 'ok', text: `synced ${last}`, detail: `Last synced ${last}. Manual: it syncs only on Sync now.` }
-  }
-  if (!sync.schedulerArmed) {
-    return {
-      tone: 'warn',
-      text: `synced ${last}`,
-      detail: `Last synced ${last}. Scheduled syncs are off on this instance — use Sync now.`,
-    }
   }
   const next = until(sync.nextSyncAt, now)
   return { tone: 'ok', text: `synced ${last}`, detail: `Last synced ${last}.${next ? ` Next sync ${next}.` : ''}` }
@@ -469,6 +478,36 @@ export const PERSON_OUTCOME: Record<PersonOutcome, { label: string; tone: 'succe
   'not-on-board': { label: 'on Talaria, not on this board — left unassigned', tone: 'warn' },
   'no-account': { label: 'no Talaria account — left unassigned', tone: 'warn' },
   'no-email': { label: 'ClickUp hides their email — left unassigned', tone: 'neutral' },
+}
+
+/** The words after "Last sync": what the connection's latest run did.
+ *  `lastRun` is whichever run started last — a one-ticket re-sync or a mapping
+ *  edit's remap too — but only a scheduled or manual run walks the list and
+ *  moves `lastSyncedAt` (run.rs finish), so a ticket or remap run is named for
+ *  what it was rather than read as the board's last sync. */
+export function lastRunNote(result: Record<string, unknown> | null | undefined): string | null {
+  const mode = result && typeof result === 'object' ? result.mode : undefined
+  if (mode === 'ticket') return 'latest run re-synced one ticket'
+  if (mode === 'remap') {
+    const counts = runSummary(result)
+    return `latest run applied the mapping${counts ? ` (${counts})` : ''}`
+  }
+  return runSummary(result)
+}
+
+/** Where a one-ticket re-sync stands, read off a projection fetched after it
+ *  was started: still going, finished (done / error / cancelled), or `ended`
+ *  — its run is neither live nor the latest any more because a later run (the
+ *  schedule held back behind it, or someone's Sync now) took `lastRun`, so it
+ *  finished without this view seeing how. */
+export type ResyncOutcome = 'going' | 'done' | 'error' | 'ended'
+export function resyncOutcome(sync: BoardSync, runId: string): ResyncOutcome {
+  if (sync.liveRun?.id === runId) return 'going'
+  const run = sync.lastRun?.id === runId ? sync.lastRun : null
+  if (!run) return 'ended'
+  if (run.state === 'done') return 'done'
+  if (run.state === 'error' || run.state === 'cancelled') return 'error'
+  return 'going'
 }
 
 /** The finished run's counts in one line, or null when there is nothing to say. */

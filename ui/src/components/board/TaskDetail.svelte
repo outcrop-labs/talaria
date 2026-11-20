@@ -83,7 +83,7 @@
   import WorkbenchTicker from './WorkbenchTicker.svelte'
   import RunDetailModal from './RunDetailModal.svelte'
   import { useWorkSession } from '@/lib/work-session.svelte'
-  import { clickupTaskId, clickupTaskUrl, resyncTicket, syncKey, useBoardSync } from '@/lib/board-sync'
+  import { clickupTaskId, clickupTaskUrl, resyncOutcome, resyncTicket, syncKey, useBoardSync } from '@/lib/board-sync'
   import { pushToast, toastError } from '@/lib/toast.svelte'
   import RemoteStateChip from './RemoteStateChip.svelte'
 
@@ -215,6 +215,8 @@
       roomId = null
       roomTried = false
       propsOpen = false
+      // …and the old ticket's re-sync is not this one's to finish.
+      resyncing = null
     }
   })
 
@@ -343,38 +345,60 @@
   const clickupId = $derived(clickupTaskId(t?.externalKey))
   const remoteState = $derived(t ? boardSync?.remoteStates[t.id] : undefined)
   const openedBy = $derived(t?.createdBy === 'clickup-sync' ? 'ClickUp sync' : t?.createdBy)
-  let resyncRun = $state<string | null>(null)
+  // The re-sync this view started: its run, the ticket it is for, and when
+  // the POST answered — a projection read before then predates the run and
+  // says nothing about it. `resyncPending` covers the POST itself, so a
+  // double-click is one request, not a second one the server refuses (409).
+  let resyncPending = $state(false)
+  let resyncing = $state<{ runId: string; taskId: string; since: number } | null>(null)
   const resync = async () => {
+    if (resyncPending || resyncing) return
+    const forTask = taskId
+    resyncPending = true
     try {
-      const r = await resyncTicket(taskId)
-      resyncRun = r.runId
+      const r = await resyncTicket(forTask)
+      // The modal jumped to another ticket meanwhile: the run still goes, but
+      // this view no longer shows the ticket it is for.
+      if (forTask !== taskId) return
+      resyncing = { runId: r.runId, taskId: forTask, since: Date.now() }
       void qc.invalidateQueries({ queryKey: syncKey(board.id) })
     } catch (e) {
       toastError('Could not re-sync from ClickUp', e)
+    } finally {
+      resyncPending = false
     }
   }
-  // The re-sync is a run of the board's sync; it is the connection's last run
-  // from the moment it starts, and the projection polls while it is live. When
-  // it finishes, read the ticket again — this view never refetches the open
+  // The re-sync is a run of the board's sync; the projection polls while it
+  // is live. It is over once the projection (read after it started) shows it
+  // finished — or shows it neither live nor latest, because a later run took
+  // `lastRun` first: the schedule held back behind it, or a member's Sync
+  // now. Then read the ticket again — this view never refetches the open
   // ticket on the board's live events (it would thrash its editors).
   $effect(() => {
-    const run = boardSync?.lastRun
-    if (!resyncRun || !run || run.id !== resyncRun) return
-    if (run.state !== 'done' && run.state !== 'error' && run.state !== 'cancelled') return
-    resyncRun = null
+    const r = resyncing
+    const s = boardSync
+    if (!r || !s || syncQuery.dataUpdatedAt < r.since) return
+    const outcome = resyncOutcome(s, r.runId)
+    if (outcome === 'going') return
+    resyncing = null
     void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
-    if (run.state === 'done') {
-      // A forced title lands in the title field too (it is seeded once per
-      // ticket, so a refetch alone would leave the old one showing).
-      void qc.refetchQueries({ queryKey: ['task', taskId] }).then(() => {
-        const fresh = taskQuery.data?.task
-        if (fresh) title = fresh.title
-      })
-      pushToast({ title: 'Re-synced from ClickUp', body: 'The ticket now matches its ClickUp task.', tone: 'success' })
-    } else {
+    if (outcome === 'error') {
       refresh()
-      pushToast({ title: 'The re-sync did not finish', body: run.error ?? 'The run stopped.', tone: 'danger' })
+      const run = s.lastRun
+      pushToast({ title: 'The re-sync did not finish', body: run?.error ?? 'The run stopped.', tone: 'danger' })
+      return
     }
+    // A forced title lands in the title field too (it is seeded once per
+    // ticket, so a refetch alone would leave the old one showing).
+    void qc.refetchQueries({ queryKey: ['task', r.taskId] }).then(() => {
+      const fresh = taskQuery.data?.task
+      if (fresh && fresh.id === r.taskId) title = fresh.title
+    })
+    pushToast(
+      outcome === 'done'
+        ? { title: 'Re-synced from ClickUp', body: 'The ticket now matches its ClickUp task.', tone: 'success' }
+        : { title: 'The re-sync has ended', body: 'Another sync started right after it; its progress shows on the board’s ClickUp chip.', tone: 'info' },
+    )
   })
 </script>
 
@@ -494,8 +518,8 @@
             {#if clickupId && boardSync && canEdit}
               <IconButton
                 size="sm"
-                title={resyncRun ? 'Re-syncing from ClickUp…' : boardSync.liveRun ? 'A sync is running on this board — re-sync when it finishes' : boardSync.state !== 'active' ? 'The board’s sync is not running — see Board settings → Sync' : 'Re-sync from ClickUp'}
-                disabled={!!resyncRun || !!boardSync.liveRun || boardSync.state !== 'active'}
+                title={resyncing || resyncPending ? 'Re-syncing from ClickUp…' : boardSync.liveRun ? 'A sync is running on this board — re-sync when it finishes' : boardSync.state === 'needs_credential' ? 'The board’s sync needs a new token — a board owner replaces it in Board settings → Sync' : 'Re-sync from ClickUp'}
+                disabled={!!resyncing || resyncPending || !!boardSync.liveRun || boardSync.state === 'needs_credential'}
                 onclick={() => void resync()}
                 data-resync
               >

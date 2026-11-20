@@ -8,7 +8,7 @@
   import { focusGold } from '@/components/chat/chat-chrome'
   import { cn } from '@/lib/cn'
   import type { BoardRole } from '@/lib/boards.svelte'
-  import { DOT_FOR_TONE, ago, chipView, runSummary, syncKey, syncNow, until, type BoardSync } from '@/lib/board-sync'
+  import { DOT_FOR_TONE, ago, chipView, lastRunNote, syncKey, syncNow, until, type BoardSync } from '@/lib/board-sync'
   import { useClock } from '@/lib/clock.svelte'
   import { pushToast, toastError } from '@/lib/toast.svelte'
   import SyncProblems from './SyncProblems.svelte'
@@ -44,7 +44,7 @@
   const name = $derived(
     `ClickUp sync: ${view.text}${problems ? `, ${problems} problem${problems === 1 ? '' : 's'}` : ''}`,
   )
-  const summary = $derived(runSummary(sync.lastRun?.result))
+  const summary = $derived(lastRunNote(sync.lastRun?.result))
   let busy = $state(false)
 
   async function runNow() {
@@ -145,8 +145,8 @@
           <Button
             variant="outline"
             size="sm"
-            disabled={busy || !!sync.liveRun || sync.state !== 'active'}
-            title={sync.state === 'paused' ? 'Resume the sync in Board settings first' : sync.state === 'needs_credential' ? 'The sync needs a new token first' : undefined}
+            disabled={busy || !!sync.liveRun || sync.state === 'needs_credential'}
+            title={sync.state === 'needs_credential' ? 'The sync needs a new token first — a board owner replaces it in Board settings → Sync' : sync.state === 'paused' ? 'Paused holds only the schedule — Sync now still runs' : undefined}
             onclick={() => void runNow()}
           >
             {sync.liveRun ? 'Syncing…' : 'Sync now'}

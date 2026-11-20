@@ -11,7 +11,7 @@ vi.mock('@tanstack/svelte-query', () => ({ createQuery: vi.fn(), useQueryClient:
 
 import RemoteStateChip from './RemoteStateChip.svelte'
 import SyncMappingTable from './SyncMappingTable.svelte'
-import { SETTINGS_TABS, settingsTabOf } from './board-settings'
+import { SETTINGS_TABS, settingsTabOf, ticketSearch } from './board-settings'
 import type { MappingRow, SyncTarget } from '@/lib/board-sync'
 
 const targets: SyncTarget[] = [
@@ -79,5 +79,14 @@ describe('the settings deep link', () => {
     expect(settingsTabOf('nope')).toBeNull()
     expect(settingsTabOf(true)).toBeNull()
     expect(settingsTabOf(undefined)).toBeNull()
+  })
+})
+
+describe('a ticket opened from the sync chip or the sync tab', () => {
+  it('keeps the board’s view and filters, and drops only the settings modal', () => {
+    expect(ticketSearch('view=list&group=priority&q=login&settings=sync')).toBe('view=list&group=priority&q=login')
+    expect(ticketSearch('?v=abc&status=open')).toBe('v=abc&status=open')
+    expect(ticketSearch('settings=sync')).toBe('')
+    expect(ticketSearch('')).toBe('')
   })
 })

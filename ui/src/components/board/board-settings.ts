@@ -23,3 +23,14 @@ export const SETTINGS_TAB_LABEL: Record<SettingsTab, string> = {
   agents: 'agents',
   sync: 'sync',
 }
+
+/** The query string a ticket opened from inside the board's settings or the
+ *  sync chip carries: the board's CURRENT view and filters (Board.svelte's
+ *  rule — the ticket overlays the view, and closing it returns there), minus
+ *  `settings`, so the modal closes under the ticket rather than reopening on
+ *  top of it. */
+export function ticketSearch(search: string): string {
+  const sp = new URLSearchParams(search)
+  sp.delete('settings')
+  return sp.toString()
+}
