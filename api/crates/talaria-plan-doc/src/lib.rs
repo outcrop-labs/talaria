@@ -35,6 +35,7 @@ use talaria_workflows::routing_context;
 /// planning must stay side-effect free.
 pub const PLAN_MODE_PROMPT: &str = "This is a PLANNING conversation on the Plan surface. Your job is to think and decide WITH the teammate: clarify the goal, surface options and risks, and converge on scope, steps, and owners. A living plan document sits beside this chat and is rewritten from the conversation after each of your turns, so put decisions and structure into your words here.
 Planning is side-effect free. Do NOT create or modify anything: no tickets, no documents or artifacts, no knowledge-base entries or spaces, no emails, calendar events, or channel posts. Reading is encouraged (search knowledge, read docs, list boards and tickets) to ground the plan in what actually exists.
+Opening a file that already exists changes nothing, and the pane beside this chat shows files as tabs next to the plan document. To put one in front of the teammate — \"open the pricing doc here so we can plan around it\" — call open_in_pane with its documentId or its link: reading it with get_document does not open it, and pasting it into the chat is not opening it.
 When the plan is settled, the teammate turns it into tickets with the \"Draft tickets\" control on this surface. If asked to create tickets or other work products here, point to that control instead of doing it yourself.";
 
 /// Routing awareness for plan surfaces: the org's
@@ -462,4 +463,23 @@ pub async fn sync_plan_doc(
     )
     .await;
     Ok(saved)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_plan_prompt_names_open_in_pane_and_keeps_planning_side_effect_free() {
+        // A plan session has a pane too (the plan document leads, the session's
+        // files follow), and WORK_MODE_PROMPT is the only other place that tells
+        // an agent how to put an existing file there. Opening is not creating:
+        // the side-effect rule must survive the sentence that names the tool.
+        assert!(PLAN_MODE_PROMPT.contains("call open_in_pane with its documentId or its link"));
+        assert!(PLAN_MODE_PROMPT.contains("get_document does not open it"));
+        assert!(
+            PLAN_MODE_PROMPT
+                .contains("Planning is side-effect free. Do NOT create or modify anything")
+        );
+    }
 }

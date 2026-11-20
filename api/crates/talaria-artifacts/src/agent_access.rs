@@ -1,13 +1,16 @@
 // WHAT AN AGENT MAY DO WITH ONE ARTIFACT — read it, rewrite its body — said
 // once, for every door that asks.
 //
-// THREE DOORS ASK IT. The artifact GET answers an agent's read, the PUT and
-// `/{id}/edit` gate an agent's write (`body_editor`), and the agent door that
-// opens a file in a person's Work pane tells the agent whether it can read and
-// edit what it just opened. Each used to state the rule inline, and the third
-// copy would have lived in another route crate — which is how two planes come
-// to disagree about one document. The rule lives here, below every route crate,
-// and the routes keep only their own error wording.
+// EVERY DOOR THAT ASKS IT. The artifact GET answers an agent's read and the
+// LIST filters by it (`agent_readable`); the PUT and `/{id}/edit` gate an
+// agent's write (`body_editor`); the Office and Google exports gate an agent's
+// export on the read, and the Google export records the new Drive file only
+// for an agent that may edit; and the agent door that opens a file in a
+// person's Work pane tells the agent whether it can read and edit what it just
+// opened. Each used to state the rule inline, and the pane door's copy would
+// have lived in another route crate — which is how two planes come to disagree
+// about one document. The rule lives here, below every route crate, and the
+// routes keep only their own error wording.
 //
 // The predicates themselves are talaria-kb-perms' pure checks; what this adds is
 // the reads they need — the personal assistant's owner, the agent's teams,

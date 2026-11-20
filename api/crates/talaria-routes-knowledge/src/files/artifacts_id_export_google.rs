@@ -4,6 +4,15 @@
 //   human            → their own connected Drive
 //   personal agent   → its OWNER's Drive (acts as the human it works for)
 //   general agent    → the shared ORG Drive (no human owner of its own)
+//
+// READ TO EXPORT, EDIT TO RECORD. Anyone who may read the artifact may export
+// it: each export is a new Drive file, and the answer carries its link. Only
+// someone who may edit it re-points the artifact at that file
+// (`record_google_export`: google_file_id, google_file_url, updated_at). That
+// record is what Pull from Google reads and what an open editor's next save is
+// checked against, so a reader's export — a person's or an agent's — must move
+// neither: an owner's Pull would replace the body with the reader's snapshot,
+// and an editor's open buffer would answer 409 on its next save.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -21,7 +30,8 @@ use talaria_api_facades::google::drive::{
 };
 use talaria_api_facades::google::errors::google_token_fail;
 use talaria_api_facades::google::org::get_org_targets;
-use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, can_read_agent, list_editors};
+use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_edit_human, can_read, list_editors};
+use talaria_artifacts::agent_access::{agent_edits_artifact, agent_reads_artifact};
 use talaria_artifacts::{get_artifact, guarded, record_google_export};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_error::{house_error, house_error_msg, internal};
@@ -96,7 +106,9 @@ pub async fn post(
     let sb = state.secretbox().await.unwrap_or_default();
 
     let agent = agent_caller(&state.pg, &headers).await?;
-    let file = if let Some(agent) = agent {
+    // `records`: may this caller re-point the artifact at the new file? The
+    // PUT's edit rule for each plane, asked before anything reaches Google.
+    let (file, records) = if let Some(agent) = agent {
         // Writing into a human's Drive (personal assistant) or the shared
         // ORG Drive is acting AS someone — the same grant the Gmail and
         // Calendar agent routes refuse to a legacy caller, and this one
@@ -109,29 +121,20 @@ pub async fn post(
         let name = agent.model.clone();
         // The read gate the GET uses, owner arm included — a personal
         // assistant exports its owner's private artifacts, same as it reads
-        // them.
-        let owner = match talaria_users::assistant_owner_for(
-            &state.pg,
-            &AgentSubject::Caller(agent.clone()),
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] owner resolve failed", e)),
-        };
-        let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
-            Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
-        };
-        if !can_read_agent(
-            &guarded(&artifact),
-            &name,
-            owner.as_deref(),
-            &editors,
-            &team_ids,
-        ) {
-            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
+        // them. talaria-artifacts' rule (`agent_reads_artifact`), not a copy.
+        match agent_reads_artifact(&state.pg, &agent, &guarded(&artifact), &editors).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+            Err(e) => return Ok(internal("[artifacts] agent read check failed", e)),
         }
+        // The body_editor rule: an editor grant, or an elevated assistant on
+        // an artifact that is not private. An agent that may only read gets
+        // its Drive file and leaves the artifact's record alone.
+        let records =
+            match agent_edits_artifact(&state.pg, &agent, &guarded(&artifact), &editors).await {
+                Ok(may) => may,
+                Err(e) => return Ok(internal("[artifacts] agent edit check failed", e)),
+            };
         // Resolve the agent's Google identity (owner for personal assistants,
         // shared org account for general fleet agents). Pass the CALLER —
         // resolve_agent_google re-checks proof, so this route's guard is a
@@ -210,22 +213,20 @@ pub async fn post(
             )
             .await;
         });
-        file
+        (file, records)
     } else {
         let user = require_user(&state, &headers).await?;
         let team_ids = match talaria_teams::team_ids_for_user(&state.pg, &user.id).await {
             Ok(v) => v,
             Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
         };
-        if !can_read(
-            &guarded(&artifact),
-            Some(&user.id),
-            who_of(&user).as_deref(),
-            &editors,
-            &team_ids,
-        ) {
+        let (g, who) = (guarded(&artifact), who_of(&user));
+        if !can_read(&g, Some(&user.id), who.as_deref(), &editors, &team_ids) {
             return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
+        // The PUT's rule (`can_edit_human`): a reader exports to their own
+        // Drive and leaves the artifact's record alone.
+        let records = can_edit_human(&g, Some(&user.id), who.as_deref(), &editors, &team_ids);
         let connected = match get_connection_status(&state.pg, &user.id).await {
             Ok(c) => c,
             Err(e) => {
@@ -268,10 +269,12 @@ pub async fn post(
             )
             .await;
         });
-        file
+        (file, records)
     };
 
-    if let Err(e) = record_google_export(&state.pg, &artifact.id, &file.id, &file.url).await {
+    if records
+        && let Err(e) = record_google_export(&state.pg, &artifact.id, &file.id, &file.url).await
+    {
         // a failed record write takes the same 502 as a failed export.
         return Ok(export_failed(ExportError::Failed(format!(
             "export record: {e}"

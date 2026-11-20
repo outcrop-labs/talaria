@@ -31,6 +31,14 @@
 // lists, less the artifacts this agent cannot read — so an agent that lost its
 // earlier tool results can bring one back without crawling list_documents.
 //
+// A GOOGLE FILE LANDS WITH ITS NAME when one is already known: the title the
+// session got from Google (a chip a Google read left) or its pin, else the
+// text of a markdown link, `[Q3 numbers](https://docs…)`, else an earlier
+// link's text. A link's text is marked as such on the chip (`NAME_FROM`), so
+// the next link may correct it while a name Google gave stands. Nothing asks
+// Google: a file nobody named still reads as "Google Sheet" until the agent
+// reads it, or opens it with a link that names it.
+//
 // No audit row: opening a file is chatter (API-CONVENTIONS § Audit).
 
 use axum::Json;
@@ -45,14 +53,18 @@ use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_edit_human, list_editors
 use talaria_artifacts::agent_access::{agent_edits_artifact, agent_readable, agent_reads_artifact};
 use talaria_artifacts::{ArtifactHead, artifact_heads, get_artifact, guarded};
 use talaria_body::{optional_max_string_member, parse};
-use talaria_chips::session_files::{FileRef, SessionFile, file_named_by};
-use talaria_chips::{
-    Landed, Target, classify_href, conversation_hint, document_chip, google_file_chip, land_chips,
-    live_landing_target,
+use talaria_chips::session_files::{
+    FileRef, NAME_FROM, NAME_FROM_LINK, SessionFile, SessionGoogleName, TrailMessage,
+    file_named_by, generic_google_label, session_google_title,
 };
-use talaria_conversations::turn_requester;
+use talaria_chips::{
+    GoogleFile, Landed, Target, classify_href, conversation_hint, document_chip, google_file_chip,
+    land_chips, live_landing_target,
+};
+use talaria_conversations::{conversation_file_trail, turn_requester};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_state::AppState;
+use talaria_work_mode::clean_focus_title;
 
 use super::conversations_id_files::{FilesError, readable_for, session_files_for};
 
@@ -79,7 +91,60 @@ const THEY_CANNOT_READ: &str = "the person in this session cannot read that docu
 enum Ask {
     /// No file named: list the session's files.
     List,
-    Open(FileRef),
+    /// A file, and the text of the markdown link that named it — a Google
+    /// file's title when the session has none (a Talaria file's title is
+    /// its row's, always).
+    Open(FileRef, Option<String>),
+}
+
+/// A markdown link, `[text](url)` — what an agent copies out of a tool answer
+/// or a message — read as (text, url). The url may sit in angle brackets and
+/// carry a quoted link title after it. None for anything else, so a bare URL
+/// is read as itself.
+fn markdown_link(s: &str) -> Option<(String, String)> {
+    let rest = s.trim().strip_prefix('[')?;
+    let (text, rest) = rest.split_once("](")?;
+    let inner = rest.strip_suffix(')')?.trim();
+    // `[t](<url> "title")`: the destination is the first token.
+    let dest = inner.split_whitespace().next()?;
+    let dest = dest
+        .strip_prefix('<')
+        .and_then(|d| d.strip_suffix('>'))
+        .unwrap_or(dest);
+    (!dest.is_empty()).then(|| (text.trim().to_string(), dest.to_string()))
+}
+
+/// The name a markdown link's text gives a Google file: cleaned to one line
+/// FIRST, so a zero-width mark cannot hide "Google Doc" from the check, and
+/// nothing when what is left is only a link (any URL, or another spelling of
+/// a file link), the URL's host, or what the file is.
+fn link_title(text: Option<&str>, url: &str) -> Option<String> {
+    let title = clean_focus_title(text?)?;
+    let lower = title.to_ascii_lowercase();
+    let a_link = lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || file_named_by(&title).is_some();
+    (!a_link && !generic_google_label(&title, url)).then_some(title)
+}
+
+/// The name a Google file lands with: a name the session got from Google or
+/// a pin, else the text of the link passed now, else an earlier link's text.
+/// A link never outranks Google's name, and a fresh link's text replaces an
+/// older one — so an agent can correct a tab it named wrong. Pure, so the
+/// order is a unit test.
+fn google_name(
+    session: Option<SessionGoogleName>,
+    link: Option<String>,
+) -> Option<SessionGoogleName> {
+    match session {
+        Some(n) if !n.from_link => Some(n),
+        earlier => link
+            .map(|title| SessionGoogleName {
+                title,
+                from_link: true,
+            })
+            .or(earlier),
+    }
 }
 
 /// The body, read: exactly one of `documentId` / `url`, or neither to list.
@@ -95,19 +160,36 @@ fn read_body(obj: &Map<String, Value>) -> Result<Ask, String> {
         (None, None) => Ok(Ask::List),
         (Some(_), Some(_)) => Err("give documentId or url — one of them, not both".into()),
         (Some(id), None) => talaria_params::uuid_canonical(&id)
-            .map(|id| Ask::Open(FileRef::Artifact(id)))
+            .map(|id| Ask::Open(FileRef::Artifact(id), None))
             .ok_or_else(|| {
                 "documentId is a Talaria document id (from list_documents or search_knowledge) — \
                  pass a link to a Google file as url"
                     .to_string()
             }),
-        (None, Some(url)) => match file_named_by(&url) {
-            Some(file) => Ok(Ask::Open(file)),
-            None if classify_href(&url).is_some_and(|l| l.entity == "kb") => Err(format!(
-                "{NOT_A_FILE} — knowledge docs open on the Knowledge page, not in the pane"
-            )),
-            None => Err(NOT_A_FILE.to_string()),
-        },
+        (None, Some(raw)) => {
+            let (text, url) = match markdown_link(&raw) {
+                Some((text, url)) => (Some(text), url),
+                None => (None, raw),
+            };
+            read_link(&url, text)
+        }
+    }
+}
+
+/// A link the body named, as a file the pane can show.
+fn read_link(url: &str, text: Option<String>) -> Result<Ask, String> {
+    match file_named_by(url) {
+        Some(file) => {
+            let title = match &file {
+                FileRef::Google(_) => link_title(text.as_deref(), url),
+                FileRef::Artifact(_) => None,
+            };
+            Ok(Ask::Open(file, title))
+        }
+        None if classify_href(url).is_some_and(|l| l.entity == "kb") => Err(format!(
+            "{NOT_A_FILE} — knowledge docs open on the Knowledge page, not in the pane"
+        )),
+        None => Err(NOT_A_FILE.to_string()),
     }
 }
 
@@ -306,11 +388,28 @@ pub async fn post(
 
     match ask {
         Ask::List => list(&state, &caller, &conversation_id, &kind, &requester, who).await,
-        Ask::Open(FileRef::Artifact(id)) => {
+        Ask::Open(FileRef::Artifact(id), _) => {
             open_artifact(&state, &caller, &landed, &kind, &requester, who, &id).await
         }
-        Ask::Open(FileRef::Google(file)) => {
-            let chip = google_file_chip(&file, None);
+        Ask::Open(FileRef::Google(file), link_named) => {
+            // GOOGLE'S NAME FOR IT, else the link's text (`google_name`).
+            // A session name with nothing printable left once cleaned is no
+            // name at all, and the link's text (cleaned the same way) stands
+            // in.
+            let named = match google_title_in_session(&state.pg, &conversation_id, &file).await {
+                Ok(t) => t,
+                Err(e) => return Ok(internal("[open] trail read failed", e)),
+            };
+            let name = google_name(named, link_named);
+            let title = name.as_ref().map(|n| n.title.clone());
+            let mut chip = google_file_chip(&file, title.as_deref());
+            // Link text is marked as link text, so the next link may
+            // correct it and a Google read outranks it.
+            if let (Some(n), Some(obj)) = (&name, chip.as_object_mut())
+                && n.from_link
+            {
+                obj.insert(NAME_FROM.into(), json!(NAME_FROM_LINK));
+            }
             let already = match already_on(&state.pg, &landed, &chip).await {
                 Ok(a) => a,
                 Err(e) => return Ok(internal("[open] row read failed", e)),
@@ -320,7 +419,7 @@ pub async fn post(
                 return Ok(internal("[open] chip landing failed", e));
             }
             let message = opened_message(&Opened {
-                title: None,
+                title: title.as_deref(),
                 google: true,
                 has_pane: PANE_KINDS.contains(&kind.as_str()),
                 already,
@@ -328,16 +427,20 @@ pub async fn post(
                 you_can_read: true,
                 you_can_edit: None,
             });
+            let mut answer = json!({
+                "key": file.key(),
+                "kind": "google",
+                "id": file.id,
+                "type": format!("google {}", file.kind.as_str()),
+                "url": file.url(),
+            });
+            if let (Some(t), Some(obj)) = (&title, answer.as_object_mut()) {
+                obj.insert("title".into(), json!(t));
+            }
             Ok(Json(json!({
                 "ok": true,
                 "conversationId": conversation_id,
-                "file": {
-                    "key": file.key(),
-                    "kind": "google",
-                    "id": file.id,
-                    "type": format!("google {}", file.kind.as_str()),
-                    "url": file.url(),
-                },
+                "file": answer,
                 "alreadyOpen": already,
                 "theyCanEdit": Value::Null,
                 "youCanEdit": Value::Null,
@@ -346,6 +449,32 @@ pub async fn post(
             .into_response())
         }
     }
+}
+
+/// The name this conversation already gives a Google file — read from its
+/// chips and pins (`session_google_title`), cleaned to one line: a Google
+/// file's title is anyone's to set, and it is quoted back to the model in the
+/// answer.
+async fn google_title_in_session(
+    pg: &sqlx::PgPool,
+    conversation_id: &str,
+    file: &GoogleFile,
+) -> Result<Option<SessionGoogleName>, sqlx::Error> {
+    let (rows, pinned) = conversation_file_trail(pg, conversation_id).await?;
+    let trail: Vec<TrailMessage> = rows
+        .into_iter()
+        .map(|(created_at, chips, requested_by)| TrailMessage {
+            created_at,
+            chips,
+            requested_by,
+        })
+        .collect();
+    Ok(session_google_title(&trail, &pinned, file).and_then(|n| {
+        clean_focus_title(&n.title).map(|title| SessionGoogleName {
+            title,
+            from_link: n.from_link,
+        })
+    }))
 }
 
 /// The session's files for the agent: what the person's pane lists, newest
@@ -521,7 +650,7 @@ mod tests {
     fn a_document_id_is_a_talaria_uuid_and_nothing_else() {
         assert_eq!(
             body(json!({ "documentId": DOC.to_uppercase() })),
-            Ok(Ask::Open(FileRef::Artifact(DOC.to_string())))
+            Ok(Ask::Open(FileRef::Artifact(DOC.to_string()), None))
         );
         let google_id = body(json!({ "documentId": "1AbCdEfGhIjKlMnOpQrStUvWxYz" }));
         assert!(
@@ -537,10 +666,10 @@ mod tests {
     fn a_link_opens_a_talaria_document_or_a_google_file_and_refuses_the_rest() {
         assert_eq!(
             body(json!({ "url": format!("https://talaria.example.com/artifacts?a={DOC}") })),
-            Ok(Ask::Open(FileRef::Artifact(DOC.to_string())))
+            Ok(Ask::Open(FileRef::Artifact(DOC.to_string()), None))
         );
         match body(json!({ "url": "https://docs.google.com/spreadsheets/d/1sheet/edit#gid=0" })) {
-            Ok(Ask::Open(FileRef::Google(f))) => assert_eq!(f.key(), "google:1sheet"),
+            Ok(Ask::Open(FileRef::Google(f), None)) => assert_eq!(f.key(), "google:1sheet"),
             other => panic!("{other:?}"),
         }
         let kb = body(json!({ "url": "/knowledge?doc=7e7e7e7e-aaaa-4bbb-8ccc-dddddddddddd" }));
@@ -553,6 +682,97 @@ mod tests {
             body(json!({ "url": "https://example.com/plan" })),
             Err(NOT_A_FILE.to_string())
         );
+    }
+
+    #[test]
+    fn google_names_a_file_and_a_link_only_names_what_google_did_not() {
+        let n = |title: &str, from_link| SessionGoogleName {
+            title: title.into(),
+            from_link,
+        };
+        let pick = |s, l: Option<&str>| {
+            google_name(s, l.map(str::to_string)).map(|n| (n.title, n.from_link))
+        };
+        let got = |t: &str, from_link| Some((t.to_string(), from_link));
+        // Google's name (or a pin's) beats any link's text.
+        assert_eq!(
+            pick(Some(n("Budget", false)), Some("Draft")),
+            got("Budget", false)
+        );
+        assert_eq!(pick(Some(n("Budget", false)), None), got("Budget", false));
+        // A fresh link's text replaces an earlier link's: the agent can
+        // correct a tab it named wrong.
+        assert_eq!(
+            pick(Some(n("Draft", true)), Some("Q3 Budget")),
+            got("Q3 Budget", true)
+        );
+        // A bare link keeps the earlier link's name, still marked as a link's.
+        assert_eq!(pick(Some(n("Draft", true)), None), got("Draft", true));
+        assert_eq!(pick(None, Some("Q3 Budget")), got("Q3 Budget", true));
+        assert_eq!(pick(None, None), None);
+    }
+
+    #[test]
+    fn a_markdown_link_names_a_google_file_and_never_a_talaria_one() {
+        // The text of a link the agent copied is the file's name for its tab…
+        match body(
+            json!({ "url": "[Q3 numbers](https://docs.google.com/spreadsheets/d/1sheet/edit#gid=0)" }),
+        ) {
+            Ok(Ask::Open(FileRef::Google(f), Some(title))) => {
+                assert_eq!(f.key(), "google:1sheet");
+                assert_eq!(title, "Q3 numbers");
+            }
+            other => panic!("{other:?}"),
+        }
+        // …in angle brackets, with a link title after it, or cleaned to one line.
+        match body(
+            json!({ "url": "[ \u{202E}Launch plan ](<https://docs.google.com/document/d/1doc/edit> \"Doc\")" }),
+        ) {
+            Ok(Ask::Open(FileRef::Google(f), Some(title))) => {
+                assert_eq!(f.key(), "google:1doc");
+                assert_eq!(title, "Launch plan");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Text that is only a link, its host or what the file is names
+        // nothing — another spelling of the url, or a zero-width mark hiding
+        // the noun until it is cleaned, included.
+        for text in [
+            "https://docs.google.com/document/d/1doc/edit",
+            "https://docs.google.com/document/d/1doc/edit?usp=sharing",
+            "HTTPS://example.com/elsewhere",
+            "/artifacts?a=9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2",
+            "docs.google.com",
+            "Google Doc",
+            "Google Doc\u{200B}",
+            "google doc",
+            "",
+        ] {
+            let url = format!("[{text}](https://docs.google.com/document/d/1doc/edit)");
+            assert!(
+                matches!(
+                    body(json!({ "url": url })),
+                    Ok(Ask::Open(FileRef::Google(_), None))
+                ),
+                "{text:?}"
+            );
+        }
+        // A Talaria document's title is its row's, whatever the link says.
+        assert_eq!(
+            body(json!({ "url": format!("[Not its name](/artifacts?a={DOC})") })),
+            Ok(Ask::Open(FileRef::Artifact(DOC.to_string()), None))
+        );
+        // A markdown link to something the pane cannot show is still refused.
+        assert_eq!(
+            body(json!({ "url": "[Plan](https://example.com/plan)" })),
+            Err(NOT_A_FILE.to_string())
+        );
+        // A bare URL is read as itself.
+        assert_eq!(
+            markdown_link("https://docs.google.com/document/d/1doc/edit"),
+            None
+        );
+        assert_eq!(markdown_link("[half](https://x"), None);
     }
 
     #[test]
@@ -621,6 +841,21 @@ mod tests {
             "{line}"
         );
         assert!(!line.contains("Opened"), "{line}");
+    }
+
+    #[test]
+    fn a_named_google_file_is_opened_by_its_name() {
+        let line = opened_message(&Opened {
+            title: Some("Q3 numbers"),
+            google: true,
+            they_can_edit: None,
+            you_can_edit: None,
+            ..opened()
+        });
+        assert!(
+            line.starts_with("Opened “Q3 numbers” in their pane."),
+            "{line}"
+        );
     }
 
     #[test]
