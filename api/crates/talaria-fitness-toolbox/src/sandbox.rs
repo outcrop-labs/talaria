@@ -1140,7 +1140,13 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                     .and_then(|r| r.split_once("]("))
                     .and_then(|(_, r)| r.strip_suffix(')'))
                     .and_then(|r| r.split_whitespace().next())
-                    .map(|d| d.trim_start_matches('<').trim_end_matches('>'))
+                    // Angle brackets come off as a pair, as production's
+                    // `markdown_link` takes them, or not at all.
+                    .map(|d| {
+                        d.strip_prefix('<')
+                            .and_then(|d| d.strip_suffix('>'))
+                            .unwrap_or(d)
+                    })
                     .unwrap_or(u)
             });
             let key = match (document_id, url) {
@@ -2953,6 +2959,14 @@ mod tests {
             .is_error
         );
         assert_eq!(s.world.pane.len(), 2, "{:?}", s.world.pane);
+        // An unpaired angle bracket is not a link production reads.
+        assert!(
+            s.dispatch(
+                "open_in_pane",
+                &json!({ "url": format!("[Budget](<{sheet})") }).to_string()
+            )
+            .is_error
+        );
 
         // With neither, it lists what is open — newest first.
         let listed = s.dispatch("open_in_pane", "{}");

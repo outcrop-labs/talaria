@@ -365,7 +365,9 @@ pub async fn post(
         Ask::Open(FileRef::Google(file), link_named) => {
             // THE NAME THE SESSION ALREADY GIVES IT, else the link's text.
             // The session's is a Google answer or a pin; the link's is the
-            // agent's own word for it — so the session's wins.
+            // agent's own word for it — so the session's wins. A session
+            // name with nothing printable left once cleaned is no name at
+            // all, and the link's text (cleaned the same way) stands in.
             let named = match google_title_in_session(&state.pg, &conversation_id, &file).await {
                 Ok(t) => t,
                 Err(e) => return Ok(internal("[open] trail read failed", e)),
