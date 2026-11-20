@@ -2107,7 +2107,7 @@ pub async fn insert_channel_message(
         status,
         attachments,
         thread_root_id,
-        false,
+        RowMark::Plain,
     )
     .await
 }
@@ -2134,12 +2134,49 @@ pub async fn insert_drafted_channel_message(
         "complete",
         attachments,
         thread_root_id,
-        true,
+        RowMark::Drafted,
     )
     .await
 }
 
-#[allow(clippy::too_many_arguments)] // the row's inputs, plus the drafted mark
+/// An agent's streaming reply to ONE person's message, stamped with that
+/// message's id (`answers_message_id`). The stamp is how a door that acts on
+/// "the person this turn answers" (an agent's review exit, talaria-chips
+/// `live_turn`) names exactly them: never someone who posted while the reply
+/// was still being decided, and never the trigger of another reply this
+/// agent is streaming beside it.
+pub async fn insert_streaming_reply(
+    deps: &NotifyDeps,
+    channel_id: &str,
+    agent: &str,
+    thread_root_id: Option<&str>,
+    answers_message_id: &str,
+) -> Result<ChannelMessageWire, sqlx::Error> {
+    insert_channel_row(
+        deps,
+        channel_id,
+        "agent",
+        agent,
+        "",
+        "streaming",
+        &Value::Array(Vec::new()),
+        thread_root_id,
+        RowMark::Answers(answers_message_id),
+    )
+    .await
+}
+
+/// What a row says about whose words it carries, beyond its author.
+#[derive(Clone, Copy)]
+enum RowMark<'a> {
+    Plain,
+    /// A person's post whose words were the agent's (`drafted`).
+    Drafted,
+    /// An agent's reply, and the person's message it answers.
+    Answers(&'a str),
+}
+
+#[allow(clippy::too_many_arguments)] // the row's inputs, plus its mark
 async fn insert_channel_row(
     deps: &NotifyDeps,
     channel_id: &str,
@@ -2149,8 +2186,13 @@ async fn insert_channel_row(
     status: &str,
     attachments: &Value,
     thread_root_id: Option<&str>,
-    drafted: bool,
+    mark: RowMark<'_>,
 ) -> Result<ChannelMessageWire, sqlx::Error> {
+    let drafted = matches!(mark, RowMark::Drafted);
+    let answers = match mark {
+        RowMark::Answers(id) => Some(id),
+        RowMark::Plain | RowMark::Drafted => None,
+    };
     let body = if author_type == "agent" {
         guard_agent_write(
             &deps.pg,
@@ -2174,8 +2216,8 @@ async fn insert_channel_row(
     .await?;
     let row: (String, i32, String, String, String, String, i64, Value, Option<String>) =
         sqlx::query_as(
-            "insert into channel_messages (channel_id, seq, author_type, author, content, status, attachments, thread_root_id, drafted) \
-             values ($1::uuid, $2, $3, $4, $5, $6, $7, $8::uuid, $9) \
+            "insert into channel_messages (channel_id, seq, author_type, author, content, status, attachments, thread_root_id, drafted, answers_message_id) \
+             values ($1::uuid, $2, $3, $4, $5, $6, $7, $8::uuid, $9, $10::uuid) \
              returning id::text, seq, author_type, author, content, status, \
                (trunc(extract(epoch from created_at) * 1000))::bigint, attachments, \
                thread_root_id::text",
@@ -2189,6 +2231,7 @@ async fn insert_channel_row(
         .bind(attachments)
         .bind(thread_root_id)
         .bind(drafted)
+        .bind(answers)
         .fetch_one(&mut *tx)
         .await?;
     tx.commit().await?;

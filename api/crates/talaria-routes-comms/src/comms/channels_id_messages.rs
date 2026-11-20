@@ -582,7 +582,7 @@ async fn post_as_user(
             }
         }
         let trigger_deps = notify.clone();
-        let trigger_seq = message.seq;
+        let (trigger_id, trigger_seq) = (message.id.clone(), message.seq);
         let trigger_sender = talaria_sender_identity::SenderIdentity {
             id: user.id.clone(),
             name: user.name.clone(),
@@ -597,6 +597,7 @@ async fn post_as_user(
                 &channel_name,
                 &body.content,
                 trigger_attachments,
+                &trigger_id,
                 trigger_seq,
                 thread_root_id.as_deref(),
                 Some(trigger_sender),

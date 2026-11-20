@@ -109,6 +109,13 @@ pub fn bare_tool_name(tool: &str) -> &str {
         .unwrap_or(tool)
 }
 
+/// A ticket tool's answer was a REFUSAL: a 403 as the toolkit words it
+/// (`Talaria API 403: …`), or the api's own `{error}` body. Never a landed
+/// write's answer, whose ticket text may say anything.
+fn is_refusal(result: &str, result_v: &Value) -> bool {
+    result.contains("Talaria API 403") || result_v.get("error").is_some()
+}
+
 /// The approval kinds that move a ticket: a refused `triage_ticket`
 /// (`ticket_move`) and a refused `move_ticket` (`ticket_board_move`). The
 /// approve route gates both on the ticket's BOARD — an editor of it, or an
@@ -917,17 +924,23 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
         // the move runs as THAT person (chips_approvals_id). Matched on the
         // bare tool name, so the card does not depend on how the client
         // prefixed the toolkit's tools.
+        //
+        // Only a REFUSAL leaves a card — a 403 as the toolkit words it, or the
+        // api's own `{error}` — never a move that landed: its answer is the
+        // moved ticket, whose title or description may say "cannot", and a
+        // stale card approved later would re-apply the move as that person.
         t if bare_tool_name(t) == "triage_ticket" => {
-            let refused = result.contains("cannot") || result_v.get("error").is_some();
-            if refused {
+            if is_refusal(result, &result_v) {
                 let task = str_field(&args_v, "taskId").unwrap_or("");
                 let status = str_field(&args_v, "status").unwrap_or("move");
                 if is_id(task) {
                     let external = format!("ticket:{task}:{status}");
+                    // The ticket as the agent named it (its ref, usually), so
+                    // two refused moves never read as one card.
                     let mut chip = approval_chip(
                         &external,
                         "ticket_move",
-                        &format!("Move ticket to {status}"),
+                        &format!("Move {task} to {status}"),
                     );
                     if let Some(obj) = chip.as_object_mut() {
                         obj.insert("payload".into(), args_v.clone());
@@ -936,26 +949,37 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
                 }
             }
         }
-        // The board-move twin. Only a REFUSAL leaves a card — a 403 as the
-        // toolkit words it, or the api's own `{error}` — never a move that
-        // landed: its answer is the moved ticket, whose text may say anything.
+        // The board-move twin, refused the same way.
         t if bare_tool_name(t) == "move_ticket" => {
-            let refused = result.contains("Talaria API 403") || result_v.get("error").is_some();
             let task = str_field(&args_v, "taskId").unwrap_or("");
             let board = str_field(&args_v, "boardId").unwrap_or("");
             let preview = args_v.get("preview").and_then(Value::as_bool) == Some(true);
-            if refused && !preview && is_id(task) && is_id(board) {
+            if is_refusal(result, &result_v) && !preview && is_id(task) && is_id(board) {
                 let status = str_field(&args_v, "status");
                 let external = format!("board-move:{task}:{board}:{}", status.unwrap_or(""));
                 let summary = match status {
-                    Some(s) => format!("Move ticket to another board ({s})"),
-                    None => "Move ticket to another board".to_string(),
+                    Some(s) => format!("Move {task} to another board ({s})"),
+                    None => format!("Move {task} to another board"),
                 };
                 let mut chip = approval_chip(&external, "ticket_board_move", &summary);
                 if let Some(obj) = chip.as_object_mut() {
                     obj.insert("payload".into(), args_v.clone());
                 }
                 out.push(chip);
+                // WHERE IT WOULD GO, beside the card. A link chip's title is
+                // resolved per viewer (`resolve_titles`), so an editor sees the
+                // destination board's name before approving, and a reader who
+                // cannot see that board gets the bare entity label — the name
+                // is never baked into a summary everyone in the thread reads.
+                out.push(link_chip(
+                    &PlatformLink {
+                        href: format!("/boards/{board}"),
+                        entity: "board",
+                        id: board.to_string(),
+                        board_id: None,
+                    },
+                    None,
+                ));
             }
         }
         "request_board_access" => {
@@ -2145,6 +2169,15 @@ pub async fn streaming_conversation_user(
 // answers come back. A door that lets an agent act on a person's word
 // (talaria-tasks `asked`) asks this and nothing looser, so a cron, a work
 // session or yesterday's chat cannot be cited as somebody's request.
+//
+// A channel reply answers exactly the message it was started for: the
+// trigger stamps that message's id on the streaming row
+// (`answers_message_id`, talaria-channels `insert_streaming_reply`). Nothing
+// is inferred from what sits before the row — a person who posts while the
+// reply is still being decided (a ticket room's relevance judgment) is not
+// the one it answers. And a tool call names only the channel, so two replies
+// this agent is streaming in one channel cannot be told apart: that is
+// `Several`, never the newer one's guess.
 
 // The live window is the fifteen minutes every resolver in this file uses.
 // Conversation replies refresh `streamed_at` every ten seconds while they
@@ -2188,8 +2221,9 @@ pub struct LiveTurn {
     pub reply_id: String,
     /// The human messages this turn answers, oldest first. In a conversation:
     /// the user rows after the last finished reply, including any queued
-    /// behind (or steered into) the streaming one. In a channel: the newest
-    /// person's row before the reply, in the reply's own thread.
+    /// behind (or steered into) the streaming one. In a channel: the one
+    /// person's message the reply's row says it answers — none when the row
+    /// carries no stamp, or the stamped row is no person's.
     pub messages: Vec<TurnMessage>,
 }
 
@@ -2200,6 +2234,9 @@ pub enum TurnLookup {
     NotYours,
     /// This agent's thread, but no reply of its own is streaming there now.
     NotLive,
+    /// More than one reply of this agent's is streaming in that channel, and
+    /// the id alone cannot say which turn is asking.
+    Several,
     Live(LiveTurn),
 }
 
@@ -2273,48 +2310,56 @@ async fn conversation_turn(pg: &PgPool, id: &str) -> Result<TurnLookup, sqlx::Er
 }
 
 async fn channel_turn(pg: &PgPool, agent: &str, id: &str) -> Result<TurnLookup, sqlx::Error> {
-    type ReplyRow = (String, i32, Option<String>, String, Option<String>);
-    let reply: Option<ReplyRow> = sqlx::query_as(
-        "select m.id::text, m.seq, m.thread_root_id::text, c.name, c.task_id::text \
+    type ReplyRow = (String, String, Option<String>, Option<String>);
+    // Two rows are enough to know the call is ambiguous.
+    let replies: Vec<ReplyRow> = sqlx::query_as(
+        "select m.id::text, c.name, c.task_id::text, m.answers_message_id::text \
          from channel_messages m join channels c on c.id = m.channel_id \
          where m.channel_id = $1::uuid and m.author_type = 'agent' and m.author = $2 \
            and m.status = 'streaming' and m.created_at > now() - interval '15 minutes' \
-         order by m.seq desc limit 1",
+         order by m.seq desc limit 2",
     )
     .bind(id)
     .bind(agent)
-    .fetch_optional(pg)
+    .fetch_all(pg)
     .await?;
-    let Some((reply_id, reply_seq, root, name, task_id)) = reply else {
-        let spoke: Option<(i32,)> = sqlx::query_as(
-            "select 1 from channel_messages \
-             where channel_id = $1::uuid and author_type = 'agent' and author = $2 limit 1",
-        )
-        .bind(id)
-        .bind(agent)
-        .fetch_optional(pg)
-        .await?;
-        return Ok(if spoke.is_some() {
-            TurnLookup::NotLive
-        } else {
-            TurnLookup::NotYours
-        });
+    let (reply_id, name, task_id, answers) = match replies.as_slice() {
+        [] => {
+            let spoke: Option<(i32,)> = sqlx::query_as(
+                "select 1 from channel_messages \
+                 where channel_id = $1::uuid and author_type = 'agent' and author = $2 limit 1",
+            )
+            .bind(id)
+            .bind(agent)
+            .fetch_optional(pg)
+            .await?;
+            return Ok(if spoke.is_some() {
+                TurnLookup::NotLive
+            } else {
+                TurnLookup::NotYours
+            });
+        }
+        [one] => one.clone(),
+        _ => return Ok(TurnLookup::Several),
     };
-    // The message the reply answers: the newest person's row before it, in
-    // the reply's own thread (a top-level reply answers the top level). The
-    // calling agent is never "a person", whatever its row was typed as.
-    let asked: Option<(String, String, String, bool)> = sqlx::query_as(
-        "select id::text, author, content, drafted from channel_messages \
-         where channel_id = $1::uuid and author_type = 'user' and author <> $2 \
-           and seq < $3 and thread_root_id is not distinct from $4::uuid \
-         order by seq desc limit 1",
-    )
-    .bind(id)
-    .bind(agent)
-    .bind(reply_seq)
-    .bind(&root)
-    .fetch_optional(pg)
-    .await?;
+    // The message the reply answers: the one its row was stamped with, if it
+    // is a person's. The calling agent is never "a person", whatever its row
+    // was typed as.
+    let asked: Option<(String, String, String, bool)> = match answers.as_deref() {
+        Some(message) => {
+            sqlx::query_as(
+                "select id::text, author, content, drafted from channel_messages \
+                 where id = $1::uuid and channel_id = $2::uuid \
+                   and author_type = 'user' and author <> $3",
+            )
+            .bind(message)
+            .bind(id)
+            .bind(agent)
+            .fetch_optional(pg)
+            .await?
+        }
+        None => None,
+    };
     let mut messages = Vec::new();
     if let Some((message_id, author, content, drafted)) = asked {
         // A channel row stores the sender's email, else their name. Only an
@@ -2873,12 +2918,40 @@ mod tests {
             r#"{"error":"agents cannot take a ticket out of review"}"#,
         );
         assert_eq!(refused[0]["actionKind"], "ticket_move");
+        assert_eq!(refused[0]["summary"], "Move t-2 to done");
         let ok = chips_from_tool(
             "triage_ticket",
             r#"{"taskId":"t-2","status":"in_progress"}"#,
             r#"{"task":{"id":"t-2","boardId":"b-1","title":"Gate"}}"#,
         );
         assert!(ok.iter().all(|c| c["kind"] != "approval"));
+    }
+
+    /// A triage that LANDED never leaves a card, whatever its ticket says —
+    /// a stale card a board editor approved later would re-apply the move as
+    /// them. Hermes reports the prefixed name, so that spelling is the one
+    /// that matters; an asked exit answers with the moved ticket too.
+    #[test]
+    fn a_landed_triage_whose_ticket_says_cannot_leaves_no_card() {
+        for name in [
+            "triage_ticket",
+            "mcp_talaria_triage_ticket",
+            "mcp__talaria__triage_ticket",
+        ] {
+            let ok = chips_from_tool(
+                name,
+                r#"{"taskId":"ABC-12","status":"in_progress","conversationId":"c-1"}"#,
+                r#"{"task":{"id":"t-2","boardId":"b-1","title":"We cannot ship this","description":"agents cannot fix it alone"}}"#,
+            );
+            assert!(ok.iter().all(|c| c["kind"] != "approval"), "{name}: {ok:?}");
+        }
+        // A 400 is a bad call, not a refusal a person could approve past.
+        let bad = chips_from_tool(
+            "mcp_talaria_triage_ticket",
+            r#"{"taskId":"ABC-12","status":"nowhere"}"#,
+            "Talaria API 400: status cannot be nowhere",
+        );
+        assert!(bad.iter().all(|c| c["kind"] != "approval"), "{bad:?}");
     }
 
     /// The card does not depend on how the client spelled the tool: Hermes
@@ -2919,6 +2992,16 @@ mod tests {
         assert_eq!(card["actionKind"], "ticket_board_move");
         assert_eq!(card["actionId"], "board-move:t-2:b-9:triage");
         assert_eq!(card["payload"]["boardId"], "b-9");
+        // The card names the ticket; the destination rides beside it as a
+        // link whose title each viewer's own access resolves.
+        assert_eq!(card["summary"], "Move t-2 to another board (triage)");
+        let dest = refused
+            .iter()
+            .find(|c| c["kind"] == "link")
+            .expect("the destination board");
+        assert_eq!(dest["href"], "/boards/b-9");
+        assert_eq!(dest["entity"], "board");
+        assert!(dest["title"].is_null());
         assert!(is_ticket_approval("ticket_board_move"));
         assert!(is_ticket_approval("ticket_move"));
         assert!(!is_ticket_approval("gmail_send"));

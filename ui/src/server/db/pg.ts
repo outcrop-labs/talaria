@@ -5100,6 +5100,16 @@ alter table tasks drop column if exists conversation_id`,
      created_at timestamptz not null default now(),
      primary key (task_id, message_id)
    )`,
+  // THE MESSAGE A CHANNEL REPLY ANSWERS. An agent's streaming reply is
+  // inserted after the reply is decided (a relevance judgment in a ticket
+  // room), so "the newest person's row before the reply" can be someone who
+  // posted in that window, or the trigger of another reply streaming beside
+  // it. The reply now carries the id of the message it was started for, and
+  // an agent's review exit on a person's ask (talaria-chips `live_turn`)
+  // names exactly that message's author. It names a row in the same channel,
+  // which the channel's cascade already takes, so no foreign key. Nullable,
+  // so roll-safe: the previous release neither reads nor writes it.
+  `alter table channel_messages add column if not exists answers_message_id uuid`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

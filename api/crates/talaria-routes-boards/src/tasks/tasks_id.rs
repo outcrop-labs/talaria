@@ -188,7 +188,7 @@ pub async fn put(
             ));
         }
         PatchActor::Agent {
-            proven: !caller.legacy && caller.id.is_some(),
+            proven: caller.proven(),
             model: caller.model,
         }
     } else {

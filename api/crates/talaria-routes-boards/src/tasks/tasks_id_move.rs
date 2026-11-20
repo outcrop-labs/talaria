@@ -22,7 +22,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_agent_auth::{AgentSubject, agent_caller};
+use talaria_agent_auth::{AgentCaller, AgentSubject, agent_caller};
 use talaria_body::{
     optional_boolean_member, optional_string_member, optional_uuid_member, parse, uuid_member,
 };
@@ -44,7 +44,7 @@ pub async fn post(
     let caller = agent_caller(&state.pg, &headers).await?;
     // Only the caller's own key can cite a person's ask; the legacy shared
     // key only asserts which agent it is.
-    let proven_agent = caller.as_ref().map(|c| !c.legacy && c.id.is_some());
+    let proven_agent = caller.as_ref().map(AgentCaller::proven);
     let mover = match caller {
         Some(caller) => {
             let model = caller.model.clone();

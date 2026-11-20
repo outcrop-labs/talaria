@@ -10,9 +10,14 @@
 //                cleared; the same message a second time is Spent
 //   not proven   another agent's thread, no live reply, a viewer's ask, a
 //                message that does not name the ticket, words the person only
-//                clicked, a cron's stamped reply with no person — all 403
+//                clicked (through the real chat and channel doors too), a
+//                cron's stamped reply with no person, a turn answering two
+//                people — all 403
 //   terminal     done / failed / cancelled refused even when asked
 //   the room     in the ticket's own discussion the ask need not name it
+//   the stamp    a channel reply answers only the message stamped on its row:
+//                not a person who posted while it was being decided, not one
+//                of two replies streaming side by side, not an unstamped row
 //   board move   the asker must edit BOTH boards; askedBy rides the audit row
 //   the card     a refused move's card: a board editor (not the agent's owner,
 //                not an admin) approves it and the move is theirs; a viewer
@@ -267,6 +272,48 @@ async fn live_chat(
     (conv, msg)
 }
 
+/// A channel row as the doors write it, numbered off the channel's own
+/// counter so a door's later post never collides with it. `answers` is the
+/// stamp a streaming reply carries (talaria-channels
+/// `insert_streaming_reply`).
+async fn channel_row(
+    pg: &PgPool,
+    channel: &str,
+    (author_type, author): (&str, &str),
+    content: &str,
+    status: &str,
+    answers: Option<&str>,
+) -> String {
+    sqlx::query_scalar(
+        "with s as (update channels set msg_seq = msg_seq + 1 where id = $1::uuid returning msg_seq) \
+         insert into channel_messages (channel_id, seq, author_type, author, content, status, answers_message_id) \
+         select $1::uuid, s.msg_seq, $2, $3, $4, $5, $6::uuid from s returning id::text",
+    )
+    .bind(channel)
+    .bind(author_type)
+    .bind(author)
+    .bind(content)
+    .bind(status)
+    .bind(answers)
+    .fetch_one(pg)
+    .await
+    .unwrap()
+}
+
+/// The ticket's own discussion room.
+async fn room(pg: &PgPool, creator: &str, ticket: &str, name: &str) -> String {
+    sqlx::query_scalar(
+        "insert into channels (name, created_by, task_id) values ($1, $2::uuid, $3::uuid) \
+         returning id::text",
+    )
+    .bind(name)
+    .bind(creator)
+    .bind(ticket)
+    .fetch_one(pg)
+    .await
+    .unwrap()
+}
+
 async fn activity(pg: &PgPool, id: &str) -> Vec<(String, String, String)> {
     sqlx::query_as(
         "select actor, type, description from task_activity where task_id = $1::uuid order by created_at, id",
@@ -433,7 +480,7 @@ async fn an_ask_that_does_not_prove_leaves_the_ticket_in_review() {
     let state = live_app_state().await;
     let pg = state.pg.clone();
     sweep(&pg, "n").await;
-    let (ada, _, _) = member(&state, "n", "ada").await;
+    let (ada, ada_cookie, _) = member(&state, "n", "ada").await;
     let (vic, _, vic_email) = member(&state, "n", "vic").await;
     let b = board(&pg, &ada, "Exit Unproven", "TRXN").await;
     share(&pg, &b, &vic, "viewer").await;
@@ -514,6 +561,79 @@ async fn an_ask_that_does_not_prove_leaves_the_ticket_in_review() {
     assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
     assert!(err(&body).contains("only clicked"), "{body}");
 
+    // The same click through the REAL chat door: the page sends
+    // `drafted: true`, the door marks the row, and the row queued behind the
+    // live reply is still not her ask.
+    let conv = conversation(&pg, &ada, &model).await;
+    row(
+        &pg,
+        &conv,
+        1,
+        "assistant",
+        None,
+        "Want me to send it back?",
+        "complete",
+        json!({}),
+    )
+    .await;
+    row(&pg, &conv, 2, "assistant", None, "", "streaming", json!({})).await;
+    let (s, body) = call_json(
+        &state,
+        "POST",
+        "/api/chat",
+        Some(&ada_cookie),
+        Some(json!({ "model": model, "conversationId": conv, "content": ask, "drafted": true })),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::ACCEPTED,
+        "queued behind the live reply: {body}"
+    );
+    let marked: Option<String> = sqlx::query_scalar(
+        "select metadata->>'drafted' from messages \
+         where conversation_id = $1::uuid and role = 'user'",
+    )
+    .bind(&conv)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!(marked.as_deref(), Some("true"));
+    let (s, body) = attempt(conv).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert!(err(&body).contains("only clicked"), "{body}");
+
+    // A turn answering two people: Ada's ask and Vic's message both sit in
+    // front of the live reply, so neither is provably the one the agent is
+    // acting for.
+    let conv = conversation(&pg, &ada, &model).await;
+    row(
+        &pg,
+        &conv,
+        1,
+        "user",
+        Some(&ada),
+        &ask,
+        "complete",
+        json!({}),
+    )
+    .await;
+    row(
+        &pg,
+        &conv,
+        2,
+        "user",
+        Some(&vic),
+        "and add a note while you are at it",
+        "complete",
+        json!({}),
+    )
+    .await;
+    row(&pg, &conv, 3, "assistant", None, "", "streaming", json!({})).await;
+    let (s, body) = attempt(conv).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert!(err(&body).contains("more than one person"), "{body}");
+
     // A cron's turn: the responsible user stamped on the REPLY, no person's
     // message in front of it.
     let conv = conversation(&pg, &ada, &model).await;
@@ -552,39 +672,17 @@ async fn in_the_tickets_own_room_the_ask_need_not_name_it() {
     let b = board(&pg, &ada, "Exit Room", "TRXR").await;
     let (model, key) = agent(&state, "r", &[&b]).await;
     let (id, _) = ticket(&pg, &b, "quality_review").await;
-    let (room,): (String,) = sqlx::query_as(
-        "insert into channels (name, created_by, task_id) values ('trx-room', $1::uuid, $2::uuid) \
-         returning id::text",
+    let room = room(&pg, &ada, &id, "trx-room").await;
+    let asked = channel_row(
+        &pg,
+        &room,
+        ("user", &ada_email),
+        "@agent send this back to the inbox",
+        "complete",
+        None,
     )
-    .bind(&ada)
-    .bind(&id)
-    .fetch_one(&pg)
-    .await
-    .unwrap();
-    for (seq, author_type, author, content, status) in [
-        (
-            1,
-            "user",
-            ada_email.as_str(),
-            "@agent send this back to the inbox",
-            "complete",
-        ),
-        (2, "agent", model.as_str(), "", "streaming"),
-    ] {
-        sqlx::query(
-            "insert into channel_messages (channel_id, seq, author_type, author, content, status) \
-             values ($1::uuid, $2, $3, $4, $5, $6)",
-        )
-        .bind(&room)
-        .bind(seq)
-        .bind(author_type)
-        .bind(author)
-        .bind(content)
-        .bind(status)
-        .execute(&pg)
-        .await
-        .unwrap();
-    }
+    .await;
+    channel_row(&pg, &room, ("agent", &model), "", "streaming", Some(&asked)).await;
     let (s, body) = as_agent(
         &state,
         &key,
@@ -601,6 +699,167 @@ async fn in_the_tickets_own_room_the_ask_need_not_name_it() {
         activity(&pg, &id).await
     );
     sweep(&pg, "r").await;
+}
+
+/// A channel reply answers the message stamped on its row and nothing else.
+/// Each case would have credited an editor under "the newest person's row
+/// before the reply".
+#[tokio::test]
+#[ignore]
+async fn a_channel_reply_answers_only_the_message_it_was_started_for() {
+    crate::support::wire_boot_seams();
+    let state = live_app_state().await;
+    let pg = state.pg.clone();
+    sweep(&pg, "s").await;
+    let (ada, ada_cookie, _) = member(&state, "s", "ada").await;
+    let (eve, _, eve_email) = member(&state, "s", "eve").await;
+    let (vic, _, vic_email) = member(&state, "s", "vic").await;
+    let b = board(&pg, &ada, "Exit Stamp", "TRXT").await;
+    share(&pg, &b, &eve, "editor").await;
+    share(&pg, &b, &vic, "viewer").await;
+    let (model, key) = agent(&state, "s", &[&b]).await;
+    let (id, tref) = ticket(&pg, &b, "quality_review").await;
+    let attempt = |thread: String| {
+        let state = state.clone();
+        let key = key.clone();
+        let id = id.clone();
+        async move {
+            as_agent(
+                &state,
+                &key,
+                "PUT",
+                &put(&id),
+                json!({ "status": "inbox", "conversationId": thread }),
+            )
+            .await
+        }
+    };
+
+    // The relevance window: Vic (a viewer) asked, the agent's reply was
+    // still being decided, and Eve (an editor) posted before its row landed.
+    // The reply answers Vic, so Vic's authority is the one checked.
+    let r = room(&pg, &ada, &id, "trx-stamp-window").await;
+    let vics = channel_row(
+        &pg,
+        &r,
+        ("user", &vic_email),
+        "send this back to the inbox",
+        "complete",
+        None,
+    )
+    .await;
+    channel_row(
+        &pg,
+        &r,
+        ("user", &eve_email),
+        "@agent what's left on this?",
+        "complete",
+        None,
+    )
+    .await;
+    channel_row(&pg, &r, ("agent", &model), "", "streaming", Some(&vics)).await;
+    let (s, body) = attempt(r).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert!(
+        err(&body).contains(&format!(
+            "{vic_email} cannot edit every board this move touches"
+        )),
+        "{body}"
+    );
+
+    // Two replies streaming side by side: the call names only the room, so
+    // which one is asking cannot be told.
+    let r = room(&pg, &ada, &id, "trx-stamp-two").await;
+    let first = channel_row(
+        &pg,
+        &r,
+        ("user", &vic_email),
+        "send this back to the inbox",
+        "complete",
+        None,
+    )
+    .await;
+    channel_row(&pg, &r, ("agent", &model), "", "streaming", Some(&first)).await;
+    let second = channel_row(
+        &pg,
+        &r,
+        ("user", &eve_email),
+        "@agent and what's left?",
+        "complete",
+        None,
+    )
+    .await;
+    channel_row(&pg, &r, ("agent", &model), "", "streaming", Some(&second)).await;
+    let (s, body) = attempt(r).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert!(err(&body).contains("more than one reply"), "{body}");
+
+    // A reply row with no stamp answers nobody, whoever posted before it.
+    let r = room(&pg, &ada, &id, "trx-stamp-none").await;
+    channel_row(
+        &pg,
+        &r,
+        ("user", &eve_email),
+        "send this back to the inbox",
+        "complete",
+        None,
+    )
+    .await;
+    channel_row(&pg, &r, ("agent", &model), "", "streaming", None).await;
+    let (s, body) = attempt(r).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert!(err(&body).contains("no person behind it"), "{body}");
+
+    // A click through the REAL channel door: `drafted: true` marks the row,
+    // and the reply answering it cites nobody.
+    let channel: talaria_api::channels::CreatedChannel =
+        talaria_api::channels::create_channel(&pg, &ada, "trx-stamp-drafted", None, "channel")
+            .await
+            .unwrap();
+    let (s, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/channels/{}/messages", channel.id),
+        Some(&ada_cookie),
+        Some(
+            json!({ "content": format!("{tref} needs revisions, move it back"), "drafted": true }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let posted = body["message"]["id"]
+        .as_str()
+        .expect("the posted row")
+        .to_string();
+    let marked: bool =
+        sqlx::query_scalar("select drafted from channel_messages where id = $1::uuid")
+            .bind(&posted)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert!(marked, "the door marks a clicked post");
+    channel_row(
+        &pg,
+        &channel.id,
+        ("agent", &model),
+        "",
+        "streaming",
+        Some(&posted),
+    )
+    .await;
+    let (s, body) = attempt(channel.id.clone()).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    assert!(err(&body).contains("only clicked"), "{body}");
+
+    assert_eq!(status_of(&pg, &id).await.0, "quality_review");
+    assert!(audit_after(&pg, "task.review_exit", &id).await.is_empty());
+    // The rooms go with the ticket; a plain channel outlives its creator.
+    sqlx::query("delete from channels where id = $1::uuid")
+        .bind(&channel.id)
+        .execute(&pg)
+        .await
+        .unwrap();
+    sweep(&pg, "s").await;
 }
 
 #[tokio::test]

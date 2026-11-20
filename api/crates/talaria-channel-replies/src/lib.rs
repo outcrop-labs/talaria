@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use talaria_channels::{
-    ChannelMessageWire, insert_channel_message, list_channel_agents, list_channel_members,
+    ChannelMessageWire, insert_streaming_reply, list_channel_agents, list_channel_members,
     list_channel_messages, list_task_room_agents, list_task_room_members, list_thread_messages,
     set_channel_message_guard, update_channel_message,
 };
@@ -895,7 +895,7 @@ async fn recent_room_turns(pg: &PgPool, channel_id: &str, before_seq: i32) -> Ve
 ///      unprompted agent speech is wrong — #announcements, a customer channel
 ///      — opts out without the capability being turned off everywhere.
 ///   2. A sender that is not a person. Nothing reaches here from an agent
-///      today (an agent's reply is written through `insert_channel_message`,
+///      today (an agent's reply is written through `insert_streaming_reply`,
 ///      not through the POST route), and this is the belt-and-braces that
 ///      keeps it that way if a future caller changes.
 ///   3. Something to judge. A room with no agents, or an empty message, has
@@ -982,6 +982,7 @@ pub async fn trigger_agent_replies(
     channel_name: &str,
     content: &str,
     attachments: usize,
+    message_id: &str,
     message_seq: i32,
     thread_root_id: Option<&str>,
     sender: Option<SenderIdentity>,
@@ -1130,17 +1131,12 @@ pub async fn trigger_agent_replies(
                 return;
             }
         };
-        let row = insert_channel_message(
-            deps,
-            channel_id,
-            "agent",
-            &m.model,
-            "",
-            "streaming",
-            &json!([]),
-            thread_root_id,
-        )
-        .await;
+        // The reply carries the message it answers — the one this pass was
+        // started for, not whatever landed while it was being decided — so
+        // "the person this turn answers" is never a guess (talaria-chips
+        // `live_turn`).
+        let row =
+            insert_streaming_reply(deps, channel_id, &m.model, thread_root_id, message_id).await;
         let row = match row {
             Ok(r) => r,
             Err(e) => {

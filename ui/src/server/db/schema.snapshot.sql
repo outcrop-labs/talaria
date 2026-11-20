@@ -559,7 +559,8 @@ CREATE TABLE public.channel_messages (
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
     guard jsonb,
     chips jsonb DEFAULT '[]'::jsonb NOT NULL,
-    drafted boolean DEFAULT false NOT NULL
+    drafted boolean DEFAULT false NOT NULL,
+    answers_message_id uuid
 );
 CREATE TABLE public.channel_teams (
     channel_id uuid NOT NULL,

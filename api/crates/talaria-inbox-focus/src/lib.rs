@@ -1818,7 +1818,7 @@ async fn execute_action_arms(
             let deps = deps.clone();
             let sb = state.secretbox().await.ok();
             let trigger_state = state.clone();
-            let trigger_seq = posted.seq;
+            let (trigger_id, trigger_seq) = (posted.id.clone(), posted.seq);
             let (channel_id, channel_name, message) =
                 (item.source_id.clone(), channel_name, message);
             let trigger_sender = talaria_sender_identity::SenderIdentity {
@@ -1836,6 +1836,7 @@ async fn execute_action_arms(
                         &channel_name,
                         &message,
                         0,
+                        &trigger_id,
                         trigger_seq,
                         None,
                         Some(trigger_sender),

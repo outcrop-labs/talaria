@@ -15,6 +15,9 @@
 //   the asker  the author of a human message that live turn answers, and
 //              nobody else: never a bystander in a busy room, never words the
 //              agent drafted that the person only clicked (`drafted` rows).
+//              A channel reply answers the one message stamped on its row;
+//              a turn answering several people, or a call that cannot say
+//              which of the agent's replies it comes from, cites nobody.
 //   the ticket the message names it (its ref, an old ref, its id or link), or
 //              the turn is in the ticket's own discussion room.
 //   authority  the asker can EDIT the board (both boards for a board move) —
@@ -100,6 +103,10 @@ pub enum Unproven {
     SharedKey,
     NotYours,
     NotLive,
+    /// Two or more of the agent's replies are streaming in the thread.
+    SeveralTurns,
+    /// The messages the turn answers come from more than one person.
+    SeveralPeople,
     NoPerson,
     Drafted,
     NotNamed,
@@ -116,6 +123,8 @@ impl Unproven {
             }
             Unproven::NotYours => "conversationId names no thread of yours — pass the id your prompt's thread line gives".into(),
             Unproven::NotLive => "you are not replying in that thread right now — the ask has to be the message you are answering".into(),
+            Unproven::SeveralTurns => "you are writing more than one reply in that thread right now, so Talaria cannot tell which message you are answering — the ask has to come while one reply is open".into(),
+            Unproven::SeveralPeople => "the messages you are answering come from more than one person, so Talaria cannot tell which of them asked — the ask has to be the only person's word in the turn".into(),
             Unproven::NoPerson => "the message you are answering has no person behind it that Talaria can name".into(),
             Unproven::Drafted => "the message you are answering is words you wrote that the person only clicked, which is not their ask".into(),
             Unproven::NotNamed => "the message you are answering does not name this ticket — ask the person to name it by its ref or link".into(),
@@ -178,13 +187,23 @@ fn whole_word(hay: &str, needle: &str) -> bool {
 /// The message that is the ask, out of the ones the live turn answers
 /// (oldest first): the newest one a person wrote — not drafted, with a person
 /// the row proves — that names the ticket, or any such one in the ticket's own
-/// room. Pure; the authority check is the caller's.
+/// room. A turn answering more than one person cites nobody: whichever of
+/// them the agent is acting for, a naming row by another cannot stand in for
+/// them (rows queued behind a reply included). Pure; the authority check is
+/// the caller's.
 pub fn choose_ask<'a>(
     messages: &'a [TurnMessage],
     in_room: bool,
     refs: &[String],
     id: &str,
 ) -> Result<&'a TurnMessage, Unproven> {
+    // Every row counts here, clicked or unprovable ones too: a click is
+    // still that person's input to the turn.
+    if let Some(first) = messages.first()
+        && messages.iter().any(|m| m.user_id != first.user_id)
+    {
+        return Err(Unproven::SeveralPeople);
+    }
     let written: Vec<&TurnMessage> = messages.iter().filter(|m| !m.drafted).collect();
     if written.is_empty() {
         return Err(if messages.is_empty() {
@@ -245,6 +264,7 @@ pub async fn person_asked(
     let turn = match live_turn(pg, agent, &claim.thread_id).await? {
         TurnLookup::NotYours => return Ok(Err(Unproven::NotYours)),
         TurnLookup::NotLive => return Ok(Err(Unproven::NotLive)),
+        TurnLookup::Several => return Ok(Err(Unproven::SeveralTurns)),
         TurnLookup::Live(turn) => turn,
     };
     let in_room =
@@ -394,11 +414,44 @@ mod tests {
     fn the_newest_naming_message_is_the_ask() {
         let m = [
             msg("m1", Some("ada"), "ABC-12 looks off", false),
-            msg("m2", Some("bo"), "move ABC-12 back", false),
+            msg("m2", Some("ada"), "move ABC-12 back", false),
         ];
-        // Bo's is the ask; whether Bo may edit is the caller's check — an
-        // older message by someone else never stands in for it.
         assert_eq!(choose_ask(&m, false, &refs(), ID).unwrap().id, "m2");
+    }
+
+    /// A turn answering two people cites neither: the agent may be acting on
+    /// one person's words while another's row names the ticket — a viewer's
+    /// "send it back" and an editor's "what's left on ABC-12?", say.
+    #[test]
+    fn a_turn_answering_more_than_one_person_cites_nobody() {
+        let viewer_then_editor = [
+            msg("m1", Some("vic"), "send it back to in progress", false),
+            msg("m2", Some("eve"), "what's left on ABC-12?", false),
+        ];
+        for in_room in [false, true] {
+            assert_eq!(
+                choose_ask(&viewer_then_editor, in_room, &refs(), ID),
+                Err(Unproven::SeveralPeople)
+            );
+        }
+        // A click is still the clicker's input to the turn.
+        let clicked = [
+            msg("m1", Some("vic"), "Yes, send it back", true),
+            msg("m2", Some("eve"), "ABC-12 back please", false),
+        ];
+        assert_eq!(
+            choose_ask(&clicked, false, &refs(), ID),
+            Err(Unproven::SeveralPeople)
+        );
+        // A row no person can be held to is another voice too.
+        let unproven = [
+            msg("m1", None, "ABC-12 back", false),
+            msg("m2", Some("eve"), "ABC-12 back please", false),
+        ];
+        assert_eq!(
+            choose_ask(&unproven, false, &refs(), ID),
+            Err(Unproven::SeveralPeople)
+        );
     }
 
     #[test]
@@ -427,6 +480,8 @@ mod tests {
             (Unproven::SharedKey, "your own agent key"),
             (Unproven::NotYours, "thread line"),
             (Unproven::NotLive, "message you are answering"),
+            (Unproven::SeveralTurns, "one reply is open"),
+            (Unproven::SeveralPeople, "only person's word"),
             (Unproven::NoPerson, "no person"),
             (Unproven::Drafted, "not their ask"),
             (Unproven::NotNamed, "ref or link"),

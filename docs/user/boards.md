@@ -105,6 +105,8 @@ The agent makes the move and the ticket's activity says who asked: *"moved to in
 
 - it is the message the agent is answering right now, and you wrote it — an option you
   clicked on the agent's own question does not count, because those are the agent's words;
+- the agent is answering you alone: if someone else wrote in the same turn, or the agent is
+  writing two replies in one channel at once, Talaria cannot tell who asked;
 - you can edit the board (both boards, for a move to another board), so an agent never does
   for you what you could not do yourself;
 - your message names the ticket — its reference (`ABC-12`, an old one too) or a link to it —
