@@ -13,19 +13,15 @@ import type { BriefEntry, BriefLine, BriefResponse, BriefView } from '@/lib/dail
 const h = vi.hoisted(() => ({
   client: null as unknown,
   frames: [] as Array<(data: string) => void>,
-  getJson: null as unknown as ReturnType<typeof vi.fn>,
-  postJson: null as unknown as ReturnType<typeof vi.fn>,
+  getJson: vi.fn<(url: string) => Promise<unknown>>(),
+  postJson: vi.fn<(url: string, body?: unknown) => Promise<unknown>>(),
 }))
 
-vi.mock('@/lib/fetch-json', () => {
-  h.getJson = vi.fn()
-  h.postJson = vi.fn()
-  return {
-    getJson: (...args: unknown[]) => h.getJson(...args),
-    postJson: (...args: unknown[]) => h.postJson(...args),
-    errorMessage: (e: unknown) => String(e),
-  }
-})
+vi.mock('@/lib/fetch-json', () => ({
+  getJson: (url: string) => h.getJson(url),
+  postJson: (url: string, body?: unknown) => h.postJson(url, body),
+  errorMessage: (e: unknown) => String(e),
+}))
 
 vi.mock('@tanstack/svelte-query', async (importOriginal) => {
   const real = await importOriginal<typeof import('@tanstack/svelte-query')>()
