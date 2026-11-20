@@ -18,6 +18,11 @@
 #      libgtk-3. LD_DEBUG=bindings prints each binding; LD_BIND_NOW makes the
 #      loader resolve them all before main, so this needs no display: the
 #      shell then gives up for lack of one, and its exit status is not read.
+#      It also gets a session bus that does not exist. The shell claims its
+#      single-instance name on the bus before it looks for a display, and on a
+#      desktop with Talaria open that claim would bring the running window
+#      forward. Unsetting the address is not enough: zbus then falls back to
+#      $XDG_RUNTIME_DIR/bus.
 #
 # Exit 0 when both hold, 1 with the reason when either does not, 2 on usage.
 # ci.yml's desktop job runs it on the debug build, desktop-package.yml on the
@@ -44,19 +49,21 @@ fi
 # 2. What libwebkit2gtk-4.1's import binds to.
 trace=$(mktemp)
 trap 'rm -f "$trace"' EXIT
-env -u DISPLAY -u WAYLAND_DISPLAY LD_BIND_NOW=1 LD_DEBUG=bindings \
-  timeout 30 "$exe" >/dev/null 2>"$trace" </dev/null || true
+env -u DISPLAY -u WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent \
+  LD_BIND_NOW=1 LD_DEBUG=bindings timeout 30 "$exe" >/dev/null 2>"$trace" </dev/null || true
 binds=$(grep -F "\`$sym'" "$trace" | grep -F 'libwebkit2gtk-4.1' || true)
 echo "LD_DEBUG=bindings for $sym:"
 printf '  %s\n' "${binds:-none}"
 name=$(basename "$exe")
+# The loader names the executable by the path it was started with (timeout
+# passes "$exe" on as argv[0]), so each line must bind "to $exe [0]".
 if [ -z "$binds" ]; then
   echo "FAIL: the loader bound no import of $sym from libwebkit2gtk-4.1: the WebKitGTK on this" \
     "machine does not call it, or the trace did not run (its first lines follow)"
   head -n 20 "$trace"
   exit 1
 fi
-if printf '%s\n' "$binds" | grep -vqE " to [^ ]*${name} \[0\]: "; then
+if printf '%s\n' "$binds" | grep -vqF -- " to $exe [0]: "; then
   echo "FAIL: libwebkit2gtk-4.1 binds $sym somewhere other than $name, so the shim never runs"
   exit 1
 fi

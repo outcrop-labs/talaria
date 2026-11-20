@@ -29,15 +29,29 @@
 //! THE FIX. WebKit's call reaches the shell first: the executable exports its
 //! own `gtk_drag_set_icon_surface`, and the loader looks in the executable
 //! before libgtk-3 (desktop/packaging/linux/check-drag-icon-shim.sh checks
-//! both halves in CI). `set_icon_surface` stamps the source window's scale on
-//! the surface — device scale (s, s), and the device offset times s so the
+//! both halves in CI). `set_icon_surface` stamps the web view's scale on the
+//! surface — device scale (s, s), and the device offset times s so the
 //! hotspot stays the CSS grab point — then calls GTK's own function, found
 //! with `dlsym(RTLD_NEXT)`. GTK then reads extents of W/s × H/s: the web size,
 //! drawn pixel for pixel, with the cursor on the point grabbed. A device scale
 //! is how GTK documents a HiDPI surface, and the form an upstream fix in
 //! DragSourceGtk3 would take (bugs.webkit.org 292058 may be this bug).
 //!
-//! THE GUARDS. A window at scale 1 is left alone. A surface that already
+//! WHICH SCALE. s must be the integer WebKit snapshotted at:
+//! `gtk_widget_get_scale_factor` of the web view (WebKit/UIProcess/API/gtk/
+//! WebKitWebViewBase.cpp:2540, 2550, at 2.52.5), which follows the monitor the
+//! window is on. GTK keeps that widget on the drag before WebKit's
+//! set-icon call (gtkdnd.c:1846; DragSourceGtk3.cpp:140 then 149), and
+//! `gtk_drag_get_source_widget` returns it (gtkdnd.c:917-938). The drag
+//! context's source window is not it: it is GTK's pooled 1×1 ipc popup
+//! (gtkdnd.c:312-315, 1828). On X11 every window has the screen's one scale,
+//! so either would do. On Wayland that popup is never mapped (it sits at
+//! -99,-99; gdk/wayland/gdkwindow-wayland.c:3160-3162) and keeps monitor 0's
+//! scale from its creation (831-835, 4907-4916), so on monitors at different
+//! scales it would halve a ghost or leave it doubled. The popup is only the
+//! fallback for a drag GTK has no source widget for.
+//!
+//! THE GUARDS. A drag from a web view at scale 1 is left alone. A surface that already
 //! carries a device scale is left alone: a WebKitGTK fixed upstream that way,
 //! or any other caller that sets one. Drag data, actions and events never
 //! pass through here. Nothing here may unwind into C — Rust aborts the
@@ -73,16 +87,16 @@ type SetIconSurface = unsafe extern "C" fn(*mut Context, *mut Surface);
 
 /// The device scale and offset an icon should carry, or `None` to leave it
 /// as it came. `surface_scale` and `offset` are the surface's own;
-/// `window_scale` is the integer scale of the window the drag left.
+/// `source_scale` is the integer scale of the web view the drag left.
 fn fitted(
     surface_scale: (f64, f64),
     offset: (f64, f64),
-    window_scale: i32,
+    source_scale: i32,
 ) -> Option<(f64, (f64, f64))> {
-    if window_scale <= 1 || surface_scale != (1.0, 1.0) {
+    if source_scale <= 1 || surface_scale != (1.0, 1.0) {
         return None;
     }
-    let s = f64::from(window_scale);
+    let s = f64::from(source_scale);
     Some((s, (offset.0 * s, offset.1 * s)))
 }
 
@@ -90,7 +104,7 @@ fn fitted(
 ///
 /// # Safety
 /// `surface` is a live cairo surface.
-unsafe fn fit(surface: *mut Surface, window_scale: i32) -> bool {
+unsafe fn fit(surface: *mut Surface, source_scale: i32) -> bool {
     if unsafe { cairo::cairo_surface_status(surface) } != cairo::STATUS_SUCCESS {
         return false;
     }
@@ -99,7 +113,7 @@ unsafe fn fit(surface: *mut Surface, window_scale: i32) -> bool {
         cairo::cairo_surface_get_device_scale(surface, &mut sx, &mut sy);
         cairo::cairo_surface_get_device_offset(surface, &mut ox, &mut oy);
     }
-    let Some((s, (x, y))) = fitted((sx, sy), (ox, oy), window_scale) else {
+    let Some((s, (x, y))) = fitted((sx, sy), (ox, oy), source_scale) else {
         return false;
     };
     unsafe {
@@ -109,17 +123,29 @@ unsafe fn fit(surface: *mut Surface, window_scale: i32) -> bool {
     true
 }
 
-/// The scale of the window the drag left — the integer WebKit snapshots at
-/// (`gtk_widget_get_scale_factor` of the web view) — or 1 without one.
+/// The integer scale WebKit snapshotted the image at, and where it was read
+/// (for the log line): the scale of the widget the drag left, the web view
+/// (the header's "WHICH SCALE"). Without a source widget, the drag's source
+/// window's, which is right on X11 only; without either, 1.
 ///
 /// # Safety
-/// `context` is a live drag context.
-unsafe fn window_scale(context: *mut Context) -> i32 {
+/// `context` is the source side's live drag context.
+unsafe fn source_scale(context: *mut Context) -> (i32, &'static str) {
+    let widget = unsafe { gtk::ffi::gtk_drag_get_source_widget(context) };
+    if !widget.is_null() {
+        return (
+            unsafe { gtk::ffi::gtk_widget_get_scale_factor(widget) },
+            "the dragged widget",
+        );
+    }
     let window = unsafe { gdk::gdk_drag_context_get_source_window(context) };
     if window.is_null() {
-        return 1;
+        return (1, "no source");
     }
-    unsafe { gdk::gdk_window_get_scale_factor(window) }
+    (
+        unsafe { gdk::gdk_window_get_scale_factor(window) },
+        "the drag's source window",
+    )
 }
 
 /// GTK's own `gtk_drag_set_icon_surface`: the next definition after the
@@ -153,7 +179,7 @@ unsafe fn prepare(context: *mut Context, surface: *mut Surface) {
     if context.is_null() || surface.is_null() {
         return;
     }
-    let scale = unsafe { window_scale(context) };
+    let (scale, from) = unsafe { source_scale(context) };
     if unsafe { fit(surface, scale) } && !SAID_FITTED.swap(true, Ordering::Relaxed) {
         let (major, minor, micro) = unsafe {
             (
@@ -164,7 +190,7 @@ unsafe fn prepare(context: *mut Context, surface: *mut Surface) {
         };
         eprintln!(
             "talaria-desktop: drag images: WebKitGTK {major}.{minor}.{micro} hands GTK device \
-             pixels; shown at scale {scale}, the web size (drag_icon.rs)"
+             pixels; shown at scale {scale} (read from {from}), the web size (drag_icon.rs)"
         );
     }
 }

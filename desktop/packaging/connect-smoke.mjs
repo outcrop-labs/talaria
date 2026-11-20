@@ -46,10 +46,14 @@
 // px with no border, shadow, outline or overflow, because WebKit snapshots the
 // element's painted rect while the hotspot is measured from its border box:
 // any of those would grow or shift the image by a CSS px (2 device px at
-// scale 2). The page also sets the Talaria UI's shell hook, so the shell
-// keeps it up instead of calling it "not Talaria" mid-drag. Missing DISPLAY,
-// xdotool, xwininfo or xprop, or a GDK_SCALE below 2, exits 2 before
-// anything is launched.
+// scale 2). The shell's one "drag images" line must also say it read the
+// scale from the dragged widget: on X11 every window has the same scale, so
+// the size alone cannot show that the shim asked the web view, which is what
+// keeps it right on Wayland with monitors at different scales. The drag
+// run's page also sets the Talaria UI's shell hook, so the shell keeps it up
+// instead of calling it "not Talaria" mid-drag; without `--drag-icon` the
+// page is the plain one. Missing DISPLAY, xdotool, xwininfo or xprop, or a
+// GDK_SCALE below 2, exits 2 before anything is launched.
 
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -139,16 +143,22 @@ const requests = []
 let launched = 0
 
 const seenQuery = new Map() // path → the query of its latest request
+// The plain connect smoke's page, as it always was: the macOS, Windows and
+// release smokes (ci.yml, desktop-package.yml) run exactly this.
+const PLAIN_PAGE = `<!doctype html>
+<meta charset="utf-8">
+<title>Connect smoke</title>
+<p>The connect smoke's instance page.</p>
+<script>fetch('/opened?href=' + encodeURIComponent(location.href)).catch(() => {})</script>
+`
 // The box `--drag-icon` drags (the header says why it is placed and styled
-// this way). Every page has it; only that phase touches it.
+// this way). Only that run's page has it.
 const BOX = { width: 240, height: 120 }
-// With --drag-icon only: the page answers as a Talaria UI that is up
-// (desktop/src-tauri/src/loading.rs, PAGE_JS). Otherwise the shell judges it
-// "not Talaria" about 3 s after it loads and goes back to the launcher, which
-// can land in the middle of the drag. The plain connect smoke keeps the page
-// as it always was.
-const TALARIA_UI_UP = '\n  window.__TALARIA_DESKTOP__ = {}'
-const PAGE = `<!doctype html>
+// The `--drag-icon` page. It also answers as a Talaria UI that is up
+// (`window.__TALARIA_DESKTOP__`; desktop/src-tauri/src/loading.rs, PAGE_JS).
+// Otherwise the shell judges it "not Talaria" about 3 s after it loads and
+// goes back to the launcher, which can land in the middle of the drag.
+const DRAG_PAGE = `<!doctype html>
 <meta charset="utf-8">
 <title>Connect smoke</title>
 <style>
@@ -162,7 +172,8 @@ const PAGE = `<!doctype html>
 </style>
 <p>The connect smoke's instance page.</p>
 <div id="drag-box" draggable="true">drag smoke</div>
-<script>${dragIcon ? TALARIA_UI_UP : ''}
+<script>
+  window.__TALARIA_DESKTOP__ = {}
   const report = (path, values) => fetch(path + '?' + new URLSearchParams(values)).catch(() => {})
   const box = document.getElementById('drag-box')
   // Centred at whole CSS px: never a transform, never a fraction.
@@ -188,6 +199,7 @@ const PAGE = `<!doctype html>
   fetch('/opened?href=' + encodeURIComponent(location.href)).catch(() => {})
 </script>
 `
+const PAGE = dragIcon ? DRAG_PAGE : PLAIN_PAGE
 
 const server = createServer((req, res) => {
   const [path, query = ''] = (req.url ?? '/').split('?')
@@ -466,20 +478,29 @@ if (existsSync(logFile)) {
   console.log(`\nno log file at ${logFile}`)
 }
 
+// The shim's one line names where it read the scale (drag_icon.rs,
+// `source_scale`). On X11 the dragged widget and the drag's source window have
+// the same scale, so only this line shows the run took the widget's, the one
+// that is also right on Wayland with monitors at different scales.
+const said = output.filter((line) => line.includes('drag images:'))
+const fromWidget = said.some((line) => line.includes('(read from the dragged widget)'))
 if (drag) {
   console.log('\nthe drag (--drag-icon):')
   for (const line of drag.log) console.log(`  ${line}`)
-  const said = output.filter((line) => line.includes('drag images:'))
   console.log(`the shell's drag-image line: ${said.length ? said.join(' | ') : 'none'}`)
 }
 
 const connected = alive && seen.has('/') && seen.has('/opened')
 if (connected && dragIcon) {
-  if (drag?.pass) {
-    console.log(`\nPASS: the shell opened the instance and ${drag.why}`)
+  if (drag?.pass && fromWidget) {
+    console.log(`\nPASS: the shell opened the instance and ${drag.why}, at the dragged widget's scale`)
     process.exit(0)
   }
-  console.log(`\nFAIL: the shell opened the instance, but ${drag?.why ?? 'the drag never ran'}`)
+  const why = !drag?.pass
+    ? (drag?.why ?? 'the drag never ran')
+    : `${drag.why}, but the shell's drag-image line does not say it read the scale from the dragged widget ` +
+      '(drag_icon.rs `source_scale`: without the widget, Wayland with monitors at different scales gets the wrong one)'
+  console.log(`\nFAIL: the shell opened the instance, but ${why}`)
   process.exit(1)
 }
 if (connected) {

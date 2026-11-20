@@ -402,18 +402,22 @@ Chromium's own code. ui/ sets no drag image and scales nothing.
 The shell corrects it at the one call that carries the image. The executable defines
 `gtk_drag_set_icon_surface` itself (`desktop/src-tauri/src/main.rs`; `build.rs` exports it
 by name), and the loader looks in the executable before libgtk-3, so WebKitGTK's call
-lands there first. `drag_icon.rs` gives the surface the drag's source-window scale as its
-device scale and scales its device offset to match. It then calls GTK's own function with
-the same arguments. GTK sizes the icon at the CSS size, draws it pixel for pixel, and keeps
+lands there first. `drag_icon.rs` gives the surface the web view's scale as its device
+scale and scales its device offset to match. That is `gtk_widget_get_scale_factor` of the
+widget the drag left (`gtk_drag_get_source_widget`), the integer WebKit snapshotted at, and
+it follows the monitor the window is on. The drag context's own source window is GTK's
+hidden ipc popup, whose scale on Wayland is monitor 0's from when it was made, so it is
+read only when a drag has no source widget. `drag_icon.rs` then calls GTK's own function
+with the same arguments. GTK sizes the icon at the CSS size, draws it pixel for pixel, and keeps
 the cursor on the point grabbed. Drag data, actions and events never pass through it. It
 leaves two cases alone: a window at scale 1, and a surface that already carries a device
 scale. The second is the form an upstream fix would take, so a fixed WebKitGTK makes the
 shim a pass-through; remove it once the oldest WebKitGTK the shell supports has the fix.
-The first fitted drag logs one line with the scale and the WebKitGTK version, for example
-`talaria-desktop: drag images: WebKitGTK 2.52.5 hands GTK device pixels; shown at scale 2,
-the web size (drag_icon.rs)`. The module's header has the upstream file and line references
-(WebKitGTK 2.52.5, GTK 3.24.52); [WebKit bug 292058][webkit292058] may be the same bug
-upstream.
+The first fitted drag logs one line with the scale, where it was read and the WebKitGTK
+version, for example `talaria-desktop: drag images: WebKitGTK 2.52.5 hands GTK device
+pixels; shown at scale 2 (read from the dragged widget), the web size (drag_icon.rs)`. The
+module's header has the upstream file and line references (WebKitGTK 2.52.5, GTK 3.24.52);
+[WebKit bug 292058][webkit292058] may be the same bug upstream.
 
 **The trade-off.** WebKitGTK passes a `setDragImage(<img>)` preview at the image's natural
 pixels instead of scaling it by the device scale. On a HiDPI Linux display such a ghost
@@ -426,7 +430,8 @@ ghost and stays the web size; use that if ui/ ever sets a drag image.
 `desktop/packaging/linux/check-drag-icon-shim.sh <binary>` asserts that the binary defines
 the symbol (readelf), and that libwebkit2gtk-4.1 binds its call to the binary
 (`LD_DEBUG=bindings`, with `LD_BIND_NOW` so the binding prints before the shell gives up
-for lack of a display). CI's Linux `desktop` job runs it on its build, and
+for lack of a display). It points the shell at a session bus that does not exist, so on a
+desktop it never reaches, or brings forward, a Talaria that is running. CI's Linux `desktop` job runs it on its build, and
 `desktop-package.yml` runs it on the binary the deb installed. The same job runs a HiDPI
 drag (Gates, below). On a desktop, run `bun run desktop` on the scaled session, or
 `GDK_SCALE=2 bun run desktop` on a 1× screen. Compare each drag with the same one in a
@@ -437,7 +442,12 @@ browser at the same scale:
   row, a KB doc row, a text selection, and an image: the web size, under the point grabbed;
 - a plain link: unchanged, GTK's default link icon;
 - each drop does what it did, and a drop on empty space is still refused (`DROP_GUARD`);
-- the log has the one "drag images" line, and with `GDK_SCALE=1` on a 1× screen, none.
+- the log has the one "drag images" line, read from the dragged widget, and with
+  `GDK_SCALE=1` on a 1× screen, none;
+- on Wayland with two monitors at different scales (say a 200% laptop panel and a 100%
+  external screen), a card drag on each: the web size on both, also after moving the window
+  across and after changing a monitor's scale while Talaria runs. CI's smoke is X11, where
+  every window has one scale, so only a person can check this.
 
 [webkit292058]: https://bugs.webkit.org/show_bug.cgi?id=292058
 
