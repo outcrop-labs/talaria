@@ -34,7 +34,7 @@ export interface ChatFocus {
  * `stopTurn`).
  */
 export async function* streamChat(
-  params: { model: string; conversationId?: string; content: string; tier?: string; effort?: string; attachmentIds?: string[]; refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>; kind?: ChatKind; templateId?: string | null; focus?: ChatFocus; turnId?: string },
+  params: { model: string; conversationId?: string; content: string; tier?: string; effort?: string; attachmentIds?: string[]; refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>; kind?: ChatKind; templateId?: string | null; focus?: ChatFocus; turnId?: string; drafted?: boolean },
   onMeta?: (m: ChatMeta) => void,
   signal?: AbortSignal,
 ) {
@@ -71,6 +71,8 @@ export async function queueChatMessage(params: {
   refs?: Array<{ type: 'kb-doc' | 'artifact'; id: string }>
   kind?: ChatKind
   focus?: ChatFocus
+  /** The words were the agent's (an ask option, a tool chip) — see `streamChat`'s twin. */
+  drafted?: boolean
 }): Promise<void> {
   // The route answers 202 `{ queued: true, conversationId }` — parsed only to
   // prove it arrived; the caller has nothing to read from it.

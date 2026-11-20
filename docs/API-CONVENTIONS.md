@@ -66,7 +66,10 @@ reaching for `.legacy` on something that might be a bare model string.
 
 Every agent patch that goes through `update_task` inherits the HITL invariant automatically:
 `agent_safe_patch` strips assignment/planning/archival, redirects terminal moves to
-the board's review column, and refuses the rest. The predicate lives **once**, in
+the board's review column, and refuses the rest. The one way out of review is a person's ask
+the server proves (`api/crates/talaria-tasks/src/asked.rs`): the call's `conversationId` names
+the thread, and the asker is the author of the message the agent's live turn answers, can edit
+the board, and named the ticket; terminal moves stay refused even then. The predicate lives **once**, in
 `api/src/tasks.rs` — the TS routes that carried a twin spelling were deleted at the cutover, the
 resident tier never writes tickets, and the MCP server's tools ride the api — so there is no second
 definition anywhere to keep in step. **A route that goes through `update_task` needs nothing else.**

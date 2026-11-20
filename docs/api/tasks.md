@@ -70,6 +70,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id.rs`](../../api/cra
 | `parentId` | `nullish` |  |
 | `addTimeSpentSeconds` | `number?(0, 86400, 30)` |  |
 | `attachmentIds` | `uuid[]?(20)` | Full replacement list, same contract as chat messages: upload ids + knowledge/artifact refs. Omit both to leave attachments unchanged. |
+| `conversationId` | `uuid?` | Agents: the conversation or channel a person asked for this move out of review in. A claim update_task proves (talaria-tasks `asked`). |
 
 ## `/api/tasks/{id}/channel`
 
@@ -137,10 +138,10 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_dependencies.rs`](
 
 Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs)
 
-> POST /api/tasks/{id}/move { boardId, status?, preview? }. Move a ticket to
-> another board — an ACTION, so POST (API-CONVENTIONS "Methods").
->
-> The decisions live in talaria-tasks `move_task` (permission on both
+> POST /api/tasks/{id}/move { boardId, status?, preview?, conversationId? }.
+> Move a ticket to another board — an ACTION, so POST (API-CONVENTIONS
+> "Methods"). `conversationId` is an agent's claim that a person asked for a
+> move out of review: the thread they asked in, proven by `move_task`
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -154,6 +155,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs`](../../ap
 | `boardId` | `uuid` |  |
 | `status` | `string?(40)` |  |
 | `preview` | `bool?` |  |
+| `conversationId` | `uuid?` | Agents: the conversation or channel a person asked for this move out of review in. A claim move_task proves (talaria-tasks `asked`). |
 
 ## `/api/tasks/{id}/review`
 

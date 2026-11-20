@@ -1,8 +1,12 @@
 // POST /api/chat/chips/approvals/{id} — approve or deny a chip.
-// Google sends execute through the existing confirm-send. Ticket moves apply
-// as the person who approved. Either way the chip that follows names the
-// tools that approval unlocked. An agent's own approval request (kind
-// `hermes_approval`) is answered through the agent instead: `once` or
+// Google sends execute through the existing confirm-send. Ticket moves (a
+// refused `triage_ticket` → `ticket_move`, a refused `move_ticket` →
+// `ticket_board_move`) apply as the person who approved, and are THE BOARD'S
+// to decide: any editor of the ticket's board, or an admin — not the agent's
+// owner, who may not even see the board. That grants nothing new, because an
+// editor can make the move on the board themselves. Every other kind's chip
+// names the tools its approval unlocked. An agent's own approval request
+// (kind `hermes_approval`) is answered through the agent instead: `once` or
 // `deny`, by the conversation's owner while they manage the agent.
 
 use axum::Json;
@@ -13,17 +17,22 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use talaria_agent_auth::now_ms;
+use talaria_api_facades::fleet::describe_agent;
 use talaria_api_facades::google::pending_actions::decide_action;
+use talaria_boards::{board_role, can_edit};
 use talaria_body::{enum_member, parse};
 use talaria_chips::{
-    is_google_action, load_approval, mark_approval, merge_mcp_unlock, merge_unlocked,
-    surface_for_agent, tools_unlocked, unlock_chip_for,
+    is_google_action, is_ticket_approval, load_approval, mark_approval, merge_mcp_unlock,
+    merge_unlocked, surface_for_agent, tools_unlocked, unlock_chip_for,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::secretbox_or_500;
-use talaria_session::{actor_of, require_user};
+use talaria_session::{SessionUser, actor_of, require_user};
 use talaria_state::AppState;
-use talaria_tasks::{TaskActor, TaskDeps, TaskError, TaskPatch, update_task};
+use talaria_tasks::{
+    MoveError, MoveRequest, Mover, ResolvedTaskId, TaskActor, TaskDeps, TaskError, TaskPatch,
+    get_task, move_task, resolve_task_id, update_task,
+};
 
 // doc: Approve or deny a protected action surfaced as a chip in the thread.
 
@@ -56,10 +65,21 @@ pub async fn post(
     if row.kind == talaria_approval_cards::KIND {
         return Ok(answer_card(&state, &user, &row, &decision).await);
     }
-    let allowed = row.owner_user_id.as_deref() == Some(user.id.as_str()) || user.role == "admin";
-    if !allowed {
-        return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
-    }
+    // A ticket move is gated on the ticket's board, and its payload's ticket
+    // (a ref or an id) is resolved here, once, for the gate and the move.
+    let ticket = if is_ticket_approval(&row.kind) {
+        match ticket_gate(&state, &user, &row).await {
+            Ok(id) => Some(id),
+            Err(response) => return Ok(response),
+        }
+    } else {
+        let allowed =
+            row.owner_user_id.as_deref() == Some(user.id.as_str()) || user.role == "admin";
+        if !allowed {
+            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
+        }
+        None
+    };
     if decision == "reject" {
         if let Err(e) = mark_approval(&state.pg, &row.id, "denied", &user.id).await {
             return Ok(internal("[chips] deny failed", e));
@@ -67,7 +87,7 @@ pub async fn post(
         return Ok(Json(json!({ "status": "denied", "tools": [] })).into_response());
     }
 
-    if let Err(response) = execute(&state, &user.id, user.role == "admin", &row).await {
+    if let Err(response) = execute(&state, &user, &row, ticket.as_deref()).await {
         return Ok(response);
     }
     if let Err(e) = mark_approval(&state.pg, &row.id, "approved", &user.id).await {
@@ -97,10 +117,11 @@ pub async fn post(
         }
         tools.iter().map(|t| t.to_string()).collect()
     };
-    // An `mcp_call` that earned no grant (an org or agent principal) shows
-    // no unlock at all; every other kind keeps its chip as before.
+    // An approval that earned no grant — an `mcp_call` for an org or agent
+    // principal, or a ticket move, which IS the move — shows no unlock at
+    // all; every other kind keeps its chip as before.
     if let Some(agent) = &row.agent_model
-        && (row.kind != "mcp_call" || !tools.is_empty())
+        && !tools.is_empty()
     {
         let chip = unlock_chip_for(&row.id, &row.kind, &tools);
         let redis = state.redis().await.ok();
@@ -162,12 +183,65 @@ async fn answer_card(
     }
 }
 
+/// Who may decide a ticket-move card: an editor of the ticket's board, or an
+/// admin. Answers the ticket's id, resolved from the payload's `taskId` —
+/// a ref (`ABC-12`, an old ref included) or an id, as the agent sent it.
+async fn ticket_gate(
+    state: &AppState,
+    user: &SessionUser,
+    row: &talaria_chips::ApprovalRow,
+) -> Result<String, Response> {
+    let raw = row
+        .payload
+        .get("taskId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if raw.is_empty() {
+        return Err(house_error(
+            StatusCode::BAD_REQUEST,
+            "no ticket on this approval",
+        ));
+    }
+    let id = match resolve_task_id(&state.pg, raw).await {
+        Ok(ResolvedTaskId::One(id)) => id,
+        Ok(ResolvedTaskId::Ambiguous) => {
+            return Err(house_error(
+                StatusCode::BAD_REQUEST,
+                &format!("\"{raw}\" names more than one ticket — move it from the board instead"),
+            ));
+        }
+        Ok(ResolvedTaskId::Missing | ResolvedTaskId::Malformed) => {
+            return Err(house_error(StatusCode::NOT_FOUND, "not found"));
+        }
+        Err(e) => return Err(internal("[chips] ticket resolve failed", e)),
+    };
+    let task = match get_task(&state.pg, &id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return Err(house_error(StatusCode::NOT_FOUND, "not found")),
+        Err(e) => return Err(internal("[chips] ticket read failed", e)),
+    };
+    if user.role == "admin" {
+        return Ok(id);
+    }
+    match board_role(&state.pg, &user.id, &task.board_id).await {
+        Ok(role) if can_edit(role.as_deref()) => Ok(id),
+        Ok(_) => Err(house_error(
+            StatusCode::FORBIDDEN,
+            "only someone who can edit this ticket's board can approve moving it",
+        )),
+        Err(e) => Err(internal("[chips] board role read failed", e)),
+    }
+}
+
 async fn execute(
     state: &AppState,
-    user_id: &str,
-    is_admin: bool,
+    user: &SessionUser,
     row: &talaria_chips::ApprovalRow,
+    ticket: Option<&str>,
 ) -> Result<(), Response> {
+    let user_id = user.id.as_str();
+    let is_admin = user.role == "admin";
     // EVERY Google kind routes through the confirm-send plane, and the test
     // is `is_google_action` rather than a second hand-written list of kinds.
     // That is the bug this shape exists to prevent: the arm used to name
@@ -208,39 +282,77 @@ async fn execute(
         };
     }
 
+    let text = |key: &str| {
+        row.payload
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
     match row.kind.as_str() {
+        // The move runs as the PERSON who approved — their email on the
+        // activity line like every human actor, never a uuid — and the line
+        // says whose request it was.
         "ticket_move" => {
-            let task_id = row
-                .payload
-                .get("taskId")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            if task_id.is_empty() {
+            let Some(task_id) = ticket else {
                 return Err(house_error(
                     StatusCode::BAD_REQUEST,
                     "no ticket on this approval",
                 ));
-            }
-            let text = |key: &str| {
-                row.payload
-                    .get(key)
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
             };
+            let agent = row
+                .agent_model
+                .as_deref()
+                .map(|m| describe_agent(m).label)
+                .unwrap_or_else(|| "the agent".into());
             let patch = TaskPatch {
                 title: text("title"),
                 status: text("status"),
                 priority: text("priority"),
                 description: text("description").map(Some),
+                status_note: Some(format!("approved {agent}'s request")),
                 ..TaskPatch::default()
             };
             let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
-            match update_task(&deps, task_id, patch, &TaskActor::human(user_id)).await {
+            match update_task(&deps, task_id, patch, &TaskActor::human(actor_of(user))).await {
                 Ok(_) => Ok(()),
                 Err(TaskError::ApprovalRequired(msg) | TaskError::Refusal(msg)) => {
                     Err(house_error(StatusCode::BAD_REQUEST, &msg))
                 }
                 Err(TaskError::Db(e)) => Err(internal("[chips] ticket move failed", e)),
+            }
+        }
+        // The board move the agent was refused, made by the person who
+        // approved it: `move_task` checks THEIR edit right on both boards.
+        "ticket_board_move" => {
+            let (Some(task_id), Some(board_id)) = (ticket, text("boardId")) else {
+                return Err(house_error(
+                    StatusCode::BAD_REQUEST,
+                    "no ticket or board on this approval",
+                ));
+            };
+            if talaria_params::uuid_canonical(&board_id).is_none() {
+                return Err(house_error(StatusCode::BAD_REQUEST, "no such board"));
+            }
+            let status = text("status");
+            let req = MoveRequest {
+                board_id: &board_id,
+                status: status.as_deref(),
+                preview: false,
+                ask: None,
+            };
+            let mover = Mover::Human {
+                user_id: user.id.clone(),
+                actor: actor_of(user),
+            };
+            let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
+            match move_task(&deps, task_id, &req, &mover).await {
+                Ok(_) => Ok(()),
+                Err(MoveError::NotFound) => Err(house_error(StatusCode::NOT_FOUND, "not found")),
+                Err(MoveError::Bad(msg)) => Err(house_error(StatusCode::BAD_REQUEST, &msg)),
+                Err(MoveError::Forbidden(msg)) => Err(house_error(StatusCode::FORBIDDEN, &msg)),
+                Err(MoveError::Conflict(msg)) => Err(house_error(StatusCode::CONFLICT, &msg)),
+                Err(MoveError::Db(e)) => Err(internal("[chips] board move failed", e)),
             }
         }
         // The approval IS the grant — there is nothing else to run.

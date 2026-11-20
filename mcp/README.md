@@ -34,9 +34,9 @@ guardrail prose rules below are checked against.
 | `fetch_attachment` | Read an attached upload: text as text, images as an image, other binaries as metadata |
 | `create_ticket` | Create a ticket → lands in **inbox**, unassigned |
 | `triage_ticket` | Priority, effort, labels, description, due date, and **forward-only** status moves using the board's own status keys (see below) |
-| `move_ticket` | Move a ticket to another board the agent is on — re-keyed there (the old ref still resolves); labels the new board lacks are dropped and agents not on it unassigned, both named in `moved`; a move that would unassign a person is refused; never into a closed or pickup column; `preview: true` moves nothing |
+| `move_ticket` | Move a ticket to another board the agent is on — re-keyed there (the old ref still resolves); labels the new board lacks are dropped and agents not on it unassigned, both named in `moved`; a move that would unassign a person is refused; never into a closed column, and into a pickup column or out of review only on a person's proven ask (`conversationId`); `preview: true` moves nothing |
 | `comment` | Comment on a ticket — lands in the ticket's **discussion thread** (the room where the agent and the board's humans talk); the one write that survives **sign-off** (a closed ticket still takes comments). Not a way around archival |
-| `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket |
+| `report_outcome` | Record outcome/resolution and hand the ticket to **quality review**. The agent's last status move on that ticket, unless a person asks it to send the ticket back |
 | `add_time` | Add seconds to the auto-accumulated time-spent. Live tickets only |
 | `add_dependency` | Mark a ticket blocked by another on the same board. Both ends must be live |
 | `report_gap` | Report a capability gap. `taskId` is optional and gated: it binds the report to the people who can see that board, and a refusal is a reason to fix the scope, never to widen the audience |
@@ -256,7 +256,8 @@ turns on writes that can't land:
 | in_progress → `blocked` | yes | parking its own work |
 | in_progress → `quality_review` | yes | handing over for sign-off |
 | blocked → `in_progress` | **no** | entering a start column is assignment; a person restarts parked work |
-| out of the review column | **no** | review is the human sign-off queue — otherwise an agent pulls its own work back off the reviewer's board |
+| out of the review column, on its own | **no** | review is the human sign-off queue — otherwise an agent pulls its own work back off the reviewer's board |
+| out of the review column, when a person asks | yes, to any column but a closed one | the call passes `conversationId` (the thread it is answering) and the API proves the ask (`asked.rs`): the agent's own key, a reply streaming in that thread now, the asker wrote the message that turn answers (not an option the agent offered), can edit the board (both boards for `move_ticket`), and named the ticket — or wrote in its own room. One move per message; a pickup column is allowed because the person chose it. Unproven → 403 and an Approve card a board editor can click |
 | any write to a **closed** ticket (a `done` column, or `failed` / `cancelled`) | **no** | sign-off is sticky and covers the record, not just the column. Includes `add_time` |
 | any write to an **archived** ticket, or any ticket on an **archived board** | **no** | archiving hides work from the people watching it; an agent noticing and writing anyway is that stop failing |
 | any move of a ticket **stranded** in a status its board no longer has | **no** | nothing can class it, so a person places it |

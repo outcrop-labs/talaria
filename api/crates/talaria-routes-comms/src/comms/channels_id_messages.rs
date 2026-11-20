@@ -15,15 +15,16 @@ use talaria_api_facades::retrieval::index::IndexDoc;
 use talaria_api_facades::retrieval::qdrant;
 use talaria_api_facades::retrieval::sources::index_activity;
 use talaria_body::{
-    array_msg, array_too_big_msg, enum_member, object_msg, optional_uuid_array_member,
-    optional_uuid_member, string_member, uuid_member, zod_type_name,
+    array_msg, array_too_big_msg, enum_member, object_msg, optional_boolean_member,
+    optional_uuid_array_member, optional_uuid_member, string_member, uuid_member, zod_type_name,
 };
 use talaria_channel_replies::{
     ChannelPost, MentionSender, notify_channel_post, trigger_agent_replies,
 };
 use talaria_channels::{
     ChannelIntent, agent_may_access_channel, channel_role, get_channel_message,
-    insert_channel_message, inserted_wire, list_channel_messages, list_thread_messages,
+    insert_channel_message, insert_drafted_channel_message, inserted_wire, list_channel_messages,
+    list_thread_messages,
 };
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_notify::NotifyDeps;
@@ -191,6 +192,10 @@ struct PostBody {
     attachment_ids: Option<Vec<String>>,
     refs: Option<Vec<MessageRef>>,
     thread_root_id: Option<String>,
+    /// The words were the agent's — an ask option or a tool chip the person
+    /// clicked. Marked on the row (`drafted`) so it never stands in for the
+    /// person's own ask (talaria-tasks `asked`).
+    drafted: bool,
 }
 
 fn validate_post(obj: &serde_json::Map<String, Value>) -> Result<PostBody, String> {
@@ -221,11 +226,15 @@ fn validate_post(obj: &serde_json::Map<String, Value>) -> Result<PostBody, Strin
         }
     };
     let thread_root_id = optional_uuid_member(obj, "threadRootId")?;
+    // The words were the agent's (an ask option or tool chip the person
+    // clicked): marked on the row, never taken as the person's own ask.
+    let drafted = optional_boolean_member(obj, "drafted")?.unwrap_or(false);
     Ok(PostBody {
         content,
         attachment_ids,
         refs,
         thread_root_id,
+        drafted,
     })
 }
 
@@ -475,17 +484,29 @@ async fn post_as_user(
     let state = state.clone();
     let id = id.to_string();
     let landed = tokio::spawn(async move {
-        let message = insert_channel_message(
-            &notify,
-            &id,
-            "user",
-            &author,
-            &body.content,
-            "complete",
-            &Value::Array(attachments),
-            thread_root_id.as_deref(),
-        )
-        .await?;
+        let message = if body.drafted {
+            insert_drafted_channel_message(
+                &notify,
+                &id,
+                &author,
+                &body.content,
+                &Value::Array(attachments),
+                thread_root_id.as_deref(),
+            )
+            .await?
+        } else {
+            insert_channel_message(
+                &notify,
+                &id,
+                "user",
+                &author,
+                &body.content,
+                "complete",
+                &Value::Array(attachments),
+                thread_root_id.as_deref(),
+            )
+            .await?
+        };
         let channel_name = channel_name(&state.pg, &id)
             .await
             .unwrap_or_else(|| "channel".into());

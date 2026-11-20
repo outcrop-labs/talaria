@@ -30,6 +30,8 @@ use talaria_retrieval::{embed, qdrant};
 use talaria_statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
 use talaria_tasks_types::DispatchTicket;
 
+mod asked;
+pub use asked::{AskPlace, Asker, Unproven, choose_ask, names_ticket};
 mod moving;
 pub use moving::{
     MoveError, MoveOutcome, MoveRequest, MoveSummary, Mover, PickRefusal, StatusHow, StatusPick,
@@ -37,8 +39,8 @@ pub use moving::{
 };
 
 pub use talaria_tasks_types::{
-    Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult, agent_assignees,
-    human_assignee_ids, is_human_assignee, json_strings,
+    AskClaim, Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult,
+    agent_assignees, human_assignee_ids, is_human_assignee, json_strings,
 };
 
 // ── The row and its select ───────────────────────────────────────────────────
@@ -1343,13 +1345,15 @@ fn pick<T: Clone>(v: &Option<Option<T>>, fallback: Option<T>) -> Option<T> {
     }
 }
 
+/// An agent's patch, made safe — and, when it takes the ticket out of review
+/// on a person's proven ask, that asker (`asked`), whom the write records.
 async fn agent_safe_patch(
     pg: &PgPool,
     cur: &Task,
     mut patch: TaskPatch,
     agent: &AgentSubject,
     meta: &StatusMeta,
-) -> TaskResult<TaskPatch> {
+) -> TaskResult<(TaskPatch, Option<Asker>)> {
     // ── PRESENCE, NOT TRUTHINESS ───────────────────────────────────────────
     // Every guard below asks `patch.status.is_some()`, never the string's
     // truth. `status: ''` is a legal JSON value and a falsy one, and a guard
@@ -1376,10 +1380,36 @@ async fn agent_safe_patch(
     // back — takes it out again. Otherwise the agent pulls its own work off
     // the reviewer's board and mints itself a fresh work session on every
     // lap.
+    //
+    // THE ONE EXCEPTION IS A PERSON'S ASK, PROVEN (`asked`): a teammate who
+    // can edit the board, in the message this agent's live turn answers,
+    // named the ticket (or said it in the ticket's own room). One exit per
+    // message (claimed at the write), never to a closed column — closing is
+    // the person's own move, asked or not — and never with the stops below
+    // lifted: an ask does not unblock, place a stranded ticket or jump a
+    // workchain. `patch.ask` is server-only (the route sets it from the
+    // call's `conversationId`), so this is the only place it means anything.
+    let mut asker: Option<Asker> = None;
     if meta.review_keys.contains(&cur.status) && status_present_and_moving(&patch) {
-        return Err(TaskError::ApprovalRequired(
-            "agents cannot take a ticket out of review — a person signs it off".into(),
-        ));
+        let dest = patch.status.clone().unwrap_or_default();
+        let Some(claim) = patch.ask.clone() else {
+            return Err(TaskError::ApprovalRequired(asked::NO_ASK.into()));
+        };
+        if meta.terminal(&dest) {
+            return Err(TaskError::ApprovalRequired(asked::NEVER_CLOSES.into()));
+        }
+        match asked::person_asked(
+            pg,
+            subject_model(agent),
+            cur,
+            &[cur.board_id.as_str()],
+            &claim,
+        )
+        .await?
+        {
+            Ok(who) => asker = Some(who),
+            Err(why) => return Err(TaskError::ApprovalRequired(why.refusal())),
+        }
     }
     // Blocked is a STOP SIGNAL raised for a person, and the dispatch prompt
     // sells it as one ("set status blocked … ends the session"). An agent
@@ -1432,7 +1462,18 @@ async fn agent_safe_patch(
     patch.parent_id = None;
     patch.archived = None;
     if patch.status.is_none() {
-        return Ok(patch);
+        return Ok((patch, None));
+    }
+    // A PROVEN ASK GOES WHERE THE PERSON ASKED. The coercion and the
+    // assignment gate below are about the agent's OWN moves; this one is the
+    // person's choice of column — "back to In progress" on a board whose
+    // working column is a pickup queue included, which then offers the
+    // ticket to dispatch exactly as the person dragging it there would.
+    // Terminal destinations never got this far (refused above). The record
+    // names who asked: status_note is server-only, so the line is ours.
+    if let Some(who) = asker {
+        patch.status_note = Some(who.note());
+        return Ok((patch, Some(who)));
     }
     // Every terminal move lands in review instead — the board's done columns
     // AND the off-board keys. Reporting a result is the agent's job, closing
@@ -1461,7 +1502,7 @@ async fn agent_safe_patch(
             "agents cannot assign tickets".into(),
         ));
     }
-    Ok(patch)
+    Ok((patch, None))
 }
 
 /// THE write path: one UPDATE, then the activity cascade, then the
@@ -1497,12 +1538,16 @@ pub async fn update_task(
             "\"{s}\" is not a status on this board"
         )));
     }
+    // The person an agent's review exit was asked by (`asked`), if any.
+    let mut asker: Option<Asker> = None;
     if who.kind == TaskActorKind::Agent {
         // `who.id` IS the agent's fleet model id (TaskActor documents it as
         // such), so the board-policy half of the invariant is answered from
         // the same actor every other clause is answered from.
-        patch =
+        let (safe, asked_by) =
             agent_safe_patch(pg, &cur, patch, &AgentSubject::Model(who.id.clone()), &meta).await?;
+        patch = safe;
+        asker = asked_by;
         // Post-condition on the REWRITTEN patch (terminal moves land in the
         // review catch): whatever an agent write is about to store names a
         // column this board actually has. handoff_target guarantees the
@@ -1586,7 +1631,16 @@ pub async fn update_task(
     let next_error_message = pick(&patch.error_message, cur.error_message.clone());
     let next_status = patch.status.clone().unwrap_or_else(|| cur.status.clone());
     let completed_at = completed_at_for(&meta, &next_status, cur.completed_at.as_deref());
-    let approved_at = approved_at_for(&meta, &next_status, &cur.status, cur.approved_at.as_deref());
+    let mut approved_at =
+        approved_at_for(&meta, &next_status, &cur.status, cur.approved_at.as_deref());
+    // A person's ask sending signed-off work back to be worked on retires the
+    // sign-off, as the reviewer's "request changes" does: the mark would
+    // otherwise ride a ticket in rework. Into Blocked or another review
+    // column it stays — neither is more work on it.
+    if asker.is_some() && !meta.review_keys.contains(&next_status) && next_status != BLOCKED_STATUS
+    {
+        approved_at = None;
+    }
     let archived_at = match patch.archived {
         None => cur.archived_at.clone(),
         Some(true) => Some(
@@ -1598,7 +1652,16 @@ pub async fn update_task(
     };
     let add_seconds = patch.add_time_spent_seconds.unwrap_or(0.0).round().max(0.0) as i64;
 
-    sqlx::query(
+    // ONE ASK, ONE EXIT: the claim is a unique key on (ticket, message), taken
+    // before the write, so two calls citing one message cannot both land.
+    // Given back below if the write itself fails.
+    if let Some(asked_by) = &asker
+        && !asked::claim_exit(pg, id, &who.id, asked_by).await?
+    {
+        return Err(TaskError::ApprovalRequired(Unproven::Spent.refusal()));
+    }
+
+    let written = sqlx::query(
         "update tasks set title=$2, description=$3, status=$4, priority=$5, effort=$6, \
          assignees=$7, due_date=$8::timestamptz, start_date=$9::timestamptz, color=$10, \
          estimated_hours=$11::numeric, parent_id=$12::uuid, tags=$13, attachments=$14, \
@@ -1629,7 +1692,13 @@ pub async fn update_task(
     .bind(add_seconds)
     .bind(&approved_at)
     .execute(pg)
-    .await?;
+    .await;
+    if let Err(e) = written {
+        if let Some(asked_by) = &asker {
+            asked::release_exit(pg, id, asked_by).await;
+        }
+        return Err(e.into());
+    }
 
     // ── THE NOTIFY WORK GOES OUT NOW (C30) ──────────────────────────────────
     // The write above has committed. Everything a person is told about it is
@@ -1676,6 +1745,25 @@ pub async fn update_task(
             format!("moved to {next_status} ({why})")
         };
         log_activity(pg, id, &who.id, "status", &moved).await?;
+        // An agent's move on a person's word is governance: the audit row
+        // names the asker, the message and the thread it was proven against.
+        if let Some(asked_by) = &asker {
+            let mut after = asked_by.audit();
+            after["status"] = serde_json::json!(next_status);
+            talaria_audit::log_audit(
+                pg,
+                talaria_audit::AuditEntry {
+                    actor: &who.id,
+                    action: "task.review_exit",
+                    target_type: "task",
+                    target_id: Some(id),
+                    target_label: Some(next_title.as_str()),
+                    before: Some(serde_json::json!({ "status": cur.status })),
+                    after: Some(after),
+                },
+            )
+            .await;
+        }
         // Apps whose triggers name the move hear it: ids and column keys,
         // never the ticket's text (talaria-platform-events).
         talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {

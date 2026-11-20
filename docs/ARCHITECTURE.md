@@ -909,7 +909,11 @@ channels, Google calendar/mail, research, board membership — and no document s
 it changes with every registration, and `bun run check` (`toolkit-tool-count-drift`) fails any doc
 that writes a number the source does not have; `mcp/README.md` lists every tool by name. The guardrail that
 actually holds is server-side and narrow: **agents cannot write assignees and cannot make a
-terminal status move** — the final sign-off is structurally a human's. The refusal predicate
+terminal status move** — the final sign-off is structurally a human's. An agent takes a ticket
+out of review only on a person's ask that the api proves from the thread the call names
+(`talaria-tasks` `asked.rs`: the agent's own key, a reply streaming there now, the asker wrote
+the message that turn answers, can edit the board, and named the ticket; one move per message,
+never to a closed column), and a refused move leaves an approval card a board editor can click. The refusal predicate
 lives once in `server/tasks.ts` (`agentSafePatch`); a second definition anywhere fails the
 invariant check, and the tool descriptions must mirror it (a startup auditor shouts on
 drift).

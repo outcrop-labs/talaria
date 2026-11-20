@@ -256,18 +256,23 @@ export const markChannelThreadRead = async (
   });
 };
 
+/** `drafted`: the words were the agent's — an ask option or a tool chip the
+ *  person clicked. The server marks the row, so it never stands in for the
+ *  person's own ask (an agent's move out of review on a person's word). */
 export const sendChannelMessage = async (
   id: string,
   content: string,
   attachmentIds: string[] = [],
   refs: Array<{ type: "kb-doc" | "artifact"; id: string }> = [],
   threadRootId: string | null = null,
+  drafted = false,
 ): Promise<void> => {
   await postJson<{ message: ChannelMessage }>(`/api/channels/${id}/messages`, {
     content,
     attachmentIds,
     refs,
     threadRootId,
+    ...(drafted ? { drafted: true } : {}),
   });
 };
 
