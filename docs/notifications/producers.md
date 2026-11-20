@@ -23,6 +23,8 @@ timed mute. Every producer files through `add_notification_with` and the convent
 | Flag | Means |
 |---|---|
 | `board-prefs` | The ticket producers obey each person's setting for a board (below, "Each board"), and `GET`/`PUT`/`DELETE /api/boards/{id}/notify`, `GET /api/notifications/boards` and the `boards` default in `GET`/`PATCH /api/notifications` are served. |
+| `board-channels` | A board setting and the `boards` default accept and serve `channels: {alerts, email}` (below, "A board's own channels"), and the rows a board's fan-outs file carry that person's choice as their channel override (I-26). |
+| `board-digest` | The `digest` cadence is accepted: a board heard as a daily digest files one quiet row a day and is listed in one "Your boards" mail (below, "The daily digest"). |
 
 ## The producers
 
@@ -139,10 +141,10 @@ A person chooses, board by board, what they hear about its tickets
 place channel levels are asked: the status move (`update_task`), the review decision, the
 board move, creation with its assignment, the comment fan-out, and the four ticket
 @mention doors (the create and edit of a description, the comment route, a post in the
-ticket's room) through `MentionOpts.ticket`. Nothing at send time reads it: the deferred
-push and the mail batcher keep reading the class matrix, as they do for a channel level.
-The one other reader is the daily board digest (below), once a day, for one person's own
-boards.
+ticket's room) through `MentionOpts.ticket`. Nothing at send time reads it: a board's own
+channels (below) ride on each row, and the deferred push and the mail batcher re-check the
+class matrix through what the row carries. The one other reader is the daily board digest
+(below), once a day, for one person's own boards.
 
 **The setting** is a preset — `all`, `participating`, `mentions`, `off` — or `custom`:
 chosen events over a scope. The events are `created` (a ticket appeared on the board,
@@ -156,6 +158,31 @@ board; `participating` is assigned, status, comment, mention and completed over 
 (nobody is in a ticket before it exists). `due` is listed but refused until its producer
 ships. The cadence is `instant` (as it happens) or `digest` (the daily board digest,
 below).
+
+**A board's own channels** (feature `board-channels`). A setting may also say how this
+board's rows reach the person: `channels: {alerts, email}`, each on, off, or null — null,
+the default, is the class matrix in Settings → Notifications. `alerts` is the banner and
+the push together: on, the board's rows pop up and push; off, they land in the inbox
+alone. `email` is the missed-activity mail. Two choices, as the per-board design decided
+— in-app and email — with the in-app one named for what it does: every row lands in the
+inbox whatever anyone chose, so in-app itself is not a choice (`inApp: false` is refused,
+as in the matrix), and push is not a board choice of its own (the matrix keeps its
+per-class Push). The row carries them as the matrix's own channels: `alerts` sets Desktop
+and Push together (`BoardChannels::overrides`). Set Alerts off and Email on and the
+board's rows reach the person by mail alone, filed read once the mail is accepted (the
+legacy email-only route); set Alerts on and the quiet board-activity row pops up. They
+change no decision about WHO gets a row, only how it reaches them, and
+they apply to every row the board's fan-outs file for that person — per-ticket rows,
+@mentions, the board-activity row, and the rows a deliberate watch carries through Off.
+Decided once, at fan-out like the rest: the producer files the row with them
+(`NotifyMeta::channels`), the writer stores them on the row (I-26), and the deferred push
+and the mail batcher re-check the matrix through the stored override — a board turned to
+mail keeps mailing what it filed, and a board setting is never re-read at send time. They
+travel with their layer: a board's row carries its own (null there means the matrix, not
+the default's), and the default for every board can carry some too. A board on the daily
+digest files nothing at fan-out, so its channels shape the digest instead: its Email
+decides whether the board is listed in the "Your boards" mail, and its digest row stays
+quiet whatever Alerts says — a digest never rings.
 
 **Where it is stored.** One row per person per board in `board_notify_prefs` — a table,
 not a `board_members` column, because a team's members see its boards with no member row
@@ -177,8 +204,10 @@ less, until they choose, and a new board inherits the default by having no row.
    someone is involvement, not a choice, and does not wake a board they set to Off.
    Pressing Watch on such a watch makes it theirs; an editor's add never takes one back.
 3. The person's setting for the board, then their default, then the built-in.
-4. Then everything else, unchanged: the class matrix, DND, working hours, the instance
-   switches and the email frequency.
+4. Then the channels: the setting's own where it chose one (Alerts for Desktop and Push,
+   Email for Email), else the class matrix. Then
+   everything else, unchanged: DND, working hours, the instance switches and the email
+   frequency.
 
 Off silences assignments and @mentions from that board, as a channel at Nothing silences
 @mentions. Whatever points at the person (assigned, @mentioned) is never held back by
@@ -238,11 +267,14 @@ The row: kind `board-digest`, class `board_activity`, `group_key::board_digest(b
 one row per board per local day, so a day the person never opened keeps its own counts (the
 next window starts where this one ended; a row that a newer day overwrote would lose them for
 good) — entity `board`, href `/boards/<id>`, body like `3 new · 8 moved · 2 completed · 11
-comments`. It is filed **quiet** — a digest never rings, and its email is not the
-missed-activity batcher's but one **"Your boards"** mail listing every board with something
-to report, sent when the person has an address, their Board activity Email is on and their
-email frequency is not Never, through `send_gated_mail` (the instance switch holds it). A
-person with no address still gets the rows. Nothing to report, nothing sent.
+comments`. It is filed **quiet** — a digest never rings, whatever the board's Alerts say,
+and its email is not the missed-activity batcher's but one **"Your boards"** mail listing
+every board with something to report whose Email is on: the board's own Email where the
+person's setting chose one (part 2, "A board's own channels"), else Board activity's in the
+matrix — `channels_with`, the rule every board row's mail follows. It is sent when the
+person has an address and their email frequency is not Never, through `send_gated_mail`
+(the instance switch holds it). A person with no address still gets the rows. Nothing to
+report, nothing sent.
 
 The ledger, `board_digest_state` (one row per person), is written as the pass goes, each
 deciding write a compare-and-set. The day is claimed before its rows are filed, and the
@@ -297,8 +329,10 @@ cannot reach it either. A future board-to-channel feed is board configuration, n
 setting.
 
 **The routes.** `GET /api/boards/{id}/notify` → `{effective, source, stored, default,
-registry}` (any board role; anyone else 403); `PUT` `{preset, events?, scope?, cadence?}`
-replaces the caller's own row; `DELETE` goes back to the default. `GET
+registry}` (any board role; anyone else 403); `PUT` `{preset, events?, scope?, cadence?,
+channels?}` replaces the caller's own row — the whole setting: a member it leaves out goes
+back to its default, so a client sends `stored` back with its change; `DELETE` goes back
+to the default. `GET
 /api/notifications/boards` → `{default, boards: [{id, name, role, effective, source}]}` for
 the boards the caller can see. `GET`/`PATCH /api/notifications` carry `boards` (the
 default; `null` clears it). The registry (event, preset and cadence labels) is served,

@@ -105,14 +105,17 @@ The center itself (the bell, the page, the settings, the status panel) is
   per board for the tickets you are not in, counting its updates until you read it; it is
   quiet unless you turn on Board activity in the matrix. A board set to a daily digest
   files nothing as it happens (what points at you still does) and, once a day at the
-  daily digest's hour, one notification counting its new tickets, moves, completions and
-  comments since your last digest, plus a "Your boards" email when Board activity's Email
-  is on. Off silences the board's
+  daily digest's hour, one quiet notification counting its new tickets, moves,
+  completions and comments since your last digest, plus a "Your boards" email listing the
+  boards whose Email is on (the board's own, else Board activity's). Off silences the board's
   assignments and @mentions too, but a ticket you watch yourself still reaches you, and
-  approvals always do. A setting changes only what you receive. Set through the API for
-  now (`/api/boards/{id}/notify`, `boards` in `PATCH /api/notifications`); the board's own
-  control and the Settings section follow. The rules:
-  [producers.md](./notifications/producers.md#each-board).
+  approvals always do. A board can also have its own channels — Alerts (the banner and
+  the push, together) and Email, each on, off, or as the matrix says — so one board's
+  tickets can reach you by mail alone while another's pop up; the inbox keeps every
+  notification either way. A setting changes
+  only what you receive. Set through the API for now (`/api/boards/{id}/notify`, `boards`
+  in `PATCH /api/notifications`); the board's own control and the Settings section follow.
+  The rules: [producers.md](./notifications/producers.md#each-board).
 - **Do Not Disturb.** Pause from the account menu or the bell for 30 minutes, an hour, two
   hours, until 9:00 tomorrow in your time zone, until you resume, or until a time you pick;
   and set working hours, outside which notifications arrive quietly. Working hours are read
@@ -268,7 +271,9 @@ worker's per-row banners.
   status move goes to every other watcher. (When their setting for the board drops
   assignments, they hear the move instead, if their setting keeps moves.)
 - **Boards.** Every ticket producer asks each recipient's setting for the board at fan-out
-  ([producers.md](./notifications/producers.md#each-board)); nothing at send time does.
+  ([producers.md](./notifications/producers.md#each-board)); nothing at send time does. A
+  board's own channels ride on each row it files (I-26), and the deferred push and the
+  missed-activity mail re-check the matrix through them.
 - **Read-sync.** Any mark-read (the bell, a toast, a banner click, a channel read) publishes
   `{type:"notifications", unread, unreadForYou, readIds}` (`all: true` for a mark-all), and
   every tab's bell drops at once.

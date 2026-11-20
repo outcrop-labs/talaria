@@ -61,10 +61,13 @@
 //           batcher's (which would mail the same counts a second time). A
 //           person with no email address still gets the rows.
 //   email   one "Your boards" mail listing every board with something to
-//           report, when the person has an address, their Board activity
-//           Email is on and their email frequency is not Never — the matrix
-//           row that already governs board mail — through `send_gated_mail`,
-//           so the instance switch holds it like every notification mail.
+//           report whose Email is on — the board's own Email where its
+//           setting chose one (`BoardChannels::email`), else Board activity's
+//           in the matrix, the row that already governs board mail, read
+//           through `channels_with` as every row's mail is — when the person
+//           has an address and their email frequency is not Never. Through
+//           `send_gated_mail`, so the instance switch holds it like every
+//           notification mail. A board's Alerts never makes its digest ring.
 //
 // THE LEDGER (`board_digest_state`, one row per person) is written as the
 // pass goes, and every write that decides something is a compare-and-set, so
@@ -98,9 +101,9 @@ use talaria_boards::list_boards;
 use talaria_email::{email_button, email_escape, email_shell};
 use talaria_notify::boards::{self as board_prefs, BoardEvent, BoardPref, Scope};
 use talaria_notify::{
-    ActorKind, Coalesce, GatedMail, GatedSendResult, NOTIFY_SETTINGS_PATH, NotificationInput,
-    NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta, add_notification_with, channels_of,
-    email_frequency, entity, group_key, instance_base_url, send_gated_mail,
+    ActorKind, ChannelOverride, Coalesce, GatedMail, GatedSendResult, NOTIFY_SETTINGS_PATH,
+    NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta, add_notification_with,
+    channels_with, email_frequency, entity, group_key, instance_base_url, send_gated_mail,
 };
 use talaria_realtime::RealtimeDeps;
 use talaria_state::AppState;
@@ -115,8 +118,8 @@ use crate::{
 /// The kind of the daily row (`KIND_CLASS`: class `board_activity`).
 pub const BOARD_DIGEST_KIND: &str = "board-digest";
 
-/// The class whose Email column decides the "Your boards" mail: the matrix
-/// row every board mail answers to.
+/// The class whose Email column decides the "Your boards" mail where a board
+/// chose no Email of its own: the matrix row every board mail answers to.
 const BOARD_CLASS: &str = "board_activity";
 
 /// The first digest covers a day; a person back after longer than two days
@@ -565,6 +568,10 @@ pub struct BoardDigest {
     pub board_id: String,
     pub name: String,
     pub counts: Counts,
+    /// The board's own Email from the person's setting for it
+    /// (`BoardChannels::email`): whether the board is in the "Your boards"
+    /// mail; None where the class matrix decides.
+    pub email: Option<bool>,
 }
 
 /// Every board the person hears as a digest that has something to report
@@ -592,6 +599,7 @@ async fn build(
                 board_id,
                 name: board.name.clone(),
                 counts,
+                email: pref.channels.email,
             });
         }
     }
@@ -684,16 +692,31 @@ async fn file_rows(
     }
 }
 
-/// Whether the person takes the "Your boards" mail: Board activity's Email
-/// on, and an email frequency that is not Never (Settings says nothing is
-/// mailed while it is, whatever the Email column says). Pure.
-pub fn mail_wanted(blob: &Value) -> bool {
-    channels_of(blob, BOARD_CLASS).email && email_frequency(blob) != "off"
+/// Whether a board with this Email choice (`BoardDigest::email`) is in the
+/// "Your boards" mail: Email on — the board's own where it chose one, else
+/// Board activity's in the matrix, through `channels_with` as every board
+/// row's mail is decided — and an email frequency that is not Never
+/// (Settings says nothing is mailed while it is, whatever any Email says).
+/// Pure.
+pub fn mail_wanted(blob: &Value, email: Option<bool>) -> bool {
+    let board = ChannelOverride {
+        email,
+        ..ChannelOverride::default()
+    };
+    channels_with(blob, BOARD_CLASS, &board).email && email_frequency(blob) != "off"
 }
 
-/// `mail_wanted`, for a person: and an address to send it to. Pure.
-fn mails(person: &Recipient) -> bool {
-    !person.email.trim().is_empty() && mail_wanted(person.prefs.as_ref().unwrap_or(&Value::Null))
+/// The boards this person's "Your boards" mail lists: none without an
+/// address, else the ones whose Email is on (`mail_wanted`). Pure.
+fn mailed<'a>(person: &Recipient, digests: &'a [BoardDigest]) -> Vec<&'a BoardDigest> {
+    if person.email.trim().is_empty() {
+        return Vec::new();
+    }
+    let blob = person.prefs.as_ref().unwrap_or(&Value::Null);
+    digests
+        .iter()
+        .filter(|d| mail_wanted(blob, d.email))
+        .collect()
 }
 
 /// The subject carries the content (the digest's rule 2): one board's line,
@@ -983,7 +1006,7 @@ async fn digest_one(
         }
         Step::File { from, to } => {
             let digests = build(pg, person, from, to).await?;
-            let owes_mail = !digests.is_empty() && mails(person);
+            let owes_mail = !mailed(person, &digests).is_empty();
             let claim = Mark {
                 filed_on: today.to_string(),
                 from_ms: from,
@@ -1041,11 +1064,12 @@ async fn file_then_mail(
     Ok(())
 }
 
-/// The mail half, for a day whose rows are filed. Claimed before it is sent
-/// (an overlapping pass sends nothing), and the claim stands when it went or
-/// when there is nothing left to send — the boards changed, or the person
-/// turned the mail off since. Given back when the door failed or the instance
-/// switch held it: owed again, for the next tick.
+/// The mail half, for a day whose rows are filed: the boards whose Email is
+/// on (`mailed`). Claimed before it is sent (an overlapping pass sends
+/// nothing), and the claim stands when it went or when there is nothing left
+/// to send — the boards changed, or the person turned the mail off since.
+/// Given back when the door failed or the instance switch held it: owed
+/// again, for the next tick.
 async fn mail(
     deps: &BoardDigestDeps,
     person: &Recipient,
@@ -1059,10 +1083,11 @@ async fn mail(
         run.busy += 1;
         return Ok(());
     }
-    if digests.is_empty() || !mails(person) {
+    let boards: Vec<BoardDigest> = mailed(person, digests).into_iter().cloned().collect();
+    if boards.is_empty() {
         return Ok(());
     }
-    let m = render_board_mail(digests, base);
+    let m = render_board_mail(&boards, base);
     let sent = (deps.send)(BoardMail {
         to: person.email.clone(),
         subject: m.subject,
@@ -1458,30 +1483,44 @@ mod tests {
         );
     }
 
-    // Board activity's Email decides the mail, and Never means never — the
-    // promise Settings makes under the Email column.
+    // Each board's own Email decides whether it is mailed, and Board
+    // activity's Email decides where the board chose none; Never means never
+    // either way — the promise Settings makes under the Email column. Every
+    // board choice over every matrix state.
     #[test]
-    fn the_mail_follows_board_activity_email() {
-        assert!(!mail_wanted(&Value::Null), "quiet by default");
+    fn the_mail_follows_each_boards_email_then_board_activity() {
+        let off = Value::Null;
         let on = json!({ "channels": { "board_activity": { "email": true } } });
-        assert!(mail_wanted(&on));
         let never = json!({
             "channels": { "board_activity": { "email": true } },
             "email": { "frequency": "off" },
         });
-        assert!(!mail_wanted(&never));
         let other = json!({ "channels": { "work_complete": { "email": true } } });
-        assert!(!mail_wanted(&other));
-        // No address: the rows, never a mail.
+        for (blob, matrix) in [(&off, false), (&on, true), (&other, false)] {
+            assert_eq!(mail_wanted(blob, None), matrix, "{blob}");
+            assert!(mail_wanted(blob, Some(true)), "{blob}");
+            assert!(!mail_wanted(blob, Some(false)), "{blob}");
+        }
+        for email in [None, Some(true), Some(false)] {
+            assert!(!mail_wanted(&never, email), "Never wins over {email:?}");
+        }
+        // The mail lists only the boards whose Email is on, and nothing
+        // without an address.
+        let mut d = digests();
+        d[0].email = Some(false);
         let person = |email: &str| Recipient {
             id: "u1".into(),
             email: email.into(),
             prefs: Some(on.clone()),
             timezone: None,
         };
-        assert!(mails(&person("u1@example.invalid")));
-        assert!(!mails(&person("")));
-        assert!(!mails(&person("  ")));
+        let listed: Vec<&str> = mailed(&person("u1@example.invalid"), &d)
+            .iter()
+            .map(|b| b.board_id.as_str())
+            .collect();
+        assert_eq!(listed, ["b2"]);
+        assert!(mailed(&person(""), &d).is_empty());
+        assert!(mailed(&person("  "), &d).is_empty());
     }
 
     #[test]
@@ -1515,6 +1554,7 @@ mod tests {
                     moved: 3,
                     ..Counts::default()
                 },
+                email: None,
             },
             BoardDigest {
                 board_id: "b2".into(),
@@ -1524,6 +1564,7 @@ mod tests {
                     comments: 4,
                     ..Counts::default()
                 },
+                email: None,
             },
         ]
     }

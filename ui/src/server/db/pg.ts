@@ -5220,6 +5220,26 @@ alter table tasks drop column if exists conversation_id`,
   // from before this column, when the only Watch offered was a person's own,
   // so it counts as deliberate. Nullable, so roll-safe.
   `alter table task_watchers add column if not exists added_by text`,
+  // A BOARD'S OWN CHANNELS for one person (talaria_notify::boards, part 2):
+  // Alerts (the banner and the push, together) and Email as they choose them
+  // for this board's rows, each NULL where the class matrix (Settings →
+  // Notifications) decides. In-app is not a column: every row lands in the
+  // inbox whatever anyone chose. Nullable, so roll-safe: the previous release
+  // never reads them.
+  `alter table board_notify_prefs
+     add column if not exists alerts boolean,
+     add column if not exists email boolean`,
+  // THE OVERRIDE A ROW WAS FILED WITH (I-26): the channels a producer decided
+  // for this person in place of the matrix — their setting for the board a
+  // ticket row is about — each NULL where the matrix decided. Stored beside
+  // the delivery columns they shaped, so the deferred push and the
+  // missed-activity batcher re-check the matrix through the same override at
+  // send time and never re-read a board setting. Metadata-only ADD COLUMNs
+  // (NULL defaults); a rolled-back binary ignores them.
+  `alter table notifications
+     add column if not exists desktop_override boolean,
+     add column if not exists push_override boolean,
+     add column if not exists email_override boolean`,
   // THE DAILY BOARD DIGEST'S LEDGER (talaria-digest boards.rs): one row per
   // person, written as the pass goes. filed_on is the local date the day was
   // claimed for (so a tick inside the same send window never files it

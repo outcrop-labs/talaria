@@ -12,7 +12,9 @@
 // see, only the ones their setting puts on a digest, never the moves of a
 // ticket they watch themselves (those reached them as they happened), a
 // ticket moved here only from its arrival, and due dates only as thresholds
-// crossed. The ledger's claims: one winner of two at once; a day still
+// crossed; the "Your boards" mail lists each board by its own Email (part 2's
+// board channels), else Board activity's. The ledger's claims: one winner of
+// two at once; a day still
 // filing is never mailed, and a claim a dead pass left is taken over and
 // finishes the day without filing a row twice.
 // Events go through the REAL router with minted sessions; the pass is called
@@ -737,6 +739,7 @@ async fn a_claim_a_dead_pass_left_is_taken_over_and_mailed_once() {
             created: 1,
             ..Counts::default()
         },
+        email: None,
     };
     assert_eq!(
         seam::file_rows(&d.notify, &bob, &day, &[landed])
@@ -967,4 +970,87 @@ async fn a_person_without_an_address_gets_the_rows_and_no_mail() {
     let rows = digests(&on_board(&state, &bob, &b).await);
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].body, "1 new");
+}
+
+// EACH BOARD IS MAILED BY ITS OWN EMAIL. Bob's Board activity Email is on and
+// Cy's is off; both hear two boards as a digest. Board X's setting turns
+// Email off for Bob and on for Cy; board Y chose nothing. Bob's mail lists Y
+// alone, Cy's X alone — and each still gets both rows, quiet, whatever the
+// board's Alerts say.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn each_board_is_mailed_by_its_own_email() {
+    let state = live_app_state().await;
+    let (_ada, _, ada_c) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c) = mint(&state, "Bob", "member").await;
+    let (cy, cy_e, cy_c) = mint(&state, "Cy", "member").await;
+    let members = [(bob_e.as_str(), "editor"), (cy_e.as_str(), "editor")];
+    let tag = &bob[..8];
+    let (x_name, y_name) = (format!("bd mail x {tag}"), format!("bd mail y {tag}"));
+    let x = board(&state, &ada_c, &x_name, &members).await;
+    let y = board(&state, &ada_c, &y_name, &members).await;
+    for (cookie, email) in [(&bob_c, false), (&cy_c, true)] {
+        ok(
+            &state,
+            "PATCH",
+            "/api/notifications",
+            cookie,
+            json!({ "boards": { "preset": "all", "cadence": "digest" } }),
+        )
+        .await;
+        set(
+            &state,
+            &x,
+            cookie,
+            json!({ "preset": "all", "cadence": "digest",
+                    "channels": { "alerts": true, "email": email } }),
+        )
+        .await;
+    }
+    board_mail_on(&state, &bob).await;
+    for b in [&x, &y] {
+        ticket(&state, b, &ada_c, json!({ "title": "News" })).await;
+    }
+    settle().await;
+
+    let now = talaria_api::agent_auth::now_ms();
+    in_the_slot(&state, now, &[&bob, &cy]).await;
+    let (send, sent) = door(Vec::new());
+    let d = deps(&state, send);
+    let run = pass(&d, now, &[&bob, &cy]).await;
+    assert_eq!((run.rows, run.mailed), (4, 2), "{run:?}");
+    for person in [&bob, &cy] {
+        for b in [&x, &y] {
+            let rows = digests(&on_board(&state, person, b).await);
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(
+                rows[0].alert.as_deref(),
+                Some("feed"),
+                "a digest never rings"
+            );
+        }
+    }
+    let mails = sent.lock().unwrap();
+    let to = |who: &str| {
+        mails
+            .iter()
+            .find(|m| m.to == who)
+            .unwrap_or_else(|| panic!("a mail to {who}"))
+    };
+    assert_eq!(
+        to(bob_e.as_str()).subject,
+        format!("Talaria: {y_name} \u{2014} 1 new")
+    );
+    assert!(
+        !to(bob_e.as_str()).text.contains(&x_name),
+        "X's Email is off for Bob"
+    );
+    assert_eq!(
+        to(cy_e.as_str()).subject,
+        format!("Talaria: {x_name} \u{2014} 1 new")
+    );
+    assert!(
+        !to(cy_e.as_str()).text.contains(&y_name),
+        "Y follows Cy's matrix: off"
+    );
 }
