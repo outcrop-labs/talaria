@@ -121,6 +121,10 @@ export interface Task {
    *  queues read this to stop asking about a ticket somebody already cleared. */
   approvedAt: string | null
   archivedAt: string | null
+  /** The record this ticket mirrors in another tracker — `clickup:<task id>`
+   *  for a ticket the board's ClickUp sync made (docs/BOARD-SYNC.md); null for
+   *  a ticket made in Talaria. Read it through lib/board-sync.ts. */
+  externalKey?: string | null
 }
 
 /** A ticket this task depends on (blocked by) or that depends on it (blocks). */

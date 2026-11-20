@@ -13,6 +13,8 @@
   import Gantt from '@/components/board/Gantt.svelte'
   import Workchains from '@/components/board/Workchains.svelte'
   import BoardSettingsModal from '@/components/board/BoardSettingsModal.svelte'
+  import BoardSyncChip from '@/components/board/BoardSyncChip.svelte'
+  import { settingsTabOf, type SettingsTab } from '@/components/board/board-settings'
   import SavedViewSettings from '@/components/board/SavedViewSettings.svelte'
   import SettingsButton from '@/components/ui/SettingsButton.svelte'
   import FilterBar from '@/components/board/FilterBar.svelte'
@@ -50,6 +52,7 @@
   import { confirm, prompt } from '@/components/ui/confirm.svelte'
   import { useSession } from '@/lib/session'
   import { useBoardStatuses, type BoardStatus } from '@/lib/statuses'
+  import { useBoardSync } from '@/lib/board-sync'
   import type { Task } from '@/lib/task-const'
   import { isClosedStatus } from '@/components/board/field-pills'
   import { readFlag, readText, writeFlag, writeText } from '@/lib/persist'
@@ -71,6 +74,10 @@
     /** Workchains lens: which chain fills the canvas. A chain is a thing you
      *  send someone, so it is a link, not component state. */
     chain?: string
+    /** Board settings, open on this tab (board-settings.ts) — so a door such
+     *  as the sync chip's "Sync settings" is a link, and a shared URL opens
+     *  the same tab. Owners and editors only: the modal is not a viewer's. */
+    settings?: SettingsTab
   }
 
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
@@ -94,6 +101,7 @@
       due: sp('due'),
       archived: searchParams.get('archived') === true,
       chain: sp('chain'),
+      settings: settingsTabOf(sp('settings')),
     }
     return {
       ...(s.view === 'list' || s.view === 'gantt' || s.view === 'workchains' ? { view: s.view } : {}),
@@ -109,6 +117,7 @@
       ...(['overdue', 'today', 'week', 'none'].includes(s.due as string) ? { due: s.due as BoardSearch['due'] } : {}),
       ...(s.archived === true ? { archived: true } : {}),
       ...(str(s.chain) ? { chain: str(s.chain) } : {}),
+      ...(s.settings ? { settings: s.settings as SettingsTab } : {}),
     }
   })
 
@@ -184,6 +193,12 @@
       : (fleet?.agents ?? []).filter((a) => boardCfg?.models.includes(a.id)),
   )
   useBoardLive(() => (board ? boardId : null))
+  // The ClickUp sync, when the board has one: the header chip, and the
+  // remote-state marks on cards and rows (a task archived, deleted or moved in
+  // ClickUp). Any member may read it.
+  const syncQuery = useBoardSync(() => (board ? boardId : null))
+  const boardSync = $derived(syncQuery.data?.sync ?? null)
+  const remoteStates = $derived(boardSync?.remoteStates ?? {})
 
   const qc = useQueryClient()
   // Per-user preference (localStorage): render every status/priority group
@@ -199,7 +214,6 @@
   const viewsList = listQuery(useBoardViews(() => (board ? boardId : null)), { title: 'Could not load your saved views', variant: 'inline' })
   const savedViews = $derived(viewsList.rows)
   const menu = useContextMenu()
-  let settingsOpen = $state(false)
   const view = $derived(search.view ?? 'board')
   const groupBy: GroupByKey = $derived(search.group ?? 'status')
   const q = $derived(search.q ?? '')
@@ -527,8 +541,16 @@
           </span>
         {/if}
       </div>
+      {#if boardSync}
+        <BoardSyncChip
+          {boardId}
+          role={board.role}
+          sync={boardSync}
+          onSettings={canEdit ? () => setSearch({ settings: 'sync' }) : undefined}
+        />
+      {/if}
       {#if canEdit}
-        <SettingsButton size="md" label="Board settings" aria-haspopup="dialog" onclick={() => (settingsOpen = true)} />
+        <SettingsButton size="md" label="Board settings" aria-haspopup="dialog" onclick={() => setSearch({ settings: 'general' })} />
       {/if}
       <ContextMenu {menu} />
     </div>
@@ -590,7 +612,7 @@
 
     <div class="relative min-h-0 min-w-0 flex-1">
       {#if view === 'board'}
-        <Kanban {board} {tasks} onOpen={openTicket} {members} />
+        <Kanban {board} {tasks} onOpen={openTicket} {members} {remoteStates} />
       {:else if view === 'gantt'}
         <Gantt {board} {tasks} onOpen={openTicket} />
       {:else if view === 'workchains'}
@@ -614,14 +636,16 @@
           }}
         />
       {:else}
-        <BoardList {tasks} onOpen={openTicket} {boardId} {members} {canEdit} {groupBy} {showEmptyGroups} />
+        <BoardList {tasks} onOpen={openTicket} {boardId} {members} {canEdit} {groupBy} {showEmptyGroups} {remoteStates} />
       {/if}
     </div>
 
     <BoardSettingsModal
       {board}
-      open={settingsOpen}
-      onClose={() => (settingsOpen = false)}
+      open={!!search.settings && canEdit}
+      initialTab={search.settings}
+      onTab={(t) => setSearch({ settings: t })}
+      onClose={() => setSearch({ settings: undefined })}
       onArchived={() => void navigate('/boards')}
       onDeleted={() => void navigate('/boards')}
     />
