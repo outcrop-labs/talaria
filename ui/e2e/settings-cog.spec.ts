@@ -5,14 +5,17 @@
 // themes. The two mixed menus in the board views are split: a saved view and
 // a workchain each get a gear of their own, with Delete on that panel's
 // danger line. Each chapter makes its own board or channel through the
-// suite's session.
+// suite's session. The last chapter opens the board as a viewer: a throwaway
+// member the suite shares it with, signed in through a session minted in the
+// stack's own Redis (E2E_DATABASE_URL / E2E_REDIS_URL, docs/E2E.md).
 //
 // The cheap structural half (the label is the name and the tooltip, the size
 // classes, the one gear) is pinned in components/ui/settings-cog.test.ts,
 // which the light CI ui job runs on every pull request; this file is the
 // browser proof, and runs in full mode.
-import { expect, test, type Locator, type Page } from '@playwright/test'
-import { Api, RUN } from './support'
+import { randomBytes } from 'node:crypto'
+import { expect, test, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test'
+import { Api, BASE_URL, RUN } from './support'
 
 const THEMES = ['mercury', 'mercury-light'] as const
 
@@ -193,3 +196,80 @@ for (const theme of THEMES) {
     })
   })
 }
+
+// ── A viewer ────────────────────────────────────────────────────────────────
+
+const VIEWER = { sub: 'e2e:cog:viewer', email: 'e2e-cog-viewer@talaria.test', name: 'Cog Viewer' }
+
+/** The board shared with a throwaway member as a viewer, and a browser
+ *  signed in as them — the session minted the way global-setup mints the
+ *  suite's (a users row, and `sess:<sid>` in Redis). */
+async function viewerOn(api: Api, browser: Browser, boardId: string): Promise<BrowserContext> {
+  const dbUrl = process.env.E2E_DATABASE_URL
+  const redisUrl = process.env.E2E_REDIS_URL
+  if (!dbUrl || !redisUrl) throw new Error('E2E_DATABASE_URL and E2E_REDIS_URL must name the stack’s own Postgres and Redis (docs/E2E.md)')
+  const { default: postgres } = await import('postgres')
+  const { Redis } = await import('ioredis')
+  const sql = postgres(dbUrl, { max: 1, onnotice: () => {} })
+  const redis = new Redis(redisUrl, { maxRetriesPerRequest: 2 })
+  const sid = `e2e-cog-${randomBytes(20).toString('hex')}`
+  try {
+    const [row] = await sql<Array<{ id: string }>>`
+      insert into users (sub, email, name, role) values (${VIEWER.sub}, ${VIEWER.email}, ${VIEWER.name}, 'member')
+      on conflict (sub) do update set role = 'member'
+      returning id::text`
+    if (!row) throw new Error('the viewer upsert returned no row')
+    const session = { id: row.id, ...VIEWER, picture: null, role: 'member', provider: 'password' }
+    await redis.set(`sess:${sid}`, JSON.stringify(session), 'EX', 3600)
+  } finally {
+    await sql.end({ timeout: 2 })
+    redis.disconnect()
+  }
+  await api.post(`/api/boards/${boardId}/members`, { email: VIEWER.email, role: 'viewer' })
+  const { members } = await api.get<{ members: Array<{ email: string | null; role: string }> }>(`/api/boards/${boardId}/members`)
+  expect(members.find((m) => m.email === VIEWER.email)?.role, 'the viewer is on the board as a viewer').toBe('viewer')
+  const ctx = await browser.newContext({
+    baseURL: BASE_URL,
+    viewport: { width: 1440, height: 960 },
+    storageState: {
+      cookies: [{ name: 'talaria_session', value: sid, domain: new URL(BASE_URL).hostname, path: '/', expires: -1, httpOnly: true, secure: false, sameSite: 'Lax' }],
+      origins: [],
+    },
+  })
+  // The server never learns of a push subscription from a test browser.
+  await ctx.route('**/api/push/subscribe', (r) => r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' }))
+  return ctx
+}
+
+// Saving, renaming or deleting a view, every workchain write and the board's
+// settings are owner/editor writes the api refuses a viewer (403), so a viewer
+// is offered none of those doors. The list's columns are a per-person view
+// setting, and stay. The theme does not change who sees a door: one pass.
+test('a viewer: no board, view or workchain settings door, no saved-view menu; column settings stay', async ({ request, browser }) => {
+  const s = await seed(new Api(request))
+  const ctx = await viewerOn(new Api(request), browser, s.boardId)
+  try {
+    const page = await ctx.newPage()
+    await page.goto(`/boards/${s.boardId}`)
+    // The saved-view tabs render only once the board (and the viewer's role
+    // on it) has loaded, so every count of zero below is read after that.
+    const tab = page.getByRole('button', { name: 'By priority', exact: true })
+    await expect(tab).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Board settings', exact: true })).toHaveCount(0)
+    await tab.click()
+    await expect(page).toHaveURL(new RegExp(`[?&]v=${s.viewId}`))
+    await expect(page.getByRole('button', { name: 'View settings', exact: true })).toHaveCount(0)
+    await tab.click({ button: 'right' })
+    for (const item of ['Update to current filters', 'Rename', 'Delete view']) {
+      await expect(page.getByRole('menuitem', { name: item })).toHaveCount(0)
+    }
+    // The list view this saved view opened: its columns stay the viewer's own.
+    await expectDoor(page, 'Column settings', 28)
+
+    await page.goto(`/boards/${s.boardId}?view=workchains&chain=${s.chainId}`)
+    await expect(page.getByTitle('Switch or create workchains')).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Workchain settings', exact: true })).toHaveCount(0)
+  } finally {
+    await ctx.close()
+  }
+})
