@@ -42,7 +42,9 @@ const developer: HostAgent = {
 const wire: HostAgents = JSON.parse(JSON.stringify({ agents: [developer], unclaimed: { actions: 'write', workflows: 'write' } }))
 
 describe('unclaimed', () => {
-  it('REGRESSION: a key the installation holds that no agent set names is unclaimed, and on no agent as carried', () => {
+  // The server computes `unclaimed` (the agents route); this pins that the
+  // dialog draws it as unclaimed and never as carried.
+  it('draws a key the installation holds that no agent set names as unclaimed, and on no agent as carried', () => {
     const keys = unclaimedKeys(wire)
     expect(keys).toEqual(['actions', 'workflows'])
     for (const row of hostAgentRows(wire, NOW)) {
@@ -86,6 +88,14 @@ describe('lastTokenLine', () => {
     expect(line.tone).not.toBe('success')
   })
 
+  it('says a row from before rows said what was asked is that, not a token for an earlier set', () => {
+    const line = lastTokenLine(token({ asked: undefined, current: false }), NOW)
+    expect(line.text).toBe(
+      'Last token (acme/widgets, 12 min ago, recorded before Talaria noted what it asked for): carried contents: write, metadata: read, pull requests: write',
+    )
+    expect(line.tone).toBe('neutral')
+  })
+
   it("says a refusal in the door's words, a workspace secret by name, and none at all", () => {
     expect(lastTokenLine(token({ ok: false, carried: null, error: 'GitHub refused the token: 422' }), NOW)).toEqual({
       text: 'Refused (acme/widgets, 12 min ago): GitHub refused the token: 422',
@@ -112,6 +122,16 @@ describe('hostAgentRow', () => {
     const row = hostAgentRow({ ...developer, carries: null }, NOW)
     expect(row.carries).toBeNull()
     expect(row.beyond).toEqual([])
+  })
+
+  it('claims nothing carried for an agent the door gives no credential', () => {
+    const row = hostAgentRow({ ...developer, developer: false, isDefault: false, set: { ...DEFAULT, members: 'read' } }, NOW)
+    expect(row.developer).toBe(false)
+    expect(row.carries).toBeNull()
+    expect(row.beyond).toEqual([])
+    expect(row.set.map((e) => e.key)).toContain('members')
+    // An older server that does not say is read as a Developer agent.
+    expect(hostAgentRow({ ...developer, developer: undefined }, NOW).developer).toBe(true)
   })
 
   it('lists Developer agents first, then by name', () => {

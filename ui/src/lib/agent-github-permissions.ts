@@ -224,15 +224,21 @@ export type OffTokenWhy =
 
 /** One key of the agent's set: is it on the agent's token? */
 export type KeyState =
-  /** The last token minted for this set carries it. */
+  /** The last token minted for this set carries it, and the record still
+   *  holds it. */
   | { kind: 'onToken'; repo: string; at: string }
   /** A token minted for this set lacks it. `installations`: the ones that
    *  have not accepted it, where an owner accepts (`notAccepted`);
-   *  `acceptedSince`: the record holds it now, so the next token can. */
+   *  `acceptedSince`: every installation that mints it holds it now, so the
+   *  next token can. */
   | { kind: 'offToken'; repo: string; at: string; why: OffTokenWhy; detail: string | null; installations: PermissionsInstallation[]; acceptedSince: boolean }
-  /** Tokens were minted, none for the set the agent has now. */
+  /** Tokens were minted, none known to be for the set the agent has now (the
+   *  set changed since, or the rows predate saying what was asked), and the
+   *  record holds it or does not say. */
   | { kind: 'notYet' }
-  /** Nothing was minted (or the server does not say): the record only. */
+  /** The record's word: nothing was minted (or the server does not say), or
+   *  what the token says no longer stands because the installation does not
+   *  hold the key now. */
   | { kind: 'record'; held: HeldState }
 
 interface Minted {
@@ -257,17 +263,32 @@ function splitWhy(why: string | null): { refused: string | null; omitted: string
 /** Whether GitHub's sentence names `key` (its sets read `key:level, …`). */
 const names = (sentence: string, key: string): boolean => new RegExp(`(?:^|[\\s,(])${key.replace(/[^a-z0-9_]/gi, '')}:`).test(sentence)
 
-export function keyState(block: HostPermissions, key: string, level: PermissionLevel): KeyState {
+/** The record's word for a key, when it is a warning: the installation does
+ *  not hold it (or the App does not ask), so no token carries it, whatever
+ *  an older token said. Null when the record holds it or does not say. */
+function recordWarns(block: HostPermissions, key: string, level: PermissionLevel): KeyState | null {
+  const held = heldState(block, key, level)
+  return held.kind === 'held' || held.kind === 'unknown' ? null : { kind: 'record', held }
+}
+
+/** `scope`: the key's (`scopeOf`). GitHub refuses only organization keys on
+ *  a token for one repository, and its 422 message names none of them, so
+ *  the refused part of `shortfallWhy` is told to organization keys only. */
+export function keyState(block: HostPermissions, key: string, level: PermissionLevel, scope: PermissionScope = scopeOf([], key)): KeyState {
   const record: KeyState = { kind: 'record', held: heldState(block, key, level) }
   if (!tokenAware(block)) return record
   if (!block.repos.some((r) => r.lastToken != null)) return record
   const current: Minted[] = block.repos.flatMap((repo) => (speaks(repo.lastToken) ? [{ repo, token: repo.lastToken }] : []))
-  if (current.length === 0) return { kind: 'notYet' }
+  // No token speaks for this set: the record's warning stands (granted
+  // before GitHub's acceptance, or never asked of the App), with its link.
+  if (current.length === 0) return recordWarns(block, key, level) ?? { kind: 'notYet' }
   const lacking = current.filter(({ token }) => !(token.ok && holds(token.carried, key, level)))
   const cite = newest(lacking.length > 0 ? lacking : current)
   if (!cite) return { kind: 'notYet' }
   const repo = cite.token.repo ?? cite.repo.repo
-  if (lacking.length === 0) return { kind: 'onToken', repo, at: cite.token.at }
+  // Carried, unless an installation that mints the agent's tokens has lost
+  // it since: the next token is narrower, whatever the last one carried.
+  if (lacking.length === 0) return recordWarns(block, key, level) ?? { kind: 'onToken', repo, at: cite.token.at }
 
   const minting = (block.installations ?? []).filter((i) => i.id === cite.repo.installation)
   const lacked = minting.filter((i) => i.held != null && !holds(i.held, key, level))
@@ -285,16 +306,17 @@ export function keyState(block: HostPermissions, key: string, level: PermissionL
   // The installation does not hold it: it was never asked of GitHub.
   if (lacked.length > 0) return off('notAccepted', null)
   if (holds(cite.token.shortfall, key, level)) {
-    // GitHub's words: what it refused on this token (organization keys on a
-    // repository token), then "GitHub did not put <keys> on the token" for
-    // what it left off; either part may stand alone.
+    // GitHub's words, as the mint writes them: its 422 refusing the
+    // organization keys on a token for one repository (a message that names
+    // no key), then "GitHub did not put <keys> on the token" for what it
+    // left off; either part may stand alone.
     const { refused, omitted } = splitWhy(why)
     if (omitted && names(omitted, key)) return off('githubOmitted', omitted)
-    if (refused) return off('githubRefused', refused)
-    if (omitted) return off('githubOmitted', omitted)
+    if (refused && scope === 'organization') return off('githubRefused', refused)
     // Dropped before the mint with no word from GitHub: the installation
-    // had not accepted it then, and its record holds it now.
-    return off('notAccepted', null, minting.length > 0)
+    // had not accepted it then. It has since only if every installation
+    // that mints this repo's token is read and holds it now.
+    return off('notAccepted', null, minting.length > 0 && minting.every((i) => i.held != null && holds(i.held, key, level)))
   }
   // Asked, held, and still not on what GitHub put on the token.
   return off('githubOmitted', null)
@@ -306,7 +328,7 @@ export function keySentence(state: KeyState, nowMs: number): string {
     case 'onToken':
       return `On the agent's token (${state.repo}, ${since(state.at, nowMs)})`
     case 'notYet':
-      return 'Granted, not on a token yet'
+      return 'Granted; no token checked against this set yet'
     case 'offToken':
       return `Not on the token (${state.repo}, ${since(state.at, nowMs)}): ${offTokenWhy(state)}`
     case 'record':
@@ -317,9 +339,11 @@ export function keySentence(state: KeyState, nowMs: number): string {
 function offTokenWhy(state: Extract<KeyState, { kind: 'offToken' }>): string {
   switch (state.why) {
     case 'notAccepted':
-      return state.acceptedSince
-        ? 'the installation had not accepted it when this token was minted; it has since, so the next token can carry it'
-        : `the installation on ${accounts(state.installations)} has not accepted it on GitHub`
+      if (state.acceptedSince) return 'the installation had not accepted it when this token was minted; it has since, so the next token can carry it'
+      // What the installation holds now is not on record: say only what
+      // the token's mint knew.
+      if (state.installations.length === 0) return 'the installation had not accepted it when this token was minted'
+      return `the installation on ${accounts(state.installations)} has not accepted it on GitHub`
     case 'githubRefused':
       return `GitHub refused it: ${state.detail ?? 'it gave no reason'}`
     case 'githubOmitted':
@@ -345,7 +369,7 @@ export function keyLines(block: HostPermissions, catalog: CatalogEntry[], nowMs:
   const rows = setRows(block.permissions, catalog)
   const lines: KeyLine[] = []
   for (const r of [...rows.repository, ...rows.organization]) {
-    const state = keyState(block, r.key, r.level)
+    const state = keyState(block, r.key, r.level, r.scope)
     const sentence = keySentence(state, nowMs)
     const installations =
       state.kind === 'offToken'
@@ -409,10 +433,16 @@ export interface TokenCheck {
 /** The repos Check token offers, in the order the editor lists them. */
 export const checkRepos = (block: HostPermissions): string[] => block.repos.map((r) => r.repo)
 
+/** A reason that is not a fault: the installation holds a key the agent's
+ *  set does not name. On an installation given every permission, that is
+ *  most of the catalog, and the agent's token is still exactly its set. */
+const isNotInSet = (r: CheckReason): boolean => r.why === 'notInSet'
+
 /** Whether a check found the App's token carrying the whole set: no error,
- *  no reason, not a workspace secret answering instead. */
+ *  no reason a key of the set is off it, not a workspace secret answering
+ *  instead. Keys the installation holds outside the set are not a fault. */
 export const checkClean = (c: TokenCheck): boolean =>
-  c.ok && !c.error?.trim() && (c.reasons ?? []).length === 0 && c.source !== 'workspace_secret'
+  c.ok && !c.error?.trim() && !(c.reasons ?? []).some((r) => !isNotInSet(r)) && c.source !== 'workspace_secret'
 
 /** One reason as a plain sentence. */
 export function reasonSentence(r: CheckReason, account?: string | null): string {
@@ -432,21 +462,44 @@ export function reasonSentence(r: CheckReason, account?: string | null): string 
   }
 }
 
-/** What a check says, as sentences, never none: the error verbatim when it
+/** One line of a check's answer, with its own tone. */
+export interface CheckLine {
+  text: string
+  tone: 'success' | 'warn' | 'neutral'
+}
+
+/** What a check says, as lines, never none: the error verbatim when it
  *  failed, the workspace secret when one answers, else what the token
- *  carries and each reason. */
-export function checkSentences(c: TokenCheck, repo: string, host: string, account?: string | null): string[] {
-  const out: string[] = []
-  if (c.error?.trim()) out.push(c.error.trim())
+ *  carries and each reason a key of the set is off it. What the
+ *  installation holds outside the set is said once, as information. */
+export function checkLines(c: TokenCheck, repo: string, host: string, account?: string | null): CheckLine[] {
+  const out: CheckLine[] = []
+  const reasons = c.reasons ?? []
+  const faults = reasons.filter((r) => !isNotInSet(r))
+  const outside = reasons.filter(isNotInSet)
+  if (c.error?.trim()) out.push({ text: c.error.trim(), tone: 'warn' })
   if (c.source === 'workspace_secret') {
-    out.push(`Git at ${host} answers from the workspace secret ${c.secret || '(unnamed)'} for this agent; these permissions don't apply to it.`)
+    out.push({ text: `Git at ${host} answers from the workspace secret ${c.secret || '(unnamed)'} for this agent; these permissions don't apply to it.`, tone: 'warn' })
   } else if (c.ok && c.carried) {
-    out.push(`The token for ${repo} carries ${permissionSummary(c.carried)}${c.minted ? ' (minted now)' : ' (served from the cache)'}.`)
+    out.push({
+      text: `The token for ${repo} carries ${permissionSummary(c.carried)}${c.minted ? ' (minted now)' : ' (served from the cache)'}.`,
+      tone: checkClean(c) ? 'success' : 'neutral',
+    })
   }
-  for (const r of c.reasons ?? []) out.push(reasonSentence(r, account))
-  if (out.length === 0) out.push(c.ok ? `The token for ${repo} was checked; GitHub said nothing more.` : 'The check failed and gave no reason.')
+  for (const r of faults) out.push({ text: reasonSentence(r, account), tone: 'warn' })
+  if (outside.length === 1) out.push({ text: reasonSentence(outside[0]!, account), tone: 'neutral' })
+  else if (outside.length > 1) {
+    const keys = outside.map((r) => `${r.key}: ${r.level}`).join(', ')
+    out.push({ text: `The installation also holds ${keys}; none is in this agent's set. Add any of them here to put it on the token.`, tone: 'neutral' })
+  }
+  if (out.length === 0)
+    out.push(c.ok ? { text: `The token for ${repo} was checked; GitHub said nothing more.`, tone: 'neutral' } : { text: 'The check failed and gave no reason.', tone: 'warn' })
   return out
 }
+
+/** `checkLines`' words alone. */
+export const checkSentences = (c: TokenCheck, repo: string, host: string, account?: string | null): string[] =>
+  checkLines(c, repo, host, account).map((l) => l.text)
 
 /** What a high-impact key lets the agent do, said beside it. Information,
  *  not a gate: an admin may give any of them. */

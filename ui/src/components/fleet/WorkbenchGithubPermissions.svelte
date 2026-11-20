@@ -11,9 +11,8 @@
   import type { DotStatus } from '@/components/ui/chip'
   import {
     addOptions,
-    checkClean,
+    checkLines,
     checkRepos,
-    checkSentences,
     fromOf,
     heldSentence,
     heldState,
@@ -72,11 +71,18 @@
     error?: string
   }
 
+  // Check token: per host, the repo picked and the last answer.
+  let picked = $state<Record<string, string>>({})
+  let checking = $state<string | null>(null)
+  let checks = $state<Record<string, { repo: string; result: TokenCheck }>>({})
+
   let saving = $state<string | null>(null)
   const write = async (h: HostPermissions, to: PermissionMap | null) => {
     saving = h.host
     try {
       const res = await putJsonOr<Saved>(`/api/workbench/github-permissions/${agentId}`, { host: h.host, from: fromOf(h), to }, [409])
+      // The set is not what the last Check token measured: its answer goes.
+      checks = Object.fromEntries(Object.entries(checks).filter(([host]) => host !== h.host))
       if (res.current) {
         pushToast({
           title: 'These permissions changed since you read them',
@@ -100,10 +106,6 @@
     ['organization', 'Organization'],
   ]
 
-  // Check token: per host, the repo picked and the last answer.
-  let picked = $state<Record<string, string>>({})
-  let checking = $state<string | null>(null)
-  let checks = $state<Record<string, { repo: string; result: TokenCheck }>>({})
   const repoFor = (h: HostPermissions) => picked[h.host] ?? checkRepos(h)[0] ?? ''
   const check = async (h: HostPermissions) => {
     const repo = repoFor(h)
@@ -156,7 +158,7 @@
                 <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</span>
                 <div class="flex flex-wrap items-center gap-1.5">
                   {#each rows[scope] as r (r.key)}
-                    {@const state = keyState(h, r.key, r.level)}
+                    {@const state = keyState(h, r.key, r.level, r.scope)}
                     {@const impact = impactNote(r.key)}
                     <span class="inline-flex items-center gap-1 rounded-md border border-line-subtle bg-raised/40 px-1.5 py-0.5">
                       <Chip
@@ -257,10 +259,10 @@
               {#if done}
                 {@const account = (h.installations ?? []).find((i) => i.id === done.result.installation)?.account}
                 <ul class="space-y-1" role="status">
-                  {#each checkSentences(done.result, done.repo, h.name, account) as sentence, i (i)}
+                  {#each checkLines(done.result, done.repo, h.name, account) as line, i (i)}
                     <li class="flex items-start gap-2 text-xs text-muted">
-                      <StatusDot status={checkClean(done.result) ? 'ok' : 'warn'} class="mt-[5px]" />
-                      <span class="min-w-0">{sentence}</span>
+                      <StatusDot status={DOT[line.tone]} class="mt-[5px]" />
+                      <span class="min-w-0">{line.text}</span>
                     </li>
                   {/each}
                   {#if done.result.at}<li class="pl-3.5 text-[11px] text-muted">Checked {since(done.result.at, clock.now)}.</li>{/if}

@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   addOptions,
   checkClean,
+  checkLines,
   checkSentences,
   fromOf,
   heldSentence,
@@ -195,6 +196,11 @@ const MINTED_AT = '2026-11-20T11:48:00Z' // 12 min before NOW
 const CARRIED = JSON.parse('{"contents":"write","metadata":"read","pull_requests":"write"}')
 const SHORTFALL = JSON.parse('{"workflows":"write"}')
 const WITH_WORKFLOWS = { contents: 'write', metadata: 'read', pull_requests: 'write', workflows: 'write' } as const
+// GitHub's 422 for an access-token ask it will not mint, as the mint keeps it
+// (the reply's `message`): it names no key.
+const GITHUB_422 = JSON.parse(
+  '{"message":"The permissions requested are not granted to this installation.","documentation_url":"https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app","status":"422"}',
+).message as string
 
 /** An installation that accepted workflows and actions, as the record has it. */
 const accepted: PermissionsInstallation = {
@@ -279,7 +285,42 @@ describe('keyState: the token decides', () => {
       expect(s).toEqual({ kind: 'notYet' })
       expect(keyTone(s)).not.toBe('success')
     }
-    expect(keySentence({ kind: 'notYet' }, NOW)).toBe('Granted, not on a token yet')
+    expect(keySentence({ kind: 'notYet' }, NOW)).toBe('Granted; no token checked against this set yet')
+  })
+
+  it('REGRESSION: with no token for this set, a key the installation has not accepted keeps its warning and the link to accept', () => {
+    // Granted ahead of GitHub's acceptance: the only token predates the grant.
+    const b = granted(token({ current: false, asked: { ...CARRIED }, shortfall: {} }), { installations: [acme], appPermissions: acme.appPermissions })
+    const s = keyState(b, 'workflows', 'write')
+    expect(s).toEqual({ kind: 'record', held: { kind: 'awaitingApproval', installations: [acme] } })
+    expect(keyTone(s)).toBe('warn')
+    expect(keySentence(s, NOW)).toBe('Waiting for an owner of acme to accept it on GitHub. No token carries it until then.')
+    const line = keyLines(b, catalog, NOW).find((l) => l.keys.some((k) => k.key === 'workflows'))
+    expect(line?.installations).toEqual([acme])
+    // What the App does not ask for says so too.
+    const unasked = granted(token({ current: false }), {
+      installations: [{ ...acme, appPermissions: { ...CARRIED } }],
+      appPermissions: { ...CARRIED },
+    })
+    expect(keyState(unasked, 'workflows', 'write')).toEqual({ kind: 'record', held: { kind: 'appMissing' } })
+    // A key it holds is still only granted.
+    expect(keyState(b, 'contents', 'write')).toEqual({ kind: 'notYet' })
+  })
+
+  it('reads a row from before rows said what was asked as no token for this set, never as on the token', () => {
+    // The server never calls such a row current (it cannot say which set it
+    // was for), even though it carried these very keys.
+    const legacy = granted(token({ asked: undefined, current: false, carried: { ...CARRIED }, shortfall: {} }), { permissions: { ...CARRIED }, isDefault: true })
+    for (const [key, level] of Object.entries(CARRIED) as Array<[string, 'read' | 'write']>) {
+      expect(keyState(legacy, key, level)).toEqual({ kind: 'notYet' })
+    }
+  })
+
+  it('REGRESSION: a key the last token carried is not green once the installation stops holding it', () => {
+    const lost = granted(token(), { installations: [{ ...accepted, held: { ...accepted.held, contents: 'read' } }] })
+    const s = keyState(lost, 'contents', 'write')
+    expect(s).toMatchObject({ kind: 'record', held: { kind: 'awaitingApproval' } })
+    expect(keyTone(s)).toBe('warn')
   })
 
   it('is on the token when the token minted for this set carries it, with the repo and when', () => {
@@ -311,25 +352,56 @@ describe('keyState: the token decides', () => {
     expect(keySentence(s, NOW)).toContain('the next token can carry it')
   })
 
-  it("quotes GitHub's own words when it refused the key", () => {
-    const why = 'The permissions requested are not granted to this installation.'
-    const s = keyState(granted(token({ shortfallWhy: why })), 'workflows', 'write')
-    expect(s).toMatchObject({ why: 'githubRefused', detail: why })
-    expect(keySentence(s, NOW)).toContain(`GitHub refused it: ${why}`)
+  it("quotes GitHub's own words when it refused an organization key, and only for one", () => {
+    const b = granted(
+      token({ asked: { ...WITH_WORKFLOWS, members: 'read' }, shortfall: { members: 'read' }, shortfallWhy: GITHUB_422 }),
+      { permissions: { ...WITH_WORKFLOWS, members: 'read' }, installations: [{ ...accepted, held: { ...accepted.held, members: 'read' } }] },
+    )
+    const s = keyState(b, 'members', 'read', 'organization')
+    expect(s).toMatchObject({ why: 'githubRefused', detail: GITHUB_422 })
+    expect(keySentence(s, NOW)).toContain(`GitHub refused it: ${GITHUB_422}`)
+    // keyLines takes each key's scope from the catalog.
+    expect(keyLines(b, catalog, NOW).find((l) => l.keys.some((k) => k.key === 'members'))?.state).toMatchObject({ why: 'githubRefused' })
   })
 
-  it("splits GitHub's words when it refused some keys and left others off", () => {
-    const refusedWhy = 'GitHub refused members:read on a token for one repository'
+  it('never pins GitHub\'s refusal on a repository key: one the installation accepted after the mint can ride on the next token', () => {
+    // An organization key and workflows, granted before the installation
+    // accepted workflows. GitHub refused the organization key (its 422 names
+    // none), workflows was never asked of it, and the installation has
+    // accepted workflows since.
     const b = granted(
       token({
         asked: { ...WITH_WORKFLOWS, members: 'read' },
         shortfall: { members: 'read', workflows: 'write' },
-        shortfallWhy: `${refusedWhy}; GitHub did not put workflows:write on the token`,
+        shortfallWhy: GITHUB_422,
       }),
       { permissions: { ...WITH_WORKFLOWS, members: 'read' }, installations: [{ ...accepted, held: { ...accepted.held, members: 'read' } }] },
     )
-    expect(keyState(b, 'workflows', 'write')).toMatchObject({ why: 'githubOmitted', detail: 'GitHub did not put workflows:write on the token' })
-    expect(keyState(b, 'members', 'read')).toMatchObject({ why: 'githubRefused', detail: refusedWhy })
+    const wf = keyState(b, 'workflows', 'write', 'repository')
+    expect(wf).toMatchObject({ kind: 'offToken', why: 'notAccepted', acceptedSince: true })
+    expect(keySentence(wf, NOW)).not.toContain('GitHub refused')
+    expect(keyState(b, 'members', 'read', 'organization')).toMatchObject({ why: 'githubRefused', detail: GITHUB_422 })
+  })
+
+  it("splits GitHub's words when it refused the organization keys and left others off", () => {
+    const omitted = 'GitHub did not put workflows:write on the token'
+    const b = granted(
+      token({
+        asked: { ...WITH_WORKFLOWS, members: 'read' },
+        shortfall: { members: 'read', workflows: 'write' },
+        shortfallWhy: `${GITHUB_422}; ${omitted}`,
+      }),
+      { permissions: { ...WITH_WORKFLOWS, members: 'read' }, installations: [{ ...accepted, held: { ...accepted.held, members: 'read' } }] },
+    )
+    expect(keyState(b, 'workflows', 'write', 'repository')).toMatchObject({ why: 'githubOmitted', detail: omitted })
+    expect(keyState(b, 'members', 'read', 'organization')).toMatchObject({ why: 'githubRefused', detail: GITHUB_422 })
+  })
+
+  it('claims no acceptance since the mint while what the installation holds is not on record', () => {
+    const b = granted(token(), { installations: [{ ...accepted, held: null }] })
+    const s = keyState(b, 'workflows', 'write')
+    expect(s).toMatchObject({ kind: 'offToken', why: 'notAccepted', acceptedSince: false, installations: [] })
+    expect(keySentence(s, NOW)).toBe('Not on the token (acme/widgets, 12 min ago): the installation had not accepted it when this token was minted')
   })
 
   it('says GitHub omitted a key it minted the token without', () => {
@@ -415,9 +487,11 @@ describe('Check token', () => {
     expect(reasonSentence({ key: 'workflows', level: 'write', why: 'githubOmitted' })).toBe('workflows: write: GitHub minted the token without it.')
   })
 
-  it('is clean only with no error, no reason, and the App answering', () => {
+  it('is clean only with no error, no reason a key of the set is off, and the App answering', () => {
     expect(checkClean(reply())).toBe(true)
-    expect(checkClean(reply({ reasons: [{ key: 'workflows', level: 'write', why: 'notInSet' }] }))).toBe(false)
+    // What the installation holds outside the set is not a fault.
+    expect(checkClean(reply({ reasons: [{ key: 'workflows', level: 'write', why: 'notInSet' }] }))).toBe(true)
+    expect(checkClean(reply({ reasons: [{ key: 'workflows', level: 'write', why: 'installationLacks' }] }))).toBe(false)
     expect(checkClean(reply({ ok: false, error: 'no' }))).toBe(false)
     expect(checkClean(reply({ source: 'workspace_secret', secret: 'deploy-pat' }))).toBe(false)
   })
@@ -427,6 +501,24 @@ describe('Check token', () => {
     expect(checkSentences(reply({ ok: false, carried: null, error, reasons: null }), 'acme/widgets', 'GitHub')).toEqual([error])
     expect(checkSentences({ ok: false }, 'acme/widgets', 'GitHub')).toEqual(['The check failed and gave no reason.'])
     expect(checkSentences({ ok: true }, 'acme/widgets', 'GitHub')).toHaveLength(1)
+  })
+
+  it('says what an installation holding everything holds outside the set once, as information, and keeps the token line green', () => {
+    // The installation was given the organization's whole permission set;
+    // the agent is on the default, and its token carries all of it.
+    const outside = ['actions', 'administration', 'issues', 'workflows'].map((key) => ({ key, level: 'write' as const, why: 'notInSet', detail: null }))
+    const lines = checkLines(reply({ reasons: outside }), 'acme/widgets', 'GitHub', 'acme')
+    expect(lines).toEqual([
+      { text: 'The token for acme/widgets carries contents: write, metadata: read, pull requests: write (minted now).', tone: 'success' },
+      {
+        text: "The installation also holds actions: write, administration: write, issues: write, workflows: write; none is in this agent's set. Add any of them here to put it on the token.",
+        tone: 'neutral',
+      },
+    ])
+    // A real gap stands out from them.
+    const gap = checkLines(reply({ reasons: [...outside, { key: 'pull_requests', level: 'write', why: 'githubOmitted', detail: null }] }), 'acme/widgets', 'GitHub')
+    expect(gap.map((l) => l.tone)).toEqual(['neutral', 'warn', 'neutral'])
+    expect(gap[1]?.text).toBe('pull_requests: write: GitHub minted the token without it.')
   })
 
   it('names the workspace secret that answers instead of the App', () => {

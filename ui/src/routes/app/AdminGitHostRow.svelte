@@ -335,6 +335,14 @@
           {#if unclaimed}
             <p class="font-sans text-[13px] leading-5 text-warning" data-testid="git-host-unclaimed">{unclaimed}</p>
           {/if}
+          {#if agents.isError}
+            <!-- A server without the route answers 404, drawn as nothing; any
+                 other failure is said, never silent. -->
+            <p class="flex items-start gap-2 font-sans text-[13px] leading-5 text-muted" data-testid="git-host-agents-error">
+              <StatusDot status="warn" class="mt-[7px]" />
+              <span class="min-w-0">Could not read the agents' tokens: {errorMessage(agents.error)}</span>
+            </p>
+          {/if}
           {#if agentRows.length > 0}
             <div class="space-y-2" data-testid="git-host-agents">
               <div class="flex items-center gap-2">
@@ -348,13 +356,17 @@
                   <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span class="font-medium text-fg">{a.name}</span>
                     {#if a.isDefault}<Chip>default</Chip>{/if}
+                    {#if !a.developer}
+                      <Chip title="Its Developer switch is off, or it is disabled: it gets no git credential, whatever its set.">no git credential</Chip>
+                    {/if}
                   </div>
                   {#if !a.isDefault}
                     {@render permissionRow('Set', a.set, 'neutral')}
                   {/if}
-                  {#if a.carries}
+                  <!-- An agent with no credential at all carries nothing. -->
+                  {#if a.developer && a.carries}
                     {@render permissionRow('Carries', a.carries, 'neutral')}
-                  {:else}
+                  {:else if a.developer}
                     <p class="text-muted">What it carries is not known until the installation is read.</p>
                   {/if}
                   {#if a.beyond.length > 0}

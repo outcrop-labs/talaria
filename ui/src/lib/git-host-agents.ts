@@ -67,6 +67,9 @@ export interface HostAgentRow {
   agentId: string
   name: string
   isDefault: boolean
+  /** False when its Developer switch is off or it is disabled: the door
+   *  gives it no git credential at all, whatever its set. */
+  developer: boolean
   /** Its set, by key. */
   set: PermissionEntry[]
   /** What its tokens can carry, by key; null when not known. */
@@ -79,14 +82,15 @@ export interface HostAgentRow {
 }
 
 /** The last token in one line: where, when, and what it carried or why it
- *  was refused. A token minted for an earlier set says so. */
+ *  was refused. A token minted for an earlier set says so; a row from before
+ *  rows said what was asked says that instead, since its set is unknown. */
 export function lastTokenLine(t: LastToken | null | undefined, nowMs: number): { text: string; tone: TokenTone } {
   if (!t) return { text: 'No token yet', tone: 'neutral' }
   const where = `${t.repo ? `${t.repo}, ` : ''}${since(t.at, nowMs)}`
   if (!t.ok) return { text: `Refused (${where}): ${t.error?.trim() || 'the door gave no reason'}`, tone: 'warn' }
   if (t.source === 'workspace_secret') return { text: `A workspace secret answered (${where})${t.secret ? `: ${t.secret}` : ''}`, tone: 'neutral' }
   const short = permissionEntries(t.shortfall)
-  const stale = t.current === false ? ', minted for an earlier set' : ''
+  const stale = t.current !== false ? '' : t.asked == null ? ', recorded before Talaria noted what it asked for' : ', minted for an earlier set'
   const carried = t.carried ? `carried ${permissionSummary(t.carried)}` : 'carried what is not on record'
   const lacks = short.length > 0 ? `; not ${permissionSummary(t.shortfall)}` : ''
   const tone: TokenTone = short.length > 0 ? 'warn' : t.current === true ? 'success' : 'neutral'
@@ -98,7 +102,19 @@ export function hostAgentRow(a: HostAgent, nowMs: number): HostAgentRow {
   const carries = a.carries == null ? null : permissionEntries(a.carries)
   const beyond = a.carries == null ? [] : permissionEntries(pendingPermissions(a.set, a.carries))
   const { text, tone } = lastTokenLine(a.lastToken, nowMs)
-  return { agentId: a.agentId, name: a.name || a.agentId, isDefault: a.isDefault === true, set, carries, beyond, token: text, tone }
+  const developer = a.developer !== false
+  return {
+    agentId: a.agentId,
+    name: a.name || a.agentId,
+    isDefault: a.isDefault === true,
+    developer,
+    set,
+    // No credential at all: nothing is carried, and nothing falls short.
+    carries: developer ? carries : null,
+    beyond: developer ? beyond : [],
+    token: text,
+    tone,
+  }
 }
 
 /** The agents in the order the dialog lists them: Developer agents first,
