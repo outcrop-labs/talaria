@@ -588,10 +588,10 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
                     } else if t.archived {
                         self.mark_archived(t).await
                     } else {
-                        self.process(t, false).await
+                        self.process(t, false, false).await
                     }
                 }
-                _ => self.process(t, false).await,
+                _ => self.process(t, false, false).await,
             };
             match outcome {
                 Ok(w) => wrote |= w,
@@ -671,7 +671,9 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
     }
 
     /// Upsert one task's ticket. Ok(true) when anything on the board changed.
-    async fn process(&mut self, t: &Task, force: bool) -> Result<bool, Halt> {
+    /// `detailed`: `t` came from GET /task (so its attachments are complete),
+    /// not from a list page.
+    async fn process(&mut self, t: &Task, force: bool, detailed: bool) -> Result<bool, Halt> {
         let board = self.sync.board_id.clone();
         let existing = self.local.item(&t.id).await.map_err(Halt::Fatal)?;
         if let Some(it) = &existing {
@@ -842,7 +844,7 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
                             )
                             .await?;
                         }
-                        self.finish_task(t, fresh_item, problems, true, force)
+                        self.finish_task(t, fresh_item, problems, true, force, detailed)
                             .await?;
                         return Ok(true);
                     }
@@ -989,7 +991,8 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
                 },
             }
         }
-        self.finish_task(t, item, problems, false, force).await?;
+        self.finish_task(t, item, problems, false, force, detailed)
+            .await?;
         if wrote {
             self.cp.counts.updated += 1;
         } else {
@@ -1082,6 +1085,7 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
         mut problems: Vec<Problem>,
         created: bool,
         force: bool,
+        detailed: bool,
     ) -> Result<(), Halt> {
         let task_id = item.task_id.clone().unwrap_or_default();
         let mut complete = true;
@@ -1125,9 +1129,13 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
         if self.sync.options.attachments
             && (created || force || item.remote_updated_ms != t.updated_ms)
         {
-            let detail = match &t.attachments {
-                Some(_) => Ok(t.clone()),
-                None => self.remote().map_err(Halt::Fatal)?.task(&t.id).await,
+            // ONLY A DETAIL READ'S FILES COUNT. A list page may carry an
+            // `attachments` field that is partial or empty (it is not where
+            // ClickUp lists files); trusting it would drop files silently.
+            let detail = if detailed && t.attachments.is_some() {
+                Ok(t.clone())
+            } else {
+                self.remote().map_err(Halt::Fatal)?.task(&t.id).await
             };
             match detail {
                 Ok(d) => {
@@ -1388,7 +1396,7 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
             let id = self.cp.queue[self.cp.index].clone();
             match self.remote()?.task(&id).await {
                 Ok(t) => {
-                    if let Err(h) = self.process(&t, true).await {
+                    if let Err(h) = self.process(&t, true, true).await {
                         return self.halt(h);
                     }
                 }

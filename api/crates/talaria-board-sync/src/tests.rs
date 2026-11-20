@@ -34,6 +34,9 @@ struct RemoteState {
     limit_after: Option<usize>,
     calls: usize,
     remaining: Option<i64>,
+    /// What GET /task answers, when it differs from the list page.
+    details: HashMap<String, Task>,
+    downloads: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -116,6 +119,9 @@ impl Remote for FakeRemote {
     async fn task(&self, id: &str) -> Result<Task, ClickUpError> {
         self.gate()?;
         let s = self.0.lock().unwrap();
+        if let Some(t) = s.details.get(id) {
+            return Ok(t.clone());
+        }
         s.tasks
             .iter()
             .chain(s.archived.iter())
@@ -160,8 +166,9 @@ impl Remote for FakeRemote {
             .cloned()
             .unwrap_or_default())
     }
-    async fn download(&self, _url: &str, _max: usize) -> Result<Vec<u8>, ClickUpError> {
+    async fn download(&self, url: &str, _max: usize) -> Result<Vec<u8>, ClickUpError> {
         self.gate()?;
+        self.0.lock().unwrap().downloads.push(url.to_string());
         Ok(b"bytes".to_vec())
     }
     fn rate(&self) -> RateLimit {
@@ -1137,4 +1144,51 @@ fn the_keys_are_stable() {
     assert_eq!(crate::external_key("86a1"), "clickup:86a1");
     assert_eq!(crate::comment_key("9012"), "clickup:comment:9012");
     let _: StatusMap = StatusMap::new();
+}
+
+#[tokio::test]
+async fn files_come_from_the_detail_read_never_from_a_list_page() {
+    let local = FakeLocal::new(&[("x", "doing")]);
+    local.with(|s| s.sync.as_mut().unwrap().options.comments = false);
+    // The list page carries an `attachments` field with no URL; GET /task
+    // carries the file properly.
+    let listed = Task::parse(&json!({
+        "id": "a", "name": "A", "status": {"status": "x"}, "date_updated": "10",
+        "attachments": [{"id": "f1", "title": "notes.txt", "size": 5}]
+    }))
+    .unwrap();
+    let detailed = Task::parse(&json!({
+        "id": "a", "name": "A", "status": {"status": "x"}, "date_updated": "10",
+        "attachments": [{"id": "f1", "title": "notes.txt", "size": 5, "mimetype": "text/plain",
+                         "url": "https://files.example/notes.txt"}]
+    }))
+    .unwrap();
+    let remote = FakeRemote::new(vec![listed]);
+    remote
+        .0
+        .lock()
+        .unwrap()
+        .details
+        .insert("a".into(), detailed);
+    drive(&local, &remote, &input("manual")).await;
+    let item = local.item_of("a").unwrap();
+    assert_eq!(
+        item.attachments["f1"].state, "done",
+        "{:?}",
+        item.attachments
+    );
+    assert_eq!(
+        remote.0.lock().unwrap().downloads,
+        vec!["https://files.example/notes.txt".to_string()]
+    );
+    assert_eq!(
+        local
+            .ticket_of("a")
+            .unwrap()
+            .attachments
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
