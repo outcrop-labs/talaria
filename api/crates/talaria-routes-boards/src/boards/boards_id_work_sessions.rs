@@ -61,7 +61,11 @@ pub async fn get(
     let mut live = Vec::with_capacity(rows.len());
     for row in rows {
         let input: serde_json::Value = row.get("input");
-        let checkpoint: serde_json::Value = row.get("checkpoint");
+        // A queued card's session has no checkpoint yet: NULL is no turn, and
+        // one such card must not fail the whole board's read.
+        let checkpoint: serde_json::Value = row
+            .get::<Option<serde_json::Value>, _>("checkpoint")
+            .unwrap_or_default();
         let subject_id: String = row.get("subject_id");
         let run_id: String = row.get("id");
         let run_state: String = row.get("state");
