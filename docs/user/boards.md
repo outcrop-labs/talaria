@@ -70,6 +70,25 @@ watchers (**Watch** to follow a ticket).
 Right-click any ticket for the fast lane: move, priority, color, due date, assign to me,
 archive.
 
+**Moving a ticket to another board.** The ticket gets the new board's next reference
+(`PLAT-118` becomes `OPS-7`); the old reference and old links still open it. Comments,
+history, attachments and dependencies come along. It lands in the column of the same name,
+else the same kind of column, else the new board's intake — never in a done column unless it
+was already closed: a move is not a sign-off. Labels the new board does not have are dropped
+(not created), and people or agents who are not on the new board are unassigned — the dialog
+names each before you confirm, and the ticket's activity records it. A ticket an agent is
+working on right now, a workchain step, or a ticket with sub-tasks can't be moved until that
+is cleared. Agents can move tickets too (`move_ticket`), only between boards they are on,
+never into a done column, never a ticket that is blocked, never one in review unless you ask
+them to (below) and you can edit both boards, and never in a way that unassigns a person. Anyone who could see the ticket before the move and can't after it
+(its assignees, watchers and creator) gets a short notice that it moved to a board they
+can't see — without the board's name. An old link opens the ticket for anyone who can see
+its new board. The ticket's token spend counts toward the board it is on now.
+
+**Muse** (in the ticket detail) edits fields from plain language — type
+`urgent, due friday` — or select text while editing and ask for a rewrite; review the chips,
+then **Apply**.
+
 ## Notifications
 
 Each board has a bell in its header, beside **Board settings**: what you hear about this
@@ -101,25 +120,6 @@ Notifications → Boards**. A board you haven't set follows the default; a new b
 
 A ticket you watch because someone else added you says who ("added by …"), with **Watch it
 myself**: only a watch you made yourself reaches you on a board you've turned off.
-
-**Moving a ticket to another board.** The ticket gets the new board's next reference
-(`PLAT-118` becomes `OPS-7`); the old reference and old links still open it. Comments,
-history, attachments and dependencies come along. It lands in the column of the same name,
-else the same kind of column, else the new board's intake — never in a done column unless it
-was already closed: a move is not a sign-off. Labels the new board does not have are dropped
-(not created), and people or agents who are not on the new board are unassigned — the dialog
-names each before you confirm, and the ticket's activity records it. A ticket an agent is
-working on right now, a workchain step, or a ticket with sub-tasks can't be moved until that
-is cleared. Agents can move tickets too (`move_ticket`), only between boards they are on,
-never into a done column, never a ticket that is blocked, never one in review unless you ask
-them to (below) and you can edit both boards, and never in a way that unassigns a person. Anyone who could see the ticket before the move and can't after it
-(its assignees, watchers and creator) gets a short notice that it moved to a board they
-can't see — without the board's name. An old link opens the ticket for anyone who can see
-its new board. The ticket's token spend counts toward the board it is on now.
-
-**Muse** (in the ticket detail) edits fields from plain language — type
-`urgent, due friday` — or select text while editing and ask for a rewrite; review the chips,
-then **Apply**.
 
 ## Working with agents
 
@@ -183,6 +183,7 @@ imported ticket on the board. Setup, the mapping, the conflict rule and every pr
 | | Viewer | Editor | Owner |
 | :--- | :-: | :-: | :-: |
 | See board, comment on open tickets | ✓ | ✓ | ✓ |
+| Your own notifications for the board (the bell and its **Notification settings**) | ✓ | ✓ | ✓ |
 | Edit tickets, drag, bulk actions, save views | | ✓ | ✓ |
 | Board settings (columns, labels, people, agents) | | ✓ | ✓ |
 | Archive / restore | | ✓ | ✓ |

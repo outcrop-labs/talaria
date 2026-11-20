@@ -44,16 +44,6 @@ fn board_row(
     })
 }
 
-/// The whole answer, from the caller's default and the listed rows. Pure.
-fn list_wire(default: Option<&BoardPref>, boards: Vec<Value>) -> Value {
-    let (default_effective, default_source) = board_prefs::effective(None, default);
-    json!({
-        "default": board_prefs::state_wire(&default_effective, default_source, default),
-        "boards": boards,
-        "registry": board_prefs::registry_wire(),
-    })
-}
-
 // doc: The caller's default for every board and the effective setting of every board they can see: `{default, boards: [{id, name, role, effective, source}], registry}`.
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     let user = require_user(&state, &headers).await?;
@@ -82,7 +72,21 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
             )
         })
         .collect();
-    Ok(Json(list_wire(default.as_ref(), rows)).into_response())
+    Ok(list_wire(default.as_ref(), rows).into_response())
+}
+
+/// The whole answer, from the caller's default and the listed rows. Pure.
+/// It answers `Json(json!({…}))` so the generated API reference reads the
+/// response's keys from this literal, and it sits below the handler: a
+/// `Json<…>` in the lines just above a handler reads to the generator as a
+/// request body.
+fn list_wire(default: Option<&BoardPref>, boards: Vec<Value>) -> Json<Value> {
+    let (default_effective, default_source) = board_prefs::effective(None, default);
+    Json(json!({
+        "default": board_prefs::state_wire(&default_effective, default_source, default),
+        "boards": boards,
+        "registry": board_prefs::registry_wire(),
+    }))
 }
 
 #[cfg(test)]
@@ -127,12 +131,12 @@ mod tests {
     fn the_list_carries_the_default_and_the_vocabulary() {
         // No default and no board: the built-in, and still the registry — a
         // person with no board yet sets their default from it.
-        let w = list_wire(None, Vec::new());
+        let Json(w) = list_wire(None, Vec::new());
         assert_eq!(w["default"]["source"], "builtin");
         assert_eq!(w["boards"], json!([]));
         assert_eq!(w["registry"], board_prefs::registry_wire());
         let mentions = BoardPref::preset(Preset::Mentions, Cadence::Instant);
-        let w = list_wire(Some(&mentions), vec![json!({ "id": "b1" })]);
+        let Json(w) = list_wire(Some(&mentions), vec![json!({ "id": "b1" })]);
         assert_eq!(
             (
                 w["default"]["source"].as_str(),
