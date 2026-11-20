@@ -87,6 +87,11 @@ pub async fn post(
         Ok(v) => v,
         Err(_) => return Ok(house_error(StatusCode::BAD_REQUEST, "body must be JSON")),
     };
+    // A step snapshot shares the door and the key, and nothing else: it is
+    // a ledger row, not a watch frame (`tool_snapshots`).
+    if parsed.get("kind").and_then(|v| v.as_str()) == Some("snapshot") {
+        return super::tool_snapshots::land(&state, &caller, parsed).await;
+    }
     let tool = parsed
         .get("toolName")
         .and_then(|v| v.as_str())

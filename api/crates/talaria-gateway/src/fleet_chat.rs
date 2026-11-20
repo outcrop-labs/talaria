@@ -1502,26 +1502,142 @@ pub async fn session_overview(agent_model: &str, conversation_id: &str) -> Optio
     })
 }
 
+/// Every row of a Hermes session, oldest first, asked of the agent's own
+/// container page by page on the control window. `None` is any failure, a
+/// 404 included, a session longer than the page cap, and a transcript that
+/// moved between two pages: a caller that judges rows by their absence must
+/// not judge them by a transcript it did not read whole. A short page is the
+/// end.
+pub async fn session_messages(agent_model: &str, session_id: &str) -> Option<Vec<Value>> {
+    session_rows(agent_model, session_id, 500, 8, false).await
+}
+
+/// The same rows plus the ones a compaction archived, which the live read
+/// leaves out: what a caller needs to tell a step that was compacted away
+/// from one that was never the session's.
+pub async fn session_messages_archived(agent_model: &str, session_id: &str) -> Option<Vec<Value>> {
+    session_rows(agent_model, session_id, 500, 8, true).await
+}
+
+async fn session_rows(
+    agent_model: &str,
+    session_id: &str,
+    page: usize,
+    pages: usize,
+    archived: bool,
+) -> Option<Vec<Value>> {
+    let entry = agent_entry(agent_model).await?;
+    session_rows_from(&entry, session_id, agent_model, page, pages, archived).await
+}
+
+async fn session_rows_from(
+    entry: &ManifestEntry,
+    session_id: &str,
+    agent_model: &str,
+    page: usize,
+    pages: usize,
+    archived: bool,
+) -> Option<Vec<Value>> {
+    debug_assert!(page >= 2, "a page shares one row with the page before it");
+    let mut rows: Vec<Value> = Vec::new();
+    for n in 0..pages {
+        // Hermes pages by offset only, and a compaction that archives the
+        // head of the live transcript between two pages moves every later
+        // row down, so the next page would start past rows it never showed.
+        // Each page after the first therefore starts on the row the page
+        // before it ended with: a different row there is a transcript that
+        // moved under the read.
+        let offset = n * (page - 1);
+        let path = format!(
+            "/api/sessions/{session_id}/messages?limit={page}&offset={offset}&order=oldest{}",
+            if archived {
+                "&include_compacted=true"
+            } else {
+                ""
+            }
+        );
+        let body = control_get_json(entry, &path, agent_model).await?;
+        if body.get("session_id").and_then(Value::as_str) != Some(session_id) {
+            tracing::debug!(
+                "[fleet_chat] {agent_model}: session {session_id} resolved to another; its rows are not this run's"
+            );
+            return None;
+        }
+        let data = body.get("data")?.as_array()?;
+        let fresh = if n == 0 {
+            &data[..]
+        } else {
+            match (rows.last(), data.first()) {
+                (Some(last), Some(first)) if same_row(last, first) => &data[1..],
+                _ => {
+                    tracing::debug!(
+                        "[fleet_chat] {agent_model}: session {session_id} moved while it was read; not read whole"
+                    );
+                    return None;
+                }
+            }
+        };
+        rows.extend(fresh.iter().cloned());
+        if data.len() < page {
+            return Some(rows);
+        }
+    }
+    tracing::debug!(
+        "[fleet_chat] {agent_model}: session {session_id} is longer than {} rows; not read whole",
+        page + pages.saturating_sub(1) * (page - 1)
+    );
+    None
+}
+
+/// Two reads of one transcript row: Hermes's row id when both carry one,
+/// and otherwise every field.
+fn same_row(a: &Value, b: &Value) -> bool {
+    match (a.get("id"), b.get("id")) {
+        (Some(x), Some(y)) if !x.is_null() => x == y,
+        _ => a == b,
+    }
+}
+
 /// A read through the agent's own door, parsed as json — bounded by the
 /// control window. Only the STATUS of a refusal is logged: an agent's own
 /// words can be in that body, and this is a session's transcript.
 async fn control_get_json(entry: &ManifestEntry, path: &str, model: &str) -> Option<Value> {
-    match tokio::time::timeout(CONTROL_WINDOW, agent_get(entry, path).send()).await {
-        Ok(Ok(res)) if res.status().is_success() => match res.json::<Value>().await {
-            Ok(body) => Some(body),
-            Err(_) => {
-                tracing::debug!("[fleet_chat] {model}: {path} answered a body that is not json");
+    bounded_get_json(entry, path, model, CONTROL_WINDOW).await
+}
+
+/// The window covers the whole answer, headers and body alike: a container
+/// that sends headers and then nothing used to hold the caller on the
+/// client's own idle clock, long past the window, and a record step that
+/// waited there was filed as a failed run.
+async fn bounded_get_json(
+    entry: &ManifestEntry,
+    path: &str,
+    model: &str,
+    window: Duration,
+) -> Option<Value> {
+    let read = async {
+        match agent_get(entry, path).send().await {
+            Ok(res) if res.status().is_success() => match res.json::<Value>().await {
+                Ok(body) => Some(body),
+                Err(_) => {
+                    tracing::debug!(
+                        "[fleet_chat] {model}: {path} answered a body that is not json"
+                    );
+                    None
+                }
+            },
+            Ok(res) => {
+                tracing::debug!("[fleet_chat] {model}: {path} answered {}", res.status());
                 None
             }
-        },
-        Ok(Ok(res)) => {
-            tracing::debug!("[fleet_chat] {model}: {path} answered {}", res.status());
-            None
+            Err(e) => {
+                tracing::debug!("[fleet_chat] {model}: {path} did not answer: {e}");
+                None
+            }
         }
-        Ok(Err(e)) => {
-            tracing::debug!("[fleet_chat] {model}: {path} did not answer: {e}");
-            None
-        }
+    };
+    match tokio::time::timeout(window, read).await {
+        Ok(body) => body,
         Err(_) => {
             tracing::debug!("[fleet_chat] {model}: {path} went quiet past the control window");
             None
@@ -2188,6 +2304,170 @@ fn session_error_message(json: &Value) -> String {
         .or_else(|| json.get("error").and_then(Value::as_str))
         .unwrap_or("the agent reported an error")
         .to_string()
+}
+
+#[cfg(test)]
+mod session_read_tests {
+    use super::*;
+
+    /// Headers and then silence used to hold the caller past the window:
+    /// only the connect and the headers were bounded, and a body that never
+    /// came waited on the client's own timeout. The whole read is one
+    /// window now, and a stall is a None, which every caller takes as "the
+    /// container could not say".
+    #[tokio::test]
+    async fn a_body_that_never_comes_is_a_none_inside_the_window() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            use tokio::io::AsyncWriteExt as _;
+            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 10000\r\n\r\n{\"data\":[")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let entry = ManifestEntry {
+            model: "probe".into(),
+            url: format!("http://{addr}"),
+            key: None,
+        };
+        let started = std::time::Instant::now();
+        let got = bounded_get_json(
+            &entry,
+            "/api/sessions/x/messages",
+            "probe",
+            Duration::from_millis(400),
+        )
+        .await;
+        assert!(got.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// Tool rows with Hermes's row ids 1..=n, oldest first.
+    fn tool_rows(n: u64) -> Vec<Value> {
+        (1..=n)
+            .map(|id| json!({ "id": id, "role": "tool", "tool_call_id": format!("call-{id}") }))
+            .collect()
+    }
+
+    fn ids(rows: &[Value]) -> Vec<u64> {
+        rows.iter().filter_map(|r| r["id"].as_u64()).collect()
+    }
+
+    /// A stand-in for session s1's messages door, paging `rows` by the
+    /// request's own `offset` and `limit` the way Hermes does. Once it has
+    /// answered `compact_after` pages it drops the first `compact` rows, as
+    /// a compaction archives the head of the live transcript between two
+    /// page reads. Any other path is a 404 and is not counted: a stray poll
+    /// on a loopback port is not a page.
+    async fn messages_door(
+        rows: Vec<Value>,
+        compact_after: usize,
+        compact: usize,
+    ) -> ManifestEntry {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = std::sync::Arc::new(std::sync::Mutex::new((rows, 0usize)));
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let state = state.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+                    let mut buf = [0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let target = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                    let (path, query) = target.split_once('?').unwrap_or((target.as_str(), ""));
+                    let param = |name: &str| {
+                        query
+                            .split('&')
+                            .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+                            .and_then(|v| v.parse::<usize>().ok())
+                    };
+                    let (status, body) = if path == "/api/sessions/s1/messages" {
+                        let offset = param("offset").unwrap_or(0);
+                        let limit = param("limit").unwrap_or(500);
+                        let mut guard = state.lock().unwrap();
+                        let (rows, served) = &mut *guard;
+                        let page: Vec<Value> =
+                            rows.iter().skip(offset).take(limit).cloned().collect();
+                        *served += 1;
+                        if *served == compact_after {
+                            let cut = compact.min(rows.len());
+                            *rows = rows.split_off(cut);
+                        }
+                        (
+                            "200 OK",
+                            json!({ "session_id": "s1", "data": page }).to_string(),
+                        )
+                    } else {
+                        ("404 Not Found", "{}".to_string())
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        ManifestEntry {
+            model: "probe".into(),
+            url: format!("http://{addr}"),
+            key: None,
+        }
+    }
+
+    /// A transcript that holds still is read whole across pages, every row
+    /// once and in order, though each page after the first starts on the
+    /// row the one before it ended with.
+    #[tokio::test]
+    async fn a_transcript_read_in_pages_holds_every_row_once() {
+        let entry = messages_door(tool_rows(7), 0, 0).await;
+        let rows = session_rows_from(&entry, "s1", "probe", 3, 8, false)
+            .await
+            .expect("a still transcript is read whole");
+        assert_eq!(ids(&rows), (1..=7).collect::<Vec<u64>>());
+        // A transcript that ends exactly on a full page ends on the next
+        // page's one shared row.
+        let entry = messages_door(tool_rows(5), 0, 0).await;
+        let rows = session_rows_from(&entry, "s1", "probe", 3, 8, false)
+            .await
+            .expect("a still transcript is read whole");
+        assert_eq!(ids(&rows), (1..=5).collect::<Vec<u64>>());
+    }
+
+    /// A compaction between two pages moved every later row down, and the
+    /// next page by offset skipped rows the session still held live: rows 4
+    /// and 5 here, which the record stage then retired as compacted or as
+    /// never this run's. A read that sees the transcript move is no
+    /// transcript, which every caller takes as "steps keep their standing".
+    #[tokio::test]
+    async fn a_compaction_between_two_pages_is_no_transcript() {
+        let entry = messages_door(tool_rows(7), 1, 2).await;
+        assert_eq!(
+            session_rows_from(&entry, "s1", "probe", 3, 8, false).await,
+            None
+        );
+    }
+
+    /// A session longer than the page cap is not read whole, and a caller
+    /// that judges steps by their absence must not see a partial read as the
+    /// transcript: every full page answers None.
+    #[tokio::test]
+    async fn a_session_past_the_page_cap_is_not_a_transcript() {
+        let entry = messages_door(tool_rows(10), 0, 0).await;
+        assert_eq!(
+            session_rows_from(&entry, "s1", "probe", 2, 3, false).await,
+            None
+        );
+    }
 }
 
 #[cfg(test)]
