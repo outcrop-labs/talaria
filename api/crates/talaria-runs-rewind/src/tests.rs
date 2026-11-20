@@ -298,20 +298,26 @@ impl RewindWorld for World {
         rewind_id: &'a str,
         _: &'a RewindInput,
         plan: &'a RewindPlan,
-        move_to: Option<&'a str>,
     ) -> BoxFuture<'a, Result<(), String>> {
         self.log("start");
         let mut s = self.state();
-        let answer = match &s.start_err {
-            Some(e) => Err(e.clone()),
-            None => {
+        // As the real one: the ticket is read here, under the lock, and
+        // `column_move` decides.
+        let move_to = match (s.start_err.clone(), &s.ticket) {
+            (Some(e), _) => Err(e),
+            (None, Some(ticket)) => column_move(ticket),
+            (None, None) => Err("the ticket is gone".to_string()),
+        };
+        let answer = match move_to {
+            Err(e) => Err(e),
+            Ok(move_to) => {
                 assert_eq!(
                     s.hold.as_deref(),
                     Some(rewind_id),
                     "start runs under this rewind's hold"
                 );
                 if let Some(to) = move_to {
-                    s.moved.push(to.to_string());
+                    s.moved.push(to);
                 }
                 s.attempts.push(AttemptRow {
                     run_id: plan.attempt_run_id.clone(),
@@ -568,7 +574,7 @@ async fn the_stages_run_in_order_and_end_in_the_attempt() {
         world.calls(),
         [
             "source", "reach", "reserve", "cancel", "quiet", "fork", "cut", "restore", "tail",
-            "checkout", "attempt", "ticket", "start"
+            "checkout", "attempt", "start"
         ]
     );
     let StepResult::Done { result } = result else {

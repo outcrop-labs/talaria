@@ -257,8 +257,9 @@ pub trait RewindWorld: Send + Sync {
     ) -> BoxFuture<'a, Result<Checkout, String>>;
     /// The attempt row under the plan's run id, when one exists.
     fn attempt<'a>(&'a self, run_id: &'a str) -> BoxFuture<'a, Result<Option<AttemptRow>, String>>;
-    /// Insert the attempt and its job with the hold lifted and, when
-    /// `move_to` is given, move the ticket there before that commits, so a
+    /// Read the ticket under the pair lock and, unless [`column_move`]
+    /// refuses it, insert the attempt and its job with the hold lifted and
+    /// move the ticket where `column_move` says before that commits, so a
     /// failure leaves neither; then retire the source's jobs and drive the
     /// attempt. Called once, for an attempt that does not exist yet.
     fn start<'a>(
@@ -266,7 +267,6 @@ pub trait RewindWorld: Send + Sync {
         rewind_id: &'a str,
         input: &'a RewindInput,
         plan: &'a RewindPlan,
-        move_to: Option<&'a str>,
     ) -> BoxFuture<'a, Result<(), String>>;
     /// Lift this rewind's hold. Best effort; the run is already failing.
     fn lift_hold<'a>(&'a self, rewind_id: &'a str) -> BoxFuture<'a, ()>;
@@ -671,7 +671,6 @@ impl RewindWorld for Real {
         rewind_id: &'a str,
         input: &'a RewindInput,
         plan: &'a RewindPlan,
-        move_to: Option<&'a str>,
     ) -> BoxFuture<'a, Result<(), String>> {
         async move {
             let pg = self.pg();
@@ -700,6 +699,15 @@ impl RewindWorld for Real {
                         plan.attempt_run_id
                     ));
                 }
+                // The ticket as it stands now, read after the lock is taken
+                // and just before the writes: a person may have moved it
+                // while the stages ran, and a done or blocked ticket fails
+                // the start here with nothing written.
+                let ticket = self
+                    .ticket(&input.task_id)
+                    .await?
+                    .ok_or_else(|| "the ticket is gone".to_string())?;
+                let move_to = column_move(&ticket)?;
                 // THE MOVE GOES LAST, inside the transaction's window: the
                 // attempt, its job and the hold and block lifts are written
                 // first and committed only after the ticket has moved. A
@@ -766,7 +774,7 @@ impl RewindWorld for Real {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| format!("block lift: {e}"))?;
-                if let Some(status) = move_to {
+                if let Some(status) = move_to.as_deref() {
                     let redis = self.state.redis().await.ok();
                     let task_deps = TaskDeps::from_route(pg.clone(), redis);
                     talaria_tasks::update_task(

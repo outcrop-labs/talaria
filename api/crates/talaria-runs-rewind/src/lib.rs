@@ -23,12 +23,12 @@
 //   restore   the snapshot commit, and nothing past it, is fetched into a new
 //             repo in the attempt's workdir.
 //   verify    the fork ends at that row and the checkout's tree is the step's.
-//   start     the ticket is read again, the attempt and its job are inserted
-//             in one transaction with the hold lifted, the ticket is moved
-//             before that commits if it still sits in review, the source's
-//             jobs are retired, and the attempt is driven. An attempt that
-//             already exists from an earlier try ends the rewind with no
-//             other write.
+//   start     the ticket is read again under the pair lock, the attempt and
+//             its job are inserted in one transaction with the hold lifted,
+//             the ticket is moved before that commits if it still sits in
+//             review, the source's jobs are retired, and the attempt is
+//             driven. An attempt that already exists from an earlier try ends
+//             the rewind with no other write.
 //
 // AFTER ANY CRASH A RETRY CONVERGES on the same end state and touches nothing
 // that happened since. A failure lifts the hold, and discards the checkout
@@ -450,17 +450,9 @@ async fn stage(
                         plan.attempt_run_id
                     ));
                 }
-                None => {
-                    // The person may have moved the ticket since validate.
-                    let ticket = world
-                        .ticket(&input.task_id)
-                        .await?
-                        .ok_or_else(|| "the ticket is gone".to_string())?;
-                    let move_to = column_move(&ticket)?;
-                    world
-                        .start(&ctx.run.id, input, &plan, move_to.as_deref())
-                        .await?;
-                }
+                // The person may have moved the ticket since validate: start
+                // reads it again under the pair lock.
+                None => world.start(&ctx.run.id, input, &plan).await?,
             }
             Ok(StepResult::Done {
                 result: json!({
