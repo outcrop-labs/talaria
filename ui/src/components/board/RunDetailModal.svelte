@@ -4,7 +4,7 @@
   import Tabs from '@/components/ui/Tabs.svelte'
   import { Square } from '@lucide/svelte'
   import { untrack } from 'svelte'
-  import { createQuery, keepPreviousData, useQueryClient } from '@tanstack/svelte-query'
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import type { TabItem } from '@/components/ui/tabs'
   import {
     fromLineage,
@@ -152,7 +152,11 @@
       const data = query.state.data
       return data && lineageRewinding(data.attempts, data.rewinds) ? 1_000 : 5_000
     },
-    placeholderData: keepPreviousData,
+    // The rows stay up while the modal moves to a rewind's attempt, which is
+    // in the same lineage. A run from another lineage starts from the
+    // skeleton: the modal must never show, or rewind from, rows not its own.
+    placeholderData: (previous?: RunLineage) =>
+      previous?.attempts.some((a) => a.runId === runId) ? previous : undefined,
     queryFn: () => readRunLineage(qc, taskId, runId),
   }))
   // A refetch of a query with no data resets it to pending and clears its
