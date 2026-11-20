@@ -12,7 +12,6 @@
   import GeneratingOverlay from '@/components/ui/GeneratingOverlay.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import RichEditor from '@/components/ui/RichEditor.svelte'
-  import type { RichEditorHandle } from '@/components/ui/rich-editor'
   import PlanDocSkeleton from './PlanDocSkeleton.svelte'
   import { saveArtifact, useArtifact } from '@/lib/artifacts'
   import { cn } from '@/lib/cn'
@@ -27,7 +26,9 @@
   const qc = useQueryClient()
   const artifactQuery = useArtifact(() => id)
   const artifact = $derived(artifactQuery.data)
-  let editorRef = $state<RichEditorHandle | null>(null)
+  // The component itself, not the SDK's RichEditorHandle: the pane guard
+  // below asks `hasUnsavedChanges`, which the handle does not promise.
+  let editorRef = $state<RichEditor | null>(null)
   let syncing = $state(false)
   let syncErr = $state<string | null>(null)
   // The editor is uncontrolled after mount — bump to remount on an agent sync.
