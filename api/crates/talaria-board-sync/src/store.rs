@@ -75,6 +75,11 @@ pub struct SyncRow {
     pub last_run_id: Option<String>,
     pub run_problems: Vec<Problem>,
     pub connected_by: Option<String>,
+    /// Who paused the sync and when (epoch ms). Set when the state flips to
+    /// paused and cleared on resume. A credential that dies while the sync is
+    /// paused leaves them set, so a replaced token returns it to paused.
+    pub paused_by: Option<String>,
+    pub paused_ms: Option<i64>,
     pub created_ms: i64,
     pub updated_ms: i64,
 }
@@ -104,6 +109,8 @@ struct RawSync {
     last_run_id: Option<String>,
     run_problems: Value,
     connected_by: Option<String>,
+    paused_by: Option<String>,
+    paused_ms: Option<i64>,
     created_ms: i64,
     updated_ms: i64,
 }
@@ -134,6 +141,8 @@ impl From<RawSync> for SyncRow {
             last_run_id: r.last_run_id,
             run_problems: serde_json::from_value(r.run_problems).unwrap_or_default(),
             connected_by: r.connected_by,
+            paused_by: r.paused_by,
+            paused_ms: r.paused_ms,
             created_ms: r.created_ms,
             updated_ms: r.updated_ms,
         }
@@ -147,6 +156,8 @@ const SYNC_SELECT: &str = "select id::text as id, board_id::text as board_id, pr
   (trunc(extract(epoch from last_synced_at) * 1000))::bigint as last_synced_ms, \
   (trunc(extract(epoch from next_sync_at) * 1000))::bigint as next_sync_ms, \
   last_run_id::text as last_run_id, run_problems, connected_by::text as connected_by, \
+  paused_by::text as paused_by, \
+  (trunc(extract(epoch from paused_at) * 1000))::bigint as paused_ms, \
   (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
   (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms \
   from board_syncs";

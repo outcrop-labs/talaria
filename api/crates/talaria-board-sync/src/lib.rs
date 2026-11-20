@@ -273,8 +273,36 @@ pub async fn cancel_live(state: &AppState, board_id: &str, reason: &str) -> Resu
     else {
         return Ok(());
     };
+    cancel_run_id(state, &id, reason).await
+}
+
+/// Stop the board's live run if it reads ClickUp (a pause). A remap run reads
+/// nothing and applies the owner's own mapping edit, so it is left to finish.
+pub async fn cancel_live_reads(
+    state: &AppState,
+    board_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "select id::text from runs where kind = $1 and subject_id = $2 \
+           and state in ('queued', 'running', 'awaiting') \
+           and coalesce(input->>'mode', '') <> 'remap' \
+         order by created_at desc limit 1",
+    )
+    .bind(KIND)
+    .bind(board_id)
+    .fetch_optional(&state.pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    match row {
+        Some((id,)) => cancel_run_id(state, &id, reason).await,
+        None => Ok(()),
+    }
+}
+
+async fn cancel_run_id(state: &AppState, id: &str, reason: &str) -> Result<(), String> {
     let deps = run_deps(state).await?;
-    talaria_runs_run::cancel_run(&id, Some(reason.to_string()), &deps)
+    talaria_runs_run::cancel_run(id, Some(reason.to_string()), &deps)
         .await
         .map(|_| ())
         .map_err(|e| e.to_string())

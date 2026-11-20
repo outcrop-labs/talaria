@@ -17,8 +17,8 @@ code is in `api/crates/talaria-board-sync` (the engine) and
 | Action | Who |
 |---|---|
 | Read the status (`GET /api/boards/{id}/sync`) | any board member |
-| Browse ClickUp, preview, connect, change the mapping or cadence, pause, replace the credential, disconnect | a board owner |
-| Sync now, re-sync one ticket | a board owner or editor |
+| Browse ClickUp, preview, connect, change the mapping or cadence, pause and resume, replace the credential, disconnect | a board owner |
+| Sync now, re-sync one ticket | a board owner or editor, while the sync is not [paused](#pausing) |
 | See or clear the stored credential | an admin, in Admin → Secrets |
 
 ## Connecting a list
@@ -106,11 +106,29 @@ mapping says:
 When it holds a move, the ticket gets a `status-held` problem that says why. The next
 change in ClickUp asks again.
 
-One consequence is not held: a move into a done column is a done move like a person's.
-If the ticket is a step of a workchain, the chain hands on, and the next step's agents
-start as if a person had closed it. The board owner mapped that status to done and a
-person closed the task in ClickUp; map closed statuses elsewhere on a board whose
-workchains should wait for a sign-off in Talaria.
+### Workchains: only a close hands a step on
+
+Only a move into a **done** column hands a workchain step on. It is a done move like a
+person's: the chain hands on, and the next step's agents start as if a person had closed
+the ticket. The board owner mapped that status to done, and a person closed the task in
+ClickUp. On a board whose workchains should wait for a sign-off in Talaria, map closed
+statuses to another column.
+
+No other move counts as a close:
+
+- A move into a review column (a "ready for review" status), Blocked, or a working or
+  pickup column leaves the step live. Its successors stay blocked, nothing is offered to
+  their agents, nobody is told it is their turn, and the chain does not pause.
+- A task closed in ClickUp while its ticket is in review or Blocked is held, like any
+  move out of them. A person moves the ticket on, and their done hands the step on.
+- The sync cannot move a ticket to failed or cancelled, the columns that pause a chain:
+  they are not mapping targets.
+
+The rule lives in the workchain engine (`talaria_workchains::advance_workchains` hands
+on only for the board's done columns). The live test
+`board_sync_live::only_a_sync_move_into_a_done_column_hands_a_workchain_step_on`
+walks a synced step through review, a held close, Blocked, a held unblock and a working
+column, and then a close, against real work dispatch.
 
 ## What carries over
 
@@ -198,7 +216,7 @@ move a list to another board:
 The `board-sync` scheduler job runs every minute. It is a required job, so a missing
 registration refuses to arm the schedule. Each tick:
 
-- starts a run for every connection that is due;
+- starts a run for every active connection that is due (a paused one never is);
 - moves the connection's next sync out by one interval, whatever the outcome;
 - skips archived boards;
 - prunes finished sync runs older than 14 days, keeping each connection's last run.
@@ -220,6 +238,41 @@ The status (`GET /api/boards/{id}/sync`) answers:
 `POST /api/boards/{id}/sync/runs` (**Sync now**) answers the run already going, if there
 is one.
 
+## Pausing
+
+A pause **freezes** the sync. An owner pauses to fix the mapping, or to take a last
+import before archiving the board, and nothing may undo that while it holds. While the
+sync is paused, nothing reads ClickUp:
+
+- the scheduler never claims it (it claims only active connections);
+- **Sync now** (`POST …/sync/runs`) and **Re-sync from ClickUp**
+  (`POST /api/tasks/{id}/resync`) answer `409` "the ClickUp sync is paused — a board
+  owner resumes it in Board settings → Sync", for owners and editors alike;
+- pressing Pause cancels the live run that reads ClickUp, so its in-flight step stops
+  at its next await;
+- a run that raced all of that, started a moment before on any instance, stops at its
+  next step with "the sync is paused". It stops without its finish pass, so the
+  watermark stays where the last finished run left it, and the run after Resume reads
+  from there.
+
+`PUT /api/boards/{id}/sync {paused: true}` pauses and `{paused: false}` resumes. Both
+are a board owner's, the same people who configure the sync. The pause records who
+pressed it and when (`board_syncs.paused_by`, `paused_at`). The status answers them as
+`pausedBy` (`{id, name, email}`) and `pausedAt`, so the board shows "Paused by Dana Reyes ·
+5m ago" to every member. Resume clears both, turns the connection active, and sets the
+next sync one interval out.
+
+What still works while paused:
+
+- **a mapping change.** It applies through a remap run, which reads nothing from ClickUp
+  ("fixing the mapping" is a reason to pause), so the owner sees the fix at once;
+- **the schedule and the options**, which take effect on Resume. A paused sync has no next
+  sync;
+- **Replace credential.** The sync stays paused, with no next sync and no run. A sync whose
+  token died while it was paused returns to paused, not active, when the token is
+  replaced;
+- **Disconnect**, from any state.
+
 ## The credential
 
 The token is sealed with the secretbox in `board_syncs.credential_sealed`. That column is
@@ -235,8 +288,10 @@ reading any task, so a dead token is never mistaken for "every task was deleted"
   `board-sync`). A second failed run does not file another.
 
 `PUT /api/boards/{id}/sync/credential {token}` replaces the token and keeps the mapping,
-the links and the history. Clearing the credential in Admin → Secrets also puts the
-connection in `needs_credential`.
+the links and the history. The connection turns active and a sync starts, unless it was
+paused when the token died: then it returns to paused (see [Pausing](#pausing)).
+Clearing the credential in Admin → Secrets also puts the connection in
+`needs_credential`.
 
 When the token works but the list is gone, or its member can no longer see the list, the
 run stops with a `list-gone` problem and the same people get the same grouped
@@ -274,7 +329,8 @@ quiet:
   already told its own people.
 - The board gets one live event per batch, not one per ticket.
 - Workchains still advance when a ticket lands in a done column, and the next step's
-  agents start (see [What the sync will not move](#what-the-sync-will-not-move)).
+  agents start. No other sync move advances one (see
+  [Workchains: only a close hands a step on](#workchains-only-a-close-hands-a-step-on)).
 - Apps hear that a ticket was created or moved only with `notifyApps` on.
 
 Imported comments do not notify anyone and raise no unread badge. Ticket discussions are

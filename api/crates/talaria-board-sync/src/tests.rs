@@ -258,6 +258,8 @@ fn sync_row(map: &[(&str, &str)]) -> SyncRow {
         last_run_id: None,
         run_problems: vec![],
         connected_by: None,
+        paused_by: None,
+        paused_ms: None,
         created_ms: 0,
         updated_ms: 0,
     }
@@ -1108,6 +1110,73 @@ async fn a_scheduled_run_on_a_paused_sync_does_nothing() {
     let r = step(&local, &remote, &input("scheduled"), &Value::Null).await;
     assert!(matches!(r, StepResult::Done { .. }));
     assert_eq!(remote.calls(), 0);
+}
+
+/// The result a run that stopped on a pause answers.
+fn stopped_paused(r: &StepResult) -> bool {
+    matches!(r, StepResult::Done { result } if result["stopped"] == "the sync is paused")
+}
+
+#[tokio::test]
+async fn a_pause_freezes_every_run_that_reads_clickup() {
+    // Not only the schedule: a Sync now (manual) and a one-ticket re-sync stop
+    // at their first step too, before a single ClickUp call or ticket write.
+    for mode in ["scheduled", "manual", "ticket"] {
+        let local = FakeLocal::new(&[("x", "doing")]);
+        local.with(|s| s.sync.as_mut().unwrap().state = "paused".into());
+        let remote = FakeRemote::new(vec![task("a", "x", 10)]);
+        let input = json!({"syncId": "sync-1", "mode": mode, "externalId": "a"});
+        let r = step(&local, &remote, &input, &Value::Null).await;
+        assert!(stopped_paused(&r), "{mode}: {r:?}");
+        assert_eq!(remote.calls(), 0, "{mode} read ClickUp while paused");
+        assert!(local.ticket_of("a").is_none(), "{mode} wrote a ticket");
+        assert!(
+            local.with(|s| s.finishes.is_empty()),
+            "{mode} ran its finish pass, which would move the watermark"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_run_under_way_when_the_sync_is_paused_stops_at_its_next_step() {
+    // A Sync now that had already saved a position mid-walk: the owner pauses,
+    // and the step after it stops instead of carrying on from there.
+    let local = FakeLocal::new(&[("x", "doing")]);
+    let remote = FakeRemote::new(vec![task("a", "x", 10)]);
+    let cp = json!({"pass": "incremental", "page": 0, "startedAtMs": 1, "sweep": true});
+    local.with(|s| s.sync.as_mut().unwrap().state = "paused".into());
+    let r = step(&local, &remote, &input("manual"), &cp).await;
+    assert!(stopped_paused(&r), "{r:?}");
+    assert_eq!(remote.calls(), 0);
+    assert!(local.ticket_of("a").is_none());
+}
+
+#[tokio::test]
+async fn a_mapping_edit_still_applies_while_the_sync_is_paused() {
+    // The remap is the owner's own edit and reads nothing from ClickUp: a
+    // pause to fix the mapping shows the fix at once, and resuming reads
+    // ClickUp again.
+    let local = FakeLocal::new(&[]);
+    local.with(|s| {
+        let o = &mut s.sync.as_mut().unwrap().options;
+        o.comments = false;
+        o.attachments = false;
+    });
+    let remote = FakeRemote::new(vec![task("a", "qa", 10)]);
+    drive(&local, &remote, &input("manual")).await;
+    assert_eq!(local.ticket_of("a").unwrap().status, "inbox");
+    local.with(|s| {
+        let sync = s.sync.as_mut().unwrap();
+        sync.state = "paused".into();
+        sync.status_map.insert("qa".into(), "doing".into());
+        sync.map_version = 2;
+        sync.remap_pending = true;
+    });
+    let calls = remote.calls();
+    let (results, _) = drive(&local, &remote, &input("remap")).await;
+    assert!(!results.iter().any(stopped_paused), "{results:?}");
+    assert_eq!(remote.calls(), calls, "a remap makes no ClickUp calls");
+    assert_eq!(local.ticket_of("a").unwrap().status, "doing");
 }
 
 #[test]

@@ -281,7 +281,15 @@ where
             result: json!({"stopped": "the board was disconnected from ClickUp"}),
         });
     }
-    if sync.state == "paused" && input.mode == Mode::Scheduled {
+    // A PAUSE FREEZES THE SYNC: every run that reads ClickUp stops at its next
+    // step — a scheduled one, a Sync now, a one-ticket re-sync — including one
+    // that started a moment before the owner pressed Pause (ops.rs refuses new
+    // ones and cancels the live one; this catches the run that raced both, on
+    // any instance). It stops without its finish pass, so the watermark stays
+    // where the last finished run left it and the run after Resume reads from
+    // there. A remap reads nothing from ClickUp and applies the owner's own
+    // mapping edit, so it still runs.
+    if sync.state == "paused" && input.mode != Mode::Remap {
         return Ok(StepResult::Done {
             result: json!({"stopped": "the sync is paused"}),
         });

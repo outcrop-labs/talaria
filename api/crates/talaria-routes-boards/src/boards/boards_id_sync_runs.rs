@@ -1,7 +1,8 @@
 // POST /api/boards/{id}/sync/runs — Sync now: start a sync of the board's
 // ClickUp list (it always reconciles every task), or answer the run already
 // going. Owner or editor. Answers {runId, live}: `live` true when the run
-// was already under way. 409 while the sync waits for a new credential.
+// was already under way. 409 while the sync waits for a new credential, and
+// while it is paused (an owner resumes it).
 
 use axum::Json;
 use axum::extract::{Path, State};

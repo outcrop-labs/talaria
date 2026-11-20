@@ -1,18 +1,26 @@
 // The ClickUp sync's board pieces that hold no query, server-rendered: the
 // status mapping table (every row offers every column, says what an
 // agent-start or done target means, and names the intake for an unmapped row)
-// and the remote-state chip on cards, rows and the ticket. The light CI ui job
+// and the remote-state chip on cards, rows and the ticket, plus the board's
+// sync chip as a phone-width row lays it out and the Segmented 24px floor the
+// board's view switcher rides on. The light CI ui job
 // runs this on every pull request; the browser run against a ClickUp
 // stand-in is in the pull request.
 import { render } from 'svelte/server'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@tanstack/svelte-query', () => ({ createQuery: vi.fn(), useQueryClient: vi.fn() }))
+// The chip's problem list links tickets through the router, which reads
+// `location` at import; nothing here navigates.
+vi.mock('sv-router', () => ({ searchParams: new URLSearchParams() }))
+vi.mock('@/router', () => ({ navigate: vi.fn() }))
 
+import BoardSyncChip from './BoardSyncChip.svelte'
 import RemoteStateChip from './RemoteStateChip.svelte'
 import SyncMappingTable from './SyncMappingTable.svelte'
+import Segmented from '@/components/ui/Segmented.svelte'
 import { SETTINGS_TABS, settingsTabOf, ticketSearch } from './board-settings'
-import type { MappingRow, SyncTarget } from '@/lib/board-sync'
+import type { BoardSync, MappingRow, SyncTarget } from '@/lib/board-sync'
 
 const targets: SyncTarget[] = [
   { key: 'inbox', label: 'Inbox', category: 'open', agentStart: false, terminal: false },
@@ -88,5 +96,56 @@ describe('a ticket opened from the sync chip or the sync tab', () => {
     expect(ticketSearch('?v=abc&status=open')).toBe('v=abc&status=open')
     expect(ticketSearch('settings=sync')).toBe('')
     expect(ticketSearch('')).toBe('')
+  })
+})
+
+const pausedSync = {
+  id: 's1',
+  provider: 'clickup',
+  state: 'paused',
+  listId: 'l1',
+  listPath: 'Engineering / Sprint',
+  listUrl: null,
+  workspaceId: null,
+  account: null,
+  credentialHint: 'ABCD',
+  statusMap: {},
+  mapVersion: 0,
+  remapPending: false,
+  options: { includeClosed: false, comments: true, attachments: true, notifyApps: false },
+  intervalMinutes: 60,
+  lastSyncedAt: null,
+  nextSyncAt: null,
+  lastSweepAt: null,
+  overdue: false,
+  schedulerArmed: true,
+  liveRun: null,
+  lastRun: null,
+  connectedBy: null,
+  pausedBy: { id: 'u1', name: 'Dana Reyes', email: null },
+  pausedAt: null,
+  warnings: [],
+  problems: [],
+  problemCount: 3,
+  statuses: [],
+  remoteStates: {},
+  createdAt: '2026-11-20T12:00:00Z',
+} satisfies BoardSync
+
+describe('BoardSyncChip', () => {
+  it('names a paused sync, and shrinks with its row so a phone cuts the label, never the chip', () => {
+    const body = render(BoardSyncChip, { props: { boardId: 'b1', role: 'viewer', sync: pausedSync } }).body
+    expect(body).toContain('aria-label="ClickUp sync: paused, 3 problems"')
+    // The row's flex item may shrink below the label; the button caps at the
+    // item's width and its label truncates, the problem count kept.
+    expect(body).toMatch(/<div class="min-w-0 max-w-full" data-sync-chip-root/)
+    expect(body).toMatch(/<button[^>]*class="[^"]*\bmin-w-0\b[^"]*max-w-\[min\(16rem,100%\)\]/)
+  })
+})
+
+describe('Segmented', () => {
+  it('keeps an sm cell at a 24px target even when its label is an icon', () => {
+    const body = render(Segmented, { props: { options: [{ id: 'a', label: 'A' }], value: 'a', onChange: () => {} } }).body
+    expect(body).toMatch(/<button[^>]*class="[^"]*\bmin-h-6\b/)
   })
 })

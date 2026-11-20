@@ -51,7 +51,9 @@
       class={cn(
         'relative select-none rounded font-mono uppercase tracking-[0.05em] transition-colors',
         focusRing,
-        size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : size === 'md' ? 'px-3 py-[7px] text-[10px] leading-4' : 'px-2.5 py-1 text-[10px] leading-4',
+        // `sm` never drops under a 24px target (WCAG 2.5.8): an icon label is a
+        // block svg shorter than the text line, which left the cell 22px tall.
+        size === 'xs' ? 'px-2 py-0.5 text-[10px] leading-3' : size === 'md' ? 'px-3 py-[7px] text-[10px] leading-4' : 'min-h-6 px-2.5 py-1 text-[10px] leading-4',
         voice === 'sans' &&
           cn(
             sansVoice,

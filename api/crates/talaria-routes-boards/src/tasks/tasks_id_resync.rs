@@ -3,8 +3,8 @@
 // the sync's column guards, priority, dates; ClickUp's labels and human
 // assignees replace the ticket's; agent assignees are never touched). Owner or
 // editor on the ticket's board, for a ticket synced by the board's live
-// connection. 409 while a sync is already running on the board. Answers
-// {runId}.
+// connection. 409 while a sync is already running on the board, while the
+// sync waits for a new credential, and while it is paused. Answers {runId}.
 
 use axum::Json;
 use axum::extract::{Path, State};

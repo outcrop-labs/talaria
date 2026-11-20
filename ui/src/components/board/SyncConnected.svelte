@@ -23,6 +23,7 @@
     mappingRows,
     mappingTargets,
     lastRunNote,
+    pausedHint,
     replaceSyncCredential,
     sameMap,
     statusMapOf,
@@ -47,14 +48,18 @@
   // ran and runs next, what it could not do (the problems, each with its fix),
   // the status mapping, what carries over, the cadence, and the credential and
   // disconnect doors. An owner changes all of it; an editor reads it and can
-  // Sync now (the server refuses an editor everything else).
+  // Sync now (the server refuses an editor everything else). A pause freezes
+  // the sync — no schedule, no Sync now, no re-sync — so while paused the panel
+  // says who paused it and when, Sync now is off, and the owner's button reads
+  // Resume. The mapping, the schedule and Disconnect still work.
   let { board, sync }: { board: Board; sync: BoardSync } = $props()
 
   const qc = useQueryClient()
   const clock = useClock()
   const isOwner = $derived(board.role === 'owner')
   const canSync = $derived(board.role === 'owner' || board.role === 'editor')
-  const view = $derived(chipView(sync, clock.now))
+  const view = $derived(chipView(sync, clock.now, { canResume: isOwner }))
+  const paused = $derived(sync.state === 'paused')
 
   const statusesQuery = useBoardStatuses(() => board.id)
   const targets = $derived(mappingTargets(statusesQuery.data ?? []))
@@ -115,8 +120,15 @@
   const setCadence = (id: CadenceId) =>
     update({ intervalMinutes: cadenceMinutes(id) }, 'cadence', 'Could not change the schedule')
 
-  const setPaused = (paused: boolean) =>
-    update({ paused }, 'pause', paused ? 'Could not pause the sync' : 'Could not resume the sync')
+  async function setPaused(pause: boolean) {
+    if (await update({ paused: pause }, 'pause', pause ? 'Could not pause the sync' : 'Could not resume the sync')) {
+      pushToast(
+        pause
+          ? { title: 'Sync paused', body: 'Nothing syncs from ClickUp until you resume it — not the schedule, Sync now or a ticket’s re-sync.', tone: 'success' }
+          : { title: 'Sync resumed', body: 'The schedule is back on, and Sync now works again.', tone: 'success' },
+      )
+    }
+  }
 
   async function runNow() {
     const r = await act('now', () => syncNow(board.id), 'Could not start a sync')
@@ -181,16 +193,23 @@
       <span class="font-sans text-sm font-medium text-fg" data-sync-headline>ClickUp · {view.text}</span>
       <span class="ml-auto flex items-center gap-2">
         {#if isOwner && sync.state !== 'needs_credential'}
-          <Button variant="ghost" size="sm" disabled={!!busy} onclick={() => void setPaused(sync.state !== 'paused')}>
-            {sync.state === 'paused' ? 'Resume' : 'Pause'}
+          <Button
+            variant={paused ? 'outline' : 'ghost'}
+            size="sm"
+            disabled={!!busy}
+            title={paused ? undefined : 'Freeze the sync: no scheduled sync, no Sync now and no ticket re-sync until you resume it'}
+            data-sync-pause={paused ? 'resume' : 'pause'}
+            onclick={() => void setPaused(!paused)}
+          >
+            {busy === 'pause' ? (paused ? 'Resuming…' : 'Pausing…') : paused ? 'Resume' : 'Pause'}
           </Button>
         {/if}
         {#if canSync}
           <Button
             variant="outline"
             size="sm"
-            disabled={!!busy || !!sync.liveRun || sync.state === 'needs_credential'}
-            title={sync.state === 'needs_credential' ? 'The sync needs a new token first' : sync.state === 'paused' ? 'Paused holds only the schedule — Sync now still runs' : undefined}
+            disabled={!!busy || !!sync.liveRun || sync.state === 'needs_credential' || paused}
+            title={sync.state === 'needs_credential' ? 'The sync needs a new token first' : paused ? pausedHint(sync, clock.now, isOwner) : undefined}
             onclick={() => void runNow()}
           >
             {sync.liveRun ? 'Syncing…' : 'Sync now'}
@@ -228,7 +247,7 @@
       </dd>
       <dt class="text-muted">Next sync</dt>
       <dd class="text-fg" title={fullTime(sync.nextSyncAt)}>
-        {#if sync.state === 'paused'}paused{:else if sync.intervalMinutes == null}only on Sync now{:else if !sync.schedulerArmed}scheduled syncs are off on this instance{:else}{until(sync.nextSyncAt, clock.now) ?? '—'}{/if}
+        {#if paused}none while paused{:else if sync.intervalMinutes == null}only on Sync now{:else if !sync.schedulerArmed}scheduled syncs are off on this instance{:else}{until(sync.nextSyncAt, clock.now) ?? '—'}{/if}
       </dd>
       {#if sync.liveRun}
         <dt class="text-muted">Running</dt>
@@ -338,8 +357,8 @@
     </div>
   {:else}
     <p class="font-sans text-xs text-muted">
-      Only a board owner changes the mapping, the schedule or the credential, or disconnects. You can Sync now and re-sync a
-      ticket from its page.
+      Only a board owner changes the mapping, the schedule or the credential, pauses or resumes, or disconnects. You can Sync
+      now and re-sync a ticket from its page, except while the sync is paused.
     </p>
   {/if}
   {#if busy && busy !== 'now'}<span class="sr-only" aria-live="polite">Saving</span>{/if}

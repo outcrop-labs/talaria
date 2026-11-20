@@ -8,7 +8,10 @@
 //            {sync, runId}; seals the token, validates the mapping, starts the
 //            first sync — owner. 409 when the board is already connected.
 //   PUT    edit {statusMap?, options?, intervalMinutes?, paused?} → {sync}; a
-//            mapping change re-places what the old mapping placed — owner.
+//            mapping change re-places what the old mapping placed; `paused`
+//            true freezes the sync (no scheduled run, Sync now or re-sync
+//            until it is resumed, and the live run is stopped), false
+//            resumes it — owner.
 //   DELETE disconnect → {ok}: future syncs stop; every imported ticket stays,
 //            editable, owned by Talaria — owner.
 // The token is never logged and never answered; the projection carries its
@@ -22,7 +25,7 @@ use serde_json::{Value, json};
 use talaria_board_sync::mapping::StatusMap;
 use talaria_board_sync::ops::{self, ConnectInput, OpError, UpdateInput};
 use talaria_board_sync::store::SyncOptions;
-use talaria_body::{parse, string_member};
+use talaria_body::{optional_boolean_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -217,17 +220,15 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let paused = match obj.get("paused") {
-        None => None,
-        Some(v) => match v.as_bool() {
-            Some(b) => Some(b),
-            None => {
-                return Ok(house_error(
-                    StatusCode::BAD_REQUEST,
-                    "paused must be true or false",
-                ));
-            }
-        },
+    // true freezes the sync until an owner resumes it; false resumes it.
+    let paused = match optional_boolean_member(obj, "paused") {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "paused must be true or false",
+            ));
+        }
     };
     let input = UpdateInput {
         status_map,

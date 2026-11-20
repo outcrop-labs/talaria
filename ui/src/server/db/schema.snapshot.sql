@@ -549,6 +549,8 @@ CREATE TABLE public.board_syncs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     disconnected_at timestamp with time zone,
+    paused_by uuid,
+    paused_at timestamp with time zone,
     CONSTRAINT board_syncs_provider_check CHECK ((provider = 'clickup'::text)),
     CONSTRAINT board_syncs_state_check CHECK ((state = ANY (ARRAY['active'::text, 'paused'::text, 'needs_credential'::text, 'disconnected'::text])))
 );
@@ -2649,6 +2651,8 @@ ALTER TABLE ONLY public.board_syncs
     ADD CONSTRAINT board_syncs_connected_by_fkey FOREIGN KEY (connected_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.board_syncs
     ADD CONSTRAINT board_syncs_disconnected_by_fkey FOREIGN KEY (disconnected_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.board_syncs
+    ADD CONSTRAINT board_syncs_paused_by_fkey FOREIGN KEY (paused_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.board_templates
     ADD CONSTRAINT board_templates_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_templates

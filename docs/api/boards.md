@@ -373,6 +373,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync.rs`](../../
 | `statusMap` | `status_map` |  |
 | `options` | `options` |  |
 | `intervalMinutes` | `interval` |  |
+| `paused` | `bool?` | true freezes the sync until an owner resumes it; false resumes it. |
 
 ## `/api/boards/{id}/sync/browse`
 
@@ -442,7 +443,8 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_runs.rs`](.
 > POST /api/boards/{id}/sync/runs — Sync now: start a sync of the board's
 > ClickUp list (it always reconciles every task), or answer the run already
 > going. Owner or editor. Answers {runId, live}: `live` true when the run
-> was already under way. 409 while the sync waits for a new credential.
+> was already under way. 409 while the sync waits for a new credential, and
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
