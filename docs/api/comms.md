@@ -212,6 +212,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/channels_id_messages.rs`](..
 | `content` | `string(0, 20000)` |  |
 | `attachmentIds` | `uuid[]?(10)` |  |
 | `threadRootId` | `uuid?` |  |
+| `drafted` | `bool?` | The words were the agent's (an ask option or tool chip the person clicked): marked on the row, never taken as the person's own ask. |
 
 ## `/api/channels/{id}/messages/{msgId}`
 
@@ -416,15 +417,16 @@ Source: [`api/crates/talaria-routes-comms/src/comms/chat.rs`](../../api/crates/t
 | `queue` | `bool?` |  |
 | `focus` | `focus` | { kind: artifact|google, id, title? } or null — the file open in the teammate's pane; read on work turns only |
 | `turnId` | `uuid?` |  |
+| `drafted` | `bool?` | The words were the agent's (an ask option or tool chip the person clicked): marked on the row, never taken as the person's own ask. |
 
 ## `/api/chat/chips/approvals/{id}`
 
 Source: [`api/crates/talaria-routes-comms/src/comms/chips_approvals_id.rs`](../../api/crates/talaria-routes-comms/src/comms/chips_approvals_id.rs)
 
 > POST /api/chat/chips/approvals/{id} — approve or deny a chip.
-> Google sends execute through the existing confirm-send. Ticket moves apply
-> as the person who approved. Either way the chip that follows names the
-> tools that approval unlocked. An agent's own approval request (kind
+> Google sends execute through the existing confirm-send. Ticket moves (a
+> refused `triage_ticket` → `ticket_move`, a refused `move_ticket` →
+> `ticket_board_move`) apply as the person who approved, and are THE BOARD'S
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -553,7 +555,7 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_files.rs`](
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{kind, files}` | 200, 404 | — |
 
-**GET** — The session's files, oldest first appearance first: every Talaria document and Google file the conversation's chips name (`touched`, with `lastTouchedAt` the newest message naming it), then the teammate's pins (`pinned`), then a legacy work session's living document (`living`). Artifacts the caller cannot read are left out; at most 100 files.
+**GET** — The session's files, oldest first appearance first: every Talaria document and Google file the conversation's chips name (`touched`, with `lastTouchedAt` the newest message naming it and `touchedFor` the person that turn was for), then the teammate's pins (`pinned`), then a legacy work session's living document (`living`). Artifacts the caller cannot read are left out; at most 100 files.
 
 ## `/api/conversations/{id}/members`
 

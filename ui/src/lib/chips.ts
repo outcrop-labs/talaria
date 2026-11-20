@@ -174,8 +174,8 @@ export function toolsUnlockedBy(kind: string): string[] {
       return ['move_google_file']
     case 'drive_rename':
       return ['rename_google_file']
-    case 'ticket_move':
-      return ['triage_ticket']
+    // A ticket move (`ticket_move`, `ticket_board_move`) unlocks nothing: the
+    // approval IS the move, made as the person who approved it.
     case 'board_access':
       return ['join_board']
     default:

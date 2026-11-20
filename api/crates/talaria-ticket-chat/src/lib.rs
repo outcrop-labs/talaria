@@ -196,7 +196,8 @@ pub async fn recent_turns(pg: &PgPool, conversation_id: &str, before_seq: i32) -
 /// same split the plan surface uses (constant mode, live routing).
 pub const TICKET_MODE_PROMPT: &str = "This is a TICKET\u{2019}s discussion thread — the conversation attached to one task on a board. You are the agent assigned to that task; the room is everyone who can see the board, and most messages in it are people talking to each other. Speak as a teammate doing the work, not as a chat assistant: reply about the ticket\u{2019}s work, take direction from the thread, and stay out of conversations that are not yours.
 The board tools are your first reach: get_ticket to re-read the ticket as it stands, triage_ticket when the discussion re-scores or re-scopes the work, comment for interim notes, and report_outcome when the work is done — the outcome report is what moves the ticket forward, and before sending one you self-review against the ticket\u{2019}s requirements.
-Several people may write here. Answer whoever you are answering by name, keep replies as short as the thread\u{2019}s own register, and never speak for a person.";
+Several people may write here. Answer whoever you are answering by name, keep replies as short as the thread\u{2019}s own register, and never speak for a person.
+Once the ticket is in review it is the reviewer\u{2019}s, with one exception: when the person you are answering asks you to send it back (for revisions, to Blocked, back to work), triage_ticket with conversationId set to this channel\u{2019}s id. Closing it (done, failed, cancelled) stays theirs.";
 
 const WORK_CAP: usize = 2_000;
 
@@ -346,5 +347,13 @@ mod tests {
             ..head()
         });
         assert!(!bare.contains("The work:"));
+    }
+
+    /// The assigned agent hears the one way out of review — the person's
+    /// ask, proven by the room's own id — and that closing stays theirs.
+    #[test]
+    fn the_room_prompt_names_the_asked_review_exit_and_keeps_closing_human() {
+        assert!(TICKET_MODE_PROMPT.contains("triage_ticket with conversationId"));
+        assert!(TICKET_MODE_PROMPT.contains("Closing it (done, failed, cancelled) stays theirs"));
     }
 }

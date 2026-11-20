@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 
 use talaria_channels::{
-    ChannelMessageWire, insert_channel_message, list_channel_agents, list_channel_members,
+    ChannelMessageWire, insert_streaming_reply, list_channel_agents, list_channel_members,
     list_channel_messages, list_task_room_agents, list_task_room_members, list_thread_messages,
     set_channel_message_guard, update_channel_message,
 };
@@ -799,6 +799,24 @@ pub fn system_prompt(
     s
 }
 
+/// The channel turn's twin of the chat door's conversation line
+/// (talaria-chat-persist `conversation_line`): the id the toolkit's
+/// `conversationId` takes in a channel. With it a chip lands in this channel
+/// rather than another thread the agent is in, and a move out of review that
+/// a person here asked for can be proven (talaria-tasks `asked`). `todo` is
+/// left out: a plan belongs to a chat, and its door refuses a channel.
+pub fn channel_line(channel_id: &str) -> Value {
+    json!({
+        "role": "system",
+        "content": format!(
+            "THIS CHANNEL'S ID: {channel_id}. When a tool takes a conversationId (ask, \
+             expose_tools, triage_ticket, move_ticket), pass exactly this value so what you send \
+             lands in this channel. For triage_ticket and move_ticket it is how a move out of \
+             review that the person you are answering asked for is proven."
+        ),
+    })
+}
+
 // ── Task rooms ────────────────────────────────────────────────────────────────
 
 /// The register a merely @mentioned agent speaks in inside a ticket room —
@@ -808,7 +826,8 @@ pub fn system_prompt(
 /// an assignment.
 const ROOM_NOTE: &str = "This is a TICKET\u{2019}s discussion room — the conversation attached to one task on a board. Someone @mentioned you; the room is everyone who can see the board, and most messages in it are people talking to each other. Speak as a teammate doing the work, not as a chat assistant: reply about the ticket\u{2019}s work, and stay out of conversations that are not yours.
 The board tools are your first reach: get_ticket to re-read the ticket as it stands, and comment for interim notes.
-Several people may write here. Answer whoever you are addressing by name, keep replies as short as the thread\u{2019}s own register, and never speak for a person.";
+Several people may write here. Answer whoever you are addressing by name, keep replies as short as the thread\u{2019}s own register, and never speak for a person.
+If the person you are answering asks you to send this ticket back out of review (for revisions, to Blocked, back to work), you may: triage_ticket with conversationId set to this channel\u{2019}s id. Closing it (done, failed, cancelled) stays theirs.";
 
 /// A task room's seasoning for the system prompt: which ticket the room is
 /// about, and the register to speak in. The ASSIGNED agent gets the chat
@@ -885,7 +904,7 @@ async fn recent_room_turns(pg: &PgPool, channel_id: &str, before_seq: i32) -> Ve
 ///      unprompted agent speech is wrong — #announcements, a customer channel
 ///      — opts out without the capability being turned off everywhere.
 ///   2. A sender that is not a person. Nothing reaches here from an agent
-///      today (an agent's reply is written through `insert_channel_message`,
+///      today (an agent's reply is written through `insert_streaming_reply`,
 ///      not through the POST route), and this is the belt-and-braces that
 ///      keeps it that way if a future caller changes.
 ///   3. Something to judge. A room with no agents, or an empty message, has
@@ -972,6 +991,7 @@ pub async fn trigger_agent_replies(
     channel_name: &str,
     content: &str,
     attachments: usize,
+    message_id: &str,
     message_seq: i32,
     thread_root_id: Option<&str>,
     sender: Option<SenderIdentity>,
@@ -1120,17 +1140,12 @@ pub async fn trigger_agent_replies(
                 return;
             }
         };
-        let row = insert_channel_message(
-            deps,
-            channel_id,
-            "agent",
-            &m.model,
-            "",
-            "streaming",
-            &json!([]),
-            thread_root_id,
-        )
-        .await;
+        // The reply carries the message it answers — the one this pass was
+        // started for, not whatever landed while it was being decided — so
+        // "the person this turn answers" is never a guess (talaria-chips
+        // `live_turn`).
+        let row =
+            insert_streaming_reply(deps, channel_id, &m.model, thread_root_id, message_id).await;
         let row = match row {
             Ok(r) => r,
             Err(e) => {
@@ -1180,6 +1195,9 @@ pub async fn trigger_agent_replies(
             if let Some(sender) = &sender {
                 messages.push(talaria_sender_identity::sender_identity_message(sender));
             }
+            // The thread's own id, for the tools that address "the thread
+            // you are answering" — the chat door's conversation line, here.
+            messages.push(channel_line(&channel_id));
             messages.extend(transcript);
             stream_reply(
                 &task_deps,
@@ -1436,5 +1454,31 @@ mod tests {
         assert_eq!(clipped.chars().count(), 201);
         assert!(clipped.ends_with('…'));
         assert_eq!(clip_body(&"y".repeat(200)), "y".repeat(200));
+    }
+
+    /// Every channel turn names its own channel as the thread the toolkit's
+    /// `conversationId` takes — the line an agent's asked review exit is
+    /// proven against — and never offers `todo`, whose door refuses channels.
+    #[test]
+    fn a_channel_turn_names_its_channel_for_conversation_id() {
+        let line = channel_line("22f1e3a0-0000-4000-8000-000000000001");
+        assert_eq!(line["role"], "system");
+        let text = line["content"].as_str().unwrap_or_default();
+        assert!(
+            text.contains("22f1e3a0-0000-4000-8000-000000000001"),
+            "{text}"
+        );
+        for tool in ["conversationId", "triage_ticket", "move_ticket"] {
+            assert!(text.contains(tool), "{tool}: {text}");
+        }
+        assert!(!text.contains("todo"), "{text}");
+    }
+
+    /// The room note tells a mentioned agent it may send the ticket back on
+    /// the person's word, and that closing stays theirs.
+    #[test]
+    fn the_room_note_says_an_ask_may_send_a_ticket_back_but_never_close_it() {
+        assert!(ROOM_NOTE.contains("conversationId"));
+        assert!(ROOM_NOTE.contains("Closing it (done, failed, cancelled) stays theirs"));
     }
 }

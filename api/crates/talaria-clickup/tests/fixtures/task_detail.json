@@ -1,0 +1,56 @@
+{
+  "id": "86a1b2c3d",
+  "custom_id": "PROJ-7",
+  "name": "Ship the importer",
+  "markdown_description": "**Bold** plan",
+  "status": { "status": "in progress", "color": "#4194f6", "orderindex": 1, "type": "custom" },
+  "date_created": "1764000000000",
+  "date_updated": "1766000000000",
+  "archived": false,
+  "assignees": [],
+  "tags": [],
+  "priority": null,
+  "list": { "id": "901100" },
+  "locations": [ { "id": "901999", "name": "Roadmap" } ],
+  "url": "https://app.clickup.com/t/86a1b2c3d",
+  "attachments": [
+    {
+      "id": "c1f0a2b3-1111-4c4c-9d9d-aaaaaaaaaaaa.pdf",
+      "date": "1765500000000",
+      "title": "plan.pdf",
+      "type": 1,
+      "source": 1,
+      "version": 0,
+      "extension": "pdf",
+      "thumbnail_small": null,
+      "thumbnail_large": null,
+      "is_folder": null,
+      "mimetype": "application/pdf",
+      "hidden": false,
+      "parent_id": "86a1b2c3d",
+      "size": 48213,
+      "total_comments": 0,
+      "resolved_comments": 0,
+      "user": { "id": 183, "username": "Dana Reyes" },
+      "deleted": false,
+      "url": "https://t9011.p.clickup-attachments.com/t9011/c1f0a2b3/plan.pdf"
+    },
+    {
+      "id": "c1f0a2b3-2222-4c4c-9d9d-bbbbbbbbbbbb.mov",
+      "title": "design.mov",
+      "extension": "mov",
+      "mimetype": "video/quicktime",
+      "size": "222298112",
+      "deleted": false,
+      "url": "https://t9011.p.clickup-attachments.com/t9011/c1f0a2b4/design.mov"
+    },
+    {
+      "id": "c1f0a2b3-3333-4c4c-9d9d-cccccccccccc.png",
+      "title": "gone.png",
+      "mimetype": "image/png",
+      "size": 10,
+      "deleted": true,
+      "url": "https://t9011.p.clickup-attachments.com/t9011/c1f0a2b5/gone.png"
+    }
+  ]
+}

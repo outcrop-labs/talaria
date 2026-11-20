@@ -779,6 +779,8 @@ pub async fn open_notice(
             created_by: UPKEEP_ACTOR,
             status: pickup.as_deref(),
             mention_text: None,
+            external_key: None,
+            quiet: false,
         },
     )
     .await

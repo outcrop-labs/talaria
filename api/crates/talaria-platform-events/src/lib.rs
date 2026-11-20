@@ -45,7 +45,10 @@ pub enum PlatformEvent {
     /// A ticket moved from one column to another — however it moved: a
     /// person's drag, promotion by assignment, an agent's status write, a
     /// review's sign-off or rejection. `closed` says the column it landed in
-    /// is terminal on its board (a done column, or failed/cancelled).
+    /// is terminal on its board (a done column, or failed/cancelled). A board
+    /// sync's mirrored move — and its imported ticket, for TicketCreated — is
+    /// emitted only when that board's connection says apps should hear it
+    /// (talaria-board-sync's `notifyApps`).
     TicketMoved {
         ticket_id: String,
         board_id: String,

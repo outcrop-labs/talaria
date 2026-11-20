@@ -73,8 +73,19 @@ fn named_session(body: &serde_json::Value) -> Option<&str> {
 /// straight onto a chip's label or detail — and a chip is the one thing here
 /// that PERSISTS, on the message row, and renders in the chat for everyone
 /// who can read the turn. Scrub first, then recognize.
+///
+/// AND RECOGNIZE THE TOOLKIT'S OWN NAME AND ANSWER. The plugin posts the name
+/// Hermes registered the tool under — `mcp__talaria__create_document` — and
+/// the answer inside Hermes' `{"result": "…"}` envelope; the chip reader keys
+/// on `create_document` and reads the answer's own fields. Without both a
+/// document an agent created never reached the session's files
+/// (`bare_tool_name`, `mcp_result_text`).
 fn chips_for(tool: &str, args: &str, result: &str) -> Vec<serde_json::Value> {
-    talaria_chips::chips_from_tool(tool, &scrub(args), &scrub(result))
+    talaria_chips::chips_from_tool(
+        talaria_chips::bare_tool_name(tool),
+        &scrub(args),
+        &scrub(&talaria_chips::mcp_result_text(result)),
+    )
 }
 
 pub async fn post(
@@ -366,5 +377,97 @@ mod tests {
         // does not drop the page.
         assert_eq!(chips[0]["href"], "https://example.com/a");
         assert_eq!(chips[0]["label"], "token [redacted:key] works");
+    }
+
+    /// A WRITER REACHES THIS DOOR UNDER THE NAME HERMES GAVE IT. Seen on a
+    /// live stack: `mcp__talaria__create_document` created the document and
+    /// landed no chip, so it never opened in the Work pane.
+    #[test]
+    fn a_prefixed_toolkit_writer_still_lands_its_document_chip() {
+        let id = "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2";
+        let answer =
+            format!(r#"{{"artifact":{{"id":"{id}","title":"Launch plan","kind":"doc"}}}}"#);
+        // What the plugin actually posts: Hermes' envelope around the answer.
+        let enveloped =
+            serde_json::to_string(&serde_json::json!({ "result": answer })).expect("plain data");
+        for (name, result) in [
+            ("create_document", &answer),
+            ("mcp__talaria__create_document", &answer),
+            ("mcp__talaria__create_document", &enveloped),
+        ] {
+            let chips = chips_for(name, r#"{"title":"Launch plan"}"#, result);
+            assert!(
+                chips
+                    .iter()
+                    .any(|c| c["href"] == format!("/artifacts?a={id}")),
+                "{name} {result}: {chips:?}"
+            );
+        }
+    }
+
+    /// What the plugin posts, for an answer the toolkit gave: the name Hermes
+    /// registered and the `{"result": …}` envelope around the toolkit's text.
+    fn as_hermes_posts(tool: &str, answer: &serde_json::Value) -> (String, String) {
+        let text = serde_json::to_string_pretty(answer).expect("plain data");
+        let enveloped = serde_json::to_string(&json!({ "result": text })).expect("plain data");
+        (format!("mcp__talaria__{tool}"), enveloped)
+    }
+
+    /// READING OUT OF THE ENVELOPE MUST NOT OPEN WHAT A READER FOUND. Once
+    /// the envelope is unwrapped, every link in every toolkit answer reaches
+    /// the chip reader — and a document chip is a file of the session, which
+    /// the pane lists and brings forward. A knowledge search whose hits point
+    /// at documents lands none of them.
+    #[test]
+    fn an_enveloped_knowledge_search_opens_none_of_the_documents_it_found() {
+        let hits: Vec<serde_json::Value> = [
+            "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2",
+            "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+            "7e2a1d90-5c34-4b6f-8a11-2d4e9f0b3c77",
+        ]
+        .iter()
+        .map(|id| {
+            json!({
+                "collection": "artifacts",
+                "sourceType": "artifact",
+                "sourceId": id,
+                "title": "A document",
+                "snippet": "what it says",
+                "href": format!("/artifacts?a={id}"),
+            })
+        })
+        .collect();
+        let (name, result) = as_hermes_posts("search_knowledge", &json!({ "hits": hits }));
+        let chips = chips_for(&name, r#"{"query":"launch"}"#, &result);
+        assert!(chips.iter().all(|c| c["entity"] != "document"), "{chips:?}");
+    }
+
+    /// Nor does a ticket listing land one link per ticket it returned.
+    #[test]
+    fn an_enveloped_ticket_listing_lands_no_chip_per_ticket() {
+        let board = "b7c1d2e3-0000-4000-8000-000000000001";
+        let tasks: Vec<serde_json::Value> = (0..6)
+            .map(|i| {
+                json!({
+                    "id": format!("a1b2c3d4-0000-4000-8000-00000000000{i}"),
+                    "boardId": board,
+                    "ticketRef": format!("A-{i}"),
+                    "title": format!("Ticket {i}"),
+                    "status": "inbox",
+                })
+            })
+            .collect();
+        let (name, result) = as_hermes_posts("list_tickets", &json!({ "tasks": tasks }));
+        let chips = chips_for(&name, &format!(r#"{{"boardId":"{board}"}}"#), &result);
+        assert!(chips.is_empty(), "{chips:?}");
+        // A ticket the agent created still links, through the same envelope.
+        let created = json!({ "task": { "id": "a1b2c3d4-0000-4000-8000-0000000000aa", "boardId": board, "title": "New" } });
+        let (name, result) = as_hermes_posts("create_ticket", &created);
+        let chips = chips_for(&name, "{}", &result);
+        assert_eq!(chips.len(), 1, "{chips:?}");
+        assert_eq!(
+            chips[0]["href"],
+            format!("/boards/{board}/a1b2c3d4-0000-4000-8000-0000000000aa")
+        );
     }
 }

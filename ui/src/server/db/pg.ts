@@ -5079,6 +5079,120 @@ alter table tasks drop column if exists conversation_id`,
      created_at timestamptz not null default now(),
      primary key (task_id, agent_model)
    )`,
+  // WORDS THE AGENT WROTE AND A PERSON ONLY CHOSE. Clicking an ask option or a
+  // tool chip sends the agent's own words as the person's message. The
+  // conversation twin rides `messages.metadata.drafted`; a channel row had
+  // nowhere to say it. An agent's review exit on a person's ask
+  // (talaria-tasks `asked`) never counts such a row as the ask. Defaulted,
+  // so roll-safe: the previous release neither reads nor writes it.
+  `alter table channel_messages add column if not exists drafted boolean not null default false`,
+  // ONE ASK, ONE EXIT. An agent takes a ticket out of review on a person's
+  // message at most once per (ticket, message): the key is the claim, taken
+  // before the write (update path) or under the move's row lock (board move),
+  // so two calls citing one message cannot both pass. message_id names a
+  // messages or channel_messages row, so it carries no foreign key. A new
+  // table, so roll-safe.
+  `create table if not exists task_asked_exits (
+     task_id uuid not null references tasks(id) on delete cascade,
+     message_id uuid not null,
+     agent_model text not null,
+     asked_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     primary key (task_id, message_id)
+   )`,
+  // THE MESSAGE A CHANNEL REPLY ANSWERS. An agent's streaming reply is
+  // inserted after the reply is decided (a relevance judgment in a ticket
+  // room), so "the newest person's row before the reply" can be someone who
+  // posted in that window, or the trigger of another reply streaming beside
+  // it. The reply now carries the id of the message it was started for, and
+  // an agent's review exit on a person's ask (talaria-chips `live_turn`)
+  // names exactly that message's author. It names a row in the same channel,
+  // which the channel's cascade already takes, so no foreign key. Nullable,
+  // so roll-safe: the previous release neither reads nor writes it.
+  `alter table channel_messages add column if not exists answers_message_id uuid`,
+  // A BOARD SYNCS FROM A CLICKUP LIST (talaria-board-sync, docs/BOARD-SYNC.md).
+  // One live connection per board: the board owns it, not the person who
+  // connected it, so nothing cascades when that person goes. The credential is
+  // a ClickUp personal token sealed with the secretbox (CIPHER_TARGETS lists the
+  // column; Admin -> Secrets shows it). status_map is lowercased ClickUp status
+  // name -> board column key; map_version and remap_pending let a mapping edit
+  // made during a live run be consumed by that run's finish pass, or the next.
+  // run_problems are the latest run's run-level problems (credential, list
+  // gone, sweep guard), rewritten by every run. New tables, so roll-safe.
+  `create table if not exists board_syncs (
+     id uuid primary key default gen_random_uuid(),
+     board_id uuid not null references boards(id) on delete cascade,
+     provider text not null default 'clickup' check (provider in ('clickup')),
+     workspace_id text,
+     list_id text not null,
+     list_path text,
+     list_statuses jsonb not null default '[]'::jsonb,
+     credential_sealed text,
+     credential_hint text,
+     credential_account jsonb,
+     status_map jsonb not null default '{}'::jsonb,
+     map_version integer not null default 0,
+     remap_pending boolean not null default false,
+     options jsonb not null default '{}'::jsonb,
+     interval_minutes integer,
+     state text not null default 'active'
+       check (state in ('active', 'paused', 'needs_credential', 'disconnected')),
+     watermark_ms bigint,
+     last_sweep_at timestamptz,
+     last_synced_at timestamptz,
+     next_sync_at timestamptz,
+     last_run_id uuid,
+     run_problems jsonb not null default '[]'::jsonb,
+     connected_by uuid references users(id) on delete set null,
+     disconnected_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now(),
+     disconnected_at timestamptz
+   )`,
+  `create unique index if not exists board_syncs_one_live on board_syncs (board_id)
+     where state <> 'disconnected'`,
+  `create index if not exists board_syncs_due on board_syncs (next_sync_at)
+     where state = 'active'`,
+  // Per-task sync state, keyed by the ClickUp task id across the instance. A row
+  // exists only once a ticket was made for it, so a row whose task_id went null
+  // is a ticket deleted in Talaria: the sync never makes it again. applied holds
+  // the last upstream value written per field (the three-way rule's base);
+  // problems is the item's current problem list, rewritten each time it syncs.
+  `create table if not exists board_sync_items (
+     provider text not null,
+     external_id text not null,
+     sync_id uuid references board_syncs(id) on delete set null,
+     board_id uuid not null references boards(id) on delete cascade,
+     task_id uuid unique references tasks(id) on delete set null,
+     custom_id text,
+     external_url text,
+     remote_state text not null default 'active'
+       check (remote_state in ('active', 'archived', 'deleted', 'moved', 'hidden')),
+     remote_updated_ms bigint,
+     applied jsonb not null default '{}'::jsonb,
+     attachments jsonb not null default '{}'::jsonb,
+     comments jsonb not null default '{}'::jsonb,
+     problems jsonb not null default '[]'::jsonb,
+     seen_run uuid,
+     synced_at timestamptz,
+     created_at timestamptz not null default now(),
+     primary key (provider, external_id)
+   )`,
+  `create index if not exists board_sync_items_board_idx on board_sync_items (board_id, external_id)`,
+  // The database is what makes "a re-run updates, never duplicates" true, even
+  // across a crash between making a ticket and recording its item row:
+  // create_task writes 'clickup:<task id>' in its own insert.
+  `alter table tasks add column if not exists external_key text`,
+  `create unique index if not exists tasks_external_key_idx on tasks (external_key)
+     where external_key is not null`,
+  // An imported comment is idempotent on its source id ('clickup:comment:<id>').
+  `alter table channel_messages add column if not exists import_key text`,
+  `create unique index if not exists channel_messages_import_key_idx
+     on channel_messages (channel_id, import_key) where import_key is not null`,
+  // One live sync per board, whoever starts it (the schedule, Sync now, a
+  // re-sync of one ticket).
+  `create unique index if not exists runs_one_live_board_sync on runs (subject_id)
+     where kind = 'clickup-sync' and state in ('queued', 'running', 'awaiting')`,
   // A PERSON'S NOTIFICATION SETTING FOR ONE BOARD (talaria_notify::boards,
   // docs/notifications/producers.md "Each board"): a preset (all,
   // participating, mentions, off, custom), Custom's own events and scope, and

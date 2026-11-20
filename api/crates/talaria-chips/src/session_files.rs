@@ -30,11 +30,16 @@ use talaria_params::uuid_canonical;
 pub const MAX_SESSION_FILES: usize = 100;
 
 /// One message's chips, in conversation order, with the message's own time
-/// (ISO 8601) — what `lastTouchedAt` reports.
+/// (ISO 8601) — what `lastTouchedAt` reports — and the person that turn was
+/// for (`talaria_conversations::conversation_file_trail` says how it is read).
 #[derive(Debug, Clone)]
 pub struct TrailMessage {
     pub created_at: String,
     pub chips: Value,
+    /// Who the message was for: a person's own message is theirs, an agent's
+    /// reply belongs to whoever sent the message it answers, else the
+    /// conversation's owner. None only when the caller could not say.
+    pub requested_by: Option<String>,
 }
 
 /// Which file a candidate is.
@@ -46,7 +51,8 @@ pub enum FileRef {
 }
 
 impl FileRef {
-    fn key(&self) -> String {
+    /// The pane's key for the file: `artifact:<uuid>` or `google:<id>`.
+    pub fn key(&self) -> String {
         match self {
             Self::Artifact(id) => format!("artifact:{id}"),
             Self::Google(f) => f.key(),
@@ -88,6 +94,8 @@ pub struct Candidate {
     pub last_touched_at: Option<String>,
     /// The position of that newest message — what the cap ranks by.
     touched_rank: Option<usize>,
+    /// Who that newest message was for (`TrailMessage::requested_by`).
+    pub touched_for: Option<String>,
 }
 
 /// What the route found for one readable artifact.
@@ -116,6 +124,11 @@ pub struct SessionFile {
     pub url: Option<String>,
     pub source: &'static str,
     pub last_touched_at: Option<String>,
+    /// The person the newest touching turn was for. The pane takes the
+    /// viewer's focus only for that person; everyone else gets the tab
+    /// listed without being moved (WorkHarness `applyFiles`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub touched_for: Option<String>,
 }
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -127,8 +140,10 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 /// The file one URL names: a Talaria document by the platform-href
 /// classifier's own reading (`/artifacts?a=<uuid>` in any of its spellings —
-/// relative, absolute, with other parameters), else a Google file.
-fn file_named_by(url: &str) -> Option<FileRef> {
+/// relative, absolute, with other parameters), else a Google file. Public
+/// because the agent door that opens a file in the pane reads a link with
+/// exactly this rule: a link it accepts is a file the pane lists.
+pub fn file_named_by(url: &str) -> Option<FileRef> {
     if let Some(link) = classify_href(url) {
         if link.entity != "document" {
             return None;
@@ -230,6 +245,7 @@ pub fn candidates(
                         absorb(c, &file, title);
                         c.last_touched_at = Some(m.created_at.clone());
                         c.touched_rank = Some(rank);
+                        c.touched_for = m.requested_by.clone();
                     }
                     None => {
                         at.insert(key, out.len());
@@ -239,6 +255,7 @@ pub fn candidates(
                             source: FileSource::Touched,
                             last_touched_at: Some(m.created_at.clone()),
                             touched_rank: Some(rank),
+                            touched_for: m.requested_by.clone(),
                         });
                     }
                 }
@@ -279,6 +296,7 @@ pub fn candidates(
                     source: FileSource::Pinned,
                     last_touched_at: None,
                     touched_rank: None,
+                    touched_for: None,
                 });
             }
         }
@@ -293,6 +311,7 @@ pub fn candidates(
                 source: FileSource::Living,
                 last_touched_at: None,
                 touched_rank: None,
+                touched_for: None,
             });
         }
     }
@@ -367,6 +386,7 @@ pub fn session_files(
                         url: None,
                         source,
                         last_touched_at: c.last_touched_at,
+                        touched_for: c.touched_for,
                     }
                 }
                 FileRef::Google(file) => SessionFile {
@@ -379,6 +399,7 @@ pub fn session_files(
                     artifact_kind: None,
                     source,
                     last_touched_at: c.last_touched_at,
+                    touched_for: c.touched_for,
                 },
             }
         })
@@ -398,6 +419,14 @@ mod tests {
         TrailMessage {
             created_at: at.to_string(),
             chips,
+            requested_by: None,
+        }
+    }
+
+    fn msg_for(at: &str, chips: Value, who: &str) -> TrailMessage {
+        TrailMessage {
+            requested_by: Some(who.to_string()),
+            ..msg(at, chips)
         }
     }
 
@@ -709,5 +738,90 @@ mod tests {
             Some(A3),
         );
         assert_eq!(artifact_ids(&c), vec![A1, A2, A3]);
+    }
+    #[test]
+    fn a_link_names_a_talaria_document_in_every_spelling_and_a_google_file_by_type() {
+        // The agent door reads a link with this rule, so what it accepts is
+        // exactly what the pane can list.
+        let doc = FileRef::Artifact(A1.to_string());
+        for spelling in [
+            format!("/artifacts?a={A1}"),
+            format!("https://talaria.example.com/artifacts?a={A1}"),
+            format!(
+                "https://talaria.example.com/artifacts?view=grid&a={}",
+                A1.to_uppercase()
+            ),
+        ] {
+            assert_eq!(file_named_by(&spelling), Some(doc.clone()), "{spelling}");
+            assert_eq!(doc.key(), format!("artifact:{A1}"));
+        }
+        let google = |url: &str| match file_named_by(url) {
+            Some(FileRef::Google(f)) => Some((f.id, f.kind)),
+            _ => None,
+        };
+        assert_eq!(
+            google("https://docs.google.com/document/d/1doc/edit"),
+            Some(("1doc".into(), GoogleType::Document))
+        );
+        assert_eq!(
+            google("https://docs.google.com/spreadsheets/d/1sheet/edit#gid=0"),
+            Some(("1sheet".into(), GoogleType::Spreadsheet))
+        );
+        assert_eq!(
+            google("https://docs.google.com/presentation/d/1deck/edit"),
+            Some(("1deck".into(), GoogleType::Presentation))
+        );
+        assert_eq!(
+            google("https://drive.google.com/file/d/1pdf/view"),
+            Some(("1pdf".into(), GoogleType::Drive))
+        );
+        assert_eq!(
+            google("https://drive.google.com/open?id=1any"),
+            Some(("1any".into(), GoogleType::Drive))
+        );
+    }
+
+    #[test]
+    fn a_knowledge_doc_or_an_ordinary_page_is_not_a_pane_file() {
+        assert_eq!(file_named_by("/knowledge?doc=k-1"), None);
+        assert_eq!(
+            file_named_by("https://talaria.example.com/knowledge?doc=k-1"),
+            None
+        );
+        assert_eq!(file_named_by("https://example.com/plan"), None);
+        assert_eq!(file_named_by("/artifacts?a=not-a-uuid"), None);
+        assert_eq!(file_named_by(""), None);
+    }
+
+    #[test]
+    fn a_file_is_touched_for_the_person_the_newest_naming_turn_was_for() {
+        const ANA: &str = "11111111-1111-4111-8111-111111111111";
+        const BEN: &str = "22222222-2222-4222-8222-222222222222";
+        let messages = vec![
+            msg_for("t1", json!([doc_chip(A1, "Plan")]), ANA),
+            msg_for("t2", json!([doc_chip(A2, "Notes")]), BEN),
+            // Ben asked for the plan again: it is his touch now.
+            msg_for("t3", json!([doc_chip(A1, "Plan")]), BEN),
+        ];
+        let pinned = json!([{ "kind": "artifact", "id": A3 }]);
+        let files = session_files(
+            candidates(&messages, &pinned, None),
+            &readable(&[
+                (A1, "doc", "Plan"),
+                (A2, "doc", "Notes"),
+                (A3, "doc", "Pinned"),
+            ]),
+            MAX_SESSION_FILES,
+        );
+        assert_eq!(files[0].touched_for.as_deref(), Some(BEN));
+        assert_eq!(files[1].touched_for.as_deref(), Some(BEN));
+        // A pin was nobody's turn.
+        assert_eq!(files[2].touched_for, None);
+        // And it rides the wire beside the touch time.
+        let wire = serde_json::to_string(&files[0]).unwrap();
+        assert!(
+            wire.ends_with(&format!(r#""lastTouchedAt":"t3","touchedFor":"{BEN}"}}"#)),
+            "{wire}"
+        );
     }
 }

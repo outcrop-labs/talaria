@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-13 routes.
+14 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -20,6 +20,7 @@
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | POST | `dual` |
 | [`/api/tasks/{id}/dependencies`](#apitasksiddependencies) | DELETE | `session` |
 | [`/api/tasks/{id}/move`](#apitasksidmove) | POST | `dual` |
+| [`/api/tasks/{id}/resync`](#apitasksidresync) | POST | `session` |
 | [`/api/tasks/{id}/review`](#apitasksidreview) | POST | `session` |
 | [`/api/tasks/{id}/usage`](#apitasksidusage) | GET | `dual` |
 | [`/api/tasks/{id}/watchers`](#apitasksidwatchers) | POST | `session` |
@@ -70,6 +71,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id.rs`](../../api/cra
 | `parentId` | `nullish` |  |
 | `addTimeSpentSeconds` | `number?(0, 86400, 30)` |  |
 | `attachmentIds` | `uuid[]?(20)` | Full replacement list, same contract as chat messages: upload ids + knowledge/artifact refs. Omit both to leave attachments unchanged. |
+| `conversationId` | `uuid?` | Agents: the conversation or channel a person asked for this move out of review in. A claim update_task proves (talaria-tasks `asked`). |
 
 ## `/api/tasks/{id}/channel`
 
@@ -137,10 +139,10 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_dependencies.rs`](
 
 Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs)
 
-> POST /api/tasks/{id}/move { boardId, status?, preview? }. Move a ticket to
-> another board — an ACTION, so POST (API-CONVENTIONS "Methods").
->
-> The decisions live in talaria-tasks `move_task` (permission on both
+> POST /api/tasks/{id}/move { boardId, status?, preview?, conversationId? }.
+> Move a ticket to another board — an ACTION, so POST (API-CONVENTIONS
+> "Methods"). `conversationId` is an agent's claim that a person asked for a
+> move out of review: the thread they asked in, proven by `move_task`
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -154,6 +156,21 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_move.rs`](../../ap
 | `boardId` | `uuid` |  |
 | `status` | `string?(40)` |  |
 | `preview` | `bool?` |  |
+| `conversationId` | `uuid?` | Agents: the conversation or channel a person asked for this move out of review in. A claim move_task proves (talaria-tasks `asked`). |
+
+## `/api/tasks/{id}/resync`
+
+Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_resync.rs`](../../api/crates/talaria-routes-boards/src/tasks/tasks_id_resync.rs)
+
+> POST /api/tasks/{id}/resync — "Re-sync from ClickUp": the ticket's ClickUp
+> task is read again and forced onto it (title, description, status through
+> the sync's column guards, priority, dates; ClickUp's labels and human
+> assignees replace the ticket's; agent assignees are never touched). Owner or
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{runId}` | 200, 400, 404, 409 | — |
 
 ## `/api/tasks/{id}/review`
 

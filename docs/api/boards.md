@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-20 routes.
+25 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -37,6 +37,14 @@
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | POST | `session` |
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | PUT | `session` |
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | DELETE | `session` |
+| [`/api/boards/{id}/sync`](#apiboardsidsync) | GET | `session` |
+| [`/api/boards/{id}/sync`](#apiboardsidsync) | POST | `session` |
+| [`/api/boards/{id}/sync`](#apiboardsidsync) | PUT | `session` |
+| [`/api/boards/{id}/sync`](#apiboardsidsync) | DELETE | `session` |
+| [`/api/boards/{id}/sync/browse`](#apiboardsidsyncbrowse) | POST | `session` |
+| [`/api/boards/{id}/sync/credential`](#apiboardsidsynccredential) | PUT | `session` |
+| [`/api/boards/{id}/sync/preview`](#apiboardsidsyncpreview) | POST | `session` |
+| [`/api/boards/{id}/sync/runs`](#apiboardsidsyncruns) | POST | `session` |
 | [`/api/boards/{id}/tasks`](#apiboardsidtasks) | GET | `dual` |
 | [`/api/boards/{id}/tasks`](#apiboardsidtasks) | POST | `dual` |
 | [`/api/boards/{id}/templates`](#apiboardsidtemplates) | GET | `session` |
@@ -330,6 +338,115 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_statuses.rs`](..
 | :--- | :--- | :--- |
 | `statusKey` | `string(1, 40)` |  |
 | `reassignTo` | `string?(40)` |  |
+
+## `/api/boards/{id}/sync`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync.rs)
+
+> /api/boards/{id}/sync — the board's ClickUp sync (talaria-board-sync,
+> docs/BOARD-SYNC.md). One-way, ClickUp → Talaria: a board owner connects one
+> ClickUp list with a personal token; a durable `clickup-sync` run pulls its
+> tasks, comments and attachments into tickets on a schedule and on Sync now.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `…` | 200, 403 | — |
+| POST | `session` | [body](#post-apiboardsidsync-body) | `{sync, runId}` | 200, 400 | — |
+| PUT | `session` | [body](#put-apiboardsidsync-body) | `{sync}` | 200, 400 | — |
+| DELETE | `session` | — | `{ok}` | 200, 400 | — |
+
+### POST `/api/boards/{id}/sync` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `token` | `string(8, 400)` |  |
+| `listId` | `string(1, 100)` |  |
+| `statusMap` | `status_map` |  |
+| `options` | `options` |  |
+| `intervalMinutes` | `interval` |  |
+
+### PUT `/api/boards/{id}/sync` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `statusMap` | `status_map` |  |
+| `options` | `options` |  |
+| `intervalMinutes` | `interval` |  |
+
+## `/api/boards/{id}/sync/browse`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_browse.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync_browse.rs)
+
+> POST /api/boards/{id}/sync/browse {token?, teamId?, spaceId?, folderId?} —
+> one level of the ClickUp hierarchy a person walks to pick a list, lazily:
+> no ids → the token's account and workspaces; teamId → its spaces; spaceId
+> → its folders and folderless lists; folderId → its lists. `token` is
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiboardsidsyncbrowse-body) | `…` | 200, 400 | — |
+
+### POST `/api/boards/{id}/sync/browse` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
+
+## `/api/boards/{id}/sync/credential`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_credential.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync_credential.rs)
+
+> PUT /api/boards/{id}/sync/credential {token} — replace the sync's ClickUp
+> token: when the member who connected it left, or ClickUp refused it. The
+> new token must be able to read the connected list. The mapping, the links
+> and the history stay; a sync waiting for a credential resumes and runs at
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `session` | [body](#put-apiboardsidsynccredential-body) | `{sync}` | 200, 400 | — |
+
+### PUT `/api/boards/{id}/sync/credential` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `token` | `string(8, 400)` |  |
+
+## `/api/boards/{id}/sync/preview`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_preview.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync_preview.rs)
+
+> POST /api/boards/{id}/sync/preview {token?, listId} — what connecting would
+> do, before anything is written: the list's statuses with their suggested
+> columns (exact label matches, or this board's last mapping of the list —
+> nothing guessed), the columns on offer and which start agent work, the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiboardsidsyncpreview-body) | `…` | 200, 400 | — |
+
+### POST `/api/boards/{id}/sync/preview` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `token` | `string?(400)` |  |
+| `listId` | `string(1, 100)` |  |
+
+## `/api/boards/{id}/sync/runs`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_runs.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync_runs.rs)
+
+> POST /api/boards/{id}/sync/runs — Sync now: start a sync of the board's
+> ClickUp list (it always reconciles every task), or answer the run already
+> going. Owner or editor. Answers {runId, live}: `live` true when the run
+> was already under way. 409 while the sync waits for a new credential.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{runId, live}` | 200 | — |
 
 ## `/api/boards/{id}/tasks`
 

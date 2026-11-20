@@ -181,6 +181,8 @@ async fn a_change_request_is_born_in_the_pickup_column_and_starts_its_maintainer
             created_by: &email,
             status: None,
             mention_text: None,
+            external_key: None,
+            quiet: false,
         },
     )
     .await

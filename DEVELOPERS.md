@@ -142,6 +142,7 @@ Every doc in the repo. Generated references are marked — don't hand-edit those
 | [`docs/WORKBENCH.md`](./docs/WORKBENCH.md) | The Workbench: execution in role-scoped sandboxes |
 | [`docs/HARNESSES.md`](./docs/HARNESSES.md) | Coding harnesses and model fitness |
 | [`docs/MCP.md`](./docs/MCP.md) | Organizational MCP governance |
+| [`docs/BOARD-SYNC.md`](./docs/BOARD-SYNC.md) | A board syncing from a ClickUp list: connecting, the status mapping and its guards, the conflict rule, cadence, the credential, rate limits, and how a run works |
 
 ### Running it
 

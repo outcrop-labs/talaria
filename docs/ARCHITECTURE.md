@@ -909,7 +909,11 @@ channels, Google calendar/mail, research, board membership — and no document s
 it changes with every registration, and `bun run check` (`toolkit-tool-count-drift`) fails any doc
 that writes a number the source does not have; `mcp/README.md` lists every tool by name. The guardrail that
 actually holds is server-side and narrow: **agents cannot write assignees and cannot make a
-terminal status move** — the final sign-off is structurally a human's. The refusal predicate
+terminal status move** — the final sign-off is structurally a human's. An agent takes a ticket
+out of review only on a person's ask that the api proves from the thread the call names
+(`talaria-tasks` `asked.rs`: the agent's own key, a reply streaming there now, the asker wrote
+the message that turn answers, can edit the board, and named the ticket; one move per message,
+never to a closed column), and a refused move leaves an approval card a board editor can click. The refusal predicate
 lives once in `server/tasks.ts` (`agentSafePatch`); a second definition anywhere fails the
 invariant check, and the tool descriptions must mirror it (a startup auditor shouts on
 drift).
@@ -1048,7 +1052,7 @@ Rust api's (`api/src/jobs.rs`), `off` arms nobody (the kill switch; `rust` is
 the retired coexistence-era value and reads as unset). Registered jobs with
 named intervals, **exactly-once via a Redis lease**
 — one run per interval fleet-wide; unreachable Redis skips the tick rather than running
-unguarded. The first nine jobs are required: a missing registration refuses to arm the schedule, and the arm loop says which job is missing on every retry (boot never reports the schedule armed). The api
+unguarded. The first ten jobs are required: a missing registration refuses to arm the schedule, and the arm loop says which job is missing on every retry (boot never reports the schedule armed). The api
 arms in every posture that serves — `talaria dev`'s child included, so background jobs
 fire locally exactly as in prod; a bare `vite dev` with no api is the one posture that
 never arms them, which is why "my background job never fires locally" usually means the
@@ -1059,6 +1063,9 @@ api before reporting the app ready, so jobs run only on an instance that can ser
 The scheduled family: comms decay (distill idle threads), the daily digest and approval
 escalation, the daily brief (opens per person, per timezone), notification mail, outreach
 sweeps, run reclaim (re-enters a run whose driver died), price refresh, update checks, the
-cron-output pull (lands a thread schedule's report the push lost).
+cron-output pull (lands a thread schedule's report the push lost), and the board sync (starts
+a `clickup-sync` run for every board whose ClickUp list is due; the run pulls tasks,
+comments and attachments into tickets, budgeted by time and by ClickUp's rate limit —
+[`docs/BOARD-SYNC.md`](./BOARD-SYNC.md)).
 Research/plan runs are durable on the same plane: derived run ids + per-step leases, so two
 instances cannot double-run and a restart resumes at the last persisted turn.

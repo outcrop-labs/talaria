@@ -37,6 +37,17 @@ export interface Artifact {
   canEdit?: boolean
 }
 
+/** May this viewer change the file? `canEdit` is the PUT's own rule answered
+ *  on read; an answer without it (an older server, a save's echo) is treated as
+ *  editable, so nothing that worked before turns read-only by accident. */
+export const canEditArtifact = (a: Pick<Artifact, 'canEdit'>): boolean => a.canEdit !== false
+
+/** Where the editor opens: in Read, unless the file is empty AND this viewer
+ *  may write it — an empty body used to drop everyone into Edit, a viewer
+ *  included, whose every keystroke then failed to save. */
+export const initialMode = (a: Pick<Artifact, 'canEdit' | 'body'>): 'read' | 'edit' =>
+  canEditArtifact(a) && !a.body.trim() ? 'edit' : 'read'
+
 export interface ArtifactFolder {
   id: string
   name: string

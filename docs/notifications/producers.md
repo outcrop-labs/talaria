@@ -207,6 +207,15 @@ losing sight of it by their setting for the source, and the people who hear the 
 full that it left — never where to — unless a per-ticket row about the move already
 reached them.
 
+**Who caused it.** An agent's move is a move: an agent that takes a ticket out of review
+on a person's proven ask (`talaria-tasks` `asked`) is the actor, and the ticket's people —
+the asker among them, when they watch, are assigned or created it — hear it as a status
+move by their setting, like any other. A tracker sync's write is not news: the ClickUp
+sync (`talaria-board-sync`, [BOARD-SYNC.md](../BOARD-SYNC.md)) writes with `quiet` set,
+so its creates, assignments and moves file no per-ticket row and no board-activity row,
+whoever hears the board in full, and its imported comments run no comment fan-out. The
+tracker it mirrors already told its people.
+
 **Access and leaving.** The board-wide audience is `talaria_boards::board_audience`
 (`board_role`'s two legs: a member row, or the owning team). Every recipient is re-checked
 at fan-out, as before, so a setting is dormant while its person cannot see the board; it is

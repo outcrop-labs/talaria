@@ -346,7 +346,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "triage_ticket",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — all refuse with 403, and assigning or marking done are human-only.",
+            description: "Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back on your own. Out of quality_review there is one way: the person you are answering asks you to send it back, and you pass conversationId so Talaria can prove that ask — never to done, failed or cancelled. Restarting your own blocked ticket, taking anything out of quality_review unasked, and any write at all to a ticket a person has taken off the table — all refuse with 403, and assigning or marking done are human-only.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -361,8 +361,9 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "color": one_of(TICKET_COLORS, "Color-code the ticket (shows on cards + gantt)"),
                     "status": one_of(
                         &["in_progress", "blocked", "quality_review"],
-                        "Forward only. in_progress is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and quality_review are one-way: a person moves it after that.",
+                        "Forward only. in_progress is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and quality_review are one-way: a person moves it after that, or asks you to (conversationId).",
                     ),
+                    "conversationId": str_schema("The thread you are answering — your prompt's thread line carries it. Pass it only when the person you are answering asked you to take this ticket out of review."),
                 },
                 "required": ["taskId"],
             }),
@@ -373,7 +374,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "move_ticket",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and agents it does not allow are unassigned — the result's moved field names both, so tell the person what changed. A move that would take a PERSON off the ticket (they are not on the new board) is refused with 403: a person moves it, or adds them to that board first. preview: true answers the same moved field without moving anything. A ticket that is closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD, in review, or blocked is a person's to move (403); so is moving one into a closed column or into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry.",
+            description: "Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and agents it does not allow are unassigned — the result's moved field names both, so tell the person what changed. A move that would take a PERSON off the ticket (they are not on the new board) is refused with 403: a person moves it, or adds them to that board first. preview: true answers the same moved field without moving anything. A ticket that is closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD, or blocked, is a person's to move (403), and so is one in review unless the person you are answering asked you to move it and you pass conversationId so Talaria can prove that ask. Moving a ticket into a closed column is refused, and so is moving it unasked into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -381,6 +382,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "boardId": str_schema("The board to move it to — an id from list_boards"),
                     "status": str_schema("A status key on the DESTINATION board. Leave it out and the move maps the ticket's column for you. Never a done column: a move does not close a ticket."),
                     "preview": bool_schema("true: answer what would change (new ref, column, dropped labels, unassigned) and move nothing"),
+                    "conversationId": str_schema("The thread you are answering — your prompt's thread line carries it. Pass it only when the person you are answering asked you to take this ticket out of review."),
                 },
                 "required": ["taskId", "boardId"],
             }),
@@ -400,7 +402,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "report_outcome",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Report the outcome of work on a ticket and hand it to the board's review column (\"Quality review\" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. Only ever on a live ticket.",
+            description: "Report the outcome of work on a ticket and hand it to the board's review column (\"Quality review\" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review it is the reviewer's, and triage_ticket takes it back out only when a person asks you to, so add anything further as a comment. Only ever on a live ticket.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -711,6 +713,28 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             group: ToolGroup::Documents,
             description: "Read one document's full content (markdown, sheet grid, or HTML depending on kind) plus metadata.",
             parameters: json!({ "type": "object", "properties": { "documentId": str_schema("Document id") }, "required": ["documentId"] }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        // AN EXISTING FILE, PUT IN FRONT OF THE PERSON. The pane lists the files
+        // the conversation's chips name, and reading one with get_document lands
+        // none — so "open the plan here" used to get the plan pasted into chat.
+        // The sandbox records what the agent opened (`world.pane`), so a fixture
+        // grades whether it opened the file instead of pasting it.
+        SandboxTool {
+            name: "open_in_pane",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Documents,
+            description: "Open a file in the person's pane — the tabs beside a Work, Plan or Research session's chat — so you can both look at it and work on it. Use it when they ask to see, open or go through an existing file here ('open the plan so we can iterate on it'), or to bring back a file from earlier in this conversation. Pass documentId for a Talaria document, sheet, page or uploaded file (ids come from list_documents or search_knowledge), or url for a Talaria document link or a Google Doc, Sheet, Slides or Drive link — one of the two. Call it with neither to list the files already in this session, newest first. Files you create open by themselves; reading one with get_document does not open it. It opens with THEIR access: if they can read but not edit it, it opens view-only and the result says so — tell them. Knowledge-base docs and files in a workbench checkout are not files the pane shows.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "documentId": str_schema("A Talaria document, sheet, page or uploaded file id — from list_documents, search_knowledge or this session's file list"),
+                    "url": str_schema("A Talaria document link (/artifacts?a=…) or a Google Docs, Sheets, Slides or Drive link"),
+                    "conversationId": str_schema("The conversation you are answering in — your prompt's conversation line carries it. Pass it so the file opens in this thread and not another one you are also in."),
+                },
+                "required": [],
+            }),
             assistant_only: false,
             needs_google: false,
         },
@@ -1824,9 +1848,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 84);
+        assert_eq!(TALARIA_TOOLS.len(), 85);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 84);
+        assert_eq!(names.len(), 85);
     }
 
     #[test]

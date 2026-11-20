@@ -6,16 +6,16 @@
 > Requests/responses follow the house envelope and conventions:
 > [API-CONVENTIONS.md](../API-CONVENTIONS.md).
 
-383 routes across 24 groups.
+390 routes across 24 groups.
 
 | Group | Covers | Routes |
 | :--- | :--- | :--- |
 | [`account`](./account.md) | Sign-in, session, profile, members. | 20 |
 | [`activity`](./activity.md) | What happened, what it cost, what the machine is doing, what needs you. | 20 |
 | [`admin`](./admin.md) | Instance administration (admin session required). | 37 |
-| [`agents`](./agents.md) | Agent CRUD, skills, runs. | 29 |
+| [`agents`](./agents.md) | Agent CRUD, skills, runs. | 30 |
 | [`apps`](./apps.md) | The app platform surface, the app-server gateway, the host's own app routes, and the SDK kit. | 8 |
-| [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 20 |
+| [`boards`](./boards.md) | Kanban boards, members, statuses, labels, views, workchains. | 25 |
 | [`brief`](./brief.md) | The personal brief: items, replies, delegation. | 5 |
 | [`comms`](./comms.md) | Channels, DMs, threads, chat streaming. | 36 |
 | [`files`](./files.md) | Uploads, artifacts, shares, downloads. | 19 |
@@ -31,7 +31,7 @@
 | [`research`](./research.md) | Cited research reports and their conversations. | 6 |
 | [`secrets`](./secrets.md) | The sealed-secrets vault: folders, shares, reveal, relay. | 7 |
 | [`system`](./system.md) | Health and instance discovery endpoints. | 2 |
-| [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 13 |
+| [`tasks`](./tasks.md) | Tickets, comments, dependencies, watchers, workflows. | 14 |
 | [`teams`](./teams.md) | Teams and their members. | 6 |
 | [`workbench`](./workbench.md) | The developer workbench: repos, jobs, harnesses, flows. | 24 |
 

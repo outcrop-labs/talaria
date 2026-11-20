@@ -213,7 +213,10 @@ fn land_document_chip(
     let (state, agent) = (state.clone(), editor.actor.clone());
     tokio::spawn(async move {
         let redis = state.redis().await.ok();
-        match talaria_chips::surface_for_agent(&state.pg, redis, &agent, vec![chip]).await {
+        // Only on a LIVE turn (`surface_on_live_turn`): a document chip
+        // opens the file in the pane, and an edit with no streaming reply
+        // must not open it in the pane of whoever the agent last spoke to.
+        match talaria_chips::surface_on_live_turn(&state.pg, redis, &agent, vec![chip]).await {
             // No live turn: a work-session or cron edit has no chat row to
             // land on, which is ordinary rather than a failure.
             Ok(_) => {}

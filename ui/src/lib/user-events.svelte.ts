@@ -324,6 +324,7 @@ export const USER_STREAM_KEYS = [
   'home',
   'channels',
   'conversations',
+  'session-files',
   'research-runs',
   'research-run',
   'agent-design',
@@ -377,6 +378,13 @@ export function useUserEventInvalidation(): void {
         case 'conversation':
           void qc.invalidateQueries({ queryKey: ['conversations'] })
           void qc.invalidateQueries({ queryKey: ['unreads'] })
+          // A chip landing is how a file joins a session (an agent created,
+          // edited or opened it), and it fans this event to the whole
+          // audience — so every member's open pane re-reads the session's
+          // files, not only the tab that is streaming the turn. Whose pane
+          // MOVES is the Work view's call (`takesFocus`); a key nobody has
+          // mounted is only marked stale.
+          void qc.invalidateQueries({ queryKey: ['session-files', event.conversationId] })
           break
         case 'run':
           void qc.invalidateQueries({ queryKey: ['research-runs'] })

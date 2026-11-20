@@ -3845,6 +3845,7 @@ dependencies = [
  "talaria-audit",
  "talaria-auth",
  "talaria-auth-config",
+ "talaria-board-sync",
  "talaria-boards",
  "talaria-body",
  "talaria-brain-health",
@@ -3857,6 +3858,7 @@ dependencies = [
  "talaria-chat-persist",
  "talaria-chips",
  "talaria-claim",
+ "talaria-clickup",
  "talaria-comms-decay",
  "talaria-config",
  "talaria-conversations",
@@ -4305,6 +4307,8 @@ dependencies = [
  "talaria-retrieval-index",
  "talaria-retrieval-qdrant",
  "talaria-retrieval-sources",
+ "talaria-teams",
+ "talaria-users",
 ]
 
 [[package]]
@@ -4341,6 +4345,36 @@ dependencies = [
 [[package]]
 name = "talaria-auth-config"
 version = "0.1.0"
+
+[[package]]
+name = "talaria-board-sync"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sqlx",
+ "talaria-agent-auth",
+ "talaria-audit",
+ "talaria-boards",
+ "talaria-channels",
+ "talaria-clickup",
+ "talaria-notify",
+ "talaria-platform-events",
+ "talaria-realtime",
+ "talaria-runs-decide",
+ "talaria-runs-define",
+ "talaria-runs-run",
+ "talaria-scheduler",
+ "talaria-secretbox",
+ "talaria-state",
+ "talaria-statuses",
+ "talaria-tasks",
+ "talaria-tasks-types",
+ "talaria-uploads",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "talaria-boards"
@@ -4580,6 +4614,19 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "talaria-clickup"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "talaria-safe-fetch",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -5927,6 +5974,7 @@ dependencies = [
  "talaria-artifacts",
  "talaria-attribution",
  "talaria-audit",
+ "talaria-board-sync",
  "talaria-channel-replies",
  "talaria-comms-decay",
  "talaria-config",
@@ -6979,6 +7027,7 @@ dependencies = [
  "talaria-api-facades",
  "talaria-approvals",
  "talaria-audit",
+ "talaria-board-sync",
  "talaria-boards",
  "talaria-body",
  "talaria-conversations",
@@ -7767,6 +7816,7 @@ dependencies = [
  "talaria-audit",
  "talaria-boards",
  "talaria-channels",
+ "talaria-chips",
  "talaria-gateway",
  "talaria-judge",
  "talaria-labels",

@@ -150,6 +150,31 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
     Ok(Json(json!({ "artifacts": artifacts })).into_response())
 }
 
+/// THE NEW FILE'S CHIP, landed by the route that made it — the edit route's
+/// rule (`artifacts_id_edit::land_document_chip`) for a create. The tool-events
+/// door lands the same chip from the tool's answer, but that answer arrives
+/// cut to 4000 chars by the agent's plugin, and a create answers with the
+/// whole body, so a document of any length lost its id there and never joined
+/// the session's files — never opened in the Work pane. Same chip id, so
+/// whichever lands second merges onto the first. Detached: the create already
+/// happened.
+///
+/// ONLY ON A LIVE TURN (`surface_on_live_turn`). A create with no streaming
+/// reply — a cron run, a background job — lands nothing, rather than opening
+/// the file in the pane of whoever the agent last spoke to.
+fn land_created_chip(state: &AppState, agent: &str, artifact: &Artifact) {
+    let chip = talaria_chips::document_chip(&artifact.id, Some(&artifact.title), None);
+    let (state, agent) = (state.clone(), agent.to_string());
+    tokio::spawn(async move {
+        let redis = state.redis().await.ok();
+        if let Err(e) =
+            talaria_chips::surface_on_live_turn(&state.pg, redis, &agent, vec![chip]).await
+        {
+            tracing::warn!("[artifacts] create chip surface failed for {agent}: {e}");
+        }
+    });
+}
+
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -275,7 +300,9 @@ pub async fn post(
             Some(artifact.id.clone()),
             Some(json!({ "title": artifact.title, "kind": artifact.kind })),
         );
-        return Ok(Json(json!({ "artifact": updated.unwrap_or(artifact) })).into_response());
+        let created = updated.unwrap_or(artifact);
+        land_created_chip(&state, &name, &created);
+        return Ok(Json(json!({ "artifact": created })).into_response());
     }
 
     let user = require_perm(&state, &headers, "artifacts.create").await?;

@@ -41,6 +41,16 @@ pub struct AgentCaller {
     pub legacy: bool,
 }
 
+impl AgentCaller {
+    /// The caller's identity was PROVEN: its own `tak_` key, never the
+    /// org-wide shared one, which only asserts which agent it is. A door that
+    /// lets an agent cite a person's word (an asked move out of review,
+    /// talaria-tasks `asked`) keys off this and nothing looser.
+    pub fn proven(&self) -> bool {
+        !self.legacy && self.id.is_some()
+    }
+}
+
 /// An agent identified either by a resolved caller (carries proof) or by a
 /// bare model string from a surface that hasn't been threaded yet. Privilege
 /// checks take this and consult
@@ -637,6 +647,21 @@ pub fn now_iso() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the caller's own key proves who it is: the shared key's caller
+    /// (legacy, no id) never does, and neither does a row missing its id.
+    #[test]
+    fn only_an_own_key_caller_is_proven() {
+        let caller = |id: Option<&str>, legacy| AgentCaller {
+            id: id.map(str::to_string),
+            model: "eng-engineering".into(),
+            legacy,
+        };
+        assert!(caller(Some("a-1"), false).proven());
+        assert!(!caller(None, true).proven());
+        assert!(!caller(Some("a-1"), true).proven());
+        assert!(!caller(None, false).proven());
+    }
 
     #[test]
     fn iso_formatter_is_to_iso_string() {
