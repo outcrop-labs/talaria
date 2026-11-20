@@ -1,6 +1,10 @@
 // POST /api/artifacts/{id}/pull/google. Overwrite the Talaria body from the
 // Google Doc this artifact was last exported to. The editor confirms first;
-// this route is the overwrite.
+// this route is the overwrite, so only someone the PUT lets edit may pull —
+// a reader gets 403 before anything reaches Google.
+//
+// The PUT's rule is `can_edit_human`: the owner, an org edit policy, or an
+// editor grant (direct or through a team).
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -12,7 +16,7 @@ use talaria_agent_auth::now_ms;
 use talaria_api_facades::google::connections::get_access_token;
 use talaria_api_facades::google::docs::get_doc_with_token;
 use talaria_api_facades::google::errors::google_fail;
-use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, list_editors};
+use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_edit_human, list_editors};
 use talaria_artifacts::{SaveArtifactPatch, get_artifact, guarded, save_artifact};
 use talaria_error::{house_error, house_error_msg, internal};
 use talaria_session::{require_user, who_of};
@@ -41,7 +45,10 @@ pub async fn post(
         Ok(v) => v,
         Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
     };
-    if !can_read(
+    // THE PUT'S RULE, not the read rule. It once checked `can_read`, so a
+    // person who could only read the document — the pane hides Pull from
+    // Google from them — could still overwrite its body by calling this.
+    if !can_edit_human(
         &guarded(&artifact),
         Some(&user.id),
         who_of(&user).as_deref(),

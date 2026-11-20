@@ -19,6 +19,7 @@ Open: **Work → Research** in the sidebar. Admins can hide Research from indivi
 | Read the report | It appears beside the discussion, with a **N sources (M cited)** line and **Open in Artifacts** |
 | Discuss the findings | The discussion is open from the start — chat with the agent about its own report; it answers from what it found and can go look again |
 | Go deeper | Ask a follow-up in the discussion — the agent can run child research and merge it into the same report |
+| Open a file beside the report | Ask in the discussion — "open the pricing sheet here" — and the agent opens that document or Google file as a tab beside the report, with your access |
 | Start another | **New**, beside **Remove** in the header — back to the centered ask with your history one click away |
 | Share a run | The avatar stack → **Share with** — members get to read and discuss |
 | Remove a run | Header → **Remove**. The report document stays in Files |

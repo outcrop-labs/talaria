@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Archive, ArchiveRestore, ArrowRightLeft, Check, Eye, SlidersHorizontal, Trash2 } from '@lucide/svelte'
+  import { Archive, ArchiveRestore, ArrowRightLeft, Check, ExternalLink, Eye, RefreshCw, SlidersHorizontal, Trash2 } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -83,6 +83,9 @@
   import WorkbenchTicker from './WorkbenchTicker.svelte'
   import RunDetailModal from './RunDetailModal.svelte'
   import { useWorkSession } from '@/lib/work-session.svelte'
+  import { clickupTaskId, clickupTaskUrl, resyncOutcome, resyncTicket, syncKey, useBoardSync } from '@/lib/board-sync'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
+  import RemoteStateChip from './RemoteStateChip.svelte'
 
   const MOVE: TaskStatus[] = [...TASK_STATUSES, ...OFF_BOARD_STATUSES]
 
@@ -212,6 +215,8 @@
       roomId = null
       roomTried = false
       propsOpen = false
+      // …and the old ticket's re-sync is not this one's to finish.
+      resyncing = null
     }
   })
 
@@ -328,6 +333,73 @@
     watchFocus = 'agent'
     watchRun = runId
   }
+
+  // ── A ticket the ClickUp sync made ─────────────────────────────────────
+  // `externalKey` names its ClickUp task. The board's sync projection (the
+  // same read as the header chip's) says whether that task is still active in
+  // ClickUp and whether the board still syncs; "Re-sync from ClickUp" forces
+  // this one ticket to ClickUp's values (docs/BOARD-SYNC.md) and is an owner's
+  // or editor's, like Sync now.
+  const syncQuery = useBoardSync(() => board.id)
+  const boardSync = $derived(syncQuery.data?.sync ?? null)
+  const clickupId = $derived(clickupTaskId(t?.externalKey))
+  const remoteState = $derived(t ? boardSync?.remoteStates[t.id] : undefined)
+  const openedBy = $derived(t?.createdBy === 'clickup-sync' ? 'ClickUp sync' : t?.createdBy)
+  // The re-sync this view started: its run, the ticket it is for, and when
+  // the POST answered — a projection read before then predates the run and
+  // says nothing about it. `resyncPending` covers the POST itself, so a
+  // double-click is one request, not a second one the server refuses (409).
+  let resyncPending = $state(false)
+  let resyncing = $state<{ runId: string; taskId: string; since: number } | null>(null)
+  const resync = async () => {
+    if (resyncPending || resyncing) return
+    const forTask = taskId
+    resyncPending = true
+    try {
+      const r = await resyncTicket(forTask)
+      // The modal jumped to another ticket meanwhile: the run still goes, but
+      // this view no longer shows the ticket it is for.
+      if (forTask !== taskId) return
+      resyncing = { runId: r.runId, taskId: forTask, since: Date.now() }
+      void qc.invalidateQueries({ queryKey: syncKey(board.id) })
+    } catch (e) {
+      toastError('Could not re-sync from ClickUp', e)
+    } finally {
+      resyncPending = false
+    }
+  }
+  // The re-sync is a run of the board's sync; the projection polls while it
+  // is live. It is over once the projection (read after it started) shows it
+  // finished — or shows it neither live nor latest, because a later run took
+  // `lastRun` first: the schedule held back behind it, or a member's Sync
+  // now. Then read the ticket again — this view never refetches the open
+  // ticket on the board's live events (it would thrash its editors).
+  $effect(() => {
+    const r = resyncing
+    const s = boardSync
+    if (!r || !s || syncQuery.dataUpdatedAt < r.since) return
+    const outcome = resyncOutcome(s, r.runId)
+    if (outcome === 'going') return
+    resyncing = null
+    void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
+    if (outcome === 'error') {
+      refresh()
+      const run = s.lastRun
+      pushToast({ title: 'The re-sync did not finish', body: run?.error ?? 'The run stopped.', tone: 'danger' })
+      return
+    }
+    // A forced title lands in the title field too (it is seeded once per
+    // ticket, so a refetch alone would leave the old one showing).
+    void qc.refetchQueries({ queryKey: ['task', r.taskId] }).then(() => {
+      const fresh = taskQuery.data?.task
+      if (fresh && fresh.id === r.taskId) title = fresh.title
+    })
+    pushToast(
+      outcome === 'done'
+        ? { title: 'Re-synced from ClickUp', body: 'The ticket now matches its ClickUp task.', tone: 'success' }
+        : { title: 'The re-sync has ended', body: 'Another sync started right after it; its progress shows on the board’s ClickUp chip.', tone: 'info' },
+    )
+  })
 </script>
 
 <!-- Escape closes the PROPERTIES DRAWER first, and only closes the ticket once
@@ -419,11 +491,41 @@
             </Chip>
           {/if}
           {#if t.archivedAt}<Chip title="This ticket is archived">Archived</Chip>{/if}
+          {#if clickupId}
+            <!-- Where it came from: the ClickUp task, and its state there. -->
+            <a
+              href={clickupTaskUrl(clickupId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex shrink-0"
+              title={boardSync ? 'Synced from ClickUp — open the task there' : 'Imported from ClickUp; the board no longer syncs — open the task there'}
+              data-ticket-source
+            >
+              <Chip class="inline-flex items-center gap-1">ClickUp {clickupId}<ExternalLink size={9} /></Chip>
+            </a>
+            <RemoteStateChip state={remoteState} />
+            {#if syncQuery.data && !boardSync}
+              <span class="hidden shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted md:inline" data-sync-disconnected>
+                sync disconnected
+              </span>
+            {/if}
+          {/if}
           <span class="hidden min-w-0 truncate font-mono text-[11px] text-muted sm:block">
-            opened by {t.createdBy}
+            opened by {openedBy}
           </span>
 
           <div class="ml-auto flex shrink-0 items-center gap-0.5">
+            {#if clickupId && boardSync && canEdit}
+              <IconButton
+                size="sm"
+                title={resyncing || resyncPending ? 'Re-syncing from ClickUp…' : boardSync.liveRun ? 'A sync is running on this board — re-sync when it finishes' : boardSync.state === 'needs_credential' ? 'The board’s sync needs a new token — a board owner replaces it in Board settings → Sync' : 'Re-sync from ClickUp'}
+                disabled={!!resyncing || resyncPending || !!boardSync.liveRun || boardSync.state === 'needs_credential'}
+                onclick={() => void resync()}
+                data-resync
+              >
+                <RefreshCw size={13} />
+              </IconButton>
+            {/if}
             {#if live || queuedWait}
               <!-- The same watch affordance the board surfaces carry, opening
                    the run-detail modal on the LIVE run. Like the card

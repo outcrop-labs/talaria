@@ -311,7 +311,9 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts_id_pull_google
 
 > POST /api/artifacts/{id}/pull/google. Overwrite the Talaria body from the
 > Google Doc this artifact was last exported to. The editor confirms first;
-> this route is the overwrite.
+> this route is the overwrite, so only someone the PUT lets edit may pull —
+> a reader gets 403 before anything reaches Google.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |

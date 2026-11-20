@@ -5,9 +5,10 @@ becomes a ticket on the board. The sync carries over status, assignees, priority
 tags, the description, attachments and comments. After the first import the sync keeps
 running, on a schedule and whenever someone presses **Sync now**.
 
-This page covers the engine and its HTTP API. The Board settings → Sync tab and the
-board's sync chip arrive in a follow-up change; until then the routes below are the way
-in. The code is in `api/crates/talaria-board-sync` (the engine) and
+This page covers the engine and its HTTP API. People reach it through Board settings →
+**sync**, the board's **ClickUp ·** chip and a synced ticket's **Re-sync from ClickUp**; the
+member guide is [`docs/user/boards-clickup-sync.md`](./user/boards-clickup-sync.md). The
+code is in `api/crates/talaria-board-sync` (the engine) and
 `api/crates/talaria-clickup` (the ClickUp v2 client). The generated route reference is in
 [`docs/api/boards.md`](./api/boards.md) and [`docs/api/tasks.md`](./api/tasks.md).
 

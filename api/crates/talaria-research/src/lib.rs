@@ -49,7 +49,9 @@ Answer from the report and its sources first. Cite the same [n] markers the repo
 
 When the answer genuinely is not in what was found, say so plainly and offer to look into it. If a teammate asks you to dig further, commission follow-up research with the research tool rather than answering from memory; its findings are added to the same report, so the document stays the one place the answer lives.
 
-Do not re-research something the report already covers — say what it says and point at the section.";
+Do not re-research something the report already covers — say what it says and point at the section.
+
+The pane beside this chat shows files as tabs next to the report. To put a file that already exists in front of the teammates — a source document, \"the pricing sheet from earlier\" — call open_in_pane with its documentId or its link: reading it with get_document does not open it, and pasting it into the chat is not opening it.";
 
 /// The other half of the research chat contract: the run is STILL WORKING. The
 /// report does not exist yet, so the mode prompt's whole frame — "answer from
@@ -60,7 +62,9 @@ pub const RESEARCH_WORKING_PROMPT: &str = "This is the discussion of a research 
 
 Do not describe findings the run has not produced and do not present guesses as research: nothing is cited yet, and in this surface everything looks cited. You may say what the run is doing (scoping, searching, writing) and what it was asked to find.
 
-A message here may be meant for the run, not for you — answers to the run's clarifying question belong to the run and steer it. When someone asks for something the finished report would answer better, say the run is on it rather than pre-empting it from memory.";
+A message here may be meant for the run, not for you — answers to the run's clarifying question belong to the run and steer it. When someone asks for something the finished report would answer better, say the run is on it rather than pre-empting it from memory.
+
+The pane beside this chat shows files as tabs. To put a file that already exists in front of the teammates, call open_in_pane with its documentId or its link: reading it with get_document does not open it.";
 
 // ── The report-side machinery ─────────────────────────────────────────────────
 //
@@ -1151,6 +1155,22 @@ mod tests {
     }
 
     const PARENT: &str = "# Postgres 17\n\nIt rewrote the vacuum [1].\n\n## Sources\n\n1. [a](https://a.test)\n2. [b](https://b.test)\n";
+
+    #[test]
+    fn both_research_prompts_name_open_in_pane() {
+        // The research surface has a pane beside the report, and the agent
+        // learns how to put an existing file there only from its prompt —
+        // whichever of the two the run's state picks.
+        for prompt in [RESEARCH_MODE_PROMPT, RESEARCH_WORKING_PROMPT] {
+            assert!(
+                prompt.contains("call open_in_pane with its documentId or its link"),
+                "{prompt}"
+            );
+            assert!(prompt.contains("get_document does not open it"), "{prompt}");
+        }
+        // The working prompt still forbids inventing findings.
+        assert!(RESEARCH_WORKING_PROMPT.contains("The report does not exist yet"));
+    }
 
     #[test]
     fn a_follow_up_extends_the_prose_and_renumbers_nothing() {

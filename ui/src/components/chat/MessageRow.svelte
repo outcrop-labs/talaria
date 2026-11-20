@@ -15,7 +15,7 @@
   import { relativeTime } from '@/lib/fleet'
   import { resolveAgentMedia } from '@/lib/agent-media'
   import { deleteChannelMessage, editChannelMessage, toggleMessageReaction, type ChannelMessage } from '@/lib/channels.svelte'
-  import { actorLabel, threadAvatars, type MessageCtx } from './channel-view'
+  import { actorLabel, importedAuthor, threadAvatars, type MessageCtx } from './channel-view'
 
   let {
     message: m,
@@ -40,10 +40,15 @@
     onDecided?: () => void
   } = $props()
 
-  const name = $derived(m.authorType === 'agent' ? ctx.labelFor(m.author) : ctx.userLabel(m.author))
+  const name = $derived(actorLabel(ctx, m.author, m.authorType))
   const live = $derived(m.status === 'streaming')
   const own = $derived(m.authorType === 'user' && m.author === ctx.me)
-  const picture = $derived(ctx.pictureFor(m.author, m.authorType))
+  // AN IMPORTED COMMENT (a tracker sync carried it over) shows its label's name
+  // with the tracker as a badge, the initials avatar, and no profile: its author
+  // is a name from another product, never resolved against Talaria accounts.
+  const imported = $derived(m.authorType === 'imported' ? importedAuthor(m.author) : null)
+  const picture = $derived(imported ? null : ctx.pictureFor(m.author, m.authorType))
+  const profileOpens = $derived(!!ctx.onOpenProfile && !imported)
   const chips: ReactionChip[] = $derived(
     (m.reactions ?? []).map((r) => ({
       emoji: r.emoji,
@@ -98,7 +103,7 @@
 >
   {#if continued}
     <ContinuationGutter {name} at={m.createdAt} timeZone={ctx.timeZone} />
-  {:else if ctx.onOpenProfile}
+  {:else if profileOpens}
     <!-- The avatar and the name open the author's profile (Comms' drawer). -->
     <button type="button" class="mt-0.5 shrink-0 self-start rounded" title={`View ${name}'s profile`} onclick={openProfile}>
       <MessageAvatar {name} src={picture} />
@@ -109,7 +114,7 @@
   <div class="min-w-0 flex-1">
     {#if !continued}
       <div class="flex items-baseline gap-2">
-        {#if ctx.onOpenProfile}
+        {#if profileOpens}
           <button type="button" class="font-sans text-[13px] font-medium text-fg hover:underline" onclick={openProfile}>
             {name}
           </button>
@@ -119,6 +124,14 @@
         {#if m.authorType === 'agent'}
           <span class="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted">
             agent
+          </span>
+        {:else if imported}
+          <span
+            class="rounded border border-line px-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted"
+            title={`Imported from ${imported.source ?? 'another tracker'} — written there by ${m.author}`}
+            data-imported-badge
+          >
+            {imported.source ?? 'imported'}
           </span>
         {/if}
         <!-- The viewer's zone, the same one the day dividers use. -->
