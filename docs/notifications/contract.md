@@ -43,7 +43,7 @@ stand, with I-8 amended below.
 
 **I-24, amended (I-25, per-board settings).** `entity::BOARD` (`"board"`, selectable by
 `PUT /api/notifications {entity}`), `group_key::board_activity(board)` and
-`group_key::board_digest(board)` (the daily board digest's row) join the conventions, with
+`group_key::board_digest(board, day)` (the daily board digest's row, one per local day) join the conventions, with
 their TS twins in `ui/src/lib/notify-wire.ts`. `NotifyMeta`, the write
 path's UPSERT and the `notifications` columns are unchanged: who gets a row is decided at
 fan-out by the producers (`talaria_notify::boards`, [producers.md](./producers.md#each-board)),

@@ -5221,21 +5221,25 @@ alter table tasks drop column if exists conversation_id`,
   // so it counts as deliberate. Nullable, so roll-safe.
   `alter table task_watchers add column if not exists added_by text`,
   // THE DAILY BOARD DIGEST'S LEDGER (talaria-digest boards.rs): one row per
-  // person, written as the pass goes. filed_on is the local date their
-  // in-app rows were filed for (so a tick inside the same send window never
-  // files them twice); window_from and window_to are the stretch those rows
-  // counted (the next digest starts at window_to); mailed_on is the local
-  // date their mail went, or there was none to send, and stays behind
-  // filed_on while a mail is owed, so a failed send is retried inside the
-  // window without filing the rows again. A table rather than an
-  // app_settings blob (the approvals digest keeps one): each pass writes one
-  // person's row, never everyone's, and the row goes with the person. New,
-  // so roll-safe: the previous release never reads it.
+  // person, written as the pass goes. filed_on is the local date the day was
+  // claimed for (so a tick inside the same send window never files it
+  // twice); window_from and window_to are the stretch its rows count (the
+  // next digest starts at window_to); filing_claim is the claiming pass's
+  // clock (epoch ms) while it files the rows, null once every row landed —
+  // nothing mails a day still filing, and a claim a dead pass left is taken
+  // over once it is stale; mailed_on is the local date the mail went, or
+  // there was none to send, and stays behind filed_on while a mail is owed,
+  // so a failed send is retried inside the window without filing the rows
+  // again. A table rather than an app_settings blob (the approvals digest
+  // keeps one): each pass writes one person's row, never everyone's, and the
+  // row goes with the person. New, so roll-safe: the previous release never
+  // reads it.
   `create table if not exists board_digest_state (
      user_id uuid primary key references users(id) on delete cascade,
      filed_on text not null,
      window_from timestamptz not null,
      window_to timestamptz not null,
+     filing_claim bigint,
      mailed_on text,
      updated_at timestamptz not null default now()
    )`,

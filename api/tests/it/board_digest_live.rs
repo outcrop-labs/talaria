@@ -8,15 +8,19 @@
 // on. A second tick the same day files nothing and mails nothing; a mail
 // that failed (or that the instance switch held) is sent on a later tick
 // without filing the rows again; tomorrow's digest counts only what came
-// after today's and replaces an unread one. Only the boards the person can
-// still see, only the ones their setting puts on a digest, and never the
-// moves of a ticket they watch themselves (those reached them as they
-// happened).
+// after today's, in a row of its own. Only the boards the person can still
+// see, only the ones their setting puts on a digest, never the moves of a
+// ticket they watch themselves (those reached them as they happened), a
+// ticket moved here only from its arrival, and due dates only as thresholds
+// crossed. The ledger's claims: one winner of two at once; a day still
+// filing is never mailed, and a claim a dead pass left is taken over and
+// finishes the day without filing a row twice.
 // Events go through the REAL router with minted sessions; the pass is called
 // directly with the person's clock put in the send window and a recording
 // mail door, for this module's people only (`run_board_digest_for`), so it
-// never touches another test's. House rule: #[ignore]d; ci.yml's api job runs
-// them with --ignored (its live-DB steps).
+// never touches another test's. The claims and the counts query are reached
+// through `talaria_digest::boards::seam`. House rule: #[ignore]d; ci.yml's
+// api job runs them with --ignored (its live-DB steps).
 //
 //   source ui/.env && cargo test -p talaria-api --test it board_digest_live:: -- --ignored
 
@@ -26,12 +30,17 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use talaria_api::state::AppState;
+use talaria_digest::Recipient;
 use talaria_digest::boards::{
-    BoardDigestDeps, BoardDigestRun, BoardMail, SendBoardMail, run_board_digest_for,
+    BoardDigest, BoardDigestDeps, BoardDigestRun, BoardMail, Counts, Raw, SendBoardMail, Tally,
+    run_board_digest_for, seam,
 };
 use talaria_notify::{GatedSendResult, NotifyDeps};
 
 use crate::support::{call_json, live_app_state};
+
+const HOUR_MS: i64 = 3_600_000;
+const DAY_MS: i64 = 24 * HOUR_MS;
 
 const IN_APP: &str = r#"{"mention":"in_app","dm":"in_app","approval_pending":"in_app","judge_escalation":"in_app","agent_blocked":"in_app","gap_reported":"in_app","work_complete":"in_app","workchain_turn":"in_app","workchain_paused":"in_app","digest":"off"}"#;
 
@@ -304,7 +313,8 @@ fn digests(rows: &[Row]) -> Vec<Row> {
 // points at her (her assignment). At the slot: one quiet row each — Bob's
 // counts the board, minus his own new ticket and a sync's writes; Cy's only
 // her ticket's move — and one mail, Bob's. A second tick files and mails
-// nothing. Tomorrow's digest counts only what came after, in the same row.
+// nothing. Tomorrow's digest counts only what came after, in a row of its
+// own: today's, unread, keeps its counts.
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (ui/.env)"]
 async fn a_digest_board_files_one_row_a_day_and_one_mail() {
@@ -435,8 +445,8 @@ async fn a_digest_board_files_one_row_a_day_and_one_mail() {
     assert_eq!(digests(&on_board(&state, &bob, &b).await)[0].count, 1);
     assert_eq!(sent.lock().unwrap().len(), 1);
 
-    // Tomorrow: only what came after today's digest, replacing the unread
-    // row rather than stacking a second one.
+    // Tomorrow: only what came after today's digest, in its own row — the
+    // unread one from today keeps what it said.
     ticket(&state, &b, &ada_c, json!({ "title": "After the digest" })).await;
     let tomorrow = now + 24 * 3_600_000;
     let next = pass(&d, tomorrow, &[&bob, &cy]).await;
@@ -446,10 +456,13 @@ async fn a_digest_board_files_one_row_a_day_and_one_mail() {
         "Cy's tickets did not move: {next:?}"
     );
     let bob_digest = digests(&on_board(&state, &bob, &b).await);
-    assert_eq!(bob_digest.len(), 1, "{bob_digest:?}");
-    assert_eq!(bob_digest[0].id, row.id, "the unread row, replaced");
-    assert_eq!(bob_digest[0].body, "1 new");
-    assert_eq!(bob_digest[0].count, 2);
+    assert_eq!(bob_digest.len(), 2, "{bob_digest:?}");
+    assert_eq!(bob_digest[0].id, row.id, "today's row, untouched");
+    assert_eq!(bob_digest[0].body, row.body);
+    assert_eq!(bob_digest[0].count, 1);
+    assert_ne!(bob_digest[1].group_key, row.group_key);
+    assert_eq!(bob_digest[1].body, "1 new");
+    assert_eq!(bob_digest[1].count, 1);
     assert_eq!(
         sent.lock().unwrap()[1].subject,
         format!("Talaria: {name} \u{2014} 1 new")
@@ -616,16 +629,318 @@ async fn only_the_boards_and_tickets_the_setting_covers() {
     assert!(on_board(&state, &eve, &digest_b).await.is_empty());
 }
 
-// TWO PASSES AT ONCE (a lease lost mid-run) file the day once and mail it
-// once: the day and the mail are each claimed by a compare-and-set, and the
-// pass that loses a claim does nothing.
+// TWO CLAIMS AT ONCE, ONE WINNER — raced on one read mark, which two whole
+// passes cannot be made to do on cue. The day: of two passes that read the
+// same (absent) mark, one claims it. Its mail cannot be claimed while the day
+// is filing; a claim that is not this pass's cannot mark the rows landed;
+// then of two mail claims, one wins. A stale claim: of two passes that read
+// it, one takes it over, and the pass it was taken from can no longer land
+// its rows.
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (ui/.env)"]
-async fn overlapping_passes_file_and_mail_once() {
+async fn two_claims_at_once_have_one_winner() {
+    let state = live_app_state().await;
+    let pg = &state.pg;
+    let (bob, _, _) = mint(&state, "Bob", "member").await;
+    let now = talaria_api::agent_auth::now_ms();
+    let window = (now - DAY_MS, now);
+    let day = "2026-11-20";
+
+    let (one, two) = tokio::join!(
+        seam::claim_day(pg, &bob, day, window, true, now),
+        seam::claim_day(pg, &bob, day, window, true, now),
+    );
+    let won = [one.unwrap(), two.unwrap()];
+    assert_eq!(won.iter().filter(|w| **w).count(), 1, "the day: {won:?}");
+    assert!(
+        !seam::claim_mail(pg, &bob, day).await.unwrap(),
+        "no mail while the day is filing"
+    );
+    assert!(!seam::rows_landed(pg, &bob, day, now - 1).await.unwrap());
+    assert!(seam::rows_landed(pg, &bob, day, now).await.unwrap());
+    let (one, two) = tokio::join!(
+        seam::claim_mail(pg, &bob, day),
+        seam::claim_mail(pg, &bob, day),
+    );
+    let won = [one.unwrap(), two.unwrap()];
+    assert_eq!(won.iter().filter(|w| **w).count(), 1, "the mail: {won:?}");
+
+    // The next day's claim, left by a pass that died; two passes past the
+    // stale bound read it and race to take it over.
+    let next = "2026-11-21";
+    assert!(
+        seam::claim_day(pg, &bob, next, (now, now + DAY_MS), true, now + DAY_MS)
+            .await
+            .unwrap()
+    );
+    let later = now + DAY_MS + 15 * 60_000;
+    let (one, two) = tokio::join!(
+        seam::take_over(pg, &bob, next, now + DAY_MS, later),
+        seam::take_over(pg, &bob, next, now + DAY_MS, later + 1),
+    );
+    let won = [one.unwrap(), two.unwrap()];
+    assert_eq!(
+        won.iter().filter(|w| **w).count(),
+        1,
+        "the takeover: {won:?}"
+    );
+    assert!(
+        !seam::rows_landed(pg, &bob, next, now + DAY_MS)
+            .await
+            .unwrap(),
+        "the pass it was taken from mails nothing"
+    );
+}
+
+// A PASS THAT DIED MID-FILING. It claimed the day and filed one board's row
+// of two, then died. A pass inside the stale bound leaves the claim (its
+// owner may still be filing) and mails nothing about rows that are not
+// there; the first tick past it takes the claim over, files only the missing
+// row, and mails once; the tick after that has nothing to do.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_claim_a_dead_pass_left_is_taken_over_and_mailed_once() {
+    let state = live_app_state().await;
+    let pg = &state.pg;
+    let (_ada, _, ada_c) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c) = mint(&state, "Bob", "member").await;
+    let first = board(&state, &ada_c, "bd dead one", &[(&bob_e, "editor")]).await;
+    let second = board(&state, &ada_c, "bd dead two", &[(&bob_e, "editor")]).await;
+    for b in [&first, &second] {
+        set(
+            &state,
+            b,
+            &bob_c,
+            json!({ "preset": "all", "cadence": "digest" }),
+        )
+        .await;
+        ticket(&state, b, &ada_c, json!({ "title": "Here" })).await;
+    }
+    board_mail_on(&state, &bob).await;
+    settle().await;
+
+    let now = talaria_api::agent_auth::now_ms();
+    in_the_slot(&state, now, &[&bob]).await;
+    let day = seam::local_day(pg, &bob, now).await.unwrap();
+    let (send, sent) = door(Vec::new());
+    let d = deps(&state, send);
+    // The dead pass: its claim, and the first board's row.
+    assert!(
+        seam::claim_day(pg, &bob, &day, (now - DAY_MS, now), true, now)
+            .await
+            .unwrap()
+    );
+    let landed = BoardDigest {
+        board_id: first.clone(),
+        name: "bd dead one".into(),
+        counts: Counts {
+            created: 1,
+            ..Counts::default()
+        },
+    };
+    assert_eq!(
+        seam::file_rows(&d.notify, &bob, &day, &[landed])
+            .await
+            .unwrap(),
+        1
+    );
+
+    let early = pass(&d, now + 5 * 60_000, &[&bob]).await;
+    assert_eq!(
+        (early.busy, early.rows, early.mailed),
+        (1, 0, 0),
+        "a fresh claim is left alone: {early:?}"
+    );
+    assert!(sent.lock().unwrap().is_empty(), "no mail while filing");
+
+    let late = pass(&d, now + 15 * 60_000, &[&bob]).await;
+    assert_eq!(
+        (late.people_filed, late.rows, late.mailed),
+        (1, 1, 1),
+        "taken over: only the missing row, then the mail: {late:?}"
+    );
+    let again = pass(&d, now + 30 * 60_000, &[&bob]).await;
+    assert_eq!(
+        (again.already_done, again.rows, again.mailed),
+        (1, 0, 0),
+        "{again:?}"
+    );
+    for b in [&first, &second] {
+        let rows = digests(&on_board(&state, &bob, b).await);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].count, 1, "filed once");
+        assert_eq!(rows[0].body, "1 new");
+    }
+    let mails = sent.lock().unwrap();
+    assert_eq!(mails.len(), 1, "mailed once");
+    assert!(
+        mails[0].subject.contains("on 2 boards"),
+        "{}",
+        mails[0].subject
+    );
+}
+
+// DUE DATES ARE THRESHOLDS CROSSED, NOT A BACKLOG. Over a window in which
+// nothing else happened: a ticket overdue since long before the window is
+// not counted; one whose due date passed inside it is overdue (Bob's own,
+// too); one that came within a day of its due date inside it is due soon;
+// one due later, and a closed one, are not counted. A board whose only
+// content is a stale overdue backlog has nothing to report.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn due_counts_are_thresholds_crossed_in_the_window() {
+    let state = live_app_state().await;
+    let pg = &state.pg;
+    let (_ada, _, ada_c) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, _) = mint(&state, "Bob", "member").await;
+    let b = board(&state, &ada_c, "bd due", &[(&bob_e, "editor")]).await;
+    let backlog = board(&state, &ada_c, "bd backlog", &[(&bob_e, "editor")]).await;
+    let stale = ticket(&state, &b, &ada_c, json!({ "title": "Stale" })).await;
+    let passed = ticket(
+        &state,
+        &b,
+        &ada_c,
+        json!({ "title": "Passed", "assignees": [format!("user:{bob}")] }),
+    )
+    .await;
+    let soon = ticket(&state, &b, &ada_c, json!({ "title": "Soon" })).await;
+    let far = ticket(&state, &b, &ada_c, json!({ "title": "Far" })).await;
+    let closed = ticket(&state, &b, &ada_c, json!({ "title": "Closed" })).await;
+    let old = ticket(&state, &backlog, &ada_c, json!({ "title": "Old" })).await;
+    settle().await;
+
+    // The window opens an hour after everything above was written.
+    let t0 = talaria_api::agent_auth::now_ms();
+    let (from, to) = (t0 + HOUR_MS, t0 + 25 * HOUR_MS);
+    for (task, due_at) in [
+        (&stale, t0 - 3 * DAY_MS),
+        (&passed, t0 + 2 * HOUR_MS),
+        (&soon, t0 + 30 * HOUR_MS),
+        (&far, t0 + 60 * HOUR_MS),
+        (&closed, t0 + 3 * HOUR_MS),
+        (&old, t0 - 30 * DAY_MS),
+    ] {
+        sqlx::query(
+            "update tasks set due_date = to_timestamp($2::bigint / 1000.0) where id = $1::uuid",
+        )
+        .bind(task)
+        .bind(due_at)
+        .execute(pg)
+        .await
+        .unwrap();
+    }
+    sqlx::query("update tasks set status = 'done' where id = $1::uuid")
+        .bind(&closed)
+        .execute(pg)
+        .await
+        .unwrap();
+    let person = Recipient {
+        id: bob.clone(),
+        email: bob_e.clone(),
+        prefs: None,
+        timezone: None,
+    };
+    let raw = seam::raw_counts(pg, &b, &person, from, to).await.unwrap();
+    assert_eq!(
+        raw,
+        Raw {
+            due_soon: Tally { board: 1, mine: 0 },
+            overdue: Tally { board: 1, mine: 1 },
+            ..Raw::default()
+        }
+    );
+    assert_eq!(
+        seam::raw_counts(pg, &backlog, &person, from, to)
+            .await
+            .unwrap(),
+        Raw::default(),
+        "a stale backlog is not news"
+    );
+}
+
+// A TICKET MOVED HERE counts from its arrival. On the board it came from it
+// was moved and commented on; then it moved here into another column. Bob,
+// who hears this board in full, gets "1 new" — not the earlier move or
+// comment, and not the column line the board move wrote beside it. Cy, its
+// assignee, who hears the tickets she is in, gets the arrival as one move.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_ticket_moved_here_counts_from_its_arrival() {
     let state = live_app_state().await;
     let (_ada, _, ada_c) = mint(&state, "Ada", "admin").await;
     let (bob, bob_e, bob_c) = mint(&state, "Bob", "member").await;
-    let b = board(&state, &ada_c, "bd overlap", &[(&bob_e, "editor")]).await;
+    let (cy, cy_e, cy_c) = mint(&state, "Cy", "member").await;
+    let members = [(bob_e.as_str(), "editor"), (cy_e.as_str(), "editor")];
+    let source = board(&state, &ada_c, "bd source", &members).await;
+    let here = board(&state, &ada_c, "bd here", &members).await;
+    set(
+        &state,
+        &here,
+        &bob_c,
+        json!({ "preset": "all", "cadence": "digest" }),
+    )
+    .await;
+    set(
+        &state,
+        &here,
+        &cy_c,
+        json!({ "preset": "participating", "cadence": "digest" }),
+    )
+    .await;
+    let t = ticket(
+        &state,
+        &source,
+        &ada_c,
+        json!({ "title": "Travels", "assignees": [format!("user:{cy}")] }),
+    )
+    .await;
+    move_to(&state, &t, &ada_c, "in_progress").await;
+    comment(&state, &t, &ada_c, "before it moved").await;
+    assert!(eventually!(activity(&state, &t, "comment").await == 1));
+    ok(
+        &state,
+        "POST",
+        &format!("/api/tasks/{t}/move"),
+        &ada_c,
+        json!({ "boardId": here, "status": "inbox" }),
+    )
+    .await;
+    assert_eq!(activity(&state, &t, "moved").await, 1);
+    let column_lines: i64 = sqlx::query_scalar(
+        "select count(*) from task_activity where task_id = $1::uuid and type = 'status' \
+         and position('(moved boards' in description) > 0",
+    )
+    .bind(&t)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    assert_eq!(column_lines, 1, "the board move's column line, beside it");
+    settle().await;
+
+    let now = talaria_api::agent_auth::now_ms();
+    in_the_slot(&state, now, &[&bob, &cy]).await;
+    let (send, _) = door(Vec::new());
+    let d = deps(&state, send);
+    let run = pass(&d, now, &[&bob, &cy]).await;
+    assert_eq!(run.rows, 2, "{run:?}");
+    let bob_rows = digests(&on_board(&state, &bob, &here).await);
+    assert_eq!(bob_rows.len(), 1, "{bob_rows:?}");
+    assert_eq!(bob_rows[0].body, "1 new");
+    let cy_rows = digests(&on_board(&state, &cy, &here).await);
+    assert_eq!(cy_rows.len(), 1, "{cy_rows:?}");
+    assert_eq!(cy_rows[0].body, "1 moved");
+}
+
+// NO ADDRESS, STILL THE ROWS. A person whose account has no email address
+// set a board to a digest with Board activity's Email on: the in-app row
+// lands; no mail is attempted.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_person_without_an_address_gets_the_rows_and_no_mail() {
+    let state = live_app_state().await;
+    let (_ada, _, ada_c) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c) = mint(&state, "Bob", "member").await;
+    let b = board(&state, &ada_c, "bd no address", &[(&bob_e, "editor")]).await;
     set(
         &state,
         &b,
@@ -634,18 +949,22 @@ async fn overlapping_passes_file_and_mail_once() {
     )
     .await;
     board_mail_on(&state, &bob).await;
-    ticket(&state, &b, &ada_c, json!({ "title": "Once" })).await;
+    ticket(&state, &b, &ada_c, json!({ "title": "News" })).await;
     settle().await;
+    sqlx::query("update users set email = null where id = $1::uuid")
+        .bind(&bob)
+        .execute(&state.pg)
+        .await
+        .unwrap();
 
     let now = talaria_api::agent_auth::now_ms();
     in_the_slot(&state, now, &[&bob]).await;
     let (send, sent) = door(Vec::new());
     let d = deps(&state, send);
-    let (one, two) = tokio::join!(pass(&d, now, &[&bob]), pass(&d, now, &[&bob]));
-    assert_eq!(one.rows + two.rows, 1, "{one:?} {two:?}");
-    assert_eq!(one.mailed + two.mailed, 1, "{one:?} {two:?}");
+    let run = pass(&d, now, &[&bob]).await;
+    assert_eq!((run.rows, run.mailed), (1, 0), "{run:?}");
+    assert!(sent.lock().unwrap().is_empty());
     let rows = digests(&on_board(&state, &bob, &b).await);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].count, 1, "filed once");
-    assert_eq!(sent.lock().unwrap().len(), 1, "mailed once");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].body, "1 new");
 }

@@ -212,31 +212,51 @@ board's own records and files one row per board. It runs in the daily digest's s
 `digest_config` hour in the person's own zone, a 15-minute tick, a two-hour window that never
 wraps. The row counts, over the stretch since the person's last digest (the first covers a
 day, none more than two): **new** tickets (created on the board or moved onto it — only for a
-setting over the whole board), tickets **moved** (not into a done column), tickets
+setting over the whole board; for the person's own tickets an arrival counts as a move, as the
+board move's producer tells them), tickets **moved** (not into a done column), tickets
 **completed**, **comments**, and — once due-date reminders have a producer — tickets **due
-soon** or **overdue**. Each only when the setting wants that event, over the tickets it
-covers (`mine`: watching, assigned, created, and for a comment having commented before; or
-the whole board). Never counted: the person's own actions, a tracker sync's writes
-(`talaria_tasks_types::MIRROR_ACTORS`), archived tickets, and the moves, completions and
-comments of a ticket they watch themselves. Only the boards the person's board list shows
-today — a board they lost is dormant — and only counts and the board's name. Read at the
-slot, not queued: a change of setting applies to the next digest, and the counts are a rollup
-that can differ slightly from what instant rows would have said (a ticket counts once per
-line however often it moved).
+soon** or **overdue**. Due dates count as thresholds crossed inside the window, the way the
+reminders fire them: due soon is a ticket that came within a day of its due date and is not
+due yet, overdue is one whose due date passed; neither counts a ticket that was already past
+it when the window opened, so a standing overdue backlog is never news by itself, and the
+first digest replays nothing older than its day. Each only when the setting wants that
+event, over the tickets it covers (`mine`: watching, assigned, created, and for a comment
+having commented before; or the whole board). A ticket that arrived on the board inside the
+window counts from its arrival: its moves and comments on the board it came from are not this
+board's, and the column line a board move writes beside its `moved` line is the arrival, not
+a second move or a completion. Never counted: the person's own actions, a tracker sync's
+writes (`talaria_tasks_types::MIRROR_ACTORS`), archived tickets, and the arrivals, moves,
+completions and comments of a ticket they watch themselves. Only the boards the person's
+board list shows today — a board they lost is dormant — and only counts and the board's
+name. Read at the slot, not queued: a change of setting applies to the next digest, and the
+counts are a rollup that can differ slightly from what instant rows would have said (a
+ticket counts once per line however often it moved; a ticket that left the board inside the
+window is no longer counted on it). The counts query reads `task_watchers` directly for the
+person's own watch rows, on boards they already passed `list_boards` for.
 
-The row: kind `board-digest`, class `board_activity`, `group_key::board_digest`, Realert (a
-newer digest replaces an unread one), entity `board`, href `/boards/<id>`, body like
-`3 new · 8 moved · 2 completed · 11 comments`. It is filed **quiet** — a digest never rings,
-and its email is not the missed-activity batcher's but one **"Your boards"** mail listing
-every board with something to report, sent when the person's Board activity Email is on and
-their email frequency is not Never, through `send_gated_mail` (the instance switch holds it).
-Nothing to report, nothing sent. The ledger, `board_digest_state` (one row per person), is
-written as the pass goes, each deciding write a compare-and-set: the day is claimed before
-its rows are filed (a row that fails to land gives the claim back, for the next tick), then
-the mail is claimed before it is sent (a mail that failed or was held gives it back, and the
-next tick inside the window offers it again without filing the rows twice). A tick inside
-the same window, or a pass that overlaps another, files and mails nothing. It is a separate mail from the
-approvals digest, at the same hour. Feature `board-digest`.
+The row: kind `board-digest`, class `board_activity`, `group_key::board_digest(board, day)` —
+one row per board per local day, so a day the person never opened keeps its own counts (the
+next window starts where this one ended; a row that a newer day overwrote would lose them for
+good) — entity `board`, href `/boards/<id>`, body like `3 new · 8 moved · 2 completed · 11
+comments`. It is filed **quiet** — a digest never rings, and its email is not the
+missed-activity batcher's but one **"Your boards"** mail listing every board with something
+to report, sent when the person has an address, their Board activity Email is on and their
+email frequency is not Never, through `send_gated_mail` (the instance switch holds it). A
+person with no address still gets the rows. Nothing to report, nothing sent.
+
+The ledger, `board_digest_state` (one row per person), is written as the pass goes, each
+deciding write a compare-and-set. The day is claimed before its rows are filed, and the
+claim marks it **filing** (`filing_claim`, the claiming pass's clock); nothing mails a day
+while it is filing. When every row has landed, the claiming pass clears the mark — only if the
+claim is still its own — and then claims the mail before sending it (a mail that failed or
+was held gives the claim back, and the next tick inside the window offers it again without
+filing the rows twice). A pass that dies or fails mid-filing leaves its claim: a pass inside
+ten minutes (the job's `max_run_ms`) leaves it to its owner, and the next tick takes it over
+— compare-and-set on the claim it read — and files only the rows still missing for the
+claimed window (a row already filed for that day is found by its key). A day still filing
+when the window closes keeps what landed, and the next digest starts after it. A tick inside
+the same window, or a pass that overlaps another, files and mails nothing twice. It is a
+separate mail from the approvals digest, at the same hour. Feature `board-digest`.
 
 **A board move** tells the destination's audience by their setting for the destination,
 the people who hear the destination in full that a ticket arrived (`created`), the people

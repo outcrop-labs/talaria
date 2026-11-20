@@ -462,6 +462,7 @@ CREATE TABLE public.board_digest_state (
     filed_on text NOT NULL,
     window_from timestamp with time zone NOT NULL,
     window_to timestamp with time zone NOT NULL,
+    filing_claim bigint,
     mailed_on text,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
