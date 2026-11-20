@@ -5,7 +5,10 @@
   import IconButton from '@/components/ui/IconButton.svelte'
   import { alert } from '@/components/ui/confirm.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+  import { cogMenuIcon } from '@/components/ui/settings-cog'
   import { cn } from '@/lib/cn'
+  import type { ChannelKind } from '@/lib/channels.svelte'
+  import { navigate } from '@/router'
   import {
     LEVELS,
     MUTE_PRESETS,
@@ -14,6 +17,8 @@
     muteLabel,
     muteUntil,
     mutedLabel,
+    notifyControlName,
+    notifyScope,
     putChannelNotify,
     readChannelNotify,
     refusalMessage,
@@ -33,11 +38,18 @@
   // name — the header reads star, name, then status). Both read the channel
   // detail query, and a write puts the server's answer straight into that
   // query, so the two never disagree and nothing local outlives a refetch.
+  //
+  // The button is a value-faced quick setter, not a settings door: its glyph
+  // IS the level, so it keeps it rather than wearing the gear. Its name says
+  // whose setting it is and what the glyph means ("Channel notifications:
+  // mentions only"), and the menu ends in the door to the full preferences,
+  // which does wear the gear (docs/UI-CONVENTIONS.md, "Settings cog").
   let {
     channelId,
     detail,
+    kind,
     part = 'control',
-  }: { channelId: string; detail: unknown; part?: 'control' | 'status' } = $props()
+  }: { channelId: string; detail: unknown; kind?: ChannelKind; part?: 'control' | 'status' } = $props()
 
   const qc = useQueryClient()
   const current = $derived(readChannelNotify(detail))
@@ -84,12 +96,15 @@
       })
     }
     if (muted) entries.push({ label: 'Unmute', icon: [Bell, { size: 14 }], onSelect: () => void write({ mutedUntil: null }) })
+    entries.push('sep', {
+      label: 'Notification settings',
+      icon: cogMenuIcon,
+      onSelect: () => void navigate('/settings/:tab', { params: { tab: 'notifications' } }),
+    })
     return entries
   }
 
-  const title = $derived(
-    mutedLine ?? (current ? `Notifications: ${levelLabel(current.level).toLowerCase()}` : 'Notifications'),
-  )
+  const title = $derived(notifyControlName(notifyScope(kind), current, mutedLine))
 </script>
 
 {#if current?.settable}

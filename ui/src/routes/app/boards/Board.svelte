@@ -2,7 +2,7 @@
   import { untrack } from 'svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Archive, CalendarRange, Layers, LayoutGrid, List, Plus, Settings2, Workflow } from '@lucide/svelte'
+  import { Archive, CalendarRange, Layers, LayoutGrid, List, Plus, Workflow } from '@lucide/svelte'
   import { navigate, route } from '@/router'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
@@ -13,6 +13,7 @@
   import Gantt from '@/components/board/Gantt.svelte'
   import Workchains from '@/components/board/Workchains.svelte'
   import BoardSettingsModal from '@/components/board/BoardSettingsModal.svelte'
+  import SettingsButton from '@/components/ui/SettingsButton.svelte'
   import FilterBar from '@/components/board/FilterBar.svelte'
   import { BOARD_MENU_GROUP, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -484,15 +485,7 @@
         {/if}
       </div>
       {#if canEdit}
-        <button
-          type="button"
-          onclick={() => (settingsOpen = true)}
-          class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
-          title="Board settings"
-          aria-label="Board settings"
-        >
-          <Settings2 size={17} />
-        </button>
+        <SettingsButton size="md" label="Board settings" aria-haspopup="dialog" onclick={() => (settingsOpen = true)} />
       {/if}
       <ContextMenu {menu} />
     </div>

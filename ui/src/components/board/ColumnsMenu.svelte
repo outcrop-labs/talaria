@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { SlidersHorizontal, GripVertical } from '@lucide/svelte'
+  import { GripVertical } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { flip, LIST } from '@/lib/motion'
   import { popHeader } from '@/components/chat/chat-chrome'
   import Popover from '@/components/ui/Popover.svelte'
   import Checkbox from '@/components/ui/Checkbox.svelte'
+  import SettingsButton from '@/components/ui/SettingsButton.svelte'
   import { LIST_COLUMNS, type ColumnKey } from './board-list'
 
   let {
@@ -39,25 +40,16 @@
   }
 </script>
 
-<!-- Icon-only trigger living in the table's trailing header cell; the §7
-     popover shell owns the panel (portal, fixed, Esc/scroll close) so the
-     scroll container can't clip it. -->
+<!-- The settings door in the table's trailing header cell: the one gear,
+     named for what it configures. The §7 popover shell owns the panel
+     (portal, fixed, Esc/scroll close) so the scroll container can't clip it,
+     and its header repeats the scope. -->
 <Popover align="right" class="w-48">
   {#snippet trigger(open)}
-    <button
-      title="Columns: show, hide, reorder"
-      aria-label="Configure columns"
-      aria-expanded={open}
-      class={cn(
-        'grid h-6 w-6 place-items-center rounded-md transition-colors',
-        open ? 'bg-raised text-fg' : 'text-muted dither-fill hover:text-fg',
-      )}
-    >
-      <SlidersHorizontal size={13} />
-    </button>
+    <SettingsButton label="Column settings" active={open} aria-expanded={open} />
   {/snippet}
   {#snippet content()}
-    <div class={popHeader}>Drag to reorder</div>
+    <div class={popHeader}>Columns: drag to reorder</div>
     {#each order as key (key)}
       {@const c = LIST_COLUMNS.find((x) => x.key === key)!}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
