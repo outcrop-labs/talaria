@@ -263,7 +263,8 @@ Three environment variables exist for live tests only. Each logs a warning at bo
   seconds, and the batcher ticks every 5 s.
 - `TALARIA_TEST_NOTIFY_DAILY_EVERY_MS=<n>`: both daily jobs run every n ms.
 - `TALARIA_TEST_TASK_DUE_EVERY_MS=<n>`: the due-date scan runs every n ms (its first run
-  after n ms).
+  after n ms). n is at least 1000; a smaller or unreadable value is ignored, with a warning
+  that says so.
 
 ## Features
 

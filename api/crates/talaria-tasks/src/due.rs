@@ -270,8 +270,9 @@ pub async fn tick(notify: &NotifyDeps) -> Result<Option<String>, String> {
 }
 
 /// TEST ONLY: `TALARIA_TEST_TASK_DUE_EVERY_MS=<n>` runs the scan every n ms
-/// (first run after n ms), so a live run can watch it. Read once; loud at
-/// registration.
+/// (first run after n ms), so a live run can watch it. n is a whole number of
+/// at least 1000; anything else is ignored. Read once; loud at registration,
+/// ignored or not.
 fn test_every_ms() -> Option<u64> {
     static V: LazyLock<Option<u64>> = LazyLock::new(|| {
         std::env::var("TALARIA_TEST_TASK_DUE_EVERY_MS")
@@ -300,10 +301,17 @@ pub fn job_spec(notify: NotifyDeps) -> JobSpec {
 
 /// Register the job (talaria-jobs' boot list).
 pub fn register_task_due_job(notify: NotifyDeps) {
-    if let Some(ms) = test_every_ms() {
-        tracing::warn!(
+    match (
+        test_every_ms(),
+        std::env::var("TALARIA_TEST_TASK_DUE_EVERY_MS"),
+    ) {
+        (Some(ms), _) => tracing::warn!(
             "[task-due] TALARIA_TEST_TASK_DUE_EVERY_MS={ms}: the due-date scan runs every {ms} ms. TEST ONLY."
-        );
+        ),
+        (None, Ok(raw)) => tracing::warn!(
+            "[task-due] TALARIA_TEST_TASK_DUE_EVERY_MS={raw:?} ignored: it takes a whole number of ms, at least 1000. The scan runs every 15 minutes."
+        ),
+        (None, Err(_)) => {}
     }
     talaria_scheduler::register_job(job_spec(notify));
 }
