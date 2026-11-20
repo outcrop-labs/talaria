@@ -29,7 +29,7 @@ timed mute. Every producer files through `add_notification_with` and the convent
 | Producer | Kind | Group key | Coalesce | Entity | Actor | Who |
 |---|---|---|---|---|---|---|
 | A DM (`talaria-channel-replies`) | `dm` | `dm(channel)`, adopts a pre-contract row | Realert | `channel` | the sender | every other member, at their level |
-| An @mention in a channel, room, ticket or plan | `mention` | none (each mention is its own row) | — | `channel`, `task` or `plan` | the sender (a person, or the agent by model id) | the members it names, minus level `none` |
+| An @mention in a channel, room, ticket or plan | `mention` | none (each mention is its own row) | — | `channel`, `task` or `plan` | the sender (a person, or the agent by model id) | the members it names, minus level `none`; a ticket's: each by their setting for the board (Off drops it; a deliberate watch keeps it) |
 | A channel thread reply | `thread-reply` | `channel_thread(root)` | Realert | `channel` | the replier | the root's author and earlier repliers, access re-checked |
 | A message in a channel at level `all` | `channel-message` | `channel_activity(channel)` | Quiet | `channel` | the sender | members at `all`, top-level messages only |
 | An event on a ticket a person is not in, on a board they hear in full (`talaria-tasks`) | `board-activity` | `board_activity(board)` | Quiet | `board` | the person or agent who caused it | members whose setting for the board covers the event over scope `board` (All, or Custom), not in the ticket's own audience |
@@ -37,7 +37,7 @@ timed mute. Every producer files through `add_notification_with` and the convent
 | Agent outreach | `agent-outreach` | `outreach(agent, UTC day)` | Realert | `conversation` | the agent | the person reached |
 | A ticket's status move (`talaria-tasks`) | `task-status` | `task_status(task)`, 10-minute window | Quiet | `task` | the mover | watchers, assigned humans and the **creator**, access re-checked, each by their setting for the board |
 | A ticket comment | `task-comment` | `task_comments(task)` | Realert | `task` | the commenter | assigned humans, the creator, watchers and earlier commenters, minus the author and anyone the comment @mentions whose mention row lands, access re-checked, each by their setting for the board |
-| Assignment, workchain turn and pause | `task-assigned`, `workchain_*` | none | — | `task` | the assigner, or the chain | as in wave 1 |
+| Assignment, workchain turn and pause | `task-assigned`, `workchain_*` | none | — | `task` | the assigner, or the chain | as in wave 1; a ticket's assignment: each by their setting for the board (Off drops it; a deliberate watch keeps it); a workchain turn or pause never reads it |
 | An MCP server going down (`talaria-mcp`) | `mcp_server_down` | `mcp_down(server)` | Realert | `mcp_server` | the health pass | every admin |
 | A Hermes agent image that failed its rollout, a release held for review (a Hermes internal Talaria relies on changed), an agent unhealthy on a known-good image or failing a catch-up, a newly good image withholding stored secrets (`talaria-hermes-channel`) | `hermes_update_failed` | `hermes("<digest>:failed")`; the rest `hermes("<topic>")`, once a day per topic | Realert | `hermes_image` | the stable channel | every admin |
 | The agent image channel stuck: checks failing 3 days, a rollout open 7 days, the host failing a rollout three times in a row or short of disk for a download, an agent left behind three windows, its state unreadable | `hermes_channel_stuck` | `hermes("<topic>")`, once a day per topic | Realert | `hermes_image` | the stable channel | every admin |
@@ -194,13 +194,18 @@ the row (the visit rule, EB-13), and the next event files a fresh one.
 **One action, one row** still holds, and only when the louder row lands: a person a patch
 assigns leaves that move's audience only if their `task-assigned` row was filed, and a
 person a comment @mentions leaves the comment fan-out only if their mention row lands
-(`boards::mention_listeners`, the same question the mention door asks). A Custom set that
-keeps comments but drops @mentions hears the @mentioning comment as a comment.
+(`boards::mention_listeners`, the same question the mention door asks). A new ticket's
+"New ticket" board row skips whoever its `task-assigned` row reached and whoever its
+description @mentions whose mention row lands (the create door's roster and the same
+question). A Custom set that keeps comments but drops @mentions hears the @mentioning
+comment as a comment; a set that keeps status but drops assignments hears a patch that
+assigns and moves them as one status row.
 
 **A board move** tells the destination's audience by their setting for the destination,
 the people who hear the destination in full that a ticket arrived (`created`), the people
 losing sight of it by their setting for the source, and the people who hear the source in
-full that it left — never where to.
+full that it left — never where to — unless a per-ticket row about the move already
+reached them.
 
 **Access and leaving.** The board-wide audience is `talaria_boards::board_audience`
 (`board_role`'s two legs: a member row, or the owning team). Every recipient is re-checked
@@ -217,7 +222,10 @@ never glob-re-exported, and `scripts/check-invariants.mjs`
 (`board-notify-setting-outside-the-fan-outs`) allows `talaria_notify::boards`,
 `board_notify_prefs` and `BOARDS_KEY` only in the per-recipient fan-outs and the caller's
 own routes — no broadcast (a board event to apps, a channel or room post, a realtime frame)
-can read one. A future board-to-channel feed is board configuration, never a person's
+can read one. It reads every spelling of the module path: the full path, a braced import,
+an alias or glob of the crate, and inside talaria-notify `crate::`, `super::` and a bare
+`boards::` (the crate root's `boards::FEATURES` excepted), so the send-time readers there
+cannot reach it either. A future board-to-channel feed is board configuration, never a person's
 setting.
 
 **The routes.** `GET /api/boards/{id}/notify` → `{effective, source, stored, default,

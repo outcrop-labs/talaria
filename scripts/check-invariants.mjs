@@ -333,9 +333,10 @@ const RULES = [
     // post, a realtime frame, a future board-to-channel feed — reading it. So
     // the module (`talaria_notify::boards`, never glob-re-exported), its
     // table and the prefs key are named only by the per-recipient fan-outs
-    // and the caller's own routes below. The allowlist is checked for rot
-    // after the rules run (BOARD_NOTIFY_ALLOW).
-    pattern: /\btalaria_notify::boards\b|\bcrate::boards\b|\bboard_notify_prefs\b|\bBOARDS_KEY\b/,
+    // and the caller's own routes below — by any spelling a path can take
+    // (scanBoardNotify). The allowlist and the spellings are checked for rot
+    // after the rules run.
+    scan: scanBoardNotify,
     allow: [
       // the module itself, and the prefs writer that holds its key
       'api/crates/talaria-notify/src/boards.rs',
@@ -360,10 +361,56 @@ const RULES = [
       'the existing fan-outs (talaria-tasks `notify_ticket_event`, talaria-mentions',
       '`MentionOpts.ticket`) or add the file to `allow` on this rule with the reason, in the',
       'pull request where a reviewer can veto it. A board-level feed is board configuration,',
-      'never a person\'s setting.',
+      'never a person\'s setting. Import it by its full path (`talaria_notify::boards`), never',
+      'through an alias or a glob of the crate, so this rule and a reviewer can both see it.',
     ],
   },
 ]
+
+/** Every spelling that reaches a person's per-board notification setting in
+ *  one Rust file: the module (`talaria_notify::boards`), its table and its
+ *  prefs key. A plain name match is not enough — a braced import
+ *  (`use talaria_notify::{Coalesce, boards};`) or an alias of the crate
+ *  (`use talaria_notify as tn;` then `tn::boards::…`) reaches the module
+ *  without ever writing its full path, and inside talaria-notify itself —
+ *  where the send-time readers (defer.rs, mail.rs) live, the code that must
+ *  never read one — `crate::boards`, `super::boards` and a bare `boards::`
+ *  all do. `path` decides which legs apply: the bare spelling means this
+ *  module only inside its own crate, or after a glob of the crate root;
+ *  elsewhere it is some other crate's own `boards` (talaria-routes-boards).
+ *  The crate root's `boards::FEATURES` (the feature list it chains into the
+ *  registry) is the one bare path that reads nothing. */
+function scanBoardNotify(src, path) {
+  const legs = [
+    /\btalaria_notify::boards\b/,
+    // a use tree never holds a `;`, so this stays inside the one statement
+    /\btalaria_notify::\{[^;]*?\bboards\b/,
+    /\bboard_notify_prefs\b/,
+    /\bBOARDS_KEY\b/,
+  ]
+  // The crate under another name: `use talaria_notify as tn;`,
+  // `extern crate talaria_notify as tn;`, `use talaria_notify::{self as tn};`.
+  for (const m of src.matchAll(/\btalaria_notify(?:\s+as\s+|::\{[^;]*?\bself\s+as\s+)(\w+)/g)) {
+    legs.push(new RegExp(`\\b${m[1]}::(?:boards\\b|\\{[^;]*?\\bboards\\b)`))
+  }
+  if (path.startsWith('api/crates/talaria-notify/') || /\btalaria_notify::\*/.test(src)) {
+    legs.push(/\b(?:crate|super|self)::boards\b/)
+    legs.push(/\b(?:crate|super|self)::\{[^;]*?\bboards\b/)
+    legs.push(/\bboards::(?!FEATURES\b)/)
+  }
+  const out = []
+  const seen = new Set()
+  for (const leg of legs) {
+    for (const h of matches(src, leg)) {
+      const key = `${h.line}:${h.text}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        out.push(h)
+      }
+    }
+  }
+  return out.sort((x, y) => x.line - y.line)
+}
 
 /** Legal in named files, in a known quantity, and forbidden everywhere else.
  *  A census entry is a promise: "these are all of them, and a new one is a bug."
@@ -845,7 +892,7 @@ for (const rule of RULES) {
   const scanned = rule.lang === 'rust' ? rustSources : sources
   for (const [path, src] of scanned) {
     if (rule.allow?.includes(path)) continue
-    const hits = rule.scan ? rule.scan(src) : matches(src, rule.pattern)
+    const hits = rule.scan ? rule.scan(src, path) : matches(src, rule.pattern)
     for (const h of hits) found.push({ path, ...h })
   }
   if (found.length) failures.push({ id: rule.id, what: rule.what, fix: rule.fix, found })
@@ -888,44 +935,69 @@ for (const rule of RULES) {
   }
 }
 
-// The board-setting confinement rule's allowlist and pattern rot the way every
-// allowlist does: a file that moved keeps an exemption that exempts nothing,
-// and a pattern that stopped matching the module's spelling passes on a tree
-// that reads the setting everywhere. So each allowed file must still exist and
-// still name the setting, the module must still hold its table, and the
-// pattern is proven against the spellings it exists to catch (and one it
-// must not).
+// The board-setting confinement rule's allowlist and spellings rot the way
+// every allowlist does: a file that moved keeps an exemption that exempts
+// nothing, and a scan that stopped matching the module's spelling passes on a
+// tree that reads the setting everywhere. So each allowed file must still
+// exist and still name the setting, the module must still hold its table, and
+// the scan is proven against the spellings it exists to catch (and the ones
+// it must not), each in the file it would be written in.
 {
   const rule = RULES.find((r) => r.id === 'board-notify-setting-outside-the-fan-outs')
-  const re = new RegExp(rule.pattern.source)
   const found = []
   for (const path of rule.allow) {
     const src = rustSources.get(path)
     if (src === undefined) found.push({ path, line: 1, text: 'on the allowlist but no longer exists' })
-    else if (!re.test(src)) found.push({ path, line: 1, text: 'on the allowlist but no longer names the setting — delete its entry' })
+    else if (!rule.scan(src, path).length) found.push({ path, line: 1, text: 'on the allowlist but no longer names the setting — delete its entry' })
   }
   const home = rustSources.get('api/crates/talaria-notify/src/boards.rs') ?? ''
   if (!home.includes('board_notify_prefs')) {
     found.push({ path: 'api/crates/talaria-notify/src/boards.rs', line: 1, text: 'no longer holds board_notify_prefs — point the rule at its new home' })
   }
+  // [file it is written in, text]
+  const elsewhere = 'api/crates/talaria-chips/src/lib.rs'
+  const inNotify = 'api/crates/talaria-notify/src/defer.rs'
   const mustMatch = [
-    'talaria_notify::boards::listeners(&pg, b, ev, &c)',
-    'use talaria_notify::boards::{self as board_prefs, Candidate};',
-    'sqlx::query("select preset from board_notify_prefs")',
-    'm.insert(BOARDS_KEY.to_string(), v)',
-    'use crate::boards::default_wire;',
+    [elsewhere, 'talaria_notify::boards::listeners(&pg, b, ev, &c)'],
+    [elsewhere, 'use talaria_notify::boards::{self as board_prefs, Candidate};'],
+    [elsewhere, 'use talaria_notify::{Coalesce, boards};'],
+    [elsewhere, 'use talaria_notify::{boards::{self as bp}, NotifyDeps};'],
+    [elsewhere, 'use talaria_notify::{\n    inbox::{Filed, Seen},\n    boards::listeners,\n};'],
+    [elsewhere, 'use talaria_notify as tn;\nfn f() { tn::boards::listeners(); }'],
+    [elsewhere, 'use talaria_notify::{self as tn, Coalesce};\nfn f() { tn::boards::listeners(); }'],
+    [elsewhere, 'use talaria_notify::*;\nfn f() { boards::listeners(); }'],
+    [elsewhere, 'sqlx::query("select preset from board_notify_prefs")'],
+    [elsewhere, 'm.insert(BOARDS_KEY.to_string(), v)'],
+    [inNotify, 'use crate::boards::default_wire;'],
+    [inNotify, 'use super::boards::default_wire;'],
+    [inNotify, 'use crate::{Coalesce, boards};'],
+    [inNotify, 'let l = boards::listeners(&pg, b, ev, &c).await;'],
+    ['api/crates/talaria-notify/src/lib.rs', 'pub use boards::*;'],
+    ['api/crates/talaria-notify/src/lib.rs', 'pub use self::boards::listeners;'],
   ]
-  const mustNot = ['talaria_notify::board_activity', 'group_key::board_activity(board_id)', 'talaria_boards::board_audience(pg, id)']
-  for (const t of mustMatch) if (!re.test(t)) found.push({ path: 'scripts/check-invariants.mjs', line: 1, text: `self-test: the pattern misses \`${t}\`` })
-  for (const t of mustNot) if (re.test(t)) found.push({ path: 'scripts/check-invariants.mjs', line: 1, text: `self-test: the pattern matches \`${t}\`` })
+  const mustNot = [
+    [elsewhere, 'talaria_notify::board_activity'],
+    [elsewhere, 'group_key::board_activity(board_id)'],
+    [elsewhere, 'talaria_boards::board_audience(pg, id)'],
+    [elsewhere, 'use talaria_notify::{Coalesce, NotifyDeps};\nlet q = "select name from boards";'],
+    // another crate's own `boards` module is not this one
+    ['api/crates/talaria-routes-boards/src/boards/mod.rs', 'pub mod boards_id_notify;\nuse super::boards::boards_id_tasks;'],
+    ['api/crates/talaria-api-routes/src/routes/mod.rs', 'get(talaria_routes_boards::boards::boards_id_notify::get)'],
+    // the crate root declares the module and chains its feature list
+    ['api/crates/talaria-notify/src/lib.rs', 'pub mod boards;\nlet f = x.chain(boards::FEATURES);'],
+    [inNotify, 'href: Some("/boards/x"),'],
+  ]
+  const show = (t) => t.replace(/\n\s*/g, ' ')
+  for (const [path, t] of mustMatch) if (!rule.scan(t, path).length) found.push({ path: 'scripts/check-invariants.mjs', line: 1, text: `self-test: the scan misses \`${show(t)}\` in ${path}` })
+  for (const [path, t] of mustNot) if (rule.scan(t, path).length) found.push({ path: 'scripts/check-invariants.mjs', line: 1, text: `self-test: the scan matches \`${show(t)}\` in ${path}` })
   if (found.length) {
     failures.push({
       id: 'board-notify-allowlist-rot',
-      what: "the board-setting confinement rule's allowlist or pattern no longer describes the tree",
+      what: "the board-setting confinement rule's allowlist or spellings no longer describe the tree",
       fix: [
-        "Update `allow` or `pattern` on 'board-notify-setting-outside-the-fan-outs' in this file, in",
-        'the commit that moved the code. An entry that names nothing is an exemption waiting for',
-        'the next broadcast to walk through.',
+        "Update `allow` on 'board-notify-setting-outside-the-fan-outs' or `scanBoardNotify` in this",
+        'file, in the commit that moved the code. An entry that names nothing is an exemption',
+        'waiting for the next broadcast to walk through.',
       ],
       found,
     })
