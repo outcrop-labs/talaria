@@ -2,11 +2,12 @@
 // unread, prefs, digest, the instance switch, whether THIS user may flip it,
 // and the desktop-alerts soft ask's memory — and, since the contract, the v2
 // rows, the For-you count, the notify seq read in the same statement as the
-// rows, the class registry, the channel matrix, DND, the mail frequency and
-// the feature flags), PUT marks read — by ids, by href, by entity, or all of
+// rows, the class registry, the channel matrix, DND, the mail frequency, the
+// default for every board and the feature flags), PUT marks read — by ids, by href, by entity, or all of
 // them — or moves rows to Done and back, or marks them unread, and tells the
 // person's other tabs and devices which rows, and PATCH changes routing, the
-// matrix, DND or the frequency, or records a soft-ask answer. The mail
+// matrix, DND, the frequency or the default for every board (`boards`), or
+// records a soft-ask answer. The mail
 // fan-out behind the prefs (the outbox, the drain) is scheduler plane, so it
 // is not here; this file ends at the rows and the switches the SPA reads and
 // writes. Every key wave 1 served is still served, in order.
@@ -53,6 +54,7 @@ use talaria_body::{
     record_msg, string_member, utf16_len, zod_type_name, zod_uuid_ok,
 };
 use talaria_error::{house_error, internal, object_or_400};
+use talaria_notify::boards::BoardPref;
 use talaria_notify::{
     ChannelsPatch, Cursor, DndPatch, DndSchedule, EMAIL_FREQUENCIES, ENTITY_TYPES, FOREVER_MS,
     InboxQuery, InboxView, NOTIFY_CLASSES, NotifyDeps, NotifyEntity, PAGE_MAX, PrefsWrite,
@@ -83,6 +85,9 @@ struct PrefsPatch {
     /// DND and working hours (I-14).
     dnd: Option<DndPatch>,
     email_frequency: Option<String>,
+    /// The default for every board (`talaria_notify::boards`): a setting,
+    /// or null to go back to the built-in.
+    boards: Option<Option<BoardPref>>,
 }
 
 const CHANNEL_KEYS: &[&str] = &["desktop", "push", "email"];
@@ -256,6 +261,11 @@ fn validate_prefs_patch(obj: &serde_json::Map<String, Value>) -> Result<PrefsPat
         None => None,
         Some(_) => Some(enum_member(obj, "emailFrequency", EMAIL_FREQUENCIES)?),
     };
+    let boards = match obj.get("boards") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(v) => Some(Some(talaria_notify::boards::parse_write(v)?)),
+    };
     if prefs.is_none()
         && digest.is_none()
         && delivery.is_none()
@@ -263,6 +273,7 @@ fn validate_prefs_patch(obj: &serde_json::Map<String, Value>) -> Result<PrefsPat
         && channels.is_none()
         && dnd.is_none()
         && email_frequency.is_none()
+        && boards.is_none()
     {
         return Err("nothing to update".into());
     }
@@ -274,6 +285,7 @@ fn validate_prefs_patch(obj: &serde_json::Map<String, Value>) -> Result<PrefsPat
         channels,
         dnd,
         email_frequency,
+        boards,
     })
 }
 
@@ -445,6 +457,7 @@ pub async fn get(
         "channels": s.channels,
         "dnd": s.dnd,
         "emailFrequency": s.email_frequency,
+        "boards": s.boards,
         "features": features(),
         "next": next,
         "more": more,
@@ -670,7 +683,8 @@ pub async fn patch(
     {
         return Ok(internal("[notifications] set prompt failed", e));
     }
-    // Routes, the matrix, the digest, DND and the frequency in ONE write: a
+    // Routes, the matrix, the digest, DND, the frequency and the board
+    // default in ONE write: a
     // legacy route and a channel bool for the same class in one PATCH apply in
     // that order, and both directions stay in step (I-13).
     if patch.prefs.is_some()
@@ -678,6 +692,7 @@ pub async fn patch(
         || patch.channels.is_some()
         || patch.dnd.is_some()
         || patch.email_frequency.is_some()
+        || patch.boards.is_some()
     {
         let write = PrefsWrite {
             prefs: patch.prefs,
@@ -685,6 +700,7 @@ pub async fn patch(
             channels: patch.channels,
             dnd: patch.dnd,
             email_frequency: patch.email_frequency,
+            boards: patch.boards,
         };
         // Includes the no-row corner — a user with no row 500s here.
         if let Err(e) = apply_notify_prefs(&state.pg, &user.id, &write).await {
@@ -705,6 +721,7 @@ pub async fn patch(
         "channels": s.channels,
         "dnd": s.dnd,
         "emailFrequency": s.email_frequency,
+        "boards": s.boards,
     }))
     .into_response())
 }
@@ -1157,6 +1174,22 @@ mod tests {
         assert_eq!(
             patch(json!({ "emailFrequency": "2h" })).unwrap_err(),
             "Invalid option: expected one of \"15m\"|\"1h\"|\"1d\"|\"off\""
+        );
+        // boards: the default for every board — a setting (talaria_notify::
+        // boards::parse_write's own checks), or null to clear it.
+        let p = patch(json!({ "boards": { "preset": "mentions" } })).unwrap();
+        assert_eq!(
+            p.boards.unwrap().unwrap().preset,
+            talaria_notify::boards::Preset::Mentions
+        );
+        assert_eq!(patch(json!({ "boards": null })).unwrap().boards, Some(None));
+        assert_eq!(
+            patch(json!({ "boards": { "preset": "custom" } })).unwrap_err(),
+            "pick at least one event, or choose off"
+        );
+        assert_eq!(
+            patch(json!({ "boards": "off" })).unwrap_err(),
+            "Invalid input: expected object, received string"
         );
     }
 }

@@ -25,6 +25,7 @@ mod artifacts_read;
 mod attribution;
 mod blueprints_live;
 mod board_agent_access;
+mod board_notify_live;
 mod board_sync_live;
 mod boards_store;
 mod brief_item_live;

@@ -7,7 +7,10 @@
 //          ticket, so a viewer may follow it. Subscribing SOMEONE ELSE writes
 //          to another person's inbox and is an editor's call. add_watcher
 //          refuses a non-member (and says so); this route decides only who
-//          may ask.
+//          may ask, and records who did (`added_by`): a person's own watch
+//          is deliberate — it carries the ticket's news through a board they
+//          set to Off — and pressing Watch on a watch an editor added makes
+//          it theirs.
 //
 //   DELETE removing someone else is the editor's mirror of adding them.
 //          REMOVING YOURSELF ALWAYS WORKS, with no board role of any kind.
@@ -76,7 +79,10 @@ pub async fn post(
             "only a board editor can make someone else follow this ticket",
         ));
     }
-    match add_watcher(&state.pg, &id, &watcher).await {
+    // Who asked is recorded: a watch a person makes themselves is theirs and
+    // reaches them even on a board they set to Off; one an editor adds for
+    // them does not (talaria_notify::boards).
+    match add_watcher(&state.pg, &id, &watcher, &user.id).await {
         Ok(WatchOutcome::Added) => {}
         Ok(WatchOutcome::Refused(msg)) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         Err(e) => return Ok(internal("[tasks] watcher add failed", e)),

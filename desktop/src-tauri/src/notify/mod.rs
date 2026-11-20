@@ -249,15 +249,17 @@ pub enum Urgency {
 
 /// Needs-you kinds are critical: on GNOME and KDE they pass Do Not Disturb
 /// and stay until dismissed (owner decision O-3), and the shell asks for
-/// attention. Status chatter is low. Everything else, a DM included, normal.
+/// attention. Status chatter is low — a board's activity row too, news about
+/// tickets a person is not in, never louder than the moves of the tickets
+/// they are. Everything else, a DM included, normal.
 pub fn urgency_of(kind: Option<&str>) -> Urgency {
     match kind {
         Some("approval_pending" | "judge_escalation" | "agent-problem" | "workchain_turn") => {
             Urgency::Critical
         }
         Some(
-            "task-status" | "research" | "board_access" | "workchain_paused" | "gap_reported"
-            | "mcp_server_down",
+            "task-status" | "board-activity" | "research" | "board_access" | "workchain_paused"
+            | "gap_reported" | "mcp_server_down",
         ) => Urgency::Low,
         _ => Urgency::Normal,
     }
@@ -1220,6 +1222,7 @@ mod tests {
         }
         for k in [
             "task-status",
+            "board-activity",
             "research",
             "board_access",
             "workchain_paused",
