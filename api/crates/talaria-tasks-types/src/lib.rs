@@ -202,6 +202,23 @@ pub struct TaskPatch {
     /// TicketMoved reaches apps — the writer emits it itself when its
     /// connection says apps should hear.
     pub quiet: bool,
+    /// SERVER-ONLY, like `status_note`: the thread an agent says a person
+    /// asked it in, for a move out of review. Only a claim — the engine
+    /// proves it (talaria-tasks `asked`), and only where the review rule
+    /// would otherwise refuse, so every other write ignores it.
+    pub ask: Option<AskClaim>,
+}
+
+/// An agent's claim that a person asked for this move, as its route read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskClaim {
+    /// The `conversationId` the call carried: the conversation, or the
+    /// channel, the agent's prompt named as its thread.
+    pub thread_id: String,
+    /// The caller's identity was PROVEN — its own `tak_` key. A legacy
+    /// shared-key caller only asserts which agent it is, so it can never cite
+    /// a person's ask.
+    pub proven_caller: bool,
 }
 
 pub async fn update_task(

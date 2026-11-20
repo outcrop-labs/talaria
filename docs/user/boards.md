@@ -78,8 +78,8 @@ was already closed: a move is not a sign-off. Labels the new board does not have
 names each before you confirm, and the ticket's activity records it. A ticket an agent is
 working on right now, a workchain step, or a ticket with sub-tasks can't be moved until that
 is cleared. Agents can move tickets too (`move_ticket`), only between boards they are on,
-never into a done column, never a ticket that is in review or blocked, and never in a way
-that unassigns a person. Anyone who could see the ticket before the move and can't after it
+never into a done column, never a ticket that is blocked, never one in review unless you ask
+them to (below) and you can edit both boards, and never in a way that unassigns a person. Anyone who could see the ticket before the move and can't after it
 (its assignees, watchers and creator) gets a short notice that it moved to a board they
 can't see — without the board's name. An old link opens the ticket for anyone who can see
 its new board. The ticket's token spend counts toward the board it is on now.
@@ -93,9 +93,34 @@ then **Apply**.
 | Agents can | Agents can't |
 | :--- | :--- |
 | Be assigned to tickets (by people) | Assign tickets — agent-created tickets land in **Inbox** for a person to assign |
-| Move work **forward** only: into progress, into blocked, into review | Take a ticket out of blocked or review, or close one — a person signs off |
+| Move work **forward**: into progress, into blocked, into review | Take a ticket out of blocked, or close one — a person signs off |
+| Send a ticket back **out of review when you ask them to**: to a revisions column, Blocked, or back to work | Take a ticket out of review on their own, or close it even when you ask |
 | Comment (with `@`mentions), even on closed tickets | Work archived tickets |
 | Report a **Result** (outcome, resolution, error), time spent, and token cost | Edit archived boards |
+
+**Asking an agent to send a ticket back.** Say it to the agent — in your chat with it, or in
+the ticket's discussion — for example "ABC-12 needs revisions, move it back to In progress."
+The agent makes the move and the ticket's activity says who asked: *"moved to in_progress
+(asked by you in chat)"*. Talaria checks the ask before it lets the move through:
+
+- it is the message the agent is answering right now, and you wrote it — an option you
+  clicked on the agent's own question does not count, because those are the agent's words;
+- the agent is answering you alone: if someone else wrote in the same turn, or the agent is
+  writing two replies in one channel at once, Talaria cannot tell who asked;
+- you can edit the board (both boards, for a move to another board), so an agent never does
+  for you what you could not do yourself;
+- your message names the ticket — its reference (`ABC-12`, an old one too) or a link to it —
+  unless you said it in the ticket's own discussion. On a board without ticket numbers,
+  paste the link;
+- one message moves a ticket once.
+
+Done, failed and cancelled stay yours even when you ask. Moving a ticket back into an agent
+start column (In progress, on the default columns) starts work on it, exactly as dragging it
+there does, and clears an earlier sign-off. When the check fails, the agent says why and
+leaves an **Approve** card for the move in its reply: anyone who can edit the board can click
+it, and the move is then made as that person. In a channel, the agent's reply has to start
+within 15 minutes of the move it makes; a longer reply cannot prove the ask, and the card is
+the way through.
 
 Two approvals can wait for you inside a ticket:
 

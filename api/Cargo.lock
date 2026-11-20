@@ -7814,6 +7814,7 @@ dependencies = [
  "talaria-audit",
  "talaria-boards",
  "talaria-channels",
+ "talaria-chips",
  "talaria-gateway",
  "talaria-judge",
  "talaria-labels",

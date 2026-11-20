@@ -76,6 +76,10 @@ struct ChatBody {
     /// thread before the page knows the thread (talaria-chat-persist
     /// `turn_stop`).
     turn_id: Option<String>,
+    /// The words were the agent's — an ask option or a tool chip the person
+    /// clicked. Stamped `metadata.drafted` on the user row, so it never stands
+    /// in for the person's own ask (talaria-tasks `asked`).
+    drafted: bool,
 }
 
 /// `focus: { kind: 'artifact' | 'google', id, title? } | null`. The kind is
@@ -141,6 +145,9 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
     // teammate's pane; read on work turns only
     let focus = focus_member(obj, "focus")?;
     let turn_id = optional_uuid_member(obj, "turnId")?;
+    // The words were the agent's (an ask option or tool chip the person
+    // clicked): marked on the row, never taken as the person's own ask.
+    let drafted = optional_boolean_member(obj, "drafted")?.unwrap_or(false);
     Ok(ChatBody {
         model,
         conversation_id,
@@ -154,6 +161,7 @@ fn validate(obj: &serde_json::Map<String, Value>) -> Result<ChatBody, String> {
         queue,
         focus,
         turn_id,
+        drafted,
     })
 }
 
@@ -486,10 +494,13 @@ pub async fn post(
     // reply that is already streaming means this turn is covered later by
     // `continue_conversation`, which re-reads exactly this stamp (and
     // re-validates it against the routed model) when it builds the next turn.
-    let metadata = match effort.as_deref() {
+    let mut metadata = match effort.as_deref() {
         Some(e) => json!({ "effort": e }),
         None => json!({}),
     };
+    if body.drafted {
+        metadata["drafted"] = json!(true);
+    }
     let user_msg_id = match insert_user_message(
         &state.pg,
         &conv_id,

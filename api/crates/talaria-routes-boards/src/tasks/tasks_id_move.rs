@@ -1,5 +1,8 @@
-// POST /api/tasks/{id}/move { boardId, status?, preview? }. Move a ticket to
-// another board — an ACTION, so POST (API-CONVENTIONS "Methods").
+// POST /api/tasks/{id}/move { boardId, status?, preview?, conversationId? }.
+// Move a ticket to another board — an ACTION, so POST (API-CONVENTIONS
+// "Methods"). `conversationId` is an agent's claim that a person asked for a
+// move out of review: the thread they asked in, proven by `move_task`
+// (talaria-tasks `asked`) and ignored for any other move or caller.
 //
 // The decisions live in talaria-tasks `move_task` (permission on both
 // boards, the live holds, the status/label/assignee translation, the
@@ -19,12 +22,14 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use talaria_agent_auth::{AgentSubject, agent_caller};
-use talaria_body::{optional_boolean_member, optional_string_member, parse, uuid_member};
+use talaria_agent_auth::{AgentCaller, AgentSubject, agent_caller};
+use talaria_body::{
+    optional_boolean_member, optional_string_member, optional_uuid_member, parse, uuid_member,
+};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
-use talaria_tasks::{MoveError, MoveRequest, Mover, TaskDeps, move_task};
+use talaria_tasks::{AskClaim, MoveError, MoveRequest, Mover, TaskDeps, move_task};
 
 pub async fn post(
     State(state): State<AppState>,
@@ -37,6 +42,9 @@ pub async fn post(
         Err(resp) => return Ok(resp),
     };
     let caller = agent_caller(&state.pg, &headers).await?;
+    // Only the caller's own key can cite a person's ask; the legacy shared
+    // key only asserts which agent it is.
+    let proven_agent = caller.as_ref().map(AgentCaller::proven);
     let mover = match caller {
         Some(caller) => {
             let model = caller.model.clone();
@@ -72,6 +80,19 @@ pub async fn post(
         Ok(v) => v.unwrap_or(false),
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
+    // Agents: the conversation or channel a person asked for this move out of
+    // review in. A claim move_task proves (talaria-tasks `asked`).
+    let conversation_id = match optional_uuid_member(obj, "conversationId") {
+        Ok(v) => v,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let ask = match (proven_agent, conversation_id) {
+        (Some(proven_caller), Some(thread_id)) => Some(AskClaim {
+            thread_id,
+            proven_caller,
+        }),
+        _ => None,
+    };
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     // The write and what it owes people run where a caller hanging up cannot
     // cancel them — the same reason PUT /api/tasks/{id} spawns (C30).
@@ -81,6 +102,7 @@ pub async fn post(
             board_id: &board_id,
             status: status.as_deref(),
             preview,
+            ask: ask.as_ref(),
         };
         move_task(&deps, &task_id, &req, &mover).await
     });

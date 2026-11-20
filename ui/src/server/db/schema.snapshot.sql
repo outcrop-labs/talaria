@@ -609,6 +609,8 @@ CREATE TABLE public.channel_messages (
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
     guard jsonb,
     chips jsonb DEFAULT '[]'::jsonb NOT NULL,
+    drafted boolean DEFAULT false NOT NULL,
+    answers_message_id uuid,
     import_key text
 );
 CREATE TABLE public.channel_teams (
@@ -1592,6 +1594,13 @@ CREATE TABLE public.task_activity (
     description text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.task_asked_exits (
+    task_id uuid NOT NULL,
+    message_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    asked_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.task_coding_pins (
     task_id uuid NOT NULL,
     account_id bigint,
@@ -2286,6 +2295,8 @@ ALTER TABLE ONLY public.skills_index_entries
     ADD CONSTRAINT skills_index_entries_pkey PRIMARY KEY (identifier);
 ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.task_asked_exits
+    ADD CONSTRAINT task_asked_exits_pkey PRIMARY KEY (task_id, message_id);
 ALTER TABLE ONLY public.task_coding_pins
     ADD CONSTRAINT task_coding_pins_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.task_dependencies
@@ -2844,6 +2855,10 @@ ALTER TABLE ONLY public.secret_folders
     ADD CONSTRAINT secret_folders_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_asked_exits
+    ADD CONSTRAINT task_asked_exits_asked_by_fkey FOREIGN KEY (asked_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.task_asked_exits
+    ADD CONSTRAINT task_asked_exits_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_coding_pins
     ADD CONSTRAINT task_coding_pins_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.agent_coding_accounts(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_coding_pins

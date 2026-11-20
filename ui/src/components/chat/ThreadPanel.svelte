@@ -77,10 +77,12 @@
     stick.jump()
   })
 
-  const send = async (text: string, atts: Attachment[]) => {
+  // `drafted`: a chip or ask-option click — the agent's words, marked so they
+  // never stand in for the person's own ask (sendChannelMessage).
+  const send = async (text: string, atts: Attachment[], drafted = false) => {
     stick.jump()
     const { attachmentIds, refs } = splitAttachments(atts)
-    await sendChannelMessage(channelId, text, attachmentIds, refs, rootId)
+    await sendChannelMessage(channelId, text, attachmentIds, refs, rootId, drafted)
   }
 
   // Reading the thread = having read its replies: advance the thread's OWN
@@ -200,7 +202,7 @@
           {@const day = dividers.get(i)}
           <div data-continued={continued.has(i) || undefined}>
             {#if day}<DayDivider label={day.label} class="mb-3" />{/if}
-            <MessageRow message={m} {ctx} inThread continued={continued.has(i)} onInvoke={(text) => void send(text, [])} />
+            <MessageRow message={m} {ctx} inThread continued={continued.has(i)} onInvoke={(text) => void send(text, [], true)} />
             <!-- The replies rule under the root (R7): label, then a hairline. -->
             {#if i === 0 && messages.length > 1}
               <div class="mt-3 flex items-center gap-2">
