@@ -5193,6 +5193,33 @@ alter table tasks drop column if exists conversation_id`,
   // re-sync of one ticket).
   `create unique index if not exists runs_one_live_board_sync on runs (subject_id)
      where kind = 'clickup-sync' and state in ('queued', 'running', 'awaiting')`,
+  // A PERSON'S NOTIFICATION SETTING FOR ONE BOARD (talaria_notify::boards,
+  // docs/notifications/producers.md "Each board"): a preset (all,
+  // participating, mentions, off, custom), Custom's own events and scope, and
+  // the cadence. No row means the person's default for every board (the
+  // `boards` key of users.notify_prefs), else the built-in — Participating,
+  // the audiences every ticket producer had before this table. A table, not a
+  // board_members column: a team's members see its boards with no member row
+  // of their own. Kept when the person leaves the board (dormant: every
+  // producer re-checks access), gone with the person or the board. A new
+  // table, so roll-safe: the previous release never reads it.
+  `create table if not exists board_notify_prefs (
+     user_id uuid not null references users(id) on delete cascade,
+     board_id uuid not null references boards(id) on delete cascade,
+     preset text not null,
+     events text[],
+     scope text,
+     cadence text not null default 'instant',
+     updated_at timestamptz not null default now(),
+     primary key (user_id, board_id)
+   )`,
+  `create index if not exists board_notify_prefs_board_idx on board_notify_prefs (board_id)`,
+  // WHO ADDED A WATCH (the users.id of whoever asked): a watch a person made
+  // themselves is deliberate and carries its ticket's news through a board
+  // they set to Off; one an editor added for them does not. NULL is a watch
+  // from before this column, when the only Watch offered was a person's own,
+  // so it counts as deliberate. Nullable, so roll-safe.
+  `alter table task_watchers add column if not exists added_by text`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

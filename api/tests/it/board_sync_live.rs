@@ -406,6 +406,28 @@ async fn a_board_syncs_from_a_clickup_list_end_to_end() {
         );
     }
 
+    // Both people hear this WHOLE board (talaria_notify::boards): had a sync
+    // write raised a person's news, it would land here as board activity —
+    // the "New ticket" row of every create, the move row of the remap below.
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/notify"),
+        Some(&cookie),
+        Some(json!({"preset": "all"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    sqlx::query(
+        "insert into board_notify_prefs (user_id, board_id, preset) \
+         values ($1::uuid, $2::uuid, 'all')",
+    )
+    .bind(&dana)
+    .bind(&board)
+    .execute(&pg)
+    .await
+    .unwrap();
+
     // ── connect: the token checked, the mapping validated, the first sync ──
     let (status, body) = call_json(
         &state,
@@ -602,6 +624,25 @@ async fn a_board_syncs_from_a_clickup_list_end_to_end() {
         ticket(&pg, &board, &format!("C{tag}")).await["status"],
         "quality_review"
     );
+    // A SYNC WRITE IS A SYSTEM ACTOR'S MIRROR: four creates, an assignment,
+    // updates and a move, and neither whole-board listener holds a row about
+    // any of it — no board activity, no per-ticket row. (The fan-outs are
+    // detached: give a leaked one time to land before saying it did not.)
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    for uid in [&owner, &dana] {
+        let (n,): (i64,) = sqlx::query_as(
+            "select count(*)::bigint from notifications where user_id = $1::uuid \
+             and kind in ('board-activity', 'task-status', 'task-assigned') \
+             and (href like $2 or href = $3)",
+        )
+        .bind(uid)
+        .bind(format!("/boards/{board}/%"))
+        .bind(format!("/boards/{board}"))
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(n, 0, "a sync write raised a row for {uid}");
+    }
 
     // ── a ticket deleted in Talaria is never made again ────────────────────
     sqlx::query("delete from tasks where board_id = $1::uuid and external_key = $2")

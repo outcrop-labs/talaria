@@ -5,9 +5,10 @@ becomes a ticket on the board. The sync carries over status, assignees, priority
 tags, the description, attachments and comments. After the first import the sync keeps
 running, on a schedule and whenever someone presses **Sync now**.
 
-This page covers the engine and its HTTP API. The Board settings → Sync tab and the
-board's sync chip arrive in a follow-up change; until then the routes below are the way
-in. The code is in `api/crates/talaria-board-sync` (the engine) and
+This page covers the engine and its HTTP API. People reach it through Board settings →
+**sync**, the board's **ClickUp ·** chip and a synced ticket's **Re-sync from ClickUp**; the
+member guide is [`docs/user/boards-clickup-sync.md`](./user/boards-clickup-sync.md). The
+code is in `api/crates/talaria-board-sync` (the engine) and
 `api/crates/talaria-clickup` (the ClickUp v2 client). The generated route reference is in
 [`docs/api/boards.md`](./api/boards.md) and [`docs/api/tasks.md`](./api/tasks.md).
 
@@ -268,8 +269,9 @@ The sync's writes go through the task engine as `clickup-sync`, so board members
 activity lines, realtime, search indexing and the agent rules all apply. Its writes are
 quiet:
 
-- Nobody is notified about imported tickets, assignments or moves. ClickUp already told
-  its own people.
+- Nobody is notified about imported tickets, assignments or moves, including people who
+  set the board to hear every ticket: a sync write raises no board-activity row. ClickUp
+  already told its own people.
 - The board gets one live event per batch, not one per ticket.
 - Workchains still advance when a ticket lands in a done column, and the next step's
   agents start (see [What the sync will not move](#what-the-sync-will-not-move)).

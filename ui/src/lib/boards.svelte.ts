@@ -25,6 +25,10 @@ export function useBoardLive(boardId: MaybeGetter<string | null>) {
       // chains invalidate here too — the workchains lens stays live.
       void qc.invalidateQueries({ queryKey: ['board-tasks', id] })
       void qc.invalidateQueries({ queryKey: ['board-workchains', id] })
+      // The ClickUp sync publishes one board event per batch it writes and one
+      // when a run finishes (talaria-board-sync), so its chip and settings
+      // read the projection again on the same stream (lib/board-sync.ts).
+      void qc.invalidateQueries({ queryKey: ['board-sync', id] })
     }
     // Reconnecting (lib/sse.ts): a deploy's 502 no longer leaves the board
     // silently frozen, and a REopen refetches what the gap may have dropped.

@@ -534,7 +534,8 @@ rule is only about a fill matching its container.
   lives in the URL, not in component state: route paths for entities
   (`/boards/:id/:taskId`), search params for view state (`/?tab=boards`,
   `/knowledge?space=…&doc=…`, `/artifacts?a=…`, `/research?r=…`,
-  `/comms?c=…` / `?a=…&x=…`, `/plan?p=…`, `/admin?tab=…`, `/settings?tab=…`).
+  `/comms?c=…` / `?a=…&x=…`, `/plan?p=…`, `/admin?tab=…`, `/settings?tab=…`,
+  `/boards/:id?settings=<tab>` for Board settings open on a tab).
 - Pattern: derive the selection FROM `Route.useSearch()` and shadow the old
   setter as a navigate wrapper — call sites don't change. User picks are
   PUSH navigations (back/forward walks them); defaults and healing are

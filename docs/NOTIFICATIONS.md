@@ -97,6 +97,18 @@ The center itself (the bell, the page, the settings, the status panel) is
   off). Its later messages add to the same notification without alerting again until you
   read it. Nothing silences @mentions too, and a muted channel's notifications arrive
   quietly.
+- **Each board** can have its own setting: All activity, Participating (the tickets you are
+  in — the default, and what everyone got before), Mentions & assignments, Off, or a custom
+  set of events (new ticket, assigned to me, status change, comment, mention, completed)
+  over the tickets you are in or the whole board. A board with no setting follows your
+  default for every board, and with no default, Participating. All files one notification
+  per board for the tickets you are not in, counting its updates until you read it; it is
+  quiet unless you turn on Board activity in the matrix. Off silences the board's
+  assignments and @mentions too, but a ticket you watch yourself still reaches you, and
+  approvals always do. A setting changes only what you receive. Set through the API for
+  now (`/api/boards/{id}/notify`, `boards` in `PATCH /api/notifications`); the board's own
+  control and the Settings section follow. The rules:
+  [producers.md](./notifications/producers.md#each-board).
 - **Do Not Disturb.** Pause from the account menu or the bell for 30 minutes, an hour, two
   hours, until 9:00 tomorrow in your time zone, until you resume, or until a time you pick;
   and set working hours, outside which notifications arrive quietly. Working hours are read
@@ -249,7 +261,10 @@ worker's per-row banners.
   moment the person looks.
 - **Mentions on edit.** A ticket description edit notifies only the people the edit adds.
 - **Assignment.** A person assigned by a patch gets `task-assigned` only; the same patch's
-  status move goes to every other watcher.
+  status move goes to every other watcher. (When their setting for the board drops
+  assignments, they hear the move instead, if their setting keeps moves.)
+- **Boards.** Every ticket producer asks each recipient's setting for the board at fan-out
+  ([producers.md](./notifications/producers.md#each-board)); nothing at send time does.
 - **Read-sync.** Any mark-read (the bell, a toast, a banner click, a channel read) publishes
   `{type:"notifications", unread, unreadForYou, readIds}` (`all: true` for a mark-all), and
   every tab's bell drops at once.

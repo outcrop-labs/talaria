@@ -471,6 +471,15 @@ CREATE TABLE public.board_members (
     role text DEFAULT 'editor'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.board_notify_prefs (
+    user_id uuid NOT NULL,
+    board_id uuid NOT NULL,
+    preset text NOT NULL,
+    events text[],
+    scope text,
+    cadence text DEFAULT 'instant'::text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.board_statuses (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     board_id uuid NOT NULL,
@@ -1622,7 +1631,8 @@ CREATE TABLE public.task_ref_aliases (
 CREATE TABLE public.task_watchers (
     task_id uuid NOT NULL,
     watcher text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    added_by text
 );
 CREATE TABLE public.task_workchain_edges (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -2063,6 +2073,8 @@ ALTER TABLE ONLY public.board_labels
     ADD CONSTRAINT board_labels_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.board_members
     ADD CONSTRAINT board_members_pkey PRIMARY KEY (board_id, user_id);
+ALTER TABLE ONLY public.board_notify_prefs
+    ADD CONSTRAINT board_notify_prefs_pkey PRIMARY KEY (user_id, board_id);
 ALTER TABLE ONLY public.board_statuses
     ADD CONSTRAINT board_statuses_board_id_key_key UNIQUE (board_id, key);
 ALTER TABLE ONLY public.board_statuses
@@ -2400,6 +2412,7 @@ CREATE INDEX audit_log_created_idx ON public.audit_log USING btree (created_at D
 CREATE INDEX audit_log_target_idx ON public.audit_log USING btree (target_type, target_id);
 CREATE INDEX blueprints_owner_idx ON public.blueprints USING btree (owner_user_id, sort, name);
 CREATE UNIQUE INDEX board_agent_requests_one_open ON public.board_agent_requests USING btree (board_id, agent_model) WHERE (status = 'open'::text);
+CREATE INDEX board_notify_prefs_board_idx ON public.board_notify_prefs USING btree (board_id);
 CREATE INDEX board_sync_items_board_idx ON public.board_sync_items USING btree (board_id, external_id);
 CREATE INDEX board_syncs_due ON public.board_syncs USING btree (next_sync_at) WHERE (state = 'active'::text);
 CREATE UNIQUE INDEX board_syncs_one_live ON public.board_syncs USING btree (board_id) WHERE (state <> 'disconnected'::text);
@@ -2597,6 +2610,10 @@ ALTER TABLE ONLY public.board_members
     ADD CONSTRAINT board_members_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_members
     ADD CONSTRAINT board_members_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_notify_prefs
+    ADD CONSTRAINT board_notify_prefs_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_notify_prefs
+    ADD CONSTRAINT board_notify_prefs_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_statuses
     ADD CONSTRAINT board_statuses_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_sync_items

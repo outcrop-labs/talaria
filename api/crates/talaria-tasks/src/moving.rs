@@ -34,7 +34,7 @@
 
 use serde::Serialize;
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use talaria_agent_auth::AgentSubject;
 use talaria_boards::{
     board_allows_agent, board_info, board_role, can_edit, get_board_agent_config,
@@ -48,11 +48,13 @@ use talaria_retrieval::sources::{
 use talaria_retrieval::{embed, qdrant};
 use talaria_statuses::{BoardStatus, OFF_BOARD_STATUSES, list_statuses, meta_of};
 
+use talaria_notify::boards::{self as board_prefs, Candidate};
+
 use super::asked::{self, Asker, Unproven};
 use super::{
     AgentIntent, AgentWriteTarget, AskClaim, Task, TaskDeps, TaskNotification, agent_assignees,
-    agent_ticket_refusal, get_task, notify_task_users, resolve_review_approval, resolve_watchers,
-    spawn_dispatch_id, ticket_audience,
+    agent_ticket_refusal, bystanders, get_task, notify_ticket_event, resolve_review_approval,
+    resolve_watchers, spawn_dispatch_id, ticket_audience,
 };
 
 // ── The request, the mover, the answer ───────────────────────────────────────
@@ -569,11 +571,13 @@ async fn decision_window_test_pause(task_id: &str) {
 }
 
 /// Of `before`, the people not in `after` — who loses sight of a ticket.
-fn lost(before: &[String], after: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for u in before {
-        if !after.contains(u) && !out.contains(u) {
-            out.push(u.clone());
+fn lost(before: &[Candidate], after: &[Candidate]) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
+    for c in before {
+        if !after.iter().any(|a| a.user_id == c.user_id)
+            && !out.iter().any(|o| o.user_id == c.user_id)
+        {
+            out.push(c.clone());
         }
     }
     out
@@ -1054,19 +1058,25 @@ fn activity_line(m: &MoveSummary, labels: &HashMap<String, String>) -> String {
     line
 }
 
-/// The move's two notices, detached like every post-commit notice (C30), and
-/// both through `notify_task_users` (the mover is never told):
+/// The move's notices, detached like every post-commit notice (C30), each
+/// through `notify_ticket_event` (the mover is never told, and each person's
+/// setting for the board in question decides — talaria_notify::boards):
 /// · the destination's audience — watchers, assigned humans and the creator
-///   who can see it there — hears where it went;
+///   who can see it there — hears where it went, by their setting for the
+///   board it is on now;
+/// · the people who hear the destination in full hear that a ticket arrived
+///   (a new ticket, for that board);
 /// · the people who could see it and now cannot hear only that it left, and
 ///   never where to: naming a board they cannot open would be the leak the
-///   move's own permission rules exist to prevent.
+///   move's own permission rules exist to prevent;
+/// · the people who hear the source board in full hear that it left, and
+///   never where to, for the same reason.
 fn spawn_move_notices(
     deps: &TaskDeps,
     cur: &Task,
     m: &MoveSummary,
-    audience: Vec<String>,
-    losing: Vec<String>,
+    audience: Vec<Candidate>,
+    losing: Vec<Candidate>,
     actor: &str,
 ) {
     let deps = deps.clone();
@@ -1075,43 +1085,77 @@ fn spawn_move_notices(
     let actor = actor.to_string();
     let m = m.clone();
     tokio::spawn(async move {
+        let pg = &deps.notify.pg;
         let was = match &m.from_ref {
             Some(r) => format!("was {r} on {}", m.from_board_name),
             None => format!("was on {}", m.from_board_name),
         };
-        notify_task_users(
+        let to_subject = m.to_ref.clone().unwrap_or_else(|| title.clone());
+        let from_subject = m.from_ref.clone().unwrap_or_else(|| title.clone());
+        let arrived = TaskNotification {
+            kind: "task-status".into(),
+            title: format!("{to_subject}: moved to {}", m.to_board_name),
+            body: Some(format!("{title} — {was}")),
+            href: Some(format!("/boards/{}/{id}", m.to_board_id)),
+            task_id: id.clone(),
+            status_burst: None,
+        };
+        let line = arrived.title.clone();
+        let arrived_told = notify_ticket_event(
             &deps.notify,
+            &m.to_board_id,
+            board_prefs::BoardEvent::Status,
             &audience,
             &actor,
-            &TaskNotification {
-                kind: "task-status".into(),
-                title: format!(
-                    "{}: moved to {}",
-                    m.to_ref.clone().unwrap_or_else(|| title.clone()),
-                    m.to_board_name
-                ),
-                body: Some(format!("{title} — {was}")),
-                href: Some(format!("/boards/{}/{id}", m.to_board_id)),
-                task_id: id.clone(),
-                status_burst: None,
-            },
+            Some(&arrived),
+            &line,
         )
         .await;
-        notify_task_users(
+        let fresh = bystanders(pg, &m.to_board_id, &audience, &HashSet::new()).await;
+        notify_ticket_event(
             &deps.notify,
+            &m.to_board_id,
+            board_prefs::BoardEvent::Created,
+            &fresh,
+            &actor,
+            None,
+            &format!("{to_subject} moved here — {title}"),
+        )
+        .await;
+        let gone = TaskNotification {
+            kind: "task-status".into(),
+            title: format!("{from_subject}: moved to a board you can't see"),
+            body: Some(title.clone()),
+            href: None,
+            task_id: id.clone(),
+            status_burst: None,
+        };
+        let line = gone.title.clone();
+        let gone_told = notify_ticket_event(
+            &deps.notify,
+            &m.from_board_id,
+            board_prefs::BoardEvent::Status,
             &losing,
             &actor,
-            &TaskNotification {
-                kind: "task-status".into(),
-                title: format!(
-                    "{}: moved to a board you can't see",
-                    m.from_ref.clone().unwrap_or_else(|| title.clone())
-                ),
-                body: Some(title.clone()),
-                href: None,
-                task_id: id.clone(),
-                status_burst: None,
-            },
+            Some(&gone),
+            &line,
+        )
+        .await;
+        // ONE ACTION, ONE ROW, as the status move keeps it: whoever a
+        // per-ticket row above reached is not told again by the source's
+        // activity row — only those whose row landed. Someone whose setting
+        // dropped that row (Off on the destination, say) still hears the
+        // source board in full if that is what they chose for it.
+        let told: HashSet<String> = arrived_told.union(&gone_told).cloned().collect();
+        let left = bystanders(pg, &m.from_board_id, &[], &told).await;
+        notify_ticket_event(
+            &deps.notify,
+            &m.from_board_id,
+            board_prefs::BoardEvent::Status,
+            &left,
+            &actor,
+            None,
+            &format!("{from_subject} moved to another board"),
         )
         .await;
     });
