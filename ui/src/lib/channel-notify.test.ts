@@ -8,6 +8,8 @@ import {
   muteLabel,
   muteUntil,
   mutedLabel,
+  notifyControlName,
+  notifyScope,
   putChannelNotify,
   readChannelNotify,
   refusalMessage,
@@ -115,4 +117,17 @@ test('a refused write says why in words', () => {
     "this room's notifications follow its board",
   )
   assert.equal(refusalMessage(new Error('Failed to fetch')), 'Could not reach the server.')
+})
+
+test('the header control names whose notifications it sets, and the value its glyph shows', () => {
+  assert.equal(notifyScope('channel'), 'Channel')
+  assert.equal(notifyScope('group'), 'Group')
+  assert.equal(notifyScope('dm'), 'Direct message')
+  assert.equal(notifyScope(undefined), 'Channel')
+  assert.equal(notifyControlName('Channel', { level: 'mentions' }, null), 'Channel notifications: mentions only')
+  assert.equal(notifyControlName('Group', { level: 'all' }, null), 'Group notifications: all messages')
+  assert.equal(notifyControlName('Direct message', { level: 'none' }, null), 'Direct message notifications: nothing')
+  // A running mute is the value while it runs.
+  assert.equal(notifyControlName('Channel', { level: 'all' }, 'Muted until 4:00 PM'), 'Channel notifications: muted until 4:00 PM')
+  assert.equal(notifyControlName('Channel', null, null), 'Channel notifications')
 })

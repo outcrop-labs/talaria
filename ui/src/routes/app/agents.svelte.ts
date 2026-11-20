@@ -1,10 +1,11 @@
 // Shared pieces of the Agents roster (Agents.svelte + its tiles/rows): the
 // health mapping, the per-agent control logic, and the agent's menu.
 import { useQueryClient } from '@tanstack/svelte-query'
-import { Archive, Copy, Play, Repeat, RotateCw, SlidersHorizontal, Square, Trash2, UserPlus } from '@lucide/svelte'
+import { Archive, Copy, Play, Repeat, RotateCw, Square, Trash2, UserPlus } from '@lucide/svelte'
 import type { DotStatus } from '@/components/ui/chip'
 import { confirm } from '@/components/ui/confirm.svelte'
 import { useContextMenu, type ContextMenuController, type ContextMenuEntry } from '@/components/ui/context-menu.svelte'
+import { cogMenuIcon } from '@/components/ui/settings-cog'
 import { controlAgent, type AgentBrainHealth, type AgentContainers, type AgentDef, type ControlAnswer, type FleetAction, type FleetRollRow } from '@/lib/fleet-defs'
 import { pushToast, type ToastSpec } from '@/lib/toast.svelte'
 
@@ -316,7 +317,8 @@ export function useAgentMenu(
       ]
     }
     return [
-      { label: canManage ? 'Manage' : 'View', icon: [SlidersHorizontal, { size: 14 }], onSelect: onManage },
+      // Opens the agent's settings (read-only for a viewer): the settings gear.
+      { label: canManage ? 'Manage' : 'View', icon: cogMenuIcon, onSelect: onManage },
       { label: 'Duplicate', icon: [Copy, { size: 14 }], onSelect: onDuplicate },
       ...(canManage
         ? ([

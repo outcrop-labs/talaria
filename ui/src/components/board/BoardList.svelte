@@ -429,7 +429,9 @@
                   </SortHeader>
                 </th>
               {/each}
-              <th class="w-8 py-1 pr-2 text-right">
+              <!-- py-0.5 around the 28px gear keeps the row at the other cells'
+                   height (py-2 around a 10px label). -->
+              <th class="w-9 py-0.5 pr-1 text-right">
                 <ColumnsMenu {visible} {order} onChangeVisible={updateCols} onChangeOrder={updateOrder} />
               </th>
             </tr>
