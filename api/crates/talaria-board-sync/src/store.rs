@@ -555,15 +555,21 @@ const EDIT_REMAP: &str = "coalesce($2 <> prev.status_map, false)";
 /// changes, so an edit saved as someone presses Pause cannot undo the pause:
 /// a request that names no `paused` leaves the state, who paused and when,
 /// and the next sync as the row holds them. The next sync follows the state
-/// and the interval the write leaves. Answers the state and the interval
-/// written and whether the map changed (a remap is due), or None when the
-/// sync was disconnected meanwhile.
+/// and the interval the write leaves: none while paused or manual, and NOW on
+/// a resume of a scheduled sync — the scheduler's next tick (within a minute)
+/// claims it, so the board catches up on what changed in ClickUp during the
+/// freeze instead of waiting a whole interval (a day, on a daily sync). A
+/// resumed manual sync stays unscheduled; it waits for Sync now. Answers the
+/// state and the interval written and whether the map changed (a remap is
+/// due), or None when the sync was disconnected meanwhile.
 pub async fn write_edit(
     pg: &PgPool,
     sync_id: &str,
     user_id: &str,
     edit: &SyncEdit,
 ) -> Result<Option<(String, Option<i32>, bool)>, sqlx::Error> {
+    // In next_sync_at, past its first arm the edit leaves the row active, so a
+    // bare `state` (the row as it was) still 'paused' is a resume.
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "with prev as ( \
            select id, status_map from board_syncs \
@@ -575,7 +581,8 @@ pub async fn write_edit(
            options = coalesce($3, options), \
            interval_minutes = {EDIT_INTERVAL}, \
            next_sync_at = case when {EDIT_INTERVAL} is null or {EDIT_STATE} <> 'active' then null \
-                               when $5 or {EDIT_STATE} <> state or next_sync_at is null \
+                               when state = 'paused' then now() \
+                               when $5 or next_sync_at is null \
                                  then now() + ({EDIT_INTERVAL} * interval '1 minute') \
                                else next_sync_at end, \
            paused_by = case when {EDIT_STATE} = 'paused' and state <> 'paused' then $7::uuid \

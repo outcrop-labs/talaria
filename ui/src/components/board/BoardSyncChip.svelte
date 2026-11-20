@@ -14,6 +14,7 @@
     chipView,
     lastRunNote,
     pausedHint,
+    resumedToast,
     syncKey,
     syncNow,
     until,
@@ -85,7 +86,7 @@
     try {
       const r = await updateBoardSync(boardId, { paused: false })
       qc.setQueryData<BoardSyncStatus>(syncKey(boardId), { sync: r.sync, disconnected: null })
-      pushToast({ title: 'Sync resumed', body: 'The schedule is back on, and Sync now works again.', tone: 'success' })
+      pushToast({ ...resumedToast(r.sync), tone: 'success' })
     } catch (e) {
       toastError('Could not resume the sync', e)
     } finally {

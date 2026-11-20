@@ -373,7 +373,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync.rs`](../../
 | `statusMap` | `status_map` |  |
 | `options` | `options` |  |
 | `intervalMinutes` | `interval` |  |
-| `paused` | `bool?` | true freezes the sync until an owner resumes it; false resumes it. |
+| `paused` | `bool?` | true freezes the sync until an owner resumes it; false resumes it, and a scheduled sync runs at the scheduler's next tick. |
 
 ## `/api/boards/{id}/sync/browse`
 

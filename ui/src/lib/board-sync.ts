@@ -331,6 +331,40 @@ export function pausedHint(sync: Pick<BoardSync, 'pausedBy' | 'pausedAt'>, now: 
   return `${pausedLine(sync, now)} — ${canResume ? 'resume it in Board settings → Sync to sync again' : 'a board owner resumes it in Board settings → Sync'}`
 }
 
+// ── Toasts ──────────────────────────────────────────────────────────────────
+// The toast host shows a body on ONE truncated line (Toasts.svelte), about 45
+// characters of IBM Plex Sans at its width and fewer in a wider fallback font,
+// so every body here stays within TOAST_BODY_MAX.
+
+export const TOAST_BODY_MAX = 42
+
+/** After Pause: nothing reads ClickUp — no schedule, Sync now or re-sync. */
+export const PAUSED_TOAST = { title: 'Sync paused', body: 'Nothing reads ClickUp until you resume it.' } as const
+
+/** After a mapping save: the remap moves what the old mapping placed, and a
+ *  ticket a person moved since stays where they put it. */
+export const MAPPING_SAVED_TOAST = { title: 'Mapping saved', body: 'Tickets follow it; ones people moved stay.' } as const
+
+const CADENCE_PHRASE: Record<number, string> = { 15: 'every 15 min', 60: 'every hour', 1440: 'once a day' }
+
+/** The toast after Resume, from the projection the PUT answered. A scheduled
+ *  sync is due at once (the engine sets next_sync_at to now), so the
+ *  scheduler's next tick catches the board up — unless a run is still live
+ *  (a mapping change's remap, which goes on while paused): the scheduler
+ *  waits that run out, so the toast says after it, not within a minute. A
+ *  manual one waits for Sync now; with the schedule off on this instance only
+ *  Sync now syncs. */
+export function resumedToast(sync: Pick<BoardSync, 'intervalMinutes' | 'schedulerArmed' | 'liveRun'>): {
+  title: string
+  body: string
+} {
+  const title = 'Sync resumed'
+  if (sync.intervalMinutes == null) return { title, body: 'Manual — press Sync now to catch up.' }
+  if (!sync.schedulerArmed) return { title, body: 'Scheduled syncs are off — press Sync now.' }
+  const every = CADENCE_PHRASE[sync.intervalMinutes] ?? `every ${sync.intervalMinutes} min`
+  return { title, body: `Syncs ${sync.liveRun ? 'after this run' : 'within a minute'}, then ${every}.` }
+}
+
 /** What the board's chip says, most urgent first: a dead credential, a run
  *  going, paused, a list that is gone, a failed run, the schedule switched off
  *  on this instance, overdue, then the last sync. NEVER SILENTLY STALE — every
