@@ -615,3 +615,37 @@ async fn only_the_boards_and_tickets_the_setting_covers() {
     assert!(digests(&on_board(&state, &bob, &quiet_b).await).is_empty());
     assert!(on_board(&state, &eve, &digest_b).await.is_empty());
 }
+
+// TWO PASSES AT ONCE (a lease lost mid-run) file the day once and mail it
+// once: the day and the mail are each claimed by a compare-and-set, and the
+// pass that loses a claim does nothing.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn overlapping_passes_file_and_mail_once() {
+    let state = live_app_state().await;
+    let (_ada, _, ada_c) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c) = mint(&state, "Bob", "member").await;
+    let b = board(&state, &ada_c, "bd overlap", &[(&bob_e, "editor")]).await;
+    set(
+        &state,
+        &b,
+        &bob_c,
+        json!({ "preset": "all", "cadence": "digest" }),
+    )
+    .await;
+    board_mail_on(&state, &bob).await;
+    ticket(&state, &b, &ada_c, json!({ "title": "Once" })).await;
+    settle().await;
+
+    let now = talaria_api::agent_auth::now_ms();
+    in_the_slot(&state, now, &[&bob]).await;
+    let (send, sent) = door(Vec::new());
+    let d = deps(&state, send);
+    let (one, two) = tokio::join!(pass(&d, now, &[&bob]), pass(&d, now, &[&bob]));
+    assert_eq!(one.rows + two.rows, 1, "{one:?} {two:?}");
+    assert_eq!(one.mailed + two.mailed, 1, "{one:?} {two:?}");
+    let rows = digests(&on_board(&state, &bob, &b).await);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].count, 1, "filed once");
+    assert_eq!(sent.lock().unwrap().len(), 1, "mailed once");
+}

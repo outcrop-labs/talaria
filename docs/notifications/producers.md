@@ -231,9 +231,11 @@ and its email is not the missed-activity batcher's but one **"Your boards"** mai
 every board with something to report, sent when the person's Board activity Email is on and
 their email frequency is not Never, through `send_gated_mail` (the instance switch holds it).
 Nothing to report, nothing sent. The ledger, `board_digest_state` (one row per person), is
-written as the pass goes: the rows are filed and marked first, then the mail; a mail that
-failed or was held is offered again on the next tick inside the window without filing the
-rows twice, and a tick inside the same window files nothing. It is a separate mail from the
+written as the pass goes, each deciding write a compare-and-set: the day is claimed before
+its rows are filed (a row that fails to land gives the claim back, for the next tick), then
+the mail is claimed before it is sent (a mail that failed or was held gives it back, and the
+next tick inside the window offers it again without filing the rows twice). A tick inside
+the same window, or a pass that overlaps another, files and mails nothing. It is a separate mail from the
 approvals digest, at the same hour. Feature `board-digest`.
 
 **A board move** tells the destination's audience by their setting for the destination,

@@ -53,11 +53,15 @@
 //           switch holds it like every notification mail.
 //
 // THE LEDGER (`board_digest_state`, one row per person) is written as the
-// pass goes: the in-app rows are filed and marked first, then the mail. A
-// mail that fails, or is held by the instance switch, leaves its row owing
-// one, and the next tick inside the window sends it without filing the rows
-// again; past the window, the rows were the digest. A tick inside the same
-// window never files twice.
+// pass goes, and every write that decides something is a compare-and-set, so
+// two passes that overlap (a lease lost mid-run) cannot both file a day or
+// both send its mail. The day is claimed before its rows are filed; a row
+// that fails to land gives the claim back, and the next tick files the day
+// again. The mail is claimed before it is sent; a mail that fails, or is held
+// by the instance switch, gives its claim back, and the next tick inside the
+// window offers it again without filing the rows twice — past the window, the
+// rows were the digest. A pass that dies between claiming a mail and sending
+// it loses that one mail, never sends it twice.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -280,6 +284,72 @@ async fn read_mark(pg: &PgPool, user_id: &str) -> Result<Option<Mark>, sqlx::Err
     }))
 }
 
+/// Claim today for this person: the mark is written only when it is not
+/// already today's. False when another pass filed today first.
+async fn claim_day(pg: &PgPool, user_id: &str, m: &Mark) -> Result<bool, sqlx::Error> {
+    let won: Option<String> = sqlx::query_scalar(
+        "insert into board_digest_state (user_id, filed_on, window_from, window_to, mailed_on) \
+         values ($1::uuid, $2, to_timestamp($3::bigint / 1000.0), \
+                 to_timestamp($4::bigint / 1000.0), $5) \
+         on conflict (user_id) do update set filed_on = excluded.filed_on, \
+           window_from = excluded.window_from, window_to = excluded.window_to, \
+           mailed_on = excluded.mailed_on, updated_at = now() \
+         where board_digest_state.filed_on is distinct from excluded.filed_on \
+         returning user_id::text",
+    )
+    .bind(user_id)
+    .bind(&m.filed_on)
+    .bind(m.from_ms)
+    .bind(m.to_ms)
+    .bind(&m.mailed_on)
+    .fetch_optional(pg)
+    .await?;
+    Ok(won.is_some())
+}
+
+/// Give a day's claim back: the mark as it was before (none at all for a
+/// person's first), so the next tick files the day again.
+async fn unclaim_day(pg: &PgPool, user_id: &str, before: Option<&Mark>) -> Result<(), sqlx::Error> {
+    match before {
+        Some(m) => write_mark(pg, user_id, m).await,
+        None => sqlx::query("delete from board_digest_state where user_id = $1::uuid")
+            .bind(user_id)
+            .execute(pg)
+            .await
+            .map(|_| ()),
+    }
+}
+
+/// Claim the day's mail: settled only by the pass that flips it. False when
+/// another pass settled it first, or the day is no longer `day`.
+async fn claim_mail(pg: &PgPool, user_id: &str, day: &str) -> Result<bool, sqlx::Error> {
+    let won: Option<String> = sqlx::query_scalar(
+        "update board_digest_state set mailed_on = filed_on, updated_at = now() \
+         where user_id = $1::uuid and filed_on = $2 and mailed_on is distinct from $2 \
+         returning user_id::text",
+    )
+    .bind(user_id)
+    .bind(day)
+    .fetch_optional(pg)
+    .await?;
+    Ok(won.is_some())
+}
+
+/// Give the mail's claim back: it is owed again.
+async fn unclaim_mail(pg: &PgPool, user_id: &str, day: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "update board_digest_state set mailed_on = null, updated_at = now() \
+         where user_id = $1::uuid and filed_on = $2",
+    )
+    .bind(user_id)
+    .bind(day)
+    .execute(pg)
+    .await?;
+    Ok(())
+}
+
+/// The mark as given, unconditionally: only `unclaim_day`, putting back what
+/// a pass read before it claimed.
 async fn write_mark(pg: &PgPool, user_id: &str, m: &Mark) -> Result<(), sqlx::Error> {
     sqlx::query(
         "insert into board_digest_state (user_id, filed_on, window_from, window_to, mailed_on) \
@@ -473,9 +543,17 @@ fn row_title(name: &str) -> String {
     format!("Daily digest: {name}")
 }
 
-/// The in-app half: one row per board. Answers how many landed.
-async fn file_rows(notify: &NotifyDeps, user_id: &str, digests: &[BoardDigest]) -> usize {
+/// The in-app half: one row per board. Answers how many landed, or the first
+/// failure once every board has been tried — a day with a row missing is not
+/// settled (`digest_one` gives its claim back, and the next tick files it
+/// again: the rows that did land take it as a re-alert of the same counts).
+async fn file_rows(
+    notify: &NotifyDeps,
+    user_id: &str,
+    digests: &[BoardDigest],
+) -> Result<usize, sqlx::Error> {
     let mut filed = 0;
+    let mut failed: Option<sqlx::Error> = None;
     for d in digests {
         let title = row_title(&d.name);
         let line = d.counts.line();
@@ -488,13 +566,19 @@ async fn file_rows(notify: &NotifyDeps, user_id: &str, digests: &[BoardDigest]) 
         };
         match add_notification_with(notify, user_id, &input, &row_meta(&d.board_id)).await {
             Ok(_) => filed += 1,
-            Err(e) => tracing::error!(
-                "[board-digest] the row for board {} to {user_id} failed: {e}",
-                d.board_id
-            ),
+            Err(e) => {
+                tracing::error!(
+                    "[board-digest] the row for board {} to {user_id} failed: {e}",
+                    d.board_id
+                );
+                failed.get_or_insert(e);
+            }
         }
     }
-    filed
+    match failed {
+        None => Ok(filed),
+        Some(e) => Err(e),
+    }
 }
 
 /// Whether the person takes the "Your boards" mail: Board activity's Email
@@ -746,8 +830,8 @@ pub async fn run_board_digest_for(
     Ok(run)
 }
 
-/// Today's digest for one person: file and mark, then mail — or only the
-/// mail a failed send still owes.
+/// Today's digest for one person: claim the day, file its rows, then the
+/// mail — or only the mail a failed send still owes.
 async fn digest_one(
     deps: &BoardDigestDeps,
     person: &Recipient,
@@ -765,59 +849,70 @@ async fn digest_one(
         }
         Step::Mail { from, to } => {
             let digests = build(pg, person, from, to).await?;
-            let mark = Mark {
-                filed_on: today.to_string(),
-                from_ms: from,
-                to_ms: to,
-                mailed_on: None,
-            };
-            mail(deps, person, mark, &digests, base, run).await
+            mail(deps, person, today, &digests, base, run).await
         }
         Step::File { from, to } => {
             let digests = build(pg, person, from, to).await?;
             let blob = person.prefs.clone().unwrap_or(Value::Null);
             let owes_mail = !digests.is_empty() && mail_wanted(&blob);
-            if !digests.is_empty() {
-                run.people_filed += 1;
-                run.rows += file_rows(&deps.notify, &person.id, &digests).await;
-            }
-            let mark = Mark {
+            let claim = Mark {
                 filed_on: today.to_string(),
                 from_ms: from,
                 to_ms: to,
                 mailed_on: (!owes_mail).then(|| today.to_string()),
             };
-            // Marked before the mail, so a tick that finds the rows filed
-            // never files them again.
-            write_mark(pg, &person.id, &mark).await?;
+            // Claimed before the rows, so an overlapping pass that read the
+            // same old mark files nothing and sends nothing.
+            if !claim_day(pg, &person.id, &claim).await? {
+                run.already_done += 1;
+                return Ok(());
+            }
             if digests.is_empty() {
                 run.nothing_to_report += 1;
                 return Ok(());
             }
+            match file_rows(&deps.notify, &person.id, &digests).await {
+                Ok(n) => {
+                    run.people_filed += 1;
+                    run.rows += n;
+                }
+                Err(e) => {
+                    // A row is missing: the day is not done. Give the claim
+                    // back (and send no mail about a row that is not there);
+                    // the next tick files it again.
+                    unclaim_day(pg, &person.id, mark.as_ref()).await?;
+                    return Err(e);
+                }
+            }
             if owes_mail {
-                mail(deps, person, mark, &digests, base, run).await?;
+                mail(deps, person, today, &digests, base, run).await?;
             }
             Ok(())
         }
     }
 }
 
-/// The mail half. Settled (`mailed_on` = today) when it went, or when there is
-/// nothing left to send — the boards changed, or the person turned the mail
-/// off since. Left owing when the door failed or the instance switch held it.
+/// The mail half, for a day whose rows are filed. Claimed before it is sent
+/// (an overlapping pass sends nothing), and the claim stands when it went or
+/// when there is nothing left to send — the boards changed, or the person
+/// turned the mail off since. Given back when the door failed or the instance
+/// switch held it: owed again, for the next tick.
 async fn mail(
     deps: &BoardDigestDeps,
     person: &Recipient,
-    mut mark: Mark,
+    today: &str,
     digests: &[BoardDigest],
     base: Option<&str>,
     run: &mut BoardDigestRun,
 ) -> Result<(), sqlx::Error> {
     let pg = &deps.notify.pg;
+    if !claim_mail(pg, &person.id, today).await? {
+        run.already_done += 1;
+        return Ok(());
+    }
     let blob = person.prefs.clone().unwrap_or(Value::Null);
     if digests.is_empty() || !mail_wanted(&blob) {
-        mark.mailed_on = Some(mark.filed_on.clone());
-        return write_mark(pg, &person.id, &mark).await;
+        return Ok(());
     }
     let m = render_board_mail(digests, base);
     let sent = (deps.send)(BoardMail {
@@ -830,13 +925,12 @@ async fn mail(
     .await;
     if sent.ok {
         run.mailed += 1;
-        mark.mailed_on = Some(mark.filed_on.clone());
-        write_mark(pg, &person.id, &mark).await
-    } else if sent.blocked {
+        return Ok(());
+    }
+    if sent.blocked {
         // The instance switch is off: owed, so a switch turned back on inside
         // the window still sends it. Not a failure — nothing was attempted.
         run.mail_held += 1;
-        Ok(())
     } else {
         run.mail_failed += 1;
         tracing::error!(
@@ -844,8 +938,8 @@ async fn mail(
             person.email,
             sent.error.as_deref().unwrap_or("unknown error")
         );
-        Ok(())
     }
+    unclaim_mail(pg, &person.id, today).await
 }
 
 pub fn board_digest_job_spec(deps: BoardDigestDeps) -> talaria_scheduler::JobSpec {
