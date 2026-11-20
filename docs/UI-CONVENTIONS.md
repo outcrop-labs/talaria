@@ -395,7 +395,7 @@ Two deliberate registers — don't mix them:
 Every door into a settings surface wears one gear, from
 `components/ui/settings-cog.ts` (apps: `@talaria/sdk`).
 `scripts/settings-glyph.mjs` fails a gear, or the sliders that used to stand
-in for one, imported anywhere else.
+in for one, imported or re-exported anywhere else.
 
 - **One glyph.** lucide `Settings`, the standard gear, at the default stroke.
   `<SettingsButton label>` is the icon-only door, `cogMenuIcon` is the icon of a
