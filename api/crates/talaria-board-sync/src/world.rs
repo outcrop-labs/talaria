@@ -297,7 +297,11 @@ impl Real {
                 .map_err(db)?;
         let name = board.map(|(n,)| n).unwrap_or_else(|| "a board".into());
         let title = format!("ClickUp sync stopped on {name}");
-        let body = format!("{} {}", problem.detail, problem.fix);
+        let body = format!(
+            "{}. {}.",
+            problem.detail.trim_end_matches('.'),
+            problem.fix.trim_end_matches('.')
+        );
         let href = format!("/boards/{}", sync.board_id);
         let notify = NotifyDeps {
             pg: self.pg.clone(),

@@ -108,8 +108,8 @@ pub fn parse_rate_limit(headers: &reqwest::header::HeaderMap) -> RateLimit {
 /// into an error a person or a log reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClickUpError {
-    /// 401. On GET /user the token is dead; on anything else the thing is out
-    /// of the token's reach. `ecode` is ClickUp's code (OAUTH_…), kept for the
+    /// A 401. On GET /user the token is dead; on anything else the thing is
+    /// out of the token's reach. `ecode` is ClickUp's code (OAUTH_…), kept for the
     /// caller's branch, never shown.
     Unauthorized {
         ecode: Option<String>,
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn task_detail_parses_attachments_and_skips_deleted_ones() {
         let t = Task::parse(&fixture("task_detail.json")).unwrap();
-        let atts = t.attachments.unwrap();
+        let atts = t.attachments.clone().unwrap();
         assert_eq!(atts.len(), 2);
         assert_eq!(atts[0].title, "plan.pdf");
         assert_eq!(atts[0].size, Some(48_213));

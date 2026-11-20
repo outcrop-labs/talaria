@@ -645,6 +645,15 @@ pub async fn preview(
         })
         .collect();
     let targets: Vec<Target> = offered_targets(&cols);
+    // The sample lands as the pre-filled table would place it.
+    let suggested: StatusMap = statuses
+        .iter()
+        .filter_map(|s| {
+            s.suggested
+                .clone()
+                .map(|k| (s.name.trim().to_lowercase(), k))
+        })
+        .collect();
 
     // The statistics: up to PREVIEW_TASKS tasks, closed included.
     let mut tasks = Vec::new();
@@ -710,7 +719,7 @@ pub async fn preview(
         .iter()
         .take(PREVIEW_SAMPLE)
         .map(|t| {
-            let placement = place(&t.status, &prefill, &cols);
+            let placement = place(&t.status, &suggested, &cols);
             let (humans, _) = map_assignees(t, &people);
             json!({
                 "id": t.id,

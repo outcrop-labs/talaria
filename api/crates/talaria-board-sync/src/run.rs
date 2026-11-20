@@ -325,7 +325,7 @@ where
     step.run().await
 }
 
-impl<'a, R: Remote, L: Local> Step<'a, R, L> {
+impl<R: Remote, L: Local> Step<'_, R, L> {
     fn remote(&self) -> Result<&R, StepError> {
         self.remote
             .as_ref()
