@@ -457,6 +457,15 @@ CREATE TABLE public.board_agents (
     board_id uuid NOT NULL,
     agent_model text NOT NULL
 );
+CREATE TABLE public.board_digest_state (
+    user_id uuid NOT NULL,
+    filed_on text NOT NULL,
+    window_from timestamp with time zone NOT NULL,
+    window_to timestamp with time zone NOT NULL,
+    filing_claim bigint,
+    mailed_on text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.board_labels (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     board_id uuid NOT NULL,
@@ -2074,6 +2083,8 @@ ALTER TABLE ONLY public.board_agent_requests
     ADD CONSTRAINT board_agent_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.board_agents
     ADD CONSTRAINT board_agents_pkey PRIMARY KEY (board_id, agent_model);
+ALTER TABLE ONLY public.board_digest_state
+    ADD CONSTRAINT board_digest_state_pkey PRIMARY KEY (user_id);
 ALTER TABLE ONLY public.board_labels
     ADD CONSTRAINT board_labels_board_id_name_key UNIQUE (board_id, name);
 ALTER TABLE ONLY public.board_labels
@@ -2612,6 +2623,8 @@ ALTER TABLE ONLY public.board_agent_requests
     ADD CONSTRAINT board_agent_requests_requested_by_user_id_fkey FOREIGN KEY (requested_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.board_agents
     ADD CONSTRAINT board_agents_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_digest_state
+    ADD CONSTRAINT board_digest_state_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_labels
     ADD CONSTRAINT board_labels_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_members

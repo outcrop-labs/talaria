@@ -106,7 +106,11 @@ The center itself (the bell, the page, the settings, the status panel) is
   ([producers.md](./notifications/producers.md#due-dates)). A board with no setting follows your
   default for every board, and with no default, Participating. All files one notification
   per board for the tickets you are not in, counting its updates until you read it; it is
-  quiet unless you turn on Board activity in the matrix. Off silences the board's
+  quiet unless you turn on Board activity in the matrix. A board set to a daily digest
+  files nothing as it happens (what points at you still does) and, once a day at the
+  daily digest's hour, one quiet notification counting its new tickets, moves,
+  completions, comments and due dates passed or near since your last digest, plus a "Your boards" email listing the
+  boards whose Email is on (the board's own, else Board activity's). Off silences the board's
   assignments and @mentions too, but a ticket you watch yourself still reaches you, and
   approvals always do. A board can also have its own channels — Alerts (the banner and
   the push, together) and Email, each on, off, or as the matrix says — so one board's

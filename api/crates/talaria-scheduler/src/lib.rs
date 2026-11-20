@@ -141,6 +141,11 @@ pub enum JobName {
     /// who opted in. Required — a reminder that silently never comes is the
     /// missed deadline it exists to prevent.
     TaskDue,
+    /// The daily board digest (talaria-digest `boards.rs`): one row per board
+    /// a person hears as a digest, and their "Your boards" mail, at the daily
+    /// digest's hour. Required — a digest that silently stops is a person who
+    /// asked to hear a board once a day and hears nothing at all.
+    BoardDigest,
 }
 
 impl JobName {
@@ -178,6 +183,7 @@ impl JobName {
             JobName::GitHostHoldings => "git-host-holdings",
             JobName::BoardSync => "board-sync",
             JobName::TaskDue => "task-due",
+            JobName::BoardDigest => "board-digest",
         }
     }
 }
@@ -202,6 +208,7 @@ pub const REQUIRED_JOBS: &[JobName] = &[
     JobName::BlurbRewrite,
     JobName::BoardSync,
     JobName::TaskDue,
+    JobName::BoardDigest,
 ];
 
 /// The work. `Ok(Some(sentence))` is a short human line for the log,
@@ -1277,6 +1284,7 @@ mod tests {
                 "blurb-rewrite",
                 "board-sync",
                 "task-due",
+                "board-digest",
             ]
         );
     }

@@ -282,6 +282,7 @@ export const GROUP = {
   outreach: (agent: string, day: string) => `outreach:${agent}:${day}`,
   agentDesign: (designId: string) => `agent-design:${designId}`,
   boardActivity: (boardId: string) => `board:${boardId}:activity`,
+  boardDigest: (boardId: string, day: string) => `board:${boardId}:digest:${day}`,
 } as const
 
 /** The entity kinds a row can be about (the server's `entity::*`). */

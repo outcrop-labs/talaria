@@ -53,8 +53,10 @@ pub use store::SyncRow;
 pub const KIND: &str = "clickup-sync";
 pub const PROVIDER: &str = "clickup";
 /// Who the sync is on a ticket: `created_by` and the activity actor. Matches
-/// no agent and no person (the comment-room owner falls back past it).
-pub const SYNC_ACTOR: &str = "clickup-sync";
+/// no agent and no person (the comment-room owner falls back past it). It is
+/// talaria-tasks-types' `CLICKUP_SYNC_ACTOR`, one of its `MIRROR_ACTORS`, so
+/// the daily board digest can leave the sync's writes out of its counts.
+pub const SYNC_ACTOR: &str = talaria_tasks_types::CLICKUP_SYNC_ACTOR;
 
 /// One step's wall-clock deadline (and the lease TTL). Steps stop themselves
 /// at a quarter of it (run::STEP_BUDGET_MS).

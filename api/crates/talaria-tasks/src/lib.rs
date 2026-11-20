@@ -551,8 +551,9 @@ async fn file_decided(
 type Recipient = (String, ChannelOverride);
 
 /// The decisions, as (per-ticket rows, board-activity rows), each person with
-/// their board's channels. Skipped people and people held for a digest (no
-/// producer yet) are in neither.
+/// their board's channels. Skipped people and people held for the daily board
+/// digest (which counts the event later, from the board's records) are in
+/// neither.
 fn split(decided: Vec<(Candidate, Delivery, ChannelOverride)>) -> (Vec<Recipient>, Vec<Recipient>) {
     let (mut ticket, mut activity) = (Vec::new(), Vec::new());
     for (c, d, channels) in decided {
@@ -2775,11 +2776,16 @@ pub async fn add_comment(
 // So: ONE resolution of "who is watching this ticket", below, and every
 // reader goes through it — `list_watchers` (the UI, the API response) and
 // `ticket_audience` (the notifications). There is no path that reads
-// `task_watchers` without asking it — but one, which can only narrow:
+// `task_watchers` without asking it — but two. The first can only narrow:
 // `talaria_notify::boards::mention_listeners` reads whether a watch is the
 // person's own (`added_by`) for people a mention door already resolved, so a
 // watch can keep their mention through a board set to Off and never names a
-// recipient of its own.
+// recipient of its own. The second widens, safely: the daily board digest
+// (`talaria_digest::boards`, its counts query) reads one person's OWN watch
+// rows to put a ticket in their `mine` scope, and only on boards that person
+// already passed `list_boards` for — the same two access legs
+// `resolve_watchers`' `board_role` checks — so a watch row there never
+// reaches anyone who could not open the board, and names nobody else.
 //
 // WHAT HAPPENS TO A STORED WATCHER WHO NO LONGER QUALIFIES — the rows
 // written before this check existed, and anyone whose board access is later

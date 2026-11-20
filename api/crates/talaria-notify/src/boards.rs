@@ -10,7 +10,10 @@
 // WHERE IT RUNS. Who gets a row is decided once, at fan-out, by the producers
 // (talaria-tasks' ticket fan-out and the four ticket @mention doors through
 // talaria-mentions) — the place channel levels are decided today. Nothing at
-// send time re-reads it. The row, once filed, is the record.
+// send time re-reads it. The row, once filed, is the record. A board a person
+// hears as a daily digest files nothing at fan-out; talaria-digest's board
+// digest reads the board's own records once a day and files one row per board
+// (`digest_people`, `digest_boards`).
 //
 // A BOARD'S OWN CHANNELS. A setting may also say how this board's rows reach
 // the person — Alerts (the banner and the push, together) and Email, each on,
@@ -19,7 +22,9 @@
 // (`NotifyMeta::channels`), the writer stores it on the row, and the deferred
 // push and the mail batcher re-check the matrix through the stored override
 // (`prefs::channels_with`) — never by reading this module. In-app is not a
-// choice: every row lands in the inbox.
+// choice: every row lands in the inbox. The daily board digest reads a
+// board's Email the same way (`channels_with`) to decide whether that board is
+// in its "Your boards" mail; its rows stay quiet whatever Alerts says.
 //
 // The precedence, in order (`resolve`):
 //   1. Needs-you rows never come here: approvals (ticket review included),
@@ -56,14 +61,11 @@ pub use crate::meta::ChannelOverride;
 pub const BOARDS_KEY: &str = "boards";
 
 /// The features this module serves in `GET /api/notifications` (I-23):
-/// the setting (`board-prefs`), a board's own channels (`board-channels`)
-/// and the due-date reminders (`task-due`, talaria-tasks `due`).
-/// `board-digest` joins when its producer ships.
-pub const FEATURES: &[&str] = &["board-prefs", "board-channels", "task-due"];
-
-/// The daily board digest has a producer (`board-digest`). Until then the
-/// cadence is listed but refused.
-const DIGEST_SERVED: bool = false;
+/// the setting (`board-prefs`), a board's own channels (`board-channels`),
+/// the due-date reminders (`task-due`, talaria-tasks `due`) and the daily
+/// board digest that the `digest` cadence feeds (`board-digest`,
+/// talaria-digest `boards.rs`).
+pub const FEATURES: &[&str] = &["board-prefs", "board-channels", "task-due", "board-digest"];
 
 // ── The vocabulary ───────────────────────────────────────────────────────────
 
@@ -136,7 +138,9 @@ impl BoardEvent {
 
     /// Whether a person may choose it yet (its producer exists). Every event
     /// has one since the due-date reminders shipped; the wire keeps the
-    /// member so a later event can be listed before its producer lands.
+    /// member so a later event can be listed before its producer lands. The
+    /// daily board digest counts an event only while this holds, so a digest
+    /// never carries news nobody could have chosen.
     pub fn available(self) -> bool {
         true
     }
@@ -175,7 +179,8 @@ const SCOPE_IDS: &[&str] = &["mine", "board"];
 pub enum Cadence {
     /// As it happens.
     Instant,
-    /// Rolled up once a day (no producer yet: `DIGEST_SERVED`).
+    /// Rolled up once a day, one row per board (talaria-digest's board
+    /// digest, at the daily digest's hour). Nothing is filed at fan-out.
     Digest,
 }
 
@@ -198,9 +203,6 @@ impl Cadence {
             "digest" => Some(Cadence::Digest),
             _ => None,
         }
-    }
-    fn available(self) -> bool {
-        self == Cadence::Instant || DIGEST_SERVED
     }
 }
 
@@ -549,7 +551,9 @@ pub enum Delivery {
     /// class): an event on a ticket they are not in, on a board they hear in
     /// full.
     BoardActivity,
-    /// Held for the daily board digest (no producer yet; nothing is filed).
+    /// Held for the daily board digest: nothing is filed now, and the digest
+    /// counts the event from the board's own records at the day's slot
+    /// (talaria-digest `boards.rs`, which asks the same questions in SQL).
     Digest,
 }
 
@@ -902,6 +906,62 @@ pub async fn mention_listeners(
         .collect()
 }
 
+// ── The daily digest ─────────────────────────────────────────────────────────
+
+/// The people who could hear some board as a daily digest: a setting of
+/// theirs for a board, or their default for every board, whose cadence is
+/// `digest` and whose preset is not Off. The board digest asks this once per
+/// pass and then each person's own boards (`digest_boards`), so a workspace
+/// where nobody chose a digest pays this one query. A superset is harmless —
+/// `digest_boards` decides — and a setting this binary cannot read never
+/// makes a digest (it falls through to the next layer, as everywhere).
+pub async fn digest_people(pg: &PgPool) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        "select user_id::text from board_notify_prefs \
+          where cadence = 'digest' and preset <> 'off' \
+         union \
+         select id::text from users \
+          where notify_prefs -> 'boards' ->> 'cadence' = 'digest' \
+            and coalesce(notify_prefs -> 'boards' ->> 'preset', '') <> 'off'",
+    )
+    .fetch_all(pg)
+    .await
+}
+
+/// Which of `board_ids` one person hears as a daily digest, each with the
+/// setting that puts it there — `effective`, the order every producer reads:
+/// their row for the board, else their default, else the built-in (never a
+/// digest). A board whose effective setting wants nothing (Off, or a Custom
+/// set emptied by a later release) is not on it. In `board_ids` order.
+pub async fn digest_boards(
+    pg: &PgPool,
+    user_id: &str,
+    board_ids: &[String],
+) -> Result<Vec<(String, BoardPref)>, sqlx::Error> {
+    if board_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = stored_for_boards(pg, user_id, board_ids).await?;
+    let default = default_for(pg, user_id).await?;
+    Ok(digest_of(board_ids, &rows, default.as_ref()))
+}
+
+/// `digest_boards`' decision, from what it read. Pure.
+fn digest_of(
+    board_ids: &[String],
+    rows: &HashMap<String, BoardPref>,
+    default: Option<&BoardPref>,
+) -> Vec<(String, BoardPref)> {
+    board_ids
+        .iter()
+        .filter_map(|b| {
+            let (p, _) = effective(rows.get(b), default);
+            let heard = p.cadence == Cadence::Digest && BoardEvent::ALL.iter().any(|e| p.wants(*e));
+            heard.then(|| (b.clone(), p))
+        })
+        .collect()
+}
+
 // ── The store ────────────────────────────────────────────────────────────────
 
 /// The caller's default for every board, if they set one.
@@ -1030,10 +1090,13 @@ pub fn registry_wire() -> Value {
             });
             json!({ "id": p.id(), "label": p.label(), "events": events, "scope": scope })
         }).collect::<Vec<_>>(),
+        // Every cadence has its producer now (the digest: talaria-digest's
+        // board digest); the flag stays on the wire so a client keeps one rule
+        // for events and cadences alike.
         "cadences": CADENCES.iter().map(|c| json!({
             "id": c.id(),
             "label": c.label(),
-            "available": c.available(),
+            "available": true,
         })).collect::<Vec<_>>(),
     })
 }
@@ -1062,12 +1125,12 @@ pub fn default_wire(blob: &Value) -> Value {
 
 /// A written setting, checked: `{preset, events?, scope?, cadence?,
 /// channels?}`. `events` and `scope` belong to Custom alone; Custom needs at
-/// least one event; New ticket needs scope board; an event or a cadence with
-/// no producer yet is refused. `channels` is `{alerts?, email?}`, each a
-/// bool or null (null or absent: the class matrix decides); in-app is always
-/// on, so `inApp: false` is refused as it is in the matrix. Unknown members
-/// are dropped. A write is the whole setting: what it leaves out goes back to
-/// its default. Every message is pinned in the tests below.
+/// least one event; New ticket needs scope board; an event with no producer
+/// yet is refused. `channels` is `{alerts?, email?}`, each a bool or null
+/// (null or absent: the class matrix decides); in-app is always on, so
+/// `inApp: false` is refused as it is in the matrix. Unknown members are
+/// dropped. A write is the whole setting: what it leaves out goes back to its
+/// default. Every message is pinned in the tests below.
 pub fn parse_write(v: &Value) -> Result<BoardPref, String> {
     let o = v.as_object().ok_or_else(|| object_msg(zod_type_name(v)))?;
     let preset = Preset::parse(&enum_member(o, "preset", PRESET_IDS)?).expect("checked");
@@ -1076,9 +1139,6 @@ pub fn parse_write(v: &Value) -> Result<BoardPref, String> {
         None => Cadence::Instant,
         Some(_) => Cadence::parse(&enum_member(o, "cadence", CADENCE_IDS)?).expect("checked"),
     };
-    if !cadence.available() {
-        return Err("a daily digest isn't available yet".into());
-    }
     let channels = parse_channels(o.get("channels"))?;
     if preset != Preset::Custom {
         if present("events") || present("scope") {
@@ -1707,11 +1767,6 @@ mod tests {
             err(json!({ "preset": "all", "channels": { "inApp": "no" } })),
             "Invalid input: expected boolean, received string"
         );
-        // What has no producer yet cannot be chosen.
-        assert_eq!(
-            err(json!({ "preset": "all", "cadence": "digest" })),
-            "a daily digest isn't available yet"
-        );
         // Due-date reminders have one (the `task-due` job): a person opts in
         // with a Custom set, over the tickets they are in or the board.
         assert_eq!(
@@ -1722,6 +1777,17 @@ mod tests {
             w(json!({ "preset": "custom", "events": ["status", "due"], "scope": "board" }))
                 .unwrap(),
             BoardPref::custom(&[Status, Due], Scope::Board, Cadence::Instant)
+        );
+        // The daily digest has its producer: the cadence is a choice now, for
+        // a preset and for a custom set alike.
+        assert_eq!(
+            parse_write(&json!({ "preset": "all", "cadence": "digest" })).unwrap(),
+            BoardPref::preset(Preset::All, Cadence::Digest)
+        );
+        assert_eq!(
+            parse_write(&json!({ "preset": "custom", "events": ["status"], "cadence": "digest" }))
+                .unwrap(),
+            BoardPref::custom(&[Status], Scope::Mine, Cadence::Digest)
         );
     }
 
@@ -1748,7 +1814,14 @@ mod tests {
             presets[4],
             json!({ "id": "custom", "label": "Custom", "events": null, "scope": null })
         );
-        assert_eq!(r["cadences"][1]["available"], json!(DIGEST_SERVED));
+        assert_eq!(
+            r["cadences"],
+            json!([
+                { "id": "instant", "label": "Instant", "available": true },
+                { "id": "digest", "label": "Daily digest", "available": true },
+            ])
+        );
+        assert!(FEATURES.contains(&"board-digest"));
         // The default's wire: the built-in when nothing is stored.
         assert_eq!(
             default_wire(&Value::Null),
@@ -1779,6 +1852,39 @@ mod tests {
                 "{p:?}"
             );
         }
+    }
+
+    // The daily digest's boards: the effective setting decides, in the order
+    // every producer reads — a board's own row over the default, the default
+    // over the built-in (which is never a digest) — and a digest that wants
+    // nothing is not one.
+    #[test]
+    fn the_digest_boards_follow_the_effective_setting() {
+        let ids: Vec<String> = ["b1", "b2", "b3", "b4"].map(String::from).to_vec();
+        let digest_all = BoardPref::preset(Preset::All, Cadence::Digest);
+        let digest_mine = BoardPref::preset(Preset::Participating, Cadence::Digest);
+        let instant = BoardPref::preset(Preset::All, Cadence::Instant);
+        let off_digest = BoardPref::preset(Preset::Off, Cadence::Digest);
+        let names = |v: Vec<(String, BoardPref)>| v.into_iter().map(|(b, _)| b).collect::<Vec<_>>();
+        // Nothing stored: the built-in, never a digest.
+        assert!(digest_of(&ids, &HashMap::new(), None).is_empty());
+        // A default of digest covers every board without a row of its own; a
+        // row says otherwise for its board, Off included.
+        let rows: HashMap<String, BoardPref> = [
+            ("b2".to_string(), instant.clone()),
+            ("b3".to_string(), off_digest.clone()),
+        ]
+        .into_iter()
+        .collect();
+        let got = digest_of(&ids, &rows, Some(&digest_mine));
+        assert_eq!(names(got.clone()), ["b1", "b4"]);
+        assert!(got.iter().all(|(_, p)| *p == digest_mine));
+        // A row of digest on an instant default: that board alone.
+        let rows: HashMap<String, BoardPref> = [("b3".to_string(), digest_all.clone())]
+            .into_iter()
+            .collect();
+        let got = digest_of(&ids, &rows, Some(&instant));
+        assert_eq!(got, vec![("b3".to_string(), digest_all)]);
     }
 
     // The probe that lets the due scan skip reading a ticket's audience must
