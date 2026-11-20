@@ -95,6 +95,19 @@ mod tests {
             (r["source"].as_str(), r["effective"]["preset"].as_str()),
             (Some("board"), Some("off"))
         );
+        // Each board's own channels are listed with it (null: the matrix).
+        assert_eq!(
+            r["effective"]["channels"],
+            json!({ "desktop": null, "push": null, "email": null })
+        );
+        let mailed = mentions
+            .clone()
+            .with_channels(talaria_notify::boards::ChannelOverride {
+                email: Some(true),
+                ..Default::default()
+            });
+        let r = board_row("b1", "Ops", Some("editor"), Some(&mailed), None);
+        assert_eq!(r["effective"]["channels"]["email"], json!(true));
         assert_eq!(
             r.as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
             ["id", "name", "role", "effective", "source"]

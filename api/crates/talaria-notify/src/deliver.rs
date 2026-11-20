@@ -2,7 +2,9 @@
 // transaction, and the tail after commit. The row is the record; every
 // channel here is a delivery on top of it (docs/notifications/delivery.md).
 //
-// THE DECISION (`decide`, pure), from the class's channels (prefs v2), the
+// THE DECISION (`decide`, pure), from the class's channels (prefs v2) with
+// any channel the producer overrode for this person replaced (`NotifyMeta::
+// channels` — their setting for a board, `prefs::channels_with`), the
 // person's DND and working hours, what the producer said (`NotifyMeta`), the
 // instance switches, and whether one of the person's clients is in use:
 //
@@ -28,7 +30,7 @@ use talaria_push::{PushNote, Urgency};
 use crate::classes::{Category, class_def};
 use crate::meta::{Alert, Coalesce, Filed, NotifyMeta};
 use crate::prefs::{
-    DeliverySwitches, FOREVER_MS, allow_needs_you, channels_of, dnd_state, email_frequency,
+    DeliverySwitches, FOREVER_MS, allow_needs_you, channels_with, dnd_state, email_frequency,
     legacy_route, next_local_time,
 };
 use crate::write::NotificationInput;
@@ -100,7 +102,7 @@ pub struct Context<'a> {
 pub fn decide(blob: &Value, class: &str, meta: &NotifyMeta, cx: &Context<'_>) -> Decision {
     let def = class_def(class).or_else(|| class_def(crate::classes::FALLBACK_CLASS));
     let category = def.map(|d| d.category).unwrap_or(Category::Following);
-    let channels = channels_of(blob, class);
+    let channels = channels_with(blob, class, &meta.channels);
     let route = legacy_route(channels);
     let dnd = dnd_state(blob, cx.zone, cx.now_ms);
     let breaks =
@@ -358,6 +360,116 @@ mod tests {
         assert_eq!(
             decide(&json!({}), "mention", &m(), &planeless).push,
             PushPlan::Skip
+        );
+    }
+
+    fn over(desktop: Option<bool>, push: Option<bool>, email: Option<bool>) -> NotifyMeta {
+        NotifyMeta {
+            channels: crate::meta::ChannelOverride {
+                desktop,
+                push,
+                email,
+            },
+            ..Default::default()
+        }
+    }
+
+    // A person's setting for a board can widen or narrow each channel of the
+    // class matrix on its own; nothing else changes — DND, the instance
+    // switches, a producer's mute and skip_push still win, and the legacy
+    // route reads the channels that actually apply.
+    #[test]
+    fn a_channel_override_beats_the_matrix_and_nothing_else() {
+        // task-status is Following: quiet by default (feed, no push, no mail).
+        let class = crate::classes::notify_class_of("task-status");
+        let d = decide(&json!({}), class, &over(None, None, None), &cx());
+        assert_eq!(
+            (d.alert, d.push, d.email_due_ms, d.route),
+            (Alert::Feed, PushPlan::Skip, None, "in_app")
+        );
+        // Widened, channel by channel.
+        let d = decide(&json!({}), class, &over(Some(true), None, None), &cx());
+        assert_eq!(
+            (d.alert, d.push, d.email_due_ms),
+            (Alert::Banner, PushPlan::Skip, None)
+        );
+        let d = decide(&json!({}), class, &over(None, Some(true), None), &cx());
+        assert_eq!(
+            (d.alert, d.push, d.email_due_ms),
+            (Alert::Feed, PushPlan::Now, None)
+        );
+        let d = decide(&json!({}), class, &over(None, None, Some(true)), &cx());
+        assert_eq!((d.alert, d.push), (Alert::Feed, PushPlan::Skip));
+        assert_eq!(d.email_due_ms, Some(NOW + 3_600_000));
+        assert_eq!(
+            d.route, "email",
+            "email alone reads as the email-only route"
+        );
+        // Narrowed: a mention banners, pushes and mails by default.
+        let d = decide(&json!({}), "mention", &over(Some(false), None, None), &cx());
+        assert_eq!((d.alert, d.push), (Alert::Feed, PushPlan::Now));
+        let d = decide(&json!({}), "mention", &over(None, Some(false), None), &cx());
+        assert_eq!((d.alert, d.push), (Alert::Banner, PushPlan::Skip));
+        let d = decide(&json!({}), "mention", &over(None, None, Some(false)), &cx());
+        assert_eq!((d.email_due_ms, d.route), (None, "in_app"));
+        let d = decide(
+            &json!({}),
+            "mention",
+            &over(Some(false), Some(false), Some(true)),
+            &cx(),
+        );
+        assert_eq!(
+            (d.alert, d.push, d.route),
+            (Alert::Feed, PushPlan::Skip, "email")
+        );
+        // The override beats a stored matrix choice too, both ways.
+        let off = json!({ "channels": { "mention": { "email": false, "push": false } } });
+        let d = decide(&off, "mention", &over(None, Some(true), Some(true)), &cx());
+        assert_eq!(d.push, PushPlan::Now);
+        assert!(d.email_due_ms.is_some());
+        let d = decide(&off, "mention", &over(None, None, None), &cx());
+        assert_eq!((d.push, d.email_due_ms), (PushPlan::Skip, None));
+        // …and nothing else: everything on, then each later rule.
+        let loud = over(Some(true), Some(true), Some(true));
+        let paused = json!({ "dnd": { "pausedUntil": crate::prefs::FOREVER } });
+        let d = decide(&paused, class, &loud, &cx());
+        assert!(d.held);
+        assert_eq!(
+            (d.alert, d.push, d.email_due_ms),
+            (Alert::Feed, PushPlan::Skip, None)
+        );
+        let mut switched = cx();
+        switched.switches = DeliverySwitches {
+            email: false,
+            push: false,
+        };
+        let d = decide(&json!({}), class, &loud, &switched);
+        assert_eq!(
+            (d.alert, d.push, d.email_due_ms),
+            (Alert::Banner, PushPlan::Skip, None)
+        );
+        let quiet = NotifyMeta {
+            quiet: true,
+            ..loud.clone()
+        };
+        let d = decide(&json!({}), class, &quiet, &cx());
+        assert_eq!(
+            (d.alert, d.push, d.email_due_ms),
+            (Alert::Feed, PushPlan::Skip, None)
+        );
+        let skip = NotifyMeta {
+            skip_push: true,
+            ..loud.clone()
+        };
+        assert_eq!(decide(&json!({}), class, &skip, &cx()).push, PushPlan::Skip);
+        let freq_off = json!({ "email": { "frequency": "off" } });
+        assert_eq!(decide(&freq_off, class, &loud, &cx()).email_due_ms, None);
+        // A present client still defers the push it widened.
+        let mut here = cx();
+        here.present = true;
+        assert_eq!(
+            decide(&json!({}), class, &loud, &here).push,
+            PushPlan::Defer
         );
     }
 

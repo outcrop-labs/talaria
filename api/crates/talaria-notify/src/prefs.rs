@@ -20,6 +20,7 @@ use crate::boards::{BOARDS_KEY, BoardPref, default_wire};
 use crate::classes::{
     CLASSES, ChannelDefaults, FALLBACK_CLASS, NOTIFY_CLASSES, ORIGINAL_CLASSES, class_def,
 };
+use crate::meta::ChannelOverride;
 
 const DIGEST_PREF_KEY: &str = "digest";
 const CHANNELS_KEY: &str = "channels";
@@ -111,6 +112,22 @@ pub fn channels_of(blob: &Value, class: &str) -> Channels {
         desktop: pick("desktop", |d| d.desktop),
         push: pick("push", |d| d.push),
         email: pick("email", |d| d.email),
+    }
+}
+
+/// One row's effective channels: the class's (`channels_of`), with each
+/// channel the producer overrode for this recipient replaced
+/// (`NotifyMeta::channels` — a person's setting for a board). The write's
+/// decision and both send-time re-checks (the deferred push, the mail
+/// batcher) call this, with the override the row was filed with, so the
+/// three can never disagree. In-app stays on.
+pub fn channels_with(blob: &Value, class: &str, o: &ChannelOverride) -> Channels {
+    let c = channels_of(blob, class);
+    Channels {
+        in_app: true,
+        desktop: o.desktop.unwrap_or(c.desktop),
+        push: o.push.unwrap_or(c.push),
+        email: o.email.unwrap_or(c.email),
     }
 }
 
@@ -1078,6 +1095,51 @@ mod tests {
 
     fn w() -> PrefsWrite {
         PrefsWrite::default()
+    }
+
+    // A producer's override (a person's setting for a board) replaces exactly
+    // the channels it names, in both directions, over every matrix state —
+    // and with nothing named it is the matrix, for every class.
+    #[test]
+    fn an_override_replaces_only_the_channels_it_names() {
+        let opts = [None, Some(false), Some(true)];
+        for stored in [false, true] {
+            let blob = json!({ "channels": { "participating": {
+                "desktop": stored, "push": stored, "email": stored } } });
+            let matrix = channels_of(&blob, "participating");
+            for desktop in opts {
+                for push in opts {
+                    for email in opts {
+                        let o = ChannelOverride {
+                            desktop,
+                            push,
+                            email,
+                        };
+                        let c = channels_with(&blob, "participating", &o);
+                        assert_eq!(
+                            c,
+                            Channels {
+                                in_app: true,
+                                desktop: desktop.unwrap_or(matrix.desktop),
+                                push: push.unwrap_or(matrix.push),
+                                email: email.unwrap_or(matrix.email),
+                            },
+                            "{stored} {o:?}"
+                        );
+                    }
+                }
+            }
+        }
+        for c in CLASSES.iter() {
+            for blob in [json!({}), json!({ c.id: "email" })] {
+                assert_eq!(
+                    channels_with(&blob, c.id, &ChannelOverride::default()),
+                    channels_of(&blob, c.id),
+                    "{}",
+                    c.id
+                );
+            }
+        }
     }
 
     // For every legacy blob wave 1 could have stored, the channels derive the

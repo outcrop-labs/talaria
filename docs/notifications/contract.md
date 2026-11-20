@@ -48,6 +48,20 @@ path's UPSERT and the `notifications` columns are unchanged: who gets a row is d
 fan-out by the producers (`talaria_notify::boards`, [producers.md](./producers.md#each-board)),
 and nothing at send time reads a board setting.
 
+**I-24, amended again (I-26, a board's own channels).** `NotifyMeta` gains `channels:
+ChannelOverride {desktop, push, email}` — each `Option<bool>`, `None` (the default) being
+the class matrix — so a producer can file one person's row on the channels that person
+chose for its board. Every `NotifyMeta` literal spreads `..Default::default()`, so every
+producer compiles untouched and files exactly as before. The write path's UPSERT gains
+three binds (`$18`–`$20`), stored in three new nullable columns, `notifications.
+desktop_override`, `push_override` and `email_override`: a `Realert` coalesce takes this
+write's, a `Quiet` one keeps the open row's, `refresh_notification` clears them.
+`deliver::decide`, the deferred push and the missed-activity batcher all read a row's
+channels through `prefs::channels_with(blob, class, &override)`, so the send-time
+re-checks apply the override the write did. Still, nothing at send time reads a board
+setting: the override is what the fan-out decided, carried on the row
+([delivery.md](./delivery.md#the-decision-at-write-time)).
+
 **I-8, amended.** A known id with a later `createdAt` is a re-alert. Since the shell's
 review fix N7, a `renotify` post on Linux closes the old OS banner and posts a new one; on
 macOS and Windows a re-post under the same identifier replaces it. The rule every consumer

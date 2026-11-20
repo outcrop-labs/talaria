@@ -478,7 +478,10 @@ CREATE TABLE public.board_notify_prefs (
     events text[],
     scope text,
     cadence text DEFAULT 'instant'::text NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    desktop boolean,
+    push boolean,
+    email boolean
 );
 CREATE TABLE public.board_statuses (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1276,7 +1279,10 @@ CREATE TABLE public.notifications (
     pushed_at timestamp with time zone,
     email_due_at timestamp with time zone,
     emailed_at timestamp with time zone,
-    email_attempts integer DEFAULT 0 NOT NULL
+    email_attempts integer DEFAULT 0 NOT NULL,
+    desktop_override boolean,
+    push_override boolean,
+    email_override boolean
 );
 CREATE TABLE public.org_domains (
     id uuid DEFAULT gen_random_uuid() NOT NULL,

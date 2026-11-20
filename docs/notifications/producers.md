@@ -139,8 +139,9 @@ A person chooses, board by board, what they hear about its tickets
 place channel levels are asked: the status move (`update_task`), the review decision, the
 board move, creation with its assignment, the comment fan-out, and the four ticket
 @mention doors (the create and edit of a description, the comment route, a post in the
-ticket's room) through `MentionOpts.ticket`. Nothing at send time reads it: the deferred
-push and the mail batcher keep reading the class matrix, as they do for a channel level.
+ticket's room) through `MentionOpts.ticket`. Nothing at send time reads it: a board's own
+channels (below) ride on each row, and the deferred push and the mail batcher re-check the
+class matrix through what the row carries.
 
 **The setting** is a preset — `all`, `participating`, `mentions`, `off` — or `custom`:
 chosen events over a scope. The events are `created` (a ticket appeared on the board,
@@ -153,6 +154,23 @@ board; `participating` is assigned, status, comment, mention and completed over 
 `mentions` is assigned and mention; `off` is nothing. `created` needs scope `board`
 (nobody is in a ticket before it exists). `due` and the `digest` cadence are listed but
 refused until their producers ship.
+
+**A board's own channels** (feature `board-channels`). A setting may also say how this
+board's rows reach the person: `channels: {desktop, push, email}`, each on, off, or null —
+null, the default, is the class matrix in Settings → Notifications. They are the matrix's
+own channels, so the same words mean the same thing; in-app is not one of them (every row
+lands in the inbox — `inApp: false` is refused, as in the matrix). Set Desktop and Push
+off and Email on and the board's rows reach the person by mail alone, filed read once the
+mail is accepted (the legacy email-only route); set Desktop on and the quiet board-activity
+row pops up. They change no decision about WHO gets a row, only how it reaches them, and
+they apply to every row the board's fan-outs file for that person — per-ticket rows,
+@mentions, the board-activity row, and the rows a deliberate watch carries through Off.
+Decided once, at fan-out like the rest: the producer files the row with them
+(`NotifyMeta::channels`), the writer stores them on the row (I-26), and the deferred push
+and the mail batcher re-check the matrix through the stored override — a board turned to
+mail keeps mailing what it filed, and a board setting is never re-read at send time. They
+travel with their layer: a board's row carries its own (null there means the matrix, not
+the default's), and the default for every board can carry some too.
 
 **Where it is stored.** One row per person per board in `board_notify_prefs` — a table,
 not a `board_members` column, because a team's members see its boards with no member row
@@ -174,8 +192,9 @@ less, until they choose, and a new board inherits the default by having no row.
    someone is involvement, not a choice, and does not wake a board they set to Off.
    Pressing Watch on such a watch makes it theirs; an editor's add never takes one back.
 3. The person's setting for the board, then their default, then the built-in.
-4. Then everything else, unchanged: the class matrix, DND, working hours, the instance
-   switches and the email frequency.
+4. Then the channels: the setting's own where it chose one, else the class matrix. Then
+   everything else, unchanged: DND, working hours, the instance switches and the email
+   frequency.
 
 Off silences assignments and @mentions from that board, as a channel at Nothing silences
 @mentions. Whatever points at the person (assigned, @mentioned) is never held back by
@@ -240,8 +259,10 @@ cannot reach it either. A future board-to-channel feed is board configuration, n
 setting.
 
 **The routes.** `GET /api/boards/{id}/notify` → `{effective, source, stored, default,
-registry}` (any board role; anyone else 403); `PUT` `{preset, events?, scope?, cadence?}`
-replaces the caller's own row; `DELETE` goes back to the default. `GET
+registry}` (any board role; anyone else 403); `PUT` `{preset, events?, scope?, cadence?,
+channels?}` replaces the caller's own row — the whole setting: a member it leaves out goes
+back to its default, so a client sends `stored` back with its change; `DELETE` goes back
+to the default. `GET
 /api/notifications/boards` → `{default, boards: [{id, name, role, effective, source}]}` for
 the boards the caller can see. `GET`/`PATCH /api/notifications` carry `boards` (the
 default; `null` clears it). The registry (event, preset and cadence labels) is served,

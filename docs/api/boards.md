@@ -280,7 +280,7 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_notify.rs`](../.
 
 **GET** — The caller's own setting for this board: `{effective, source, stored, default, registry}`. Any board role.
 
-**PUT** — `{preset, events?, scope?, cadence?}` → replaces the caller's own setting for this board; answers as GET. `events` and `scope` only with `custom`.
+**PUT** — `{preset, events?, scope?, cadence?, channels?}` → replaces the caller's own setting for this board; answers as GET. `events` and `scope` only with `custom`; `channels` is `{desktop?, push?, email?}`, each bool or null (null: the matrix decides).
 
 ### PUT `/api/boards/{id}/notify` body
 

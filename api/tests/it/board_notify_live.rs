@@ -7,8 +7,9 @@
 // All files one counting board-activity row, a custom set without @mentions
 // keeps the comment, one action is one row (a patch that assigns and moves; a
 // new ticket that @mentions a whole-board listener), the board-wide probe
-// hears both a row and a default, and the setting survives leaving and
-// rejoining a board.
+// hears both a row and a default, the setting survives leaving and
+// rejoining a board, and a board's own channels shape that person's rows and
+// nobody else's (stored on each row for the send-time re-checks).
 // Driven through the REAL router with minted sessions, so the route, its
 // detached fan-out and the writer's upsert are what is proven. House rule:
 // #[ignore]d; ci.yml's api job runs them with --ignored (its live-DB steps).
@@ -1037,4 +1038,194 @@ async fn a_team_member_sets_and_obeys_a_board_setting() {
         "no mention row (no door has a team-leg member on its roster), and the comment counted"
     );
     assert!(rows[0].body.contains("commented"), "{:?}", rows[0]);
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct Delivered {
+    kind: String,
+    alert: Option<String>,
+    desktop_override: Option<bool>,
+    push_override: Option<bool>,
+    email_override: Option<bool>,
+}
+
+/// How each row one person holds about this board was filed: its kind, the
+/// alert the write decided, and the channel override it was filed with.
+async fn delivered(state: &AppState, user: &str, board: &str) -> Vec<Delivered> {
+    sqlx::query_as(
+        "select kind, alert, desktop_override, push_override, email_override \
+         from notifications \
+         where user_id = $1::uuid and (href like $2 or href = $3 \
+               or entity_id in (select id::text from tasks where board_id = $4::uuid)) \
+         order by created_at, seq",
+    )
+    .bind(user)
+    .bind(format!("/boards/{board}/%"))
+    .bind(format!("/boards/{board}"))
+    .bind(board)
+    .fetch_all(&state.pg)
+    .await
+    .unwrap()
+}
+
+// A BOARD'S OWN CHANNELS (part 2): a person's setting for a board can say how
+// its rows reach them — here Bob keeps his rows off the screen and in the
+// mail, and Dee, who hears the whole board, has its quiet activity row pop
+// up. Each row is filed with the override its own recipient chose, decided
+// at fan-out and stored on the row beside the delivery it shaped (the alert
+// here; the deferred push and the batcher read the stored override at send
+// time). Cy, with no setting, gets exactly the matrix — another person's
+// choice changes nothing she receives. In-app is not a choice.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_boards_own_channels_shape_that_persons_rows_only() {
+    let state = live_app_state().await;
+    let (ada, _, ada_c, _) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c, bob_tok) = mint(&state, "Bob", "member").await;
+    let (cy, cy_e, _, _) = mint(&state, "Cy", "member").await;
+    let (dee, dee_e, dee_c, _) = mint(&state, "Dee", "member").await;
+    let b = board(
+        &state,
+        &ada_c,
+        "bn channels",
+        &[(&bob_e, "editor"), (&cy_e, "editor"), (&dee_e, "viewer")],
+    )
+    .await;
+    let got = set(
+        &state,
+        &b,
+        &bob_c,
+        json!({ "preset": "participating", "channels": { "desktop": false, "email": true } }),
+    )
+    .await;
+    assert_eq!(
+        got["effective"]["channels"],
+        json!({ "desktop": false, "push": null, "email": true })
+    );
+    assert_eq!(
+        got["stored"],
+        json!({ "preset": "participating", "cadence": "instant",
+                "channels": { "desktop": false, "email": true } })
+    );
+    set(
+        &state,
+        &b,
+        &dee_c,
+        json!({ "preset": "all", "channels": { "desktop": true } }),
+    )
+    .await;
+    // In-app is not a choice, as in the matrix.
+    let (status, out) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{b}/notify"),
+        Some(&dee_c),
+        Some(json!({ "preset": "all", "channels": { "inApp": false } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{out}");
+    assert_eq!(out["error"], "In-app is always on");
+
+    // Assigned to Bob and Cy, moved, then a comment @mentioning Bob.
+    let t = ticket(
+        &state,
+        &b,
+        &ada_c,
+        json!({ "title": "Channels", "assignees": [format!("user:{bob}"), format!("user:{cy}")] }),
+    )
+    .await;
+    ok(
+        &state,
+        "PUT",
+        &format!("/api/tasks/{t}"),
+        &ada_c,
+        json!({ "status": "in_progress" }),
+    )
+    .await;
+    ok(
+        &state,
+        "POST",
+        &format!("/api/tasks/{t}/comments"),
+        &ada_c,
+        json!({ "content": format!("@{bob_tok} over to you") }),
+    )
+    .await;
+    assert!(eventually!(
+        kind_set(&on_board(&state, &bob, &b).await) == ["mention", "task-assigned", "task-status"]
+    ));
+    assert!(eventually!(
+        kind_set(&on_board(&state, &cy, &b).await)
+            == ["task-assigned", "task-comment", "task-status"]
+    ));
+    assert!(eventually!(
+        on_board(&state, &dee, &b)
+            .await
+            .first()
+            .is_some_and(|r| r.kind == "board-activity" && r.count == 3)
+    ));
+    settle().await;
+
+    // Bob: every row — the assignment, the move and the @mention door's —
+    // filed with his board's channels; off the screen (feed), and the mail
+    // override rides on the row for the batcher.
+    let rows = delivered(&state, &bob, &b).await;
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    for r in &rows {
+        assert_eq!(
+            (
+                r.desktop_override,
+                r.push_override,
+                r.email_override,
+                r.alert.as_deref()
+            ),
+            (Some(false), None, Some(true), Some("feed")),
+            "{r:?}"
+        );
+    }
+    // Cy: the matrix, untouched — every row banners (her classes are in-app)
+    // and none carries an override.
+    let rows = delivered(&state, &cy, &b).await;
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    for r in &rows {
+        assert_eq!(
+            (
+                r.desktop_override,
+                r.push_override,
+                r.email_override,
+                r.alert.as_deref()
+            ),
+            (None, None, None, Some("banner")),
+            "{r:?}"
+        );
+    }
+    // Dee: the board-activity row is quiet by default; her board widened it.
+    let rows = delivered(&state, &dee, &b).await;
+    assert_eq!(
+        rows.iter()
+            .map(|r| (r.kind.as_str(), r.desktop_override, r.alert.as_deref()))
+            .collect::<Vec<_>>(),
+        [("board-activity", Some(true), Some("banner"))]
+    );
+    assert!(
+        delivered(&state, &ada, &b).await.is_empty(),
+        "never the actor"
+    );
+    // The feature is served.
+    let fetched = ok(&state, "GET", "/api/notifications", &bob_c, Value::Null).await;
+    assert!(
+        fetched["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("board-channels"))
+    );
+    // A PUT is the whole setting: one without channels gives the matrix back.
+    let back = set(&state, &b, &bob_c, json!({ "preset": "participating" })).await;
+    assert_eq!(
+        back["effective"]["channels"],
+        json!({ "desktop": null, "push": null, "email": null })
+    );
+    assert_eq!(
+        back["stored"],
+        json!({ "preset": "participating", "cadence": "instant" })
+    );
 }
