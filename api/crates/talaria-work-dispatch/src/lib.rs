@@ -25,6 +25,9 @@
 //   put the next one. So:
 //     · a live (or parked) run at generation n → stand down, that is the session
 //     · a finished run at generation n → that session is over, look at n + 1
+//     · nothing at generation n, but a rewind reserved it → look at n + 1
+//       (`holds::rewind_reserved`: the rewind's fork may still sit under
+//       that id, and a session opened there would continue it)
 //     · nothing at generation n → claim it
 //   A duplicate-key error on the claim is the race resolving itself: somebody
 //   inserted between our read and our write, and what they inserted is a live
@@ -32,6 +35,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+
+pub mod holds;
 
 use sqlx::PgPool;
 use talaria_agent_auth::now_ms as wall_ms;
@@ -93,10 +98,14 @@ pub enum Dispatch {
 /// IT DOES NOT WAIT FOR THE WORK. The session is a row before this function
 /// returns and a driver picks it up detached — this process's scheduler. The
 /// callers fire-and-forget; the session outlives them.
+///
+/// `reserved` is the pair's session ids a rewind reserved
+/// (`holds::rewind_reserved`); the walk never claims one.
 pub async fn dispatch_ticket_work(
     deps: &RunDeps,
     task: &DispatchTicket,
     agent_model: &str,
+    reserved: &[String],
     board_name: Option<&str>,
 ) -> Dispatch {
     let def = work_session_run();
@@ -139,6 +148,13 @@ pub async fn dispatch_ticket_work(
             // Finished: that session is over, the next generation may start
             // a new one.
             Some(_) => continue,
+            // RESERVED BY A REWIND that never made its attempt. If the
+            // rewind could not reach the agent to delete its fork, that fork
+            // still sits under this id, and a session opened here would get
+            // Hermes' `session_exists` and carry on inside the rewound
+            // conversation. Only a rewind, which asks the agent first, uses
+            // this generation again.
+            None if reserved.contains(&id) => continue,
             None => {}
         }
         let mut input = serde_json::json!({
@@ -385,15 +401,65 @@ pub async fn maybe_dispatch_ticket(
         let subject = talaria_agent_auth::AgentSubject::Model(agent.clone());
         match tasks::agent_ticket_refusal(pg, &target, &subject, tasks::AgentIntent::Write).await {
             Ok(Some(_refusal)) => continue,
-            Ok(None) => match dispatch_ticket_work(deps, task, &agent, None).await {
-                Dispatch::Session => talaria_work_wait::clear_waiting(pg, &task.id).await,
-                Dispatch::NotNow => {}
-                Dispatch::AtCap => surface_session_cap(pg, &task.id, &agent).await,
-            },
+            Ok(None) => {}
             Err(e) => {
                 tracing::error!("{LOG} {}: dispatch to {agent} threw: {e}", task.id);
+                continue;
             }
         }
+        // THE PAIR LOCK, from the hold read until enqueue returns. A rewind
+        // holds the pair while it prepares its attempt, and the ticket move
+        // it makes lands here: a walk that found no live session would
+        // otherwise claim the attempt's generation.
+        let mut lock = match holds::lock_pair(pg, &task.id, &agent).await {
+            Ok(lock) => lock,
+            Err(e) => {
+                tracing::error!(
+                    "{LOG} {}: could not lock the pair with {agent}, not dispatching: {e}",
+                    task.id
+                );
+                continue;
+            }
+        };
+        match holds::hold_on(lock.conn(), &task.id, &agent).await {
+            Ok(None) => {}
+            Ok(Some(rewind)) => {
+                tracing::debug!(
+                    "{LOG} {}: rewind {rewind} holds {agent} on this ticket — not dispatching",
+                    task.id
+                );
+                lock.release().await;
+                continue;
+            }
+            Err(e) => {
+                tracing::error!(
+                    "{LOG} {}: could not read the rewind hold for {agent}, not dispatching: {e}",
+                    task.id
+                );
+                lock.release().await;
+                continue;
+            }
+        }
+        // The generations rewinds reserved, under the same lock: a rewind
+        // fixes its attempt's id before it forks anything.
+        let reserved = match holds::rewind_reserved(lock.conn(), &task.id, &agent).await {
+            Ok(reserved) => reserved,
+            Err(e) => {
+                tracing::error!(
+                    "{LOG} {}: could not read the generations rewinds reserved for {agent}, \
+                     not dispatching: {e}",
+                    task.id
+                );
+                lock.release().await;
+                continue;
+            }
+        };
+        match dispatch_ticket_work(deps, task, &agent, &reserved, None).await {
+            Dispatch::Session => talaria_work_wait::clear_waiting(pg, &task.id).await,
+            Dispatch::NotNow => {}
+            Dispatch::AtCap => surface_session_cap(pg, &task.id, &agent).await,
+        }
+        lock.release().await;
     }
 }
 
@@ -999,10 +1065,22 @@ mod tests {
         session_run_id(task, agent, generation)
     }
 
+    /// The walk for ticket t-1 and one agent, over `store`.
+    async fn walk(store: &Arc<WalkStore>, reserved: &[String]) -> Dispatch {
+        dispatch_ticket_work(
+            &deps(store.clone()),
+            &ticket(),
+            "claude-opus-4-5",
+            reserved,
+            None,
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn claims_generation_zero_when_nothing_exists() {
         let store = WalkStore::empty();
-        dispatch_ticket_work(&deps(store.clone()), &ticket(), "claude-opus-4-5", None).await;
+        walk(&store, &[]).await;
         let inserted = store.inserted.lock().unwrap().clone();
         assert_eq!(inserted, vec![session_id("t-1", "claude-opus-4-5", 0)]);
     }
@@ -1015,7 +1093,7 @@ mod tests {
             (session_id("t-1", "claude-opus-4-5", 0), RunState::Done),
             (session_id("t-1", "claude-opus-4-5", 1), RunState::Running),
         ]));
-        dispatch_ticket_work(&deps(store.clone()), &ticket(), "claude-opus-4-5", None).await;
+        walk(&store, &[]).await;
         assert!(store.inserted.lock().unwrap().is_empty());
     }
 
@@ -1027,7 +1105,7 @@ mod tests {
             session_id("t-1", "claude-opus-4-5", 0),
             RunState::Awaiting,
         )]));
-        dispatch_ticket_work(&deps(store.clone()), &ticket(), "claude-opus-4-5", None).await;
+        walk(&store, &[]).await;
         assert!(store.inserted.lock().unwrap().is_empty());
     }
 
@@ -1038,9 +1116,34 @@ mod tests {
             (session_id("t-1", "claude-opus-4-5", 1), RunState::Error),
             (session_id("t-1", "claude-opus-4-5", 2), RunState::Cancelled),
         ]));
-        dispatch_ticket_work(&deps(store.clone()), &ticket(), "claude-opus-4-5", None).await;
+        walk(&store, &[]).await;
         let inserted = store.inserted.lock().unwrap().clone();
         assert_eq!(inserted, vec![session_id("t-1", "claude-opus-4-5", 3)]);
+    }
+
+    #[tokio::test]
+    async fn never_claims_a_generation_a_rewind_reserved() {
+        // Generation 0 finished. A rewind reserved generation 1 and failed
+        // before its attempt existed, so 1 has no run row, but its fork may
+        // still sit under that id in the agent's store. The walk takes 2.
+        let store = WalkStore::with(HashMap::from([(
+            session_id("t-1", "claude-opus-4-5", 0),
+            RunState::Done,
+        )]));
+        let reserved = [session_id("t-1", "claude-opus-4-5", 1)];
+        walk(&store, &reserved).await;
+        let inserted = store.inserted.lock().unwrap().clone();
+        assert_eq!(inserted, vec![session_id("t-1", "claude-opus-4-5", 2)]);
+
+        // A rewind that made its attempt reserved that generation too, and
+        // the attempt's run row decides: live, so the walk stands down.
+        let store = WalkStore::with(HashMap::from([
+            (session_id("t-1", "claude-opus-4-5", 0), RunState::Done),
+            (session_id("t-1", "claude-opus-4-5", 1), RunState::Running),
+        ]));
+        let outcome = walk(&store, &reserved).await;
+        assert_eq!(outcome, Dispatch::Session);
+        assert!(store.inserted.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1049,8 +1152,7 @@ mod tests {
             .map(|n| (session_id("t-1", "claude-opus-4-5", n), RunState::Done))
             .collect();
         let store = WalkStore::with(spent);
-        let outcome =
-            dispatch_ticket_work(&deps(store.clone()), &ticket(), "claude-opus-4-5", None).await;
+        let outcome = walk(&store, &[]).await;
         assert_eq!(outcome, Dispatch::AtCap);
         assert!(store.inserted.lock().unwrap().is_empty());
     }
@@ -1058,7 +1160,7 @@ mod tests {
     #[tokio::test]
     async fn a_duplicate_key_is_the_race_resolving_not_a_failure() {
         let store = WalkStore::racing_first_insert();
-        dispatch_ticket_work(&deps(store.clone()), &ticket(), "claude-opus-4-5", None).await;
+        walk(&store, &[]).await;
         // One refusal, no retry: what the other dispatcher inserted is a live
         // session for this exact ticket and agent.
         assert!(store.inserted.lock().unwrap().is_empty());
@@ -1069,7 +1171,7 @@ mod tests {
         let store = WalkStore::blind();
         // Must return without panicking — the driven-method unreachables are
         // the assertion that a blind store means no insert.
-        dispatch_ticket_work(&deps(store), &ticket(), "claude-opus-4-5", None).await;
+        walk(&store, &[]).await;
     }
 
     // C13: the sweep offers a ticket only to an AGENT. A people-only ticket
@@ -1137,6 +1239,104 @@ mod live_db {
         .fetch_one(pg)
         .await
         .expect("insert ticket")
+    }
+
+    /// The route's check is read-then-enqueue, so rewinds can pass it together.
+    /// These reach the hold at once, each under the pair's lock as `reserve`
+    /// takes it, with no route in front of them.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn rewinds_past_the_routes_check_get_one_hold_between_them() {
+        let pg = pg().await;
+        let tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let email = format!("hold-race-{tag}@link-test.invalid");
+        let user: String = sqlx::query_scalar(
+            "insert into users (sub, email, name, role) values ($1, $1, 'Hold Race', 'member') \
+             returning id::text",
+        )
+        .bind(&email)
+        .fetch_one(&pg)
+        .await
+        .expect("insert user");
+        let board: String = sqlx::query_scalar(
+            "insert into boards (name, owner_id) values ('hold-race', $1::uuid) returning id::text",
+        )
+        .bind(&user)
+        .fetch_one(&pg)
+        .await
+        .expect("insert board");
+        let task = ticket(&pg, &board, "in_progress", serde_json::json!([])).await;
+        let agent = format!("hold-race-{tag}");
+        let mut rewinds = Vec::new();
+        for _ in 0..6 {
+            let id: String = sqlx::query_scalar(
+                "insert into runs (kind, state, input) values ('run-rewind', 'running', '{}') \
+                 returning id::text",
+            )
+            .fetch_one(&pg)
+            .await
+            .expect("insert rewind");
+            rewinds.push(id);
+        }
+        let start = std::sync::Arc::new(tokio::sync::Barrier::new(rewinds.len()));
+        let mut racers = tokio::task::JoinSet::new();
+        for rewind in rewinds.clone() {
+            let (pg, task, agent, start) = (pg.clone(), task.clone(), agent.clone(), start.clone());
+            racers.spawn(async move {
+                start.wait().await;
+                let mut lock = holds::lock_pair(&pg, &task, &agent).await.expect("lock");
+                let placed = holds::place_hold(lock.conn(), &task, &agent, &rewind)
+                    .await
+                    .expect("hold");
+                lock.release().await;
+                (rewind, placed)
+            });
+        }
+        let mut winners = Vec::new();
+        while let Some(raced) = racers.join_next().await {
+            let (rewind, placed) = raced.expect("racer");
+            if placed {
+                winners.push(rewind);
+            }
+        }
+        assert_eq!(winners.len(), 1, "one rewind holds the pair: {winners:?}");
+        let held: String = sqlx::query_scalar(
+            "select rewind_run_id::text from work_dispatch_holds \
+             where task_id = $1::uuid and agent_model = $2",
+        )
+        .bind(&task)
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .expect("the hold");
+        assert_eq!(held, winners[0]);
+
+        sqlx::query("update runs set state = 'error' where id = $1::uuid")
+            .bind(&held)
+            .execute(&pg)
+            .await
+            .expect("end the winner");
+        let next = rewinds.iter().find(|r| **r != held).expect("a loser");
+        let mut lock = holds::lock_pair(&pg, &task, &agent).await.expect("lock");
+        let placed = holds::place_hold(lock.conn(), &task, &agent, next)
+            .await
+            .expect("hold");
+        lock.release().await;
+        assert!(placed, "a hold whose rewind ended does not block the next");
+
+        sqlx::query("delete from runs where id::text = any($1)")
+            .bind(&rewinds)
+            .execute(&pg)
+            .await
+            .expect("cleanup");
+        sqlx::query("delete from users where id = $1::uuid")
+            .bind(&user)
+            .execute(&pg)
+            .await
+            .expect("cleanup");
     }
 
     #[tokio::test]
@@ -1504,7 +1704,8 @@ mod live_db {
 
         async fn drop(self) {
             sqlx::query(
-                "delete from runs where kind = 'work-session' and input->>'agentModel' = $1",
+                "delete from runs where kind in ('work-session', 'run-rewind') \
+                 and input->>'agentModel' = $1",
             )
             .bind(&self.agent)
             .execute(&self.pg)
@@ -1598,6 +1799,55 @@ mod live_db {
             f.sessions_reach(&chosen, 1).await,
             1,
             "created in the pickup column"
+        );
+        f.drop().await;
+    }
+
+    /// A rewind that failed with its fork out of the agent's reach leaves a
+    /// `run-rewind` row whose plan names generation 0 and no run row there.
+    /// The first session the dispatcher starts for the pair is generation 1.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres + Redis (DATABASE_URL, REDIS_URL)"]
+    async fn a_generation_a_failed_rewind_reserved_gets_no_new_session() {
+        let f = Fixture::new("rewound").await;
+        let id = f.create(&[], None).await;
+        f.move_to(&id, "assigned", &f.email).await;
+        settle().await;
+        let reserved = session_run_id(&id, &f.agent, 0);
+        sqlx::query(
+            "insert into runs (kind, state, subject_type, subject_id, input, checkpoint, error) \
+             values ('run-rewind', 'error', 'task', $1, $2, $3, \
+                     'the agent could not be reached')",
+        )
+        .bind(&id)
+        .bind(serde_json::json!({
+            "sourceRunId": "00000000-0000-0000-0000-000000000000",
+            "seq": 7,
+            "requestedBy": f.user,
+            "taskId": id,
+            "agentModel": f.agent,
+            "boardId": f.board,
+        }))
+        .bind(serde_json::json!({
+            "stage": "cut",
+            "plan": { "attemptRunId": reserved, "generation": 0 },
+        }))
+        .execute(&f.pg)
+        .await
+        .expect("a failed rewind");
+        f.assign(&id).await;
+        assert_eq!(f.sessions_reach(&id, 1).await, 1, "no session started");
+        let started: Vec<String> = sqlx::query_scalar(
+            "select id::text from runs where kind = 'work-session' and subject_id = $1",
+        )
+        .bind(&id)
+        .fetch_all(&f.pg)
+        .await
+        .unwrap();
+        assert_eq!(
+            started,
+            vec![session_run_id(&id, &f.agent, 1)],
+            "the dispatcher claimed the generation a rewind reserved"
         );
         f.drop().await;
     }
