@@ -218,62 +218,69 @@ async fn google_action_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sq
     )
     .fetch_all(pg)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(id, kind, summary, agent_model, owner_user_id, is_org, created_ms)| {
-                let what = if kind == "gmail_send" {
-                    "send an email"
-                } else {
-                    "create a calendar event"
-                };
-                // The summary belongs in the TITLE, not only the body: this string
-                // is a notification headline and an email subject fragment, and "an
-                // agent wants to send an email" is not a thing anyone can decide
-                // from.
-                let summary = summary.as_deref().map(str::trim).filter(|s| !s.is_empty());
-                PendingApproval {
-                    kind: ApprovalKind::GoogleAction,
-                    key: format!("google_action:{id}"),
-                    id: id.clone(),
-                    title: format!(
-                        "{} wants to {what}{}",
-                        agent_model.as_deref().unwrap_or("An agent"),
-                        summary.map(|s| format!(": {s}")).unwrap_or_default()
-                    ),
-                    detail: summary.map(str::to_string).unwrap_or_else(|| {
-                        format!(
-                            "A drafted {} is held until someone approves it.",
-                            kind.replace('_', " ")
-                        )
-                    }),
-                    // The focus queue is the surface that owns this decision.
-                    href: "/".into(),
-                    waiting_since: epoch_ms_to_iso(created_ms),
-                    // Org rows name no owner; over a uuid
-                    // column the only null-ish value is null.
-                    owner_user_ids: match (&owner_user_id, is_org) {
-                        (Some(owner), false) => vec![owner.clone()],
-                        _ => Vec::new(),
-                    },
-                    // The route: org → any admin; personal → the owner ALONE, which
-                    // refuses an admin outright. A personal confirm-send is one
-                    // person's mail or calendar and an admin is not entitled to its
-                    // subject line by virtue of being an admin — they cannot action
-                    // it either.
-                    authority: if is_org {
-                        Authority::Admin { on_board: None }
-                    } else if let Some(owner) = owner_user_id.as_deref() {
-                        Authority::User {
-                            user_ids: vec![owner.to_string()],
-                        }
-                    } else {
-                        Authority::Nobody
-                    },
-                }
-            },
-        )
-        .collect())
+    Ok(rows.into_iter().map(google_action_approval).collect())
+}
+
+/// What a pending Google action asks for, in the words of a headline.
+fn google_action_verb(kind: &str) -> &'static str {
+    match kind {
+        "gmail_send" => "send an email",
+        // A call to one of Google's Workspace MCP servers the pack held for
+        // a person; its summary names the product, the tool and the start
+        // of the arguments.
+        "mcp_call" => "run a Google Workspace tool",
+        _ => "create a calendar event",
+    }
+}
+
+/// One pending `google_pending_actions` row as the census counts it. Pure.
+fn google_action_approval(row: GoogleActionRow) -> PendingApproval {
+    let (id, kind, summary, agent_model, owner_user_id, is_org, created_ms) = row;
+    let what = google_action_verb(&kind);
+    // The summary belongs in the TITLE, not only the body: this string
+    // is a notification headline and an email subject fragment, and "an
+    // agent wants to send an email" is not a thing anyone can decide
+    // from.
+    let summary = summary.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    PendingApproval {
+        kind: ApprovalKind::GoogleAction,
+        key: format!("google_action:{id}"),
+        id: id.clone(),
+        title: format!(
+            "{} wants to {what}{}",
+            agent_model.as_deref().unwrap_or("An agent"),
+            summary.map(|s| format!(": {s}")).unwrap_or_default()
+        ),
+        detail: summary.map(str::to_string).unwrap_or_else(|| {
+            format!(
+                "A drafted {} is held until someone approves it.",
+                kind.replace('_', " ")
+            )
+        }),
+        // The focus queue is the surface that owns this decision.
+        href: "/".into(),
+        waiting_since: epoch_ms_to_iso(created_ms),
+        // Org rows name no owner; over a uuid
+        // column the only null-ish value is null.
+        owner_user_ids: match (&owner_user_id, is_org) {
+            (Some(owner), false) => vec![owner.clone()],
+            _ => Vec::new(),
+        },
+        // The route: org → any admin; personal → the owner ALONE, which
+        // refuses an admin outright. A personal confirm-send is one
+        // person's mail or calendar and an admin is not entitled to its
+        // subject line by virtue of being an admin — they cannot action
+        // it either.
+        authority: if is_org {
+            Authority::Admin { on_board: None }
+        } else if let Some(owner) = owner_user_id.as_deref() {
+            Authority::User {
+                user_ids: vec![owner.to_string()],
+            }
+        } else {
+            Authority::Nobody
+        },
+    }
 }
 
 /// One `workbench_jobs`-anchored row, in column order — task_id/ticket_ref and
@@ -1843,6 +1850,55 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use talaria_runs_define::RunDecision;
+
+    /// A held Google Workspace MCP call (`mcp_call`) is counted like every
+    /// other pending Google action, with its own words, and its audience is
+    /// its principal's: a personal assistant's owner ALONE, or the admins
+    /// for the org account and an agent's own identity (both `is_org`).
+    #[test]
+    fn a_held_google_workspace_mcp_call_is_counted_for_its_principals_approver() {
+        let row = |owner: Option<&str>, is_org: bool| -> GoogleActionRow {
+            (
+                "p-1".into(),
+                "mcp_call".into(),
+                Some("Google Calendar \u{b7} create_event {\"summary\":\"Standup\"}".into()),
+                Some("pa-ops".into()),
+                owner.map(str::to_string),
+                is_org,
+                1_700_000_000_000,
+            )
+        };
+        let personal = google_action_approval(row(Some("u-owner"), false));
+        assert_eq!(personal.kind, ApprovalKind::GoogleAction);
+        assert_eq!(personal.key, "google_action:p-1");
+        assert_eq!(
+            personal.title,
+            "pa-ops wants to run a Google Workspace tool: Google Calendar \u{b7} create_event {\"summary\":\"Standup\"}"
+        );
+        assert_eq!(personal.owner_user_ids, ["u-owner"]);
+        assert_eq!(
+            personal.authority,
+            Authority::User {
+                user_ids: vec!["u-owner".into()]
+            }
+        );
+        // The org account and an agent's own identity: any admin decides,
+        // nobody in particular is nagged first.
+        let org = google_action_approval(row(None, true));
+        assert_eq!(org.authority, Authority::Admin { on_board: None });
+        assert!(org.owner_user_ids.is_empty());
+        // A personal row with no owner reaches nobody.
+        assert_eq!(
+            google_action_approval(row(None, false)).authority,
+            Authority::Nobody
+        );
+        // The other kinds keep their words.
+        assert_eq!(google_action_verb("gmail_send"), "send an email");
+        assert_eq!(
+            google_action_verb("calendar_create"),
+            "create a calendar event"
+        );
+    }
 
     // One row per approval per person, about the approval: the first contact
     // and every SLA stage share the key, so a nag re-alerts the same row.

@@ -319,6 +319,10 @@ pub struct McpToolResult {
 /// dispatches through the compiled app module (apps/*/mcp.ts — authors'
 /// TS/node code, owned by the app runtime). OAuth servers do not refuse
 /// here — the org bearer rides `org_session`.
+///
+/// AND REFUSES GOOGLE'S WORKSPACE MCP SERVERS: a pack row acts only as a
+/// calling agent's own Google principal, and any other row naming one of
+/// those servers is relayed to by nobody (`pack::UNPACKED_ROW_REFUSAL`).
 pub async fn call_mcp_tool(
     pg: &PgPool,
     sb: &SecretBox,
@@ -345,6 +349,23 @@ pub async fn call_mcp_tool(
         return Err(format!(
             "MCP server \"{server_name}\" is published by the app \"{slug}\" and dispatches \
              in-process through the app runtime, which stays TS by rule 10 (docs/RUST-MIGRATION.md)"
+        ));
+    }
+    if crate::google::is_google(&server) {
+        // A Google Workspace MCP server acts only as a calling agent's own
+        // Google principal, through the gateway; a platform stage is no
+        // agent and has none.
+        return Err(format!(
+            "MCP server \"{server_name}\" is a Google Workspace MCP server, which acts only as a \
+             calling agent's own Google account through the gateway; a platform stage cannot call it."
+        ));
+    }
+    if talaria_google_mcp::pack::is_google_workspace_mcp_url(&server.url) {
+        // Not the pack's, yet one of Google's Workspace MCP servers: the
+        // gateway relays nothing to it, and neither does a stage.
+        return Err(format!(
+            "MCP server \"{server_name}\": {}",
+            talaria_google_mcp::pack::UNPACKED_ROW_REFUSAL
         ));
     }
 
@@ -693,6 +714,13 @@ pub async fn create_mcp_server(
     sb: &SecretBox,
     input: &NewServer<'_>,
 ) -> Result<McpServer, String> {
+    // Google's Workspace MCP servers come in through the pack, which alone
+    // writes `auth_mode = 'google'`; by URL they would take no Google grant.
+    if talaria_google_mcp::pack::is_google_workspace_mcp_url(input.url)
+        && input.auth_mode != crate::google::AUTH_MODE
+    {
+        return Err(talaria_google_mcp::pack::CUSTOM_URL_REFUSAL.into());
+    }
     // Sealed before the insert: the plaintext column is written `{}` and a
     // header value never touches a row in the clear.
     let headers_sealed =
@@ -775,15 +803,19 @@ pub async fn update_mcp_server(
     id: &str,
     patch: &ServerPatch,
 ) -> Result<(), String> {
-    let row: Option<(bool, Option<String>, String)> =
-        sqlx::query_as("select builtin, app_slug::text, url from mcp_servers where id::text = $1")
-            .bind(id)
-            .fetch_optional(pg)
-            .await
-            .map_err(|e| e.to_string())?;
-    let Some((builtin, app_slug, old_url)) = row else {
+    let row: Option<(bool, Option<String>, String, String)> = sqlx::query_as(
+        "select builtin, app_slug::text, url, auth_mode::text from mcp_servers where id::text = $1",
+    )
+    .bind(id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((builtin, app_slug, old_url, auth_mode)) = row else {
         return Ok(()); // updates below match zero rows — a no-op
     };
+    if let Some(refusal) = pack_patch_refusal(&auth_mode, patch) {
+        return Err(refusal.into());
+    }
     if builtin
         && (patch.url.is_some()
             || patch.headers.is_some()
@@ -903,6 +935,39 @@ pub async fn update_mcp_server(
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Why a patch may not touch this row, for the Google Workspace MCP pack:
+/// a pack row's address, credentials and auth mode are the pack's (its
+/// calls go to the product's endpoint as the code names it, with the
+/// calling agent's own Google grant), and no other row may be pointed at
+/// Google's Workspace MCP servers or given the pack's auth mode. None = the
+/// patch may proceed. Pure.
+pub fn pack_patch_refusal(auth_mode: &str, patch: &ServerPatch) -> Option<&'static str> {
+    if auth_mode == crate::google::AUTH_MODE {
+        if patch.url.is_some()
+            || patch.headers.is_some()
+            || patch.merge_headers.is_some()
+            || patch.auth_mode.is_some()
+        {
+            return Some(
+                "this is a Google Workspace MCP server: its address, credentials and auth mode \
+                 belong to the pack (Admin → Org → Google Workspace MCP)",
+            );
+        }
+        return None;
+    }
+    if patch
+        .url
+        .as_deref()
+        .is_some_and(talaria_google_mcp::pack::is_google_workspace_mcp_url)
+    {
+        return Some(talaria_google_mcp::pack::CUSTOM_URL_REFUSAL);
+    }
+    if patch.auth_mode.as_deref() == Some(crate::google::AUTH_MODE) {
+        return Some("only the Google Workspace MCP pack makes a server's auth mode google");
+    }
+    None
 }
 
 /// Does `new_url` name a different upstream than `old_url`? The authority —
@@ -1197,6 +1262,9 @@ pub struct EffectiveMcp {
     /// Headers to speak upstream with (org's, or the acting user's sealed
     /// set) — ordered pairs, JS object order.
     pub upstream_headers: Vec<(String, String)>,
+    /// A Google Workspace MCP server's call: the product and the grant the
+    /// bearer came from (`google`). None for every other server.
+    pub google: Option<crate::google::GoogleCall>,
 }
 
 fn intersect(a: Option<Vec<String>>, b: Option<Vec<String>>) -> Option<Vec<String>> {
@@ -1251,29 +1319,31 @@ pub enum McpAccess {
     NotConnected(NotConnected),
 }
 
-/// What one AGENT may do on one server: assignment ∪ team-agent grants,
-/// intersected (for a personal assistant) with its owner's user/team access —
-/// with the owner's credentials on per-user servers. Access is decided
-/// BEFORE credentials, so a server the agent may not use answers `Denied`
-/// whether or not anyone connected it, and only a granted one can answer
-/// `NotConnected`.
-pub async fn effective_mcp_for(
-    pg: &PgPool,
-    sb: &SecretBox,
-    subject: &AgentSubject,
-    server_name: &str,
-) -> Result<McpAccess, String> {
-    let agent_model = subject_model(subject);
-    let Some(server) = get_mcp_server(pg, server_name)
-        .await
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(McpAccess::Denied);
-    };
-    if !server.serving() {
-        return Ok(McpAccess::Denied);
-    }
+/// What the registry grants one agent on one server, before any credential
+/// is read: refused, or granted with a tool allowance (None = every tool)
+/// and, for a personal assistant, its owner.
+pub enum Allowance {
+    /// No assignment or team grant, or the owner's access is denied.
+    Denied,
+    Granted {
+        tools: Option<Vec<String>>,
+        owner: Option<String>,
+    },
+}
 
+/// The ACCESS half of `effective_mcp_for`: assignment ∪ team-agent grants
+/// (or, for the Workbench, the agent's Developer Agent switch alone),
+/// intersected for a personal assistant with its owner's user and team
+/// access. Reads no credential and no server state beyond `server`'s id and
+/// name — the caller has decided the row serves. The approved replay of a
+/// held Google Workspace MCP call reads it again (talaria-google-pending), so
+/// access revoked after the call was queued stops it.
+pub async fn mcp_allowance(
+    pg: &PgPool,
+    subject: &AgentSubject,
+    server: &McpServer,
+) -> Result<Allowance, String> {
+    let agent_model = subject_model(subject);
     // The Workbench is granted by the agent's Developer Agent switch and by
     // nothing else. Assignment and team rows for it are ignored, so the
     // switch and the tools can never disagree.
@@ -1285,7 +1355,7 @@ pub async fn effective_mcp_for(
                 .await
                 .map_err(|e| e.to_string())?
         {
-            return Ok(McpAccess::Denied);
+            return Ok(Allowance::Denied);
         }
         None
     } else {
@@ -1320,7 +1390,7 @@ pub async fn effective_mcp_for(
             if server.all_agents {
                 None
             } else if team_allow_lists.is_empty() {
-                return Ok(McpAccess::Denied);
+                return Ok(Allowance::Denied);
             } else {
                 union_tool_lists(team_allow_lists)
             }
@@ -1343,7 +1413,7 @@ pub async fn effective_mcp_for(
         .await
         .map_err(|e| e.to_string())?;
         if access.as_ref().is_some_and(|(allowed, _)| !allowed) {
-            return Ok(McpAccess::Denied);
+            return Ok(Allowance::Denied);
         }
         let team_rows: Vec<(bool, Option<Vec<String>>)> = sqlx::query_as(
             "select a.allowed, a.tools \
@@ -1360,7 +1430,7 @@ pub async fn effective_mcp_for(
         let any_team_allow = team_rows.iter().any(|(allowed, _)| *allowed);
         let user_allow = access.as_ref().is_some_and(|(allowed, _)| *allowed);
         if any_team_deny && !any_team_allow && !user_allow {
-            return Ok(McpAccess::Denied);
+            return Ok(Allowance::Denied);
         }
         let mut allowed_lists = Vec::new();
         if user_allow {
@@ -1372,17 +1442,120 @@ pub async fn effective_mcp_for(
             }
         }
         user_tools = union_tool_lists(allowed_lists);
-    } else if server.auth_mode == "per-user" {
+    }
+    Ok(Allowance::Granted {
+        tools: intersect(agent_tools, user_tools),
+        owner,
+    })
+}
+
+/// What one AGENT may do on one server: assignment ∪ team-agent grants,
+/// intersected (for a personal assistant) with its owner's user/team access —
+/// with the owner's credentials on per-user servers. Access is decided
+/// BEFORE credentials, so a server the agent may not use answers `Denied`
+/// whether or not anyone connected it, and only a granted one can answer
+/// `NotConnected`.
+pub async fn effective_mcp_for(
+    pg: &PgPool,
+    sb: &SecretBox,
+    subject: &AgentSubject,
+    server_name: &str,
+) -> Result<McpAccess, String> {
+    let Some(server) = get_mcp_server(pg, server_name)
+        .await
+        .map_err(|e| e.to_string())?
+    else {
+        return Ok(McpAccess::Denied);
+    };
+    if !server.serving() {
+        return Ok(McpAccess::Denied);
+    }
+    // A Google Workspace MCP server speaks as the caller's own Google
+    // principal, which a legacy shared-key caller does not have: refused
+    // before anything else is read. So is a pack row no product claims.
+    let google_product = crate::google::product_of(&server);
+    if crate::google::is_google(&server)
+        && (google_product.is_none() || !talaria_agent_auth::subject_proven(subject))
+    {
+        return Ok(McpAccess::Denied);
+    }
+
+    let (tools, owner) = match mcp_allowance(pg, subject, &server).await? {
+        Allowance::Denied => return Ok(McpAccess::Denied),
+        Allowance::Granted { tools, owner } => (tools, owner),
+    };
+    if owner.is_none() && server.auth_mode == "per-user" {
         // Org agents have no single acting user to be — per-user servers are
         // personal-assistant territory by definition. Granted, so it is not a
         // refusal; but nothing anyone connects will change it.
         return Ok(McpAccess::NotConnected(NotConnected {
             scope: ConnectScope::PerUserOnOrgAgent,
             server,
-            tools: agent_tools,
+            tools,
+            detail: None,
         }));
     }
-    let tools = intersect(agent_tools, user_tools);
+
+    // A Google Workspace MCP server: the allowance narrowed to the tools the
+    // pack runs or holds (never one it denies, never one Google's catalog
+    // does not list), spoken as the caller's own Google principal through the
+    // one door, at the product's endpoint as the code names it (see `google`).
+    if let Some(product) = google_product {
+        let overrides = crate::google::tool_overrides(pg, &server.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let listed =
+            talaria_google_mcp::policy::listed_tools(product.id, &server.tools, &overrides);
+        let tools = Some(intersect(tools, Some(listed)).unwrap_or_default());
+        let now = talaria_agent_auth::now_ms();
+        return Ok(match crate::google::speak_as(pg, sb, subject, now).await {
+            crate::google::Speak::Refuse => McpAccess::Denied,
+            crate::google::Speak::Missing { scope, detail } => {
+                McpAccess::NotConnected(NotConnected {
+                    scope,
+                    server,
+                    tools,
+                    detail,
+                })
+            }
+            crate::google::Speak::As { token, grant } => {
+                let facts = crate::google::facts_of(pg, &grant).await;
+                let principal = match &grant {
+                    talaria_google_connections::GrantRow::User(_) => {
+                        talaria_google_agent::PrincipalKind::Owner
+                    }
+                    talaria_google_connections::GrantRow::Org => {
+                        talaria_google_agent::PrincipalKind::Org
+                    }
+                    talaria_google_connections::GrantRow::Agent(_) => {
+                        talaria_google_agent::PrincipalKind::Agent
+                    }
+                };
+                McpAccess::Allowed(EffectiveMcp {
+                    server: McpServer {
+                        url: talaria_google_mcp::pack::endpoint(&product),
+                        ..server
+                    },
+                    tools,
+                    upstream_headers: vec![("authorization".into(), format!("Bearer {token}"))],
+                    google: Some(crate::google::GoogleCall {
+                        product,
+                        grant,
+                        principal,
+                        scope: facts.scope,
+                        flagged: facts.flagged.is_some(),
+                        // An admin's ALLOW never reaches a personal
+                        // assistant's call: a write into one member's own
+                        // account stays held for that member.
+                        overrides: talaria_google_mcp::policy::overrides_for(
+                            &overrides,
+                            principal == talaria_google_agent::PrincipalKind::Owner,
+                        ),
+                    }),
+                })
+            }
+        });
+    }
 
     // The account the call speaks as: the owner's on per-user servers, the
     // org's on org-auth OAuth servers. Missing → NotConnected, carrying the
@@ -1399,6 +1572,7 @@ pub async fn effective_mcp_for(
                     scope: ConnectScope::PerUser,
                     server,
                     tools,
+                    detail: None,
                 }));
             };
             speak_as.push(("authorization".into(), format!("Bearer {bearer}")));
@@ -1408,6 +1582,7 @@ pub async fn effective_mcp_for(
                     scope: ConnectScope::PerUser,
                     server,
                     tools,
+                    detail: None,
                 }));
             };
             speak_as.extend(crate::org_headers::header_pairs(&creds));
@@ -1426,6 +1601,7 @@ pub async fn effective_mcp_for(
                 scope: ConnectScope::Org,
                 server,
                 tools,
+                detail: None,
             }));
         };
         speak_as.push(("authorization".into(), format!("Bearer {bearer}")));
@@ -1443,6 +1619,7 @@ pub async fn effective_mcp_for(
         server,
         tools,
         upstream_headers,
+        google: None,
     }))
 }
 
@@ -1476,6 +1653,32 @@ pub async fn refresh_mcp_tools(
         // discovery answers that catalog. It used to answer an error, which
         // Manage → MCP showed as a 502 on "Discover tools".
         return Ok(app_catalog(&server));
+    }
+    // A Google Workspace MCP server's catalog keeps what its policy reads
+    // (annotations) and Google's per-tool scopes: asked of Google by the
+    // pack's own reader, never the generic conversation, which keeps names
+    // and descriptions only.
+    if let Some(product) = crate::google::product_of(&server) {
+        let now = talaria_agent_auth::now_ms();
+        return match crate::google::google_catalog(pg, sb, &product, now).await {
+            Ok((tools, authenticated)) => {
+                store_catalog(pg, id, &Value::Array(tools.clone())).await?;
+                let detail = crate::google::catalog_detail(&product, &tools, authenticated);
+                record_probe(pg, id, ProbeState::Ok, &detail).await;
+                Ok(tools)
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                let state = match e {
+                    talaria_google_mcp::catalog::CatalogError::Unreachable(_) => {
+                        ProbeState::Unreachable
+                    }
+                    _ => ProbeState::Error,
+                };
+                record_probe(pg, id, state, &msg).await;
+                Err(msg)
+            }
+        };
     }
     // Package servers split by transport: stdio packages converse through
     // the pump (the cached handshake answers initialize); oci-http packages
@@ -1936,6 +2139,23 @@ pub async fn servers_for_agent(
     let mut out = Vec::new();
     for (name, timeout_secs, auth_mode, oauth_enabled, id, explicit) in rows {
         let per_user = auth_mode == "per-user";
+        // A Google Workspace MCP server speaks as the agent's own Google
+        // principal: it needs a connection when that principal's grant
+        // holds none. A personal assistant whose owner is denied the server
+        // skips it, as for any other server.
+        if auth_mode == crate::google::AUTH_MODE {
+            if let Some(owner) = &owner
+                && owner_denied(pg, &id, owner).await?
+            {
+                continue;
+            }
+            out.push(AgentServer {
+                name,
+                timeout_secs,
+                needs_connection: crate::google::needs_connection(pg, agent_model).await,
+            });
+            continue;
+        }
         let needs_connection = match &owner {
             None if per_user => {
                 if !explicit {
@@ -2020,6 +2240,53 @@ mod tests {
         for keep in ["builtin = true", "all_agents = true", "enabled = true"] {
             assert!(conflict.contains(keep), "{keep}");
         }
+    }
+
+    /// The pack's rows keep their address, credentials and auth mode; no
+    /// other row is pointed at Google's Workspace MCP servers or made one.
+    #[test]
+    fn pack_rows_and_google_urls_are_the_packs_alone() {
+        let patch = |f: fn(&mut ServerPatch)| {
+            let mut p = ServerPatch::default();
+            f(&mut p);
+            p
+        };
+        // On a pack row: address, headers and mode are refused; the rest pass.
+        for refused in [
+            patch(|p| p.url = Some("https://example.com/mcp".into())),
+            patch(|p| p.headers = Some(Map::new())),
+            patch(|p| p.merge_headers = Some(Map::new())),
+            patch(|p| p.auth_mode = Some("org".into())),
+        ] {
+            assert!(pack_patch_refusal("google", &refused).is_some());
+        }
+        for allowed in [
+            patch(|p| p.label = Some("Gmail".into())),
+            patch(|p| p.enabled = Some(false)),
+            patch(|p| p.all_agents = Some(true)),
+            patch(|p| p.timeout_secs = Some(Some(30))),
+        ] {
+            assert!(pack_patch_refusal("google", &allowed).is_none());
+        }
+        // On any other row: no Google Workspace MCP URL, no google mode.
+        assert_eq!(
+            pack_patch_refusal(
+                "org",
+                &patch(|p| p.url = Some("https://gmailmcp.googleapis.com/mcp/v1".into()))
+            ),
+            Some(talaria_google_mcp::pack::CUSTOM_URL_REFUSAL)
+        );
+        assert!(
+            pack_patch_refusal("per-user", &patch(|p| p.auth_mode = Some("google".into())))
+                .is_some()
+        );
+        assert!(
+            pack_patch_refusal(
+                "org",
+                &patch(|p| p.url = Some("https://mcp.notion.com/mcp".into()))
+            )
+            .is_none()
+        );
     }
 
     /// The repoint rule: a different host or port is a different server and

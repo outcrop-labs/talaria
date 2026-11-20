@@ -1,10 +1,8 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
   import { tabFromPath } from '@/lib/route-tabs'
   import { navigate, route } from '@/router'
-  import Tabs from '@/components/ui/Tabs.svelte'
-  import { fly, staggerIn } from '@/lib/motion'
-  import { claimViewTitle } from '@/lib/view-title.svelte'
+  import { fly } from '@/lib/motion'
   import ComputePanel from '@/components/observability/ComputePanel.svelte'
   import HostPanel from '@/components/observability/HostPanel.svelte'
   import CostPanel from '@/components/observability/CostPanel.svelte'
@@ -21,27 +19,22 @@
     if (t === 'overview') void navigate('/observability')
     else void navigate('/observability/:tab', { params: { tab: t } })
   }
-
-  // The view's title claim is unread (lib/view-title) — the body opens
-  // straight onto its tabs.
-  claimViewTitle('Observability')
 </script>
 
-<PageSurface>
-  <!-- Page content entrance: tab strip → panel region rise in sequence
-       (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
-       stays unstaggered inside — one level only. -->
-  <div use:staggerIn class="space-y-6">
-    <Tabs items={OBS_TABS} value={tab} onChange={setTab} />
-    <!-- Tab-pane grammar: rise in on switch, no exit; no AutoHeight. On MOUNT
-         the pane is a section whose items cascade: Overview's three blocks
-         (alerts strip, stat-tile grid, audit trail — the [data-obs-sections]
-         hook) rise 30ms apart while the frame fades. The detail panels live in
-         components/observability and stay one block — dense readouts, and not
-         this file's cascade to own. -->
+<SettingsPage
+  title="Observability"
+  blurb="Health, cost and activity across the workspace."
+  tabs={OBS_TABS}
+  {tab}
+  onTab={setTab}
+  staggerItems="[data-obs-sections] > *"
+>
+    <!-- Tab-pane grammar: rise in on switch, no exit, no AutoHeight. On mount
+         Overview's blocks (the [data-obs-sections] hook) rise 30ms apart while
+         the frame fades. The detail panels stay one block each. -->
     {#key tab}
       <div in:fly={{ y: 6, duration: 200 }} data-stagger-items="[data-obs-sections] > *">
-        {#if tab === 'overview'}<OverviewPanel onOpen={setTab} />{/if}
+        {#if tab === 'overview'}<OverviewPanel />{/if}
         {#if tab === 'compute'}<ComputePanel />{/if}
         {#if tab === 'host'}<HostPanel />{/if}
         {#if tab === 'cost'}<CostPanel />{/if}
@@ -50,5 +43,4 @@
         {#if tab === 'alerts'}<AlertsPanel />{/if}
       </div>
     {/key}
-  </div>
-</PageSurface>
+</SettingsPage>

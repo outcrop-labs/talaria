@@ -1,5 +1,7 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
+  import { useAutosave } from '@/components/settings/autosave.svelte'
+  import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
   import Button from '@/components/ui/Button.svelte'
   import DangerLink from '@/components/ui/DangerLink.svelte'
@@ -15,6 +17,7 @@
   let { user }: { user: SessionUser | null | undefined } = $props()
 
   const qc = useQueryClient()
+  const autosave = useAutosave()
   let input = $state<HTMLInputElement | null>(null)
   let busy = $state(false)
   let error = $state<string | null>(null)
@@ -37,6 +40,7 @@
       }
       await putJson<{ ok: true }>('/api/me', { avatarUploadId: up.id })
       await refresh()
+      autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     } finally {
@@ -52,6 +56,7 @@
     try {
       await putJson<{ ok: true }>('/api/me', { avatarUploadId: null })
       await refresh()
+      autosave.flash()
     } catch (e) {
       error = errorMessage(e)
     } finally {
@@ -60,29 +65,26 @@
   }
 </script>
 
-<div class="mt-5 border-t border-line-subtle pt-4">
-  <span class="mb-1.5 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Profile photo</span>
-  <div class="flex items-center gap-4">
-    <Avatar src={user?.picture} name={user?.name || user?.email} class="h-16 w-16" />
-    <div class="flex items-center gap-3">
-      <Button size="sm" variant="outline" disabled={busy} onclick={() => input?.click()}>
-        {busy ? 'Uploading' : 'Upload'}
-      </Button>
-      {#if isUploadedAvatar(user?.picture)}
-        <DangerLink onClick={() => void remove()} disabled={busy}>Remove</DangerLink>
-      {/if}
-    </div>
-    <input
-      bind:this={input}
-      type="file"
-      accept={PROFILE_PHOTO_ACCEPT}
-      class="hidden"
-      onchange={(e) => void onFile(e.currentTarget.files?.[0])}
-    />
-  </div>
-  {#if error}
-    <p class="mt-2 text-xs text-danger" role="alert">{error}</p>
-  {:else}
-    <p class="mt-2 text-xs text-muted">PNG, JPEG, WebP, or GIF up to 5 MB. Shown wherever your avatar appears.</p>
+<SettingsRow label="Photo">
+  {#snippet hint()}
+    {#if error}
+      <span class="text-danger" role="alert">{error}</span>
+    {:else}
+      PNG, JPEG, WebP or GIF, up to 5 MB.
+    {/if}
+  {/snippet}
+  {#if isUploadedAvatar(user?.picture)}
+    <DangerLink onClick={() => void remove()} disabled={busy}>Remove photo</DangerLink>
   {/if}
-</div>
+  <Avatar src={user?.picture} name={user?.name || user?.email} class="h-9 w-9" />
+  <Button size="sm" variant="outline" disabled={busy} onclick={() => input?.click()}>
+    {busy ? 'Uploading' : 'Upload'}
+  </Button>
+  <input
+    bind:this={input}
+    type="file"
+    accept={PROFILE_PHOTO_ACCEPT}
+    class="hidden"
+    onchange={(e) => void onFile(e.currentTarget.files?.[0])}
+  />
+</SettingsRow>

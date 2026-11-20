@@ -364,6 +364,7 @@ async fn a_resumed_round_is_provisioned_afresh_when_it_starts() {
                 effort: "heavy",
                 plan: "round two",
                 queue_reason: (round == "queued").then_some("host has 1.0 GiB RAM free"),
+                taking_over: None,
             },
             &pr,
         )

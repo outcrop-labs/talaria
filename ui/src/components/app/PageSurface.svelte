@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
 
   /**
    * The second page archetype, as a component rather than as a comment.
@@ -47,9 +48,11 @@
     /** On the centred column — where `use:staggerIn` targets and rhythm goes. */
     innerClass?: string
   } = $props()
+
+  const voice = useUiVoice()
 </script>
 
-<div class={cn('h-full min-h-0 min-w-0', scroll && 'overflow-y-auto', !flush && 'p-8', className)}>
+<div data-voice={voiceScope(voice)} class={cn('h-full min-h-0 min-w-0', scroll && 'overflow-y-auto', !flush && 'p-8', className)}>
   <!-- w-full alongside the max-width: without it the column is only as wide as
        its content, so a short page centres a narrow block and the panels no
        longer line up with the view you just came from — the same jank by a

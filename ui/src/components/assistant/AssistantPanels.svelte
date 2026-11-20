@@ -20,8 +20,8 @@
   let tab = $state<Tab>('Schedules')
 </script>
 
-<div class="space-y-5">
-  <Tabs items={TABS.map((t) => ({ id: t, label: t }))} value={tab} onChange={(t) => (tab = t)} class="border-b border-line pb-2" />
+<div class="space-y-6">
+  <Tabs items={TABS.map((t) => ({ id: t, label: t }))} value={tab} onChange={(t) => (tab = t)} />
   <!-- Settings-column pane: it resizes with each tab's content, so the switch
        rides AutoHeight; the incoming pane rises in (no exit, no stagger — these
        are data panes, not section stacks). -->
@@ -31,12 +31,14 @@
         <!-- canManage: this is the viewer's OWN assistant, and its human is one of
              its managers by definition (docs/PERMISSIONS.md). -->
         {#if tab === 'Schedules'}<CronsPanel agentId={assistant.id} canManage />{/if}
-        {#if tab === 'Skills'}<SkillsLibrary owner={assistant.slug} ownerLabel={assistant.displayName} surface="well" class="h-[38rem]" />{/if}
+        <!-- The panes sit on the page ground now, so they are panels, not wells. -->
+        {#if tab === 'Skills'}<SkillsLibrary owner={assistant.slug} ownerLabel={assistant.displayName} class="h-[38rem]" />{/if}
         {#if tab === 'Memory'}
           <MemoryEditor
             id={assistant.id}
             label={assistant.displayName}
             class="h-[38rem]"
+            flush
             museContext={`The memory of ${assistant.displayName}, a personal AI assistant.`}
             offline={assistant.running ? null : { title: 'Memory unavailable', hint: 'Start your assistant to read its memory.' }}
           />

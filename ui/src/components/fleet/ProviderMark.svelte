@@ -1,24 +1,13 @@
 <script lang="ts" module>
   import { PROVIDER_LOGOS } from './provider-logos'
 
-  // Neutral monogram fallback for providers we have no real mark for (OpenAI, Groq,
-  // LiteLLM, Together, ). Kept monochrome to sit beside the real logos cleanly.
-  const MONOGRAM: Record<string, string> = {
-    openai: 'AI',
-    groq: 'gq',
-    litellm: 'LL',
-    together: 'T',
-    fireworks: 'F',
-    cerebras: 'C',
-    deepinfra: 'DI',
-  }
-
   // Map an endpoint's provider/name onto a known logo slug. Endpoint names often
-  // say more than the provider ('custom' covers Gemini, Groq, ), so try name first.
+  // say more than the provider ('custom' covers Gemini, Groq and others), so try
+  // name first. A provider with no mark here (Groq, Together, a custom host) gets
+  // its initial in the quiet ink, which cannot be taken for another provider's logo.
   function resolve(provider: string, name?: string): { logo?: string; mono: string } {
     const keys = [name?.toLowerCase(), provider.toLowerCase()].filter(Boolean) as string[]
     for (const k of keys) if (PROVIDER_LOGOS[k]) return { logo: PROVIDER_LOGOS[k], mono: '' }
-    for (const k of keys) if (MONOGRAM[k]) return { mono: MONOGRAM[k] }
     return { mono: (name ?? provider).charAt(0).toUpperCase() }
   }
 </script>
@@ -44,6 +33,6 @@
       <path d={resolved.logo} />
     </svg>
   {:else}
-    <span class="text-[10px] font-bold text-muted">{resolved.mono}</span>
+    <span class="font-sans text-xs font-semibold leading-none text-muted">{resolved.mono}</span>
   {/if}
 </span>

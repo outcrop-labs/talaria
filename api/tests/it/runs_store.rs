@@ -6,7 +6,7 @@
 // refusal, the park/answer/stale-key path, the deferral wait, and
 // cancel-from-anywhere. House rule: #[ignore]d, never CI.
 //
-//   DATABASE_URL=postgres://… cargo test --test it runs_store:: -- --ignored
+//   DATABASE_URL=postgres://… cargo test -p talaria-api --test it runs_store:: -- --ignored
 
 use crate::support::pg;
 use serde_json::json;
@@ -15,13 +15,15 @@ use talaria_api::runs::define::{
     DecisionAnswer, DecisionOption, DecisionRequest, RunDecision, RunState,
 };
 use talaria_api::runs::store::{
-    AnswerOutcome, CancelOutcome, ClaimOutcome, NewRun, PgRunStore, RunStore, WriteFailure,
-    agent_turn_of, set_agent_run_id,
+    AnswerOutcome, CancelOutcome, CheckpointKind, ClaimOutcome, NewRun, PgRunStore, RunStore,
+    StepSnapshot, WriteFailure, agent_turn_of, record_step, retire_job_steps, run_checkpoints,
+    set_agent_run_id, verify_steps,
 };
-/// One run of the test kind; earlier crashed runs of this suite are swept so
-/// the unique approval_key index never bites the next attempt.
-async fn cleanup(pg: &PgPool) {
-    sqlx::query("delete from runs where kind = 'rust-store-test'")
+/// Every test passes its own kind: the suite runs in parallel, and this deletes
+/// all of a kind's runs.
+async fn cleanup(pg: &PgPool, kind: &str) {
+    sqlx::query("delete from runs where kind = $1")
+        .bind(kind)
         .execute(pg)
         .await
         .unwrap();
@@ -31,14 +33,15 @@ async fn cleanup(pg: &PgPool) {
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn the_cas_lifecycle_refuses_every_wrong_writer() {
     let pg = pg().await;
-    cleanup(&pg).await;
+    let kind = "rust-store-test-cas";
+    cleanup(&pg, kind).await;
     let store = PgRunStore::new(pg.clone());
 
     let id = uuid::Uuid::new_v4().to_string();
     let run = store
         .insert(NewRun {
             id: id.clone(),
-            kind: "rust-store-test".into(),
+            kind: kind.into(),
             owner_user_id: None,
             subject_type: None,
             subject_id: None,
@@ -235,7 +238,7 @@ async fn the_cas_lifecycle_refuses_every_wrong_writer() {
         CancelOutcome::Terminal { .. }
     ));
 
-    cleanup(&pg).await;
+    cleanup(&pg, kind).await;
 }
 
 #[tokio::test]
@@ -303,12 +306,8 @@ async fn due_finds_the_unleased_and_kind_views_read_the_latest() {
     use talaria_api::runs::store::{active_run_of_kind, latest_run_of_kind};
 
     let pg = pg().await;
-    let kind = "rust-store-test-due"; // own kind: this suite runs its tests in parallel
-    sqlx::query("delete from runs where kind = $1")
-        .bind(kind)
-        .execute(&pg)
-        .await
-        .unwrap();
+    let kind = "rust-store-test-due";
+    cleanup(&pg, kind).await;
     let store = PgRunStore::new(pg.clone());
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -382,4 +381,480 @@ impl ClaimAssert for ClaimOutcome {
             "expected Claimed, got {self:?}"
         );
     }
+}
+
+async fn claimed_run(store: &PgRunStore, kind: &str) -> (String, String) {
+    let id = uuid::Uuid::new_v4().to_string();
+    store
+        .insert(NewRun {
+            id: id.clone(),
+            kind: kind.into(),
+            owner_user_id: None,
+            subject_type: None,
+            subject_id: None,
+            input: json!({}),
+            phase: "starting".into(),
+        })
+        .await
+        .unwrap();
+    let token = format!("driver:{}", uuid::Uuid::new_v4());
+    match store.claim(&id, &token, 60_000).await.unwrap() {
+        ClaimOutcome::Claimed { .. } => (id, token),
+        other => panic!("a fresh run must be claimable, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn n_checkpoints_yield_n_ledger_rows_and_the_run_holds_the_last() {
+    let pg = pg().await;
+    let kind = "rust-store-test-ledger";
+    cleanup(&pg, kind).await;
+    let store = PgRunStore::new(pg.clone());
+    let (id, token) = claimed_run(&store, kind).await;
+
+    for turn in 1..=3 {
+        let checkpoint = json!({"stage": "send", "turn": turn, "stageAttempt": 0});
+        store
+            .checkpoint(&id, &token, checkpoint, format!("turn {turn}"), false)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    store
+        .checkpoint(&id, &token, json!({"cursor": 9}), "swept".into(), false)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        [1, 2, 3, 4],
+        "one gapless row per checkpoint, oldest first"
+    );
+    assert!(rows.iter().all(|r| r.kind == CheckpointKind::Turn));
+    assert_eq!(rows[1].turn, Some(2));
+    assert_eq!(rows[1].status.as_deref(), Some("send"));
+    assert_eq!(rows[1].title.as_deref(), Some("turn 2"));
+    assert_eq!(rows[3].turn, None);
+    assert_eq!(rows[3].status, None);
+    assert!(!rows[0].restorable, "a turn boundary restores nothing");
+    assert!(rows[0].unrestorable_reason.is_some());
+
+    let run = store.get(&id).await.unwrap().unwrap();
+    assert_eq!(run.checkpoint, json!({"cursor": 9}));
+    assert_eq!(run.phase, "swept");
+
+    cleanup(&pg, kind).await;
+    assert!(
+        run_checkpoints(&pg, &id).await.unwrap().is_empty(),
+        "the ledger goes with its run"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_lost_lease_write_leaves_no_ledger_row() {
+    let pg = pg().await;
+    let kind = "rust-store-test-lost-lease";
+    cleanup(&pg, kind).await;
+    let store = PgRunStore::new(pg.clone());
+    let (id, token) = claimed_run(&store, kind).await;
+    store
+        .checkpoint(&id, &token, json!({"turn": 1}), "turn 1".into(), false)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let refused = store
+        .checkpoint(
+            &id,
+            "someone-else",
+            json!({"turn": 2}),
+            "hijack".into(),
+            false,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(refused, Err(WriteFailure::LeaseLost { .. })));
+
+    store.cancel(&id, None).await.unwrap();
+    let cancelled = store
+        .checkpoint(&id, &token, json!({"turn": 3}), "late".into(), false)
+        .await
+        .unwrap();
+    assert_eq!(cancelled, Err(WriteFailure::Cancelled));
+
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the leaseholder's write is in the ledger"
+    );
+    assert_eq!(rows[0].turn, Some(1));
+    let seq: i64 = sqlx::query_scalar("select checkpoint_seq from runs where id = $1::uuid")
+        .bind(&id)
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(seq, 1, "a refused write allocates no seq");
+
+    cleanup(&pg, kind).await;
+}
+
+fn step(call: &str, tool: &str, at_ms: i64, job_id: Option<&str>) -> StepSnapshot {
+    step_in("hermes-turn", call, tool, at_ms, job_id)
+}
+
+fn step_in(
+    turn_id: &str,
+    call: &str,
+    tool: &str,
+    at_ms: i64,
+    job_id: Option<&str>,
+) -> StepSnapshot {
+    StepSnapshot {
+        agent_turn_id: Some(turn_id.into()),
+        tool_call_id: call.into(),
+        tool: tool.into(),
+        title: None,
+        status: "completed".into(),
+        job_id: job_id.map(str::to_string),
+        workspace_commit: Some("a".repeat(40)),
+        workspace_tree: Some("b".repeat(40)),
+        unrestorable_reason: None,
+        at_ms,
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn step_rows_share_the_seq_allocator_dedupe_by_call_and_keep_their_order_across_a_compaction()
+{
+    let pg = pg().await;
+    let kind = "rust-store-test-steps";
+    cleanup(&pg, kind).await;
+    let store = PgRunStore::new(pg.clone());
+    let (id, token) = claimed_run(&store, kind).await;
+    let job = uuid::Uuid::new_v4().to_string();
+    // The hook's clock runs well behind the driver's: the test proves that
+    // rank and step number order a turn, not the wall clock.
+    let past = 1_700_000_000_000i64;
+    let place = |rows: &[talaria_api::runs::store::RunCheckpoint], call: &str| {
+        let row = rows
+            .iter()
+            .find(|r| r.tool_call_id.as_deref() == Some(call))
+            .unwrap();
+        (row.turn, row.step_no)
+    };
+
+    let turn = |n: i64, stage: &str| json!({"stage": stage, "turn": n, "stageAttempt": 0});
+    store
+        .checkpoint(&id, &token, turn(1, "send"), "pushed".into(), false)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        record_step(&pg, &id, &step("c1", "terminal", past + 1_000, None))
+            .await
+            .unwrap(),
+        Some(2),
+        "a step takes the next seq after the turn row"
+    );
+    assert_eq!(
+        record_step(
+            &pg,
+            &id,
+            &step("c2", "write_file", past + 2_000, Some(&job))
+        )
+        .await
+        .unwrap(),
+        Some(3)
+    );
+    assert_eq!(
+        record_step(
+            &pg,
+            &id,
+            &step("c2", "write_file", past + 2_000, Some(&job))
+        )
+        .await
+        .unwrap(),
+        None,
+        "the frame the ledger already holds adds no row"
+    );
+    store
+        .checkpoint(
+            &id,
+            &token,
+            turn(1, "record"),
+            "turn 1 answered".into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .checkpoint(
+            &id,
+            &token,
+            turn(2, "send"),
+            "turn 1 recorded".into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // A frame of turn 1 that lands after turn 2 opened still joins turn 1:
+    // its Hermes turn id is the one turn 1's rows carry.
+    assert_eq!(
+        record_step(&pg, &id, &step("c0", "read_file", past + 500, Some(&job)))
+            .await
+            .unwrap(),
+        Some(6)
+    );
+    // Turn 2's first step carries a new Hermes turn id and takes the turn
+    // the run is on.
+    assert_eq!(
+        record_step(
+            &pg,
+            &id,
+            &step_in("hermes-turn-2", "d1", "terminal", past + 3_000, Some(&job))
+        )
+        .await
+        .unwrap(),
+        Some(7)
+    );
+    let (allocated,): (i64,) =
+        sqlx::query_as("select checkpoint_seq from runs where id = $1::uuid")
+            .bind(&id)
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+    assert_eq!(allocated, 7, "a duplicate does not spend a seq");
+
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    assert_eq!(place(&rows, "c1"), (Some(1), Some(1)));
+    assert_eq!(place(&rows, "c2"), (Some(1), Some(2)));
+    assert_eq!(
+        place(&rows, "c0"),
+        (Some(1), Some(3)),
+        "numbered on arrival, in its own turn"
+    );
+    assert_eq!(place(&rows, "d1"), (Some(2), Some(1)));
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        [1, 2, 3, 6, 4, 5, 7],
+        "a turn's send row, its steps by step number, its record row; then the next turn"
+    );
+    assert_eq!(rows[1].kind, CheckpointKind::Step);
+    assert_eq!(rows[1].tool.as_deref(), Some("terminal"));
+    assert!(
+        !rows[1].restorable,
+        "a step with no job of the agent restores nothing"
+    );
+    assert_eq!(
+        rows[1].unrestorable_reason.as_deref(),
+        Some("the step named no job of this agent")
+    );
+    assert!(rows[2].restorable);
+    assert_eq!(rows[2].job_id.as_deref(), Some(job.as_str()));
+    assert_eq!(
+        rows[1].created_at, "2023-11-14T22:13:21.000Z",
+        "the hook's clock is the row's"
+    );
+
+    // A compaction took c2's conversation row out of the live transcript:
+    // the step says so. c1 is still there; d1 landed after the read and is
+    // not judged by it. A second pass changes nothing.
+    // c0 is in neither the live nor the archived transcript: it was never
+    // this session's own step.
+    let through = talaria_api::runs::store::checkpoint_seq(&pg, &id)
+        .await
+        .unwrap();
+    let live = vec!["c1".to_string(), "d1".to_string()];
+    let archived = vec!["c2".to_string()];
+    assert_eq!(
+        verify_steps(&pg, &id, through - 1, &live, &archived)
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        verify_steps(&pg, &id, through - 1, &live, &archived)
+            .await
+            .unwrap(),
+        0
+    );
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    let c2 = rows
+        .iter()
+        .find(|r| r.tool_call_id.as_deref() == Some("c2"))
+        .unwrap();
+    assert!(!c2.restorable);
+    assert!(
+        c2.unrestorable_reason
+            .as_deref()
+            .unwrap()
+            .starts_with("compacted:"),
+        "{c2:?}"
+    );
+    let c0 = rows
+        .iter()
+        .find(|r| r.tool_call_id.as_deref() == Some("c0"))
+        .unwrap();
+    assert!(!c0.restorable);
+    assert!(
+        c0.unrestorable_reason
+            .as_deref()
+            .unwrap()
+            .starts_with("not in this run's transcript"),
+        "{c0:?}"
+    );
+    let d1 = rows
+        .iter()
+        .find(|r| r.tool_call_id.as_deref() == Some("d1"))
+        .unwrap();
+    assert!(d1.restorable, "a frame past the bound is not judged");
+    // Steps after the compaction keep counting up within their turn.
+    assert_eq!(
+        record_step(&pg, &id, &step("c3", "terminal", past + 4_000, Some(&job)))
+            .await
+            .unwrap(),
+        Some(8)
+    );
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    assert_eq!(place(&rows, "c3"), (Some(1), Some(4)));
+
+    assert_eq!(
+        retire_job_steps(&pg, &job, "the job's checkout was removed")
+            .await
+            .unwrap(),
+        2,
+        "d1 and c3 are the job's steps still promising a restore"
+    );
+    assert_eq!(
+        retire_job_steps(&pg, &job, "again").await.unwrap(),
+        0,
+        "a retired row keeps its reason"
+    );
+
+    // A clock the server cannot hold, or one ahead of it, is the server's
+    // present rather than a dropped frame.
+    let before: i64 = sqlx::query_scalar("select (extract(epoch from now()) * 1000)::bigint")
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(
+        record_step(&pg, &id, &step("c-far", "terminal", i64::MAX, None))
+            .await
+            .unwrap(),
+        Some(9)
+    );
+    assert_eq!(
+        record_step(&pg, &id, &step("c-neg", "terminal", -5, None))
+            .await
+            .unwrap(),
+        Some(10)
+    );
+    let (far, neg): (i64, i64) = sqlx::query_as(
+        "select (extract(epoch from max(created_at) filter (where tool_call_id = 'c-far')) * 1000)::bigint, \
+                (extract(epoch from max(created_at) filter (where tool_call_id = 'c-neg')) * 1000)::bigint \
+         from run_checkpoints where run_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(far >= before && far <= before + 60_000, "{far} vs {before}");
+    assert!(neg >= before && neg <= before + 60_000, "{neg} vs {before}");
+
+    // The step after the run's last tool call lands after the run ended, in
+    // a turn no row has seen: it takes the last closed turn, after that
+    // turn's last step.
+    store
+        .checkpoint(
+            &id,
+            &token,
+            turn(2, "record"),
+            "turn 2 answered".into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    store
+        .complete(&id, &token, json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        record_step(
+            &pg,
+            &id,
+            &step_in("hermes-turn-3", "c-last", "terminal", past + 9_000, None)
+        )
+        .await
+        .unwrap(),
+        Some(12)
+    );
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    assert_eq!(place(&rows, "c-last"), (Some(2), Some(2)));
+    assert_eq!(
+        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        [1, 2, 3, 6, 8, 9, 10, 4, 5, 7, 12, 11],
+        "turn 1 in step order, then turn 2's send row, its steps, the late step, its record row"
+    );
+
+    cleanup(&pg, kind).await;
+}
+
+/// Frames of one turn can reach the door at once when a plugin queue drains
+/// after a stall, and two statements reading `max(step_no)` under the same
+/// snapshot would hand out one number twice. The number comes from the run
+/// row the statement already locks for `seq`.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn concurrent_steps_of_one_turn_never_share_a_number() {
+    let pg = pg().await;
+    let kind = "rust-store-test-steps-concurrent";
+    cleanup(&pg, kind).await;
+    let store = PgRunStore::new(pg.clone());
+    let (id, token) = claimed_run(&store, kind).await;
+    store
+        .checkpoint(
+            &id,
+            &token,
+            json!({"stage": "send", "turn": 1, "stageAttempt": 0}),
+            "pushed".into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let mut tasks = Vec::new();
+    for n in 0..24 {
+        let (pg, id) = (pg.clone(), id.clone());
+        tasks.push(tokio::spawn(async move {
+            record_step(
+                &pg,
+                &id,
+                &step(&format!("k{n}"), "terminal", 1_700_000_000_000 + n, None),
+            )
+            .await
+            .unwrap()
+        }));
+    }
+    for t in tasks {
+        assert!(t.await.unwrap().is_some());
+    }
+    let rows = run_checkpoints(&pg, &id).await.unwrap();
+    let mut numbers: Vec<i64> = rows
+        .iter()
+        .filter(|r| r.kind == CheckpointKind::Step)
+        .map(|r| r.step_no.unwrap())
+        .collect();
+    numbers.sort_unstable();
+    assert_eq!(numbers, (1..=24).collect::<Vec<i64>>(), "{numbers:?}");
+    cleanup(&pg, kind).await;
 }

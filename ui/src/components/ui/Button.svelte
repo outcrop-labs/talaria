@@ -1,10 +1,13 @@
 <script lang="ts">
   import type { HTMLButtonAttributes } from 'svelte/elements'
-  import { buttonClasses, type ButtonSize, type ButtonVariant } from './button'
+  import { useUiVoice } from '@/lib/ui-voice'
+  import { buttonClasses, type ButtonSize, type ButtonVariant, type ButtonVoice } from './button'
 
   interface Props extends HTMLButtonAttributes {
     variant?: ButtonVariant
     size?: ButtonSize
+    /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
+    voice?: ButtonVoice
     /** bind:ref for imperative focus/measure at call sites that need it. */
     ref?: HTMLButtonElement | null
     /**
@@ -32,6 +35,7 @@
   let {
     variant = 'primary',
     size = 'md',
+    voice,
     type = 'button',
     class: className,
     children,
@@ -40,6 +44,8 @@
     disabled,
     ...rest
   }: Props = $props()
+
+  const areaVoice = useUiVoice()
 
   // A disabled control must not reach for the pointer — the bloom reads as an
   // invitation, and a dimmed button that still blooms is telling two stories.
@@ -68,6 +74,7 @@
   class={buttonClasses({
     variant,
     size,
+    voice: voice ?? areaVoice,
     className: [wantsBloom ? 'dither-fill' : '', className as string | null].filter(Boolean).join(' '),
   })}
   {...rest}

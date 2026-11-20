@@ -15,23 +15,9 @@ use talaria_api_facades::google::pending_actions::{
 };
 use talaria_error::{house_error, internal};
 
-/// The person in the live conversation, when one is streaming. None when the
-/// agent is not mid-turn — a cron, a finished turn — which is not a mismatch.
-pub async fn streaming_conversation_user(
-    pg: &PgPool,
-    agent_model: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "select c.user_id::text \
-         from messages m join conversations c on c.id = m.conversation_id \
-         where c.agent_model = $1 and m.role = 'assistant' and m.status = 'streaming' \
-           and m.streamed_at > now() - interval '15 minutes' \
-         order by m.streamed_at desc limit 1",
-    )
-    .bind(agent_model)
-    .fetch_optional(pg)
-    .await
-}
+/// The person in the live conversation, when one is streaming (talaria-chips
+/// owns the read; the MCP gateway's hold asks it too).
+pub use talaria_chips::streaming_conversation_user;
 
 /// A personal draft queued for a different user than the one in this
 /// conversation would succeed in the API and stay invisible to the person

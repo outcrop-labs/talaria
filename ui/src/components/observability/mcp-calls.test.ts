@@ -20,8 +20,8 @@ import {
 } from './mcp-calls'
 
 describe('outcomes', () => {
-  it('names the api’s seven outcomes, each with a label and a tone', () => {
-    expect([...OUTCOMES]).toEqual(['ok', 'error', 'denied', 'not_connected', 'upstream_error', 'spend_error', 'cancelled'])
+  it('names the api’s eight outcomes, each with a label and a tone', () => {
+    expect([...OUTCOMES]).toEqual(['ok', 'error', 'denied', 'not_connected', 'upstream_error', 'spend_error', 'cancelled', 'held'])
     for (const o of OUTCOMES) {
       expect(OUTCOME_META[o].label).toBeTruthy()
       expect(isOutcome(o)).toBe(true)
@@ -31,6 +31,8 @@ describe('outcomes', () => {
     expect(OUTCOME_META.not_connected.tone).toBe('neutral')
     // A caller hanging up is not the server failing.
     expect(OUTCOME_META.cancelled.tone).toBe('neutral')
+    // A call held for a person is neither a failure nor a refusal.
+    expect(OUTCOME_META.held.tone).toBe('accent')
     for (const failure of ['error', 'upstream_error', 'spend_error'] as const) expect(OUTCOME_META[failure].tone).toBe('danger')
     expect(isOutcome('bogus')).toBe(false)
     expect(isOutcome(null)).toBe(false)

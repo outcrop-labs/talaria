@@ -209,12 +209,11 @@ pub fn should_reclaim(
     bytes >= ceiling.saturating_mul(1024 * 1024 * 1024)
 }
 
-/// A job status that could still be building. `pr_open` and
-/// `awaiting_approval` cannot be, by definition — the agent is waiting on a
-/// person. `started` might be, so the script checks for live processes and
-/// refuses; this only decides who is worth asking.
 fn reclaim_candidate(status: &str) -> bool {
-    matches!(status, "started" | "awaiting_approval" | "pr_open")
+    matches!(
+        status,
+        "started" | "awaiting_approval" | "pr_open" | "superseded"
+    )
 }
 
 /// Drop a job's rebuildable output. `Ok(None)` means the job was busy and
@@ -285,13 +284,26 @@ pub async fn teardown_job(
     )
     .await?;
     if mode == Teardown::Remove {
-        sqlx::query("update workbench_jobs set workspace_cleared_at = now() where id = $1::uuid")
-            .bind(job_id)
-            .execute(pg)
-            .await
-            .map_err(|e| format!("job update: {e}"))?;
+        mark_removed(pg, job_id).await?;
     }
     Ok(())
+}
+
+/// The workdir is gone: the job's done-marker, and the retirement of every
+/// step that pointed into the checkout, in one transaction. Two writes would
+/// let a failure between them leave a job the sweep never scans again with
+/// rows that still promise a restore.
+pub async fn mark_removed(pg: &PgPool, job_id: &str) -> Result<(), String> {
+    let mut tx = pg.begin().await.map_err(|e| format!("job update: {e}"))?;
+    talaria_runs_store::retire_job_steps(&mut *tx, job_id, "the job's checkout was removed")
+        .await
+        .map_err(|e| format!("checkpoint update: {e}"))?;
+    sqlx::query("update workbench_jobs set workspace_cleared_at = now() where id = $1::uuid")
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("job update: {e}"))?;
+    tx.commit().await.map_err(|e| format!("job update: {e}"))
 }
 
 /// Fire-and-forget from a verb: the agent's tool call returns now, the
@@ -335,22 +347,30 @@ pub const TICKETLESS_STALE_AFTER_SECS: i64 = 7 * 24 * 60 * 60;
 pub const QUEUED_STALE_AFTER_SECS: i64 = 24 * 60 * 60;
 
 /// `idle_secs` is how long since the row's `updated_at`; a job the sweep
-/// cannot date (null) is never stale.
+/// cannot date (null) is never stale. A superseded job whose checkout a
+/// rewind could still restore from stays while its ticket is open, however
+/// idle; once the ticket closes, the checkout goes with the ticket's other
+/// jobs.
 pub fn sweep_action(
     job_status: &str,
     ticket_closed: Option<bool>,
     idle_secs: Option<i64>,
+    restorable_checkpoints: bool,
 ) -> SweepAction {
     match (job_status, ticket_closed) {
         ("abandoned", _) => SweepAction::Remove,
         ("started" | "awaiting_approval", Some(true)) => SweepAction::AbandonAndRemove,
-        ("pr_open", Some(true)) => SweepAction::Remove,
+        ("pr_open" | "superseded", Some(true)) => SweepAction::Remove,
+        ("superseded", _) if restorable_checkpoints => SweepAction::Leave,
         // No ticket (ad-hoc job, or the ticket was deleted and the FK nulled
         // it) says nothing about whether the work is over — only time does.
         ("started" | "awaiting_approval", None)
             if idle_secs.is_some_and(|s| s >= TICKETLESS_STALE_AFTER_SECS) =>
         {
             SweepAction::AbandonAndRemove
+        }
+        ("superseded", None) if idle_secs.is_some_and(|s| s >= TICKETLESS_STALE_AFTER_SECS) => {
+            SweepAction::Remove
         }
         ("queued", _) if idle_secs.is_some_and(|s| s >= QUEUED_STALE_AFTER_SECS) => {
             SweepAction::Abandon
@@ -369,6 +389,7 @@ type SweepRow = (
     bool,           // ticket archived
     Option<String>, // task id (for the queued job's board-level wait)
     Option<i64>,    // seconds since updated_at
+    bool,           // a rewind could still restore a step from this checkout
 );
 
 pub async fn sweep_job_workspaces(pg: &PgPool) -> Result<Option<String>, String> {
@@ -376,12 +397,14 @@ pub async fn sweep_job_workspaces(pg: &PgPool) -> Result<Option<String>, String>
         "select j.id::text, j.status, j.agent_id::text, d.department, \
                 t.board_id::text, t.status, t.archived_at is not null, \
                 j.task_id::text, \
-                (extract(epoch from (now() - j.updated_at)))::bigint \
+                (extract(epoch from (now() - j.updated_at)))::bigint, \
+                exists (select 1 from run_checkpoints c where c.job_id = j.id and c.restorable) \
          from workbench_jobs j \
          join agent_defs d on d.id = j.agent_id \
          left join tasks t on t.id = j.task_id \
          where j.workspace_cleared_at is null \
-           and j.status in ('started', 'awaiting_approval', 'pr_open', 'abandoned', 'queued') \
+           and j.status in ('started', 'awaiting_approval', 'pr_open', 'abandoned', 'queued', \
+                            'superseded') \
          order by j.updated_at",
     )
     .fetch_all(pg)
@@ -390,8 +413,18 @@ pub async fn sweep_job_workspaces(pg: &PgPool) -> Result<Option<String>, String>
 
     let (mut abandoned, mut removed, mut failed) = (0, 0, 0);
     let mut budgets: Vec<(String, String)> = Vec::new();
-    for (job_id, status, agent_id, department, board_id, ticket_status, archived, task_id, idle) in
-        rows
+    for (
+        job_id,
+        status,
+        agent_id,
+        department,
+        board_id,
+        ticket_status,
+        archived,
+        task_id,
+        idle,
+        restorable,
+    ) in rows
     {
         let closed = match (&board_id, &ticket_status) {
             (Some(board), Some(ticket_status)) => Some(
@@ -403,7 +436,7 @@ pub async fn sweep_job_workspaces(pg: &PgPool) -> Result<Option<String>, String>
             ),
             _ => None,
         };
-        let action = sweep_action(&status, closed, idle);
+        let action = sweep_action(&status, closed, idle, restorable);
         if action == SweepAction::Leave {
             continue;
         }
@@ -521,7 +554,7 @@ async fn reclaim_pass(pg: &PgPool) -> Result<u64, String> {
          from workbench_jobs j \
          join agent_defs d on d.id = j.agent_id \
          where j.workspace_cleared_at is null \
-           and j.status in ('started', 'awaiting_approval', 'pr_open') \
+           and j.status in ('started', 'awaiting_approval', 'pr_open', 'superseded') \
          order by j.updated_at",
     )
     .fetch_all(pg)
@@ -754,10 +787,49 @@ mod tests {
         assert!(reclaim_candidate("started"));
         assert!(reclaim_candidate("awaiting_approval"));
         assert!(reclaim_candidate("pr_open"));
+        assert!(reclaim_candidate("superseded"));
         // Abandoned is the status pass's business — it removes the whole
         // workdir, so reclaiming part of it first would be wasted work.
         assert!(!reclaim_candidate("abandoned"));
         assert!(!reclaim_candidate("merged"));
+    }
+
+    #[test]
+    fn a_superseded_checkout_a_rewind_can_still_use_stays_until_its_ticket_closes() {
+        let week = TICKETLESS_STALE_AFTER_SECS;
+        assert_eq!(
+            sweep_action("superseded", Some(false), Some(week * 4), true),
+            SweepAction::Leave
+        );
+        assert_eq!(
+            sweep_action("superseded", None, Some(week * 4), true),
+            SweepAction::Leave
+        );
+        assert_eq!(
+            sweep_action("superseded", Some(true), Some(0), true),
+            SweepAction::Remove
+        );
+    }
+
+    #[test]
+    fn a_superseded_job_goes_only_when_its_ticket_does() {
+        let week = TICKETLESS_STALE_AFTER_SECS;
+        assert_eq!(
+            sweep_action("superseded", Some(false), Some(week * 4), false),
+            SweepAction::Leave
+        );
+        assert_eq!(
+            sweep_action("superseded", Some(true), Some(0), false),
+            SweepAction::Remove
+        );
+        assert_eq!(
+            sweep_action("superseded", None, Some(week - 1), false),
+            SweepAction::Leave
+        );
+        assert_eq!(
+            sweep_action("superseded", None, Some(week), false),
+            SweepAction::Remove
+        );
     }
 
     #[test]
@@ -772,9 +844,12 @@ mod tests {
 
     #[test]
     fn abandoned_jobs_are_always_cleared() {
-        assert_eq!(sweep_action("abandoned", None, None), SweepAction::Remove);
         assert_eq!(
-            sweep_action("abandoned", Some(false), Some(0)),
+            sweep_action("abandoned", None, None, false),
+            SweepAction::Remove
+        );
+        assert_eq!(
+            sweep_action("abandoned", Some(false), Some(0), false),
             SweepAction::Remove
         );
     }
@@ -782,11 +857,11 @@ mod tests {
     #[test]
     fn a_live_job_on_a_closed_ticket_is_closed_out() {
         assert_eq!(
-            sweep_action("started", Some(true), Some(0)),
+            sweep_action("started", Some(true), Some(0), false),
             SweepAction::AbandonAndRemove
         );
         assert_eq!(
-            sweep_action("awaiting_approval", Some(true), Some(0)),
+            sweep_action("awaiting_approval", Some(true), Some(0), false),
             SweepAction::AbandonAndRemove
         );
     }
@@ -794,11 +869,11 @@ mod tests {
     #[test]
     fn a_pr_keeps_its_checkout_until_the_ticket_closes() {
         assert_eq!(
-            sweep_action("pr_open", Some(false), Some(0)),
+            sweep_action("pr_open", Some(false), Some(0), false),
             SweepAction::Leave
         );
         assert_eq!(
-            sweep_action("pr_open", Some(true), Some(0)),
+            sweep_action("pr_open", Some(true), Some(0), false),
             SweepAction::Remove
         );
     }
@@ -806,18 +881,25 @@ mod tests {
     #[test]
     fn open_tickets_and_fresh_ticketless_jobs_are_left_alone() {
         assert_eq!(
-            sweep_action("started", Some(false), Some(0)),
+            sweep_action("started", Some(false), Some(0), false),
             SweepAction::Leave
         );
-        assert_eq!(sweep_action("started", None, Some(0)), SweepAction::Leave);
-        assert_eq!(sweep_action("pr_open", None, Some(0)), SweepAction::Leave);
+        assert_eq!(
+            sweep_action("started", None, Some(0), false),
+            SweepAction::Leave
+        );
+        assert_eq!(
+            sweep_action("pr_open", None, Some(0), false),
+            SweepAction::Leave
+        );
         // An open ticket keeps its job however old: the ticket is the
         // signal there, not the clock.
         assert_eq!(
             sweep_action(
                 "started",
                 Some(false),
-                Some(TICKETLESS_STALE_AFTER_SECS * 10)
+                Some(TICKETLESS_STALE_AFTER_SECS * 10),
+                false
             ),
             SweepAction::Leave
         );
@@ -827,43 +909,46 @@ mod tests {
     fn a_ticketless_job_untouched_for_a_week_is_abandoned_and_a_younger_one_is_not() {
         let week = TICKETLESS_STALE_AFTER_SECS;
         assert_eq!(
-            sweep_action("started", None, Some(week)),
+            sweep_action("started", None, Some(week), false),
             SweepAction::AbandonAndRemove
         );
         assert_eq!(
-            sweep_action("awaiting_approval", None, Some(week + 1)),
+            sweep_action("awaiting_approval", None, Some(week + 1), false),
             SweepAction::AbandonAndRemove
         );
         assert_eq!(
-            sweep_action("started", None, Some(week - 1)),
+            sweep_action("started", None, Some(week - 1), false),
             SweepAction::Leave
         );
         // A PR is not a running job; its checkout waits for the ticket.
         assert_eq!(
-            sweep_action("pr_open", None, Some(week * 4)),
+            sweep_action("pr_open", None, Some(week * 4), false),
             SweepAction::Leave
         );
         // Undated is never stale.
-        assert_eq!(sweep_action("started", None, None), SweepAction::Leave);
+        assert_eq!(
+            sweep_action("started", None, None, false),
+            SweepAction::Leave
+        );
     }
 
     #[test]
     fn a_job_queued_for_a_day_is_abandoned_without_a_teardown() {
         let day = QUEUED_STALE_AFTER_SECS;
         assert_eq!(
-            sweep_action("queued", None, Some(day)),
+            sweep_action("queued", None, Some(day), false),
             SweepAction::Abandon
         );
         assert_eq!(
-            sweep_action("queued", Some(false), Some(day)),
+            sweep_action("queued", Some(false), Some(day), false),
             SweepAction::Abandon
         );
         assert_eq!(
-            sweep_action("queued", None, Some(day - 1)),
+            sweep_action("queued", None, Some(day - 1), false),
             SweepAction::Leave
         );
         assert_eq!(
-            sweep_action("queued", Some(false), None),
+            sweep_action("queued", Some(false), None, false),
             SweepAction::Leave
         );
     }

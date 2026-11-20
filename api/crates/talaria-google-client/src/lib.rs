@@ -30,9 +30,12 @@
 //
 // Each client also carries what is known about its agentic mark, keyed by
 // client id in `google_client_evidence` (env pins for headless installs).
-// Google exposes no API and no token claim for the mark, so for now the only
-// evidence is the operator's own declaration; nothing here refuses anything
-// on it.
+// Google exposes no API and no token claim for the mark. Two kinds of
+// evidence: the operator's declaration, and Google's own answer to "Check
+// with Google" — a Workspace MCP call made with that client's token, which
+// Google accepts only from a client marked agentic. `agentic_standing` folds
+// them into one verdict, Google's acceptance first. Nothing here refuses
+// anything on it; the agent-token door (talaria-google-agent) reads it.
 
 use serde_json::Value;
 use sqlx::PgPool;
@@ -308,10 +311,13 @@ pub async fn resolve_google_signin_client(pg: &PgPool, sb: &SecretBox) -> Option
 
 // ── Agentic evidence ─────────────────────────────────────────────────────────
 //
-// `google_client_evidence` = { "<clientId>": { "declaredAgentic": bool|null } }.
-// Keyed by client id, not by slot, so a client moved between slots, or set in
-// env, keeps its own facts. A declaration is what the operator says Google
-// Cloud shows; nothing verifies it yet, and nothing refuses on it.
+// `google_client_evidence` = { "<clientId>": { "declaredAgentic": bool|null,
+// "lastCheck": ClientCheck } }. Keyed by client id, not by slot, so a client
+// moved between slots, or set in env, keeps its own facts. A declaration is
+// what the operator says Google Cloud shows; `lastCheck` is Google's own
+// answer to "Check with Google". A declaration refuses no REST call. A
+// client declared unticked keeps its grants off Google's Workspace MCP
+// servers (the agent-token door) unless Google's last answer accepted a call.
 
 /// What is known about one client's agentic mark.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -401,6 +407,114 @@ pub async fn declare_agentic(
     .map(|_| ())
 }
 
+// ── Google's own answer: "Check with Google" ─────────────────────────────────
+//
+// The one provider-side signal there is: Google's Workspace MCP servers reject
+// a client not marked agentic, so a call they ACCEPT from a client's token is
+// Google saying the mark is there. `talaria_google_mcp::check_agentic` makes
+// that call; its answer is stored here, under the client's id beside the
+// declaration (`google_client_evidence.<id>.lastCheck`), so neither write
+// loses the other.
+
+/// What Google answered the last "Check with Google" for one client.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCheck {
+    /// Google's MCP server accepted the call: HTTP 2xx, a JSON-RPC result,
+    /// and no `isError`. Nothing else counts, whatever its words.
+    pub ok: bool,
+    /// The HTTP status Google answered with.
+    pub status: u16,
+    /// Google's own words when it refused, folded and capped, never
+    /// reworded. None when it accepted: the answer to an accepted call is
+    /// the checker's own mail labels, which are not stored.
+    pub text: Option<String>,
+    /// When it answered (RFC 3339, UTC).
+    pub at: String,
+}
+
+/// The last check stored for one client, or None (never checked, or a stored
+/// value that is not a check's shape).
+pub fn last_check(evidence: &Value, client_id: &str) -> Option<ClientCheck> {
+    if client_id.is_empty() {
+        return None;
+    }
+    let stored = evidence.get(client_id)?.get("lastCheck")?;
+    serde_json::from_value(stored.clone()).ok()
+}
+
+/// Store Google's answer for one client id, replacing the last one (the last
+/// answer wins: a refusal after an acceptance ends the `Verified` standing),
+/// keeping the declaration and any other fact stored under it (the same
+/// one-statement merge as `declare_agentic`).
+pub async fn record_check(
+    pg: &PgPool,
+    client_id: &str,
+    check: &ClientCheck,
+) -> Result<(), sqlx::Error> {
+    let value = serde_json::to_value(check).unwrap_or(Value::Null);
+    sqlx::query(
+        "insert into app_settings (key, value) \
+         values ($1, jsonb_build_object($2::text, jsonb_build_object('lastCheck', $3::jsonb))) \
+         on conflict (key) do update set value = \
+           (case when jsonb_typeof(app_settings.value) = 'object' then app_settings.value else '{}'::jsonb end) \
+           || jsonb_build_object($2::text, \
+                (case when jsonb_typeof(app_settings.value -> $2::text) = 'object' \
+                      then app_settings.value -> $2::text else '{}'::jsonb end) \
+                || jsonb_build_object('lastCheck', $3::jsonb)), \
+           updated_at = now()",
+    )
+    .bind(EVIDENCE_KEY)
+    .bind(client_id)
+    .bind(value)
+    .execute(pg)
+    .await
+    .map(|_| ())
+}
+
+/// Everything known about one client's agentic mark, as one verdict — what
+/// the agent-token door reads before a token goes to Google's MCP servers.
+/// Google's LAST answer is the one read: a later refusal ends an earlier
+/// acceptance. The refusal is not read as "not marked" — the standing falls
+/// back to the declaration, as if no check had been made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgenticStanding {
+    /// Google accepted the last Workspace MCP call made with this client's
+    /// token (`lastCheck.ok`). Google's answer outranks any declaration.
+    Verified,
+    /// The operator, or an env pin, says the box is ticked.
+    DeclaredAgentic,
+    /// The operator, or an env pin, says the box is not ticked, and Google's
+    /// last answer (if any) did not accept a call from it.
+    DeclaredNotAgentic,
+    /// Nobody has said, and Google's last answer (if any) did not accept a
+    /// call. A refusal is never evidence of an unmarked client: Google's
+    /// words are not read for a class, and the same refusal comes from a
+    /// project outside the Developer Preview.
+    Unknown,
+}
+
+/// The verdict from a declaration and the last check. Pure.
+pub fn standing_of(declared: Option<bool>, check: Option<&ClientCheck>) -> AgenticStanding {
+    if check.is_some_and(|c| c.ok) {
+        return AgenticStanding::Verified;
+    }
+    match declared {
+        Some(true) => AgenticStanding::DeclaredAgentic,
+        Some(false) => AgenticStanding::DeclaredNotAgentic,
+        None => AgenticStanding::Unknown,
+    }
+}
+
+/// One client's standing, the env pin winning over the stored declaration.
+pub fn agentic_standing(evidence: &Value, client_id: &str) -> AgenticStanding {
+    standing_of(
+        agentic_declaration(evidence, client_id).declared,
+        last_check(evidence, client_id).as_ref(),
+    )
+}
+
 // ── Status, patch and clear, per role ────────────────────────────────────────
 
 /// Status for the admin panel — says which source is live and surfaces a
@@ -419,6 +533,8 @@ pub struct GoogleClientStatus {
     /// inherits from the connections side — read-only there.
     pub hd: Option<String>,
     pub agentic: AgenticDeclaration,
+    /// Google's answer to the last "Check with Google" for this client.
+    pub last_check: Option<ClientCheck>,
 }
 
 fn status_with(
@@ -452,6 +568,7 @@ fn status_with(
         configured,
         source,
         agentic: declaration_with(evidence, &client_id, env),
+        last_check: last_check(evidence, &client_id),
         client_id,
         secret_set,
         hd,
@@ -1072,6 +1189,71 @@ mod tests {
         );
     }
 
+    fn check(ok: bool) -> ClientCheck {
+        ClientCheck {
+            ok,
+            status: if ok { 200 } else { 403 },
+            text: (!ok).then(|| "Google's words".into()),
+            at: "2026-11-16T00:00:00.000Z".into(),
+        }
+    }
+
+    #[test]
+    fn googles_last_acceptance_outranks_every_declaration_and_a_refusal_is_not_read() {
+        // Every declaration × {no check, a refused check, an accepted check}.
+        // Only the last check is stored (`record_check` replaces it), so a
+        // refusal after an acceptance is the "refused check" row: the
+        // declaration again, never a class read from Google's words.
+        for declared in [Some(true), Some(false), None] {
+            let by_declaration = match declared {
+                Some(true) => AgenticStanding::DeclaredAgentic,
+                Some(false) => AgenticStanding::DeclaredNotAgentic,
+                None => AgenticStanding::Unknown,
+            };
+            assert_eq!(standing_of(declared, None), by_declaration);
+            assert_eq!(
+                standing_of(declared, Some(&check(false))),
+                by_declaration,
+                "a refused check is not read for a class: {declared:?}"
+            );
+            assert_eq!(
+                standing_of(declared, Some(&check(true))),
+                AgenticStanding::Verified,
+                "{declared:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_last_check_is_read_per_client_beside_the_declaration() {
+        let evidence = json!({
+            "conn-a": { "declaredAgentic": false, "lastCheck": check(true) },
+            "signin-b": { "declaredAgentic": true, "lastCheck": check(false) },
+            "bent": { "lastCheck": "not a check" },
+        });
+        assert_eq!(last_check(&evidence, "conn-a"), Some(check(true)));
+        assert_eq!(last_check(&evidence, "signin-b"), Some(check(false)));
+        assert_eq!(last_check(&evidence, "bent"), None);
+        assert_eq!(last_check(&evidence, "never-seen"), None);
+        assert_eq!(last_check(&evidence, ""), None);
+        // The wire the panel reads.
+        assert_eq!(
+            serde_json::to_string(&check(false)).unwrap(),
+            r#"{"ok":false,"status":403,"text":"Google's words","at":"2026-11-16T00:00:00.000Z"}"#
+        );
+        // A status carries its client's check, and the declaration beside it.
+        let s = status_with(
+            ClientRole::Connections,
+            &record("conn-a", Some("sa"), None),
+            &record("conn-a", Some("sa"), None),
+            &evidence,
+            &open,
+            &env_of(&[]),
+        );
+        assert_eq!(s.agentic.declared, Some(false));
+        assert_eq!(s.last_check, Some(check(true)));
+    }
+
     #[test]
     fn statuses_per_role() {
         let conn = record("conn-a", Some("sa"), Some("radhires.com"));
@@ -1143,7 +1325,7 @@ mod tests {
         // The wire, order pinned.
         assert_eq!(
             serde_json::to_string(&s).unwrap(),
-            r#"{"configured":true,"source":"admin","clientId":"signin-b","secretSet":true,"hd":"radhires.com","agentic":{"declared":false,"pinnedBy":null}}"#
+            r#"{"configured":true,"source":"admin","clientId":"signin-b","secretSet":true,"hd":"radhires.com","agentic":{"declared":false,"pinnedBy":null},"lastCheck":null}"#
         );
 
         // The connections record removed: the sign-in client is still its
@@ -1175,6 +1357,7 @@ mod tests {
                 declared,
                 pinned_by: None,
             },
+            last_check: None,
         }
     }
 
@@ -1469,6 +1652,79 @@ mod live {
         assert_eq!(
             login_client(&pg, &sb).await,
             Some(("conn-a".into(), ClientRole::Connections, None))
+        );
+
+        // Google's answer and the declaration share one client's entry, and
+        // neither write loses the other, in either order.
+        let accepted = ClientCheck {
+            ok: true,
+            status: 200,
+            text: None,
+            at: "2026-11-16T00:00:00.000Z".into(),
+        };
+        declare_agentic(&pg, "conn-a", Some(false)).await.unwrap();
+        record_check(&pg, "conn-a", &accepted).await.unwrap();
+        record_check(
+            &pg,
+            "signin-b",
+            &ClientCheck {
+                ok: false,
+                status: 403,
+                text: Some("refused".into()),
+                at: "2026-11-16T00:00:01.000Z".into(),
+            },
+        )
+        .await
+        .unwrap();
+        declare_agentic(&pg, "signin-b", Some(true)).await.unwrap();
+        let evidence = client_evidence(&pg).await;
+        assert_eq!(
+            agentic_declaration(&evidence, "conn-a").declared,
+            Some(false)
+        );
+        assert_eq!(last_check(&evidence, "conn-a"), Some(accepted));
+        assert_eq!(
+            agentic_standing(&evidence, "conn-a"),
+            AgenticStanding::Verified
+        );
+        assert_eq!(
+            agentic_declaration(&evidence, "signin-b").declared,
+            Some(true)
+        );
+        assert_eq!(
+            last_check(&evidence, "signin-b").map(|c| (c.ok, c.status)),
+            Some((false, 403))
+        );
+        assert_eq!(
+            agentic_standing(&evidence, "signin-b"),
+            AgenticStanding::DeclaredAgentic
+        );
+        let status = google_client_status(&pg, &sb, ClientRole::Connections).await;
+        assert_eq!(status.last_check.map(|c| c.ok), Some(true));
+
+        // The last answer wins: a later refusal ends the acceptance, and the
+        // standing falls back to the declaration (never read as "not marked"
+        // on its own — signin-b's refusal above left it DeclaredAgentic).
+        record_check(
+            &pg,
+            "conn-a",
+            &ClientCheck {
+                ok: false,
+                status: 401,
+                text: Some("Request had invalid authentication credentials.".into()),
+                at: "2026-11-16T00:00:02.000Z".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let evidence = client_evidence(&pg).await;
+        assert_eq!(
+            agentic_declaration(&evidence, "conn-a").declared,
+            Some(false)
+        );
+        assert_eq!(
+            agentic_standing(&evidence, "conn-a"),
+            AgenticStanding::DeclaredNotAgentic
         );
 
         pg.close().await;

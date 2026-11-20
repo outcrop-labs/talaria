@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { cn } from '@/lib/cn'
+  import { useUiVoice } from '@/lib/ui-voice'
   import DitherLayer from './DitherLayer.svelte'
   import type { DitherSource } from '@/lib/dither'
 
@@ -41,7 +42,11 @@
     class?: string
   } = $props()
 
-  const wantsVignette = $derived(vignette ?? variant === 'full')
+  const sans = useUiVoice() === 'sans'
+  // The settings area is matte: no dither field unless a caller asks for one.
+  const wantsVignette = $derived(vignette ?? (variant === 'full' && !sans))
+  // In the settings area the one line reads as prose: "No keys yet. Create one above."
+  const sentence = $derived(hint ? `${title}${/[.!?:]$/.test(title) ? '' : '.'} ${hint}` : title)
 
   // A VIGNETTE AND NOTHING ELSE — four edges inward, no travelling source.
   //
@@ -76,7 +81,9 @@
 
 <!-- Spec §2: empty-state copy is reading voice — sans, never the mono chrome
      voice the app shell inherits from the base font. -->
-{#if variant === 'inline'}
+{#if variant === 'inline' && sans}
+  <div class={cn('font-sans text-[13px] leading-5 text-muted', className)}>{sentence}</div>
+{:else if variant === 'inline'}
   <div class={cn('font-sans text-xs text-muted', className)}>
     {title}{hint ? `: ${hint}` : ''}
   </div>
@@ -116,8 +123,8 @@
       <div class={cn('mx-auto text-ink-dim', variant === 'full' ? 'mb-3 text-3xl' : 'mb-2 text-xl')}>
         {#if typeof icon === 'string'}{icon}{:else}{@render icon()}{/if}
       </div>
-      <div class={cn('font-sans font-medium text-fg', variant === 'full' ? 'text-sm' : 'text-xs')}>{title}</div>
-      {#if hint}<div class="mt-1 font-sans text-xs leading-5 text-muted">{hint}</div>{/if}
+      <div class={cn('font-sans font-medium text-fg', variant === 'full' || sans ? 'text-sm' : 'text-xs')}>{title}</div>
+      {#if hint}<div class={sans ? 'mt-1 font-sans text-[13px] leading-5 text-muted' : 'mt-1 font-sans text-xs leading-5 text-muted'}>{hint}</div>{/if}
       {#if action}<div class={variant === 'full' ? 'mt-4' : 'mt-3'}>{@render action()}</div>{/if}
     </div>
   </div>

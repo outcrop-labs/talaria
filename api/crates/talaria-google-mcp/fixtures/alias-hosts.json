@@ -1,0 +1,440 @@
+{
+ "probedAt": "2026-11-17T11:33:22Z",
+ "request": "POST https://<host>/mcp/v1 with {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}, no credential",
+ "note": "status null = no answer (DNS, TLS or timeout). sameAs = the body is byte-identical to that committed fixture.",
+ "answers": [
+  {
+   "url": "https://gmailmcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 88436,
+   "sha256": "3046b1e2b798e436f4d37e0cd36f39d1b5c1879eb796e8c31624d7c07af5a975",
+   "sameAs": "tools-list/gmailmcp.json"
+  },
+  {
+   "url": "https://gmailmcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 88436,
+   "sha256": "3046b1e2b798e436f4d37e0cd36f39d1b5c1879eb796e8c31624d7c07af5a975",
+   "sameAs": "tools-list/gmailmcp.json"
+  },
+  {
+   "url": "https://gmailmcp.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 88436,
+   "sha256": "3046b1e2b798e436f4d37e0cd36f39d1b5c1879eb796e8c31624d7c07af5a975",
+   "sameAs": "tools-list/gmailmcp.json"
+  },
+  {
+   "url": "https://gmailmcp.mtls.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 88436,
+   "sha256": "3046b1e2b798e436f4d37e0cd36f39d1b5c1879eb796e8c31624d7c07af5a975",
+   "sameAs": "tools-list/gmailmcp.json"
+  },
+  {
+   "url": "https://content-gmailmcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 88436,
+   "sha256": "3046b1e2b798e436f4d37e0cd36f39d1b5c1879eb796e8c31624d7c07af5a975",
+   "sameAs": "tools-list/gmailmcp.json"
+  },
+  {
+   "url": "https://content-gmailmcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 88436,
+   "sha256": "3046b1e2b798e436f4d37e0cd36f39d1b5c1879eb796e8c31624d7c07af5a975",
+   "sameAs": "tools-list/gmailmcp.json"
+  },
+  {
+   "url": "https://drivemcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 78876,
+   "sha256": "603a786884dbb29e08930fc3419ee685582ee5b353e627e7dfcc090e586121e1",
+   "sameAs": "tools-list/drivemcp.json"
+  },
+  {
+   "url": "https://drivemcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 78876,
+   "sha256": "603a786884dbb29e08930fc3419ee685582ee5b353e627e7dfcc090e586121e1",
+   "sameAs": "tools-list/drivemcp.json"
+  },
+  {
+   "url": "https://drivemcp.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 78876,
+   "sha256": "603a786884dbb29e08930fc3419ee685582ee5b353e627e7dfcc090e586121e1",
+   "sameAs": "tools-list/drivemcp.json"
+  },
+  {
+   "url": "https://drivemcp.mtls.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 78876,
+   "sha256": "603a786884dbb29e08930fc3419ee685582ee5b353e627e7dfcc090e586121e1",
+   "sameAs": "tools-list/drivemcp.json"
+  },
+  {
+   "url": "https://content-drivemcp.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://content-drivemcp.mtls.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://calendarmcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 119208,
+   "sha256": "b4bd9cf4dbcd94b740b8ae75b573468d4a67267b4219fc7067e15b517e63a551",
+   "sameAs": "tools-list/calendarmcp.json"
+  },
+  {
+   "url": "https://calendarmcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 119208,
+   "sha256": "b4bd9cf4dbcd94b740b8ae75b573468d4a67267b4219fc7067e15b517e63a551",
+   "sameAs": "tools-list/calendarmcp.json"
+  },
+  {
+   "url": "https://calendarmcp.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 119208,
+   "sha256": "b4bd9cf4dbcd94b740b8ae75b573468d4a67267b4219fc7067e15b517e63a551",
+   "sameAs": "tools-list/calendarmcp.json"
+  },
+  {
+   "url": "https://calendarmcp.mtls.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 119208,
+   "sha256": "b4bd9cf4dbcd94b740b8ae75b573468d4a67267b4219fc7067e15b517e63a551",
+   "sameAs": "tools-list/calendarmcp.json"
+  },
+  {
+   "url": "https://content-calendarmcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 119208,
+   "sha256": "b4bd9cf4dbcd94b740b8ae75b573468d4a67267b4219fc7067e15b517e63a551",
+   "sameAs": "tools-list/calendarmcp.json"
+  },
+  {
+   "url": "https://content-calendarmcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 119208,
+   "sha256": "b4bd9cf4dbcd94b740b8ae75b573468d4a67267b4219fc7067e15b517e63a551",
+   "sameAs": "tools-list/calendarmcp.json"
+  },
+  {
+   "url": "https://docsmcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 43010,
+   "sha256": "3fa021c0510dbc77296d8677959ccc4d26d8314a841a13cc51e95a1fd674d304",
+   "sameAs": "tools-list/docsmcp.json"
+  },
+  {
+   "url": "https://docsmcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 43010,
+   "sha256": "3fa021c0510dbc77296d8677959ccc4d26d8314a841a13cc51e95a1fd674d304",
+   "sameAs": "tools-list/docsmcp.json"
+  },
+  {
+   "url": "https://docsmcp.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 43010,
+   "sha256": "3fa021c0510dbc77296d8677959ccc4d26d8314a841a13cc51e95a1fd674d304",
+   "sameAs": "tools-list/docsmcp.json"
+  },
+  {
+   "url": "https://docsmcp.mtls.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 43010,
+   "sha256": "3fa021c0510dbc77296d8677959ccc4d26d8314a841a13cc51e95a1fd674d304",
+   "sameAs": "tools-list/docsmcp.json"
+  },
+  {
+   "url": "https://content-docsmcp.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://content-docsmcp.mtls.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://sheetsmcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 33786,
+   "sha256": "0896bce05cfbacfc41da38795e7b1d7ce17f94b6613b36445fe5d43eaa0ac276",
+   "sameAs": "tools-list/sheetsmcp.json"
+  },
+  {
+   "url": "https://sheetsmcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 33786,
+   "sha256": "0896bce05cfbacfc41da38795e7b1d7ce17f94b6613b36445fe5d43eaa0ac276",
+   "sameAs": "tools-list/sheetsmcp.json"
+  },
+  {
+   "url": "https://sheetsmcp.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 33786,
+   "sha256": "0896bce05cfbacfc41da38795e7b1d7ce17f94b6613b36445fe5d43eaa0ac276",
+   "sameAs": "tools-list/sheetsmcp.json"
+  },
+  {
+   "url": "https://sheetsmcp.mtls.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 33786,
+   "sha256": "0896bce05cfbacfc41da38795e7b1d7ce17f94b6613b36445fe5d43eaa0ac276",
+   "sameAs": "tools-list/sheetsmcp.json"
+  },
+  {
+   "url": "https://content-sheetsmcp.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://content-sheetsmcp.mtls.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://slidesmcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 37962,
+   "sha256": "a13ae346e112f0952019be37c134305517c47f5100b41a929efc448a5ea13fca",
+   "sameAs": "tools-list/slidesmcp.json"
+  },
+  {
+   "url": "https://slidesmcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 37962,
+   "sha256": "a13ae346e112f0952019be37c134305517c47f5100b41a929efc448a5ea13fca",
+   "sameAs": "tools-list/slidesmcp.json"
+  },
+  {
+   "url": "https://slidesmcp.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 37962,
+   "sha256": "a13ae346e112f0952019be37c134305517c47f5100b41a929efc448a5ea13fca",
+   "sameAs": "tools-list/slidesmcp.json"
+  },
+  {
+   "url": "https://slidesmcp.mtls.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 37962,
+   "sha256": "a13ae346e112f0952019be37c134305517c47f5100b41a929efc448a5ea13fca",
+   "sameAs": "tools-list/slidesmcp.json"
+  },
+  {
+   "url": "https://content-slidesmcp.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://content-slidesmcp.mtls.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://chatmcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 37511,
+   "sha256": "b44d93f5ebe4c46e01f6a4a0f18f241cc0c892cbdfac34917a9083d878bbfd37",
+   "sameAs": "tools-list/chatmcp.json"
+  },
+  {
+   "url": "https://chatmcp.mtls.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://chatmcp.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 37511,
+   "sha256": "b44d93f5ebe4c46e01f6a4a0f18f241cc0c892cbdfac34917a9083d878bbfd37",
+   "sameAs": "tools-list/chatmcp.json"
+  },
+  {
+   "url": "https://chatmcp.mtls.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 37511,
+   "sha256": "b44d93f5ebe4c46e01f6a4a0f18f241cc0c892cbdfac34917a9083d878bbfd37",
+   "sameAs": "tools-list/chatmcp.json"
+  },
+  {
+   "url": "https://content-chatmcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 37511,
+   "sha256": "b44d93f5ebe4c46e01f6a4a0f18f241cc0c892cbdfac34917a9083d878bbfd37",
+   "sameAs": "tools-list/chatmcp.json"
+  },
+  {
+   "url": "https://content-chatmcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 37511,
+   "sha256": "b44d93f5ebe4c46e01f6a4a0f18f241cc0c892cbdfac34917a9083d878bbfd37",
+   "sameAs": "tools-list/chatmcp.json"
+  },
+  {
+   "url": "https://workspacemcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 9608,
+   "sha256": "0d79daee8ad6d392ff772490a0bf689dcc271f83df5e1e0f7ff1c75b8302cc89",
+   "sameAs": "tools-list/workspacemcp.json"
+  },
+  {
+   "url": "https://workspacemcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 9608,
+   "sha256": "0d79daee8ad6d392ff772490a0bf689dcc271f83df5e1e0f7ff1c75b8302cc89",
+   "sameAs": "tools-list/workspacemcp.json"
+  },
+  {
+   "url": "https://workspacemcp.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 9608,
+   "sha256": "0d79daee8ad6d392ff772490a0bf689dcc271f83df5e1e0f7ff1c75b8302cc89",
+   "sameAs": "tools-list/workspacemcp.json"
+  },
+  {
+   "url": "https://workspacemcp.mtls.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 9608,
+   "sha256": "0d79daee8ad6d392ff772490a0bf689dcc271f83df5e1e0f7ff1c75b8302cc89",
+   "sameAs": "tools-list/workspacemcp.json"
+  },
+  {
+   "url": "https://content-workspacemcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 9608,
+   "sha256": "0d79daee8ad6d392ff772490a0bf689dcc271f83df5e1e0f7ff1c75b8302cc89",
+   "sameAs": "tools-list/workspacemcp.json"
+  },
+  {
+   "url": "https://content-workspacemcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 9608,
+   "sha256": "0d79daee8ad6d392ff772490a0bf689dcc271f83df5e1e0f7ff1c75b8302cc89",
+   "sameAs": "tools-list/workspacemcp.json"
+  },
+  {
+   "url": "https://classroommcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 46,
+   "sha256": "7c116dab6525a750dca29e9a8b343e8624b0cc0336b94658445e60bb0fad8c46"
+  },
+  {
+   "url": "https://classroommcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 46,
+   "sha256": "7c116dab6525a750dca29e9a8b343e8624b0cc0336b94658445e60bb0fad8c46"
+  },
+  {
+   "url": "https://classroommcp.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 46,
+   "sha256": "7c116dab6525a750dca29e9a8b343e8624b0cc0336b94658445e60bb0fad8c46"
+  },
+  {
+   "url": "https://classroommcp.mtls.clients6.google.com/mcp/v1",
+   "status": 200,
+   "bytes": 46,
+   "sha256": "7c116dab6525a750dca29e9a8b343e8624b0cc0336b94658445e60bb0fad8c46"
+  },
+  {
+   "url": "https://content-classroommcp.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 46,
+   "sha256": "7c116dab6525a750dca29e9a8b343e8624b0cc0336b94658445e60bb0fad8c46"
+  },
+  {
+   "url": "https://content-classroommcp.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 46,
+   "sha256": "7c116dab6525a750dca29e9a8b343e8624b0cc0336b94658445e60bb0fad8c46"
+  },
+  {
+   "url": "https://people.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 4519,
+   "sha256": "6c63d3752de047f7a9eeb195d15aedb58b3adf399bcf7b3a71fb2a0d4d81fb75",
+   "sameAs": "tools-list/people.json"
+  },
+  {
+   "url": "https://people.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 4519,
+   "sha256": "6c63d3752de047f7a9eeb195d15aedb58b3adf399bcf7b3a71fb2a0d4d81fb75",
+   "sameAs": "tools-list/people.json"
+  },
+  {
+   "url": "https://people.clients6.google.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://people.mtls.clients6.google.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://content-people.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 4519,
+   "sha256": "6c63d3752de047f7a9eeb195d15aedb58b3adf399bcf7b3a71fb2a0d4d81fb75",
+   "sameAs": "tools-list/people.json"
+  },
+  {
+   "url": "https://content-people.mtls.googleapis.com/mcp/v1",
+   "status": 200,
+   "bytes": 4519,
+   "sha256": "6c63d3752de047f7a9eeb195d15aedb58b3adf399bcf7b3a71fb2a0d4d81fb75",
+   "sameAs": "tools-list/people.json"
+  },
+  {
+   "url": "https://www.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://content.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://clients6.google.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://gmailmcp-pa.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  },
+  {
+   "url": "https://foo-gmailmcp.googleapis.com/mcp/v1",
+   "status": 404,
+   "bytes": 1567,
+   "sha256": "9065b2dffe1e9a29ae770357329ce1808ef1bed19df5a6c8d4db13239cb9eabf"
+  }
+ ]
+}

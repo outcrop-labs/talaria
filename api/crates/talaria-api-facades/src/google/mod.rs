@@ -8,6 +8,7 @@ pub use talaria_google_docs as docs;
 pub use talaria_google_drive as drive;
 pub use talaria_google_errors as errors;
 pub use talaria_google_gmail as gmail;
+pub use talaria_google_mcp as mcp;
 pub use talaria_google_oauth as oauth;
 pub use talaria_google_org as org;
 pub use talaria_google_pending as pending_actions;

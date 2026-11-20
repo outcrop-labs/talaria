@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+talaria-runs-rewind = { workspace = true }
 talaria-agent-managers = { workspace = true }
 talaria-agent-auth = { workspace = true }
 talaria-agent-crons = { workspace = true }
@@ -51,6 +52,7 @@ talaria-personal-agent = { workspace = true }
 talaria-price-oracle = { workspace = true }
 talaria-ratelimit = { workspace = true }
 talaria-realtime-watch = { workspace = true }
+talaria-runs-store = { workspace = true }
 talaria-safe-fetch = { workspace = true }
 talaria-secretbox = { workspace = true }
 talaria-session = { workspace = true }

@@ -1,18 +1,16 @@
 <script lang="ts">
-  import PageSurface from '@/components/app/PageSurface.svelte'
+  import SettingsGroup from '@/components/settings/SettingsGroup.svelte'
+  import SettingsPage from '@/components/settings/SettingsPage.svelte'
+  import SettingsSection from '@/components/settings/SettingsSection.svelte'
   import { navigate, route } from '@/router'
   import { tabFromPath } from '@/lib/route-tabs'
   import Button from '@/components/ui/Button.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
-  import SectionHeader from '@/components/ui/SectionHeader.svelte'
-  import SkeletonCard from '@/components/ui/SkeletonCard.svelte'
-  import Tabs from '@/components/ui/Tabs.svelte'
-  import ViewHeader from '@/components/ui/ViewHeader.svelte'
-  import { fly, staggerIn } from '@/lib/motion'
+  import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import { fly } from '@/lib/motion'
   import { useSession } from '@/lib/session'
   import { useEndpoints } from '@/lib/models'
-  import type { LlmEndpoint } from '@/lib/fleet-defs'
   import ModelsAddProviderModal from './ModelsAddProviderModal.svelte'
   import ModelsEndpointCard from './ModelsEndpointCard.svelte'
   import ModelsEndpointModal from './ModelsEndpointModal.svelte'
@@ -39,35 +37,23 @@
   let manageId = $state<string | null>(null)
   const managing = $derived(manageId ? endpoints.find((e) => e.id === manageId) : undefined)
 
-  const local = $derived(endpoints.filter((e) => e.class === 'local'))
-  const cloud = $derived(endpoints.filter((e) => e.class === 'cloud'))
+  const groups = $derived([
+    { title: 'Self-hosted', endpoints: endpoints.filter((e) => e.class === 'local') },
+    { title: 'Cloud', endpoints: endpoints.filter((e) => e.class === 'cloud') },
+  ])
 </script>
-
-<!-- §8 section header: 10px mono uppercase ink-dim + right-aligned mono count. -->
-{#snippet section(title: string, eps: LlmEndpoint[])}
-  {#if eps.length > 0}
-    <div>
-      <SectionHeader class="mb-2" {title} action={String(eps.length).padStart(2, '0')} />
-      <!-- data-cards: the hook the pane's data-stagger-items selector targets —
-           endpoint cards cascade on entrance; skeletons/other panes don't. -->
-      <div class="space-y-3" data-cards>
-        {#each eps as e (e.id)}
-          <ModelsEndpointCard ep={e} />
-        {/each}
-      </div>
-    </div>
-  {/if}
-{/snippet}
 
 {#if session.data && !isAdmin}
   <EmptyState icon="▤" title="Admins only" />
 {:else}
-  <PageSurface>
-    <!-- Page content entrance: header row → tab strip → pane rise in sequence
-         (ANIMATIONS.md). The keyed pane keeps its own fly on tab switch and
-         stays unstaggered inside — one level only. -->
-    <div use:staggerIn class="space-y-6">
-      <ViewHeader title="Models">
+  <SettingsPage
+    title="Models"
+    blurb="The model providers your agents can use."
+    tabs={MODEL_TABS}
+    {tab}
+    onTab={setTab}
+    staggerItems="[data-cards] > *"
+  >
         {#snippet actions()}
           {#if tab === 'models'}
             <Button size="sm" onclick={() => (adding = true)}>
@@ -75,9 +61,6 @@
             </Button>
           {/if}
         {/snippet}
-      </ViewHeader>
-
-      <Tabs items={MODEL_TABS} value={tab} onChange={setTab} />
 
       <!-- Tab-pane grammar: rise in on switch, no exit. On MOUNT the pane is a
            section whose items cascade: endpoint cards (the [data-cards] hook)
@@ -88,10 +71,9 @@
       <div in:fly={{ y: 6, duration: 200 }} class="space-y-6" data-stagger-items="[data-cards] > *">
       {#if tab === 'models'}
         {#if endpointsQuery.isPending}
-          <div class="space-y-3">
-            <SkeletonCard />
-            <SkeletonCard />
-          </div>
+          <SettingsGroup>
+            <div class="px-5 py-4"><SkeletonRows rows={3} /></div>
+          </SettingsGroup>
         {:else if !endpointsQuery.data}
           <!-- The registry read failed. "No model backends yet — Add a
                provider" invites an admin to re-add providers that already
@@ -99,22 +81,35 @@
                guard the Member access panel below already uses. -->
           <QueryError
             error={endpointsQuery.error}
-            title="Could not load your model backends"
+            title="Could not load your providers"
             onRetry={() => void endpointsQuery.refetch()}
           />
         {:else if endpoints.length === 0}
           <EmptyState
             icon="▤"
-            title="No model backends yet"
-            hint="Add a provider, or import your stack on the Agents page to seed them."
+            title="No providers yet"
+            hint="Add a provider, or import your stack on the Agents page."
           >
             {#snippet action()}
-              <Button size="sm" onclick={() => (adding = true)}>Add provider</Button>
+              <Button size="sm" variant="outline" onclick={() => (adding = true)}>Add provider</Button>
             {/snippet}
           </EmptyState>
         {:else}
-          {@render section('Self-hosted: your hardware & on-prem', local)}
-          {@render section('Cloud', cloud)}
+          <!-- data-cards: the hook the page's stagger selector targets, so
+               provider rows cascade on entrance and skeletons do not. -->
+          <div class="space-y-8">
+            {#each groups as group (group.title)}
+              {#if group.endpoints.length > 0}
+                <SettingsSection title={group.title}>
+                  <SettingsGroup data-cards>
+                    {#each group.endpoints as e (e.id)}
+                      <ModelsEndpointCard ep={e} />
+                    {/each}
+                  </SettingsGroup>
+                </SettingsSection>
+              {/if}
+            {/each}
+          </div>
         {/if}
       {/if}
       {#if tab === 'roles'}<ModelsRolesPanel />{/if}
@@ -125,6 +120,5 @@
 
       {#if adding}<ModelsAddProviderModal open={adding} onClose={() => (adding = false)} onAdded={(id) => (manageId = id)} />{/if}
       {#if managing}<ModelsEndpointModal ep={managing} onClose={() => (manageId = null)} />{/if}
-    </div>
-  </PageSurface>
+  </SettingsPage>
 {/if}
