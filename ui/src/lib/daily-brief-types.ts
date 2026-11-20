@@ -156,6 +156,116 @@ export interface BriefAbsent {
 
 export type BriefResponse = BriefView | BriefAbsent
 
+/** The owner's three verdicts on a line (POST /api/brief/item). */
+export type BriefMarkAction = 'check' | 'dismiss' | 'restore'
+
+/** What POST /api/brief/item answers on success: the page exactly as
+ *  GET /api/brief would serve it now, read after the mark. `brief` is absent
+ *  only when that read failed — the mark itself landed. */
+export interface BriefMarkAnswer {
+  ok: true
+  brief?: BriefResponse
+}
+
+/** The kinds that close a line: the source saying it is done, or the owner
+ *  checking it off or dismissing it (the engine's `is_terminal`). */
+const TERMINAL_KINDS: ReadonlySet<string> = new Set(['resolved', 'checked', 'dismissed'])
+
+const PRIORITY_RANK: Readonly<Record<string, number>> = { p0: 0, p1: 1, p2: 2 }
+const priorityRank = (p: string | null): number => PRIORITY_RANK[p ?? ''] ?? 3
+
+/** The document's line order, as the engine sorts a section (view.rs):
+ *  unresolved first, then priority, then where the log first put the line. */
+function byDocumentOrder(a: BriefLine, b: BriefLine): number {
+  return (
+    Number(a.resolved) - Number(b.resolved) ||
+    priorityRank(a.current.priority) - priorityRank(b.current.priority) ||
+    (a.history[0]?.seq ?? 0) - (b.history[0]?.seq ?? 0)
+  )
+}
+
+/** A line as the owner's verdict leaves it — the row `mark_brief_item` will
+ *  append, folded on — or null when the verdict changes nothing (checking off
+ *  a closed line, restoring an open one) or there is nothing to restore to.
+ *
+ *  THE SAME LITERAL THE ENGINE WRITES. A check-off or a dismissal is the
+ *  closing row: priority `ok`, the CHECKED OFF / DISMISSED label, no badge, no
+ *  body, no evidence, the fingerprint carried forward. A restore is a
+ *  `change` carrying the last LIVE row in the line's history. Only the id,
+ *  seq and time are the browser's stand-ins until the server's row replaces
+ *  them. */
+export function markedLine(line: BriefLine, action: BriefMarkAction, at: string, seq: number): BriefLine | null {
+  const current = line.current
+  const stand = { id: `pending:${line.key}:${seq}`, seq, batch: null, supersedes: current.id, createdAt: at }
+  let entry: BriefEntry
+  if (action === 'restore') {
+    if (!line.resolved) return null
+    const live = [...line.history].reverse().find((e) => !TERMINAL_KINDS.has(e.kind))
+    if (!live) return null
+    entry = { ...live, ...stand, kind: 'change', sourceKey: live.sourceKey ?? '' }
+  } else {
+    if (line.resolved) return null
+    entry = {
+      ...current,
+      ...stand,
+      kind: action === 'check' ? 'checked' : 'dismissed',
+      priority: 'ok',
+      statusLabel: action === 'check' ? 'CHECKED OFF' : 'DISMISSED',
+      badge: null,
+      body: '',
+      evidence: [],
+    }
+  }
+  return { ...line, current: entry, history: [...line.history, entry], resolved: action !== 'restore', unseen: true }
+}
+
+/** The page with one line marked (see `markedLine`), its section re-sorted
+ *  the way the engine sorts it. The same object back when nothing changes —
+ *  an absence, a key not on the page, a verdict that is already true. */
+export function withMark(page: BriefResponse, key: string, action: BriefMarkAction, at: string): BriefResponse {
+  if ('absent' in page) return page
+  let changed = false
+  const sections = page.sections.map((s) => {
+    const i = s.lines.findIndex((l) => l.key === key)
+    if (i < 0) return s
+    const marked = markedLine(s.lines[i]!, action, at, page.lastSeq + 1)
+    if (!marked) return s
+    changed = true
+    const lines = s.lines.map((l, j) => (j === i ? marked : l)).sort(byDocumentOrder)
+    return { ...s, lines }
+  })
+  return changed ? { ...page, sections } : page
+}
+
+/** The page with one line put back as `from` had it — the undo of an
+ *  optimistic mark whose POST failed. Line-level, so a second mark still in
+ *  flight on another line keeps its own state. `from` itself when the pages
+ *  are different documents or the line cannot be found. */
+export function withLineFrom(page: BriefResponse, from: BriefResponse | undefined, key: string): BriefResponse {
+  if (!from) return page
+  if ('absent' in page || 'absent' in from || page.id !== from.id) return from
+  const original = from.sections.flatMap((s) => s.lines).find((l) => l.key === key)
+  if (!original) return from
+  let changed = false
+  const sections = page.sections.map((s) => {
+    const i = s.lines.findIndex((l) => l.key === key)
+    if (i < 0) return s
+    changed = true
+    return { ...s, lines: s.lines.map((l, j) => (j === i ? original : l)).sort(byDocumentOrder) }
+  })
+  return changed ? { ...page, sections } : from
+}
+
+/** Whether a realtime 'brief' event says something the cached page has not
+ *  seen. The event carries the brief's id and the seq its append reached;
+ *  a page of that brief already at or past that seq has it — the echo of a
+ *  read that swept, or of the reader's own check-off whose answer carried the
+ *  page — and refetching it would be a GET for nothing. */
+export function briefEventIsNews(cached: BriefResponse | undefined, event: { briefId: string; seq: number }): boolean {
+  if (!cached || 'absent' in cached) return true
+  return cached.id !== event.briefId || cached.lastSeq < event.seq
+}
+
 // Re-exported, not defined: the one definition lives in `@/lib/brief-absent`
 // so the browser can reach it without importing a value from `@/server/`.
 export { isBriefAbsent } from '@/lib/brief-absent'

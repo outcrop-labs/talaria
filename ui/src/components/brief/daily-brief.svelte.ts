@@ -10,10 +10,12 @@
 //
 // So the cursor advances on an explicit gesture (the "N new" control, or
 // scrolling the timeline to the top), never on load.
-import { createQuery, useQueryClient } from '@tanstack/svelte-query'
+import { createQuery, useQueryClient, type QueryClient } from '@tanstack/svelte-query'
+import { SvelteSet } from 'svelte/reactivity'
 import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
 import { onUserEvent } from '@/lib/user-events.svelte'
-import type { BriefResponse, BriefView } from '@/lib/daily-brief-types'
+import { briefEventIsNews, withLineFrom, withMark } from '@/lib/daily-brief-types'
+import type { BriefMarkAction, BriefMarkAnswer, BriefResponse, BriefView } from '@/lib/daily-brief-types'
 
 export type { BriefResponse, BriefView }
 export type * from '@/lib/daily-brief-types'
@@ -35,11 +37,76 @@ const browserZone = (): string => {
 
 export const BRIEF_KEY = ['daily-brief'] as const
 
+// ── Marks in flight ─────────────────────────────────────────────────────────
+//
+// A check-off is shown the moment it is clicked and confirmed by the POST's
+// answer, which carries the whole page (POST /api/brief/item). Until then the
+// mark lives here, so EVERY page that lands in the cache meanwhile — another
+// mark's answer, the slow poll, a refetch — gets it laid back on top instead
+// of flickering the line back open. Module state, like the query cache it
+// guards: the card that was clicked moves lanes the moment it is marked, and
+// whatever it remounts as must still see the mark and, if the POST fails,
+// the failure.
+
+interface PendingMark {
+  token: number
+  action: BriefMarkAction
+  at: string
+}
+
+/** The latest mark on each line whose POST has not answered, by source key. */
+const pending = new Map<string, PendingMark>()
+/** Each line's POSTs, one after another — the server applies a check and a
+ *  quick put-back in the order they were clicked. */
+const chains = new Map<string, Promise<unknown>>()
+/** The newest 'brief' event heard while a mark was in flight: it is very
+ *  likely the mark's own echo, which the POST's answer will already cover. */
+let held: { briefId: string; seq: number } | null = null
+let tokens = 0
+
+/** Lines whose last mark did not go through, by source key. Reactive, so a
+ *  row that remounted on its way back to its lane can still say so. */
+const failedMarks = new SvelteSet<string>()
+
+/** Whether the last mark on this line did not go through — the "That did not
+ *  go through" a row shows, including a row that remounted since it was
+ *  clicked (a marked card changes lanes at once, and a failed mark brings it
+ *  back as a new row). Cleared by the next mark on the line. Reactive. */
+export function briefMarkFailed(sourceKey: string): boolean {
+  return failedMarks.has(sourceKey)
+}
+
+function withPendingMarks(page: BriefResponse): BriefResponse {
+  let out = page
+  for (const [key, mark] of pending) out = withMark(out, key, mark.action, mark.at)
+  return out
+}
+
+/** The newer of two documents of one brief, by how far its log reaches. A
+ *  page read before a mark committed must not land over the page the mark's
+ *  answer carried: the log only grows, so a lower lastSeq is an older read.
+ *  A different brief (the day turned, the zone changed) always wins. */
+function newerPage(fresh: BriefResponse, cached: BriefResponse | undefined): BriefResponse {
+  if (!cached || 'absent' in cached || 'absent' in fresh) return fresh
+  return fresh.id === cached.id && fresh.lastSeq < cached.lastSeq ? cached : fresh
+}
+
+/** A 'brief' event the cache has not seen refetches it — once: the second
+ *  listener on the same event joins the fetch the first started rather than
+ *  cancelling it. */
+function refetchIfNews(qc: QueryClient, event: { briefId: string; seq: number }): void {
+  if (!briefEventIsNews(qc.getQueryData<BriefResponse>(BRIEF_KEY), event)) return
+  void qc.invalidateQueries({ queryKey: BRIEF_KEY }, { cancelRefetch: false })
+}
+
 export function useBrief() {
+  const qc = useQueryClient()
   return createQuery(() => ({
     queryKey: BRIEF_KEY,
-    queryFn: (): Promise<BriefResponse> =>
-      getJson<BriefResponse>(`/api/brief?tz=${encodeURIComponent(browserZone())}`),
+    queryFn: async (): Promise<BriefResponse> => {
+      const fresh = await getJson<BriefResponse>(`/api/brief?tz=${encodeURIComponent(browserZone())}`)
+      return withPendingMarks(newerPage(fresh, qc.getQueryData<BriefResponse>(BRIEF_KEY)))
+    },
     // A slow poll UNDER the realtime subscription, not instead of it. The
     // subscription is the fast path and covers everything that publishes; this
     // is the floor for a dropped SSE connection, a sleeping laptop, and the
@@ -73,13 +140,23 @@ export function useBrief() {
  *  would turn a busy afternoon of agent work into a poll. The subscription
  *  itself is the tab's ONE shared firehose (user-events.svelte), not a
  *  private stream — a dedicated Redis subscriber per surface was the cost of
- *  the old shape. */
+ *  the old shape.
+ *
+ *  THE ONE LISTENER THAT REFETCHES. The app-wide map only marks the page
+ *  stale for its next mount. An event the cached page already covers (its
+ *  lastSeq is at or past the event's) is dropped, and one that arrives while
+ *  a check-off is in flight waits for the POST's answer, which carries the
+ *  page — that event is almost always the click's own echo. */
 export function useBriefLive(): void {
   const qc = useQueryClient()
   $effect(() =>
     onUserEvent((event) => {
       if (event.type !== 'brief') return
-      void qc.invalidateQueries({ queryKey: BRIEF_KEY })
+      if (pending.size > 0) {
+        if (!held || held.briefId !== event.briefId || held.seq < event.seq) held = { briefId: event.briefId, seq: event.seq }
+        return
+      }
+      refetchIfNews(qc, event)
     }),
   )
 }
@@ -124,17 +201,52 @@ export function useBriefActions() {
     },
     /** The owner's own verdict on a line: done, not needed, or put it back.
      *
-     *  Awaited so the refetch lands before the caller clears its busy state —
-     *  a strike-through that appears a beat after the spinner stops reads as
-     *  the click not having worked. */
-    async markItem(sourceKey: string, action: 'check' | 'dismiss' | 'restore'): Promise<boolean> {
+     *  OPTIMISTIC. The line is struck through (or put back) in the cache at
+     *  once, with the row the server is about to write — the card moves lanes
+     *  on the click, not after a round trip. The POST's answer carries the
+     *  page as GET would serve it, and replaces the cache: one request per
+     *  click, no refetch. A failed POST puts the line back as it was,
+     *  refetches, records the failure (`briefMarkFailed`), and resolves false. */
+    async markItem(sourceKey: string, action: BriefMarkAction): Promise<boolean> {
+      const mark: PendingMark = { token: ++tokens, action, at: new Date().toISOString() }
+      failedMarks.delete(sourceKey)
+      // A read already in flight was made before this click; its answer must
+      // not land over the mark.
+      void qc.cancelQueries({ queryKey: BRIEF_KEY })
+      const before = qc.getQueryData<BriefResponse>(BRIEF_KEY)
+      pending.set(sourceKey, mark)
+      if (before) qc.setQueryData<BriefResponse>(BRIEF_KEY, withMark(before, sourceKey, action, mark.at))
+
+      const prior = chains.get(sourceKey) ?? Promise.resolve()
+      const post = prior.then(() => postJson<BriefMarkAnswer>('/api/brief/item', { sourceKey, action, tz: browserZone() }))
+      const done = post.catch(() => null)
+      chains.set(sourceKey, done)
+      let answer: BriefMarkAnswer | null = null
       let ok = true
       try {
-        await postJson('/api/brief/item', { sourceKey, action, tz: browserZone() })
+        answer = await post
       } catch {
         ok = false
       }
-      await refresh()
+      if (chains.get(sourceKey) === done) chains.delete(sourceKey)
+      if (pending.get(sourceKey)?.token === mark.token) pending.delete(sourceKey)
+
+      if (ok && answer?.brief) {
+        qc.setQueryData<BriefResponse>(BRIEF_KEY, withPendingMarks(answer.brief))
+      } else if (ok) {
+        void refresh()
+      } else {
+        failedMarks.add(sourceKey)
+        const now = qc.getQueryData<BriefResponse>(BRIEF_KEY)
+        const restored = now ? withLineFrom(now, before, sourceKey) : before
+        if (restored) qc.setQueryData<BriefResponse>(BRIEF_KEY, withPendingMarks(restored))
+        void refresh()
+      }
+      if (pending.size === 0 && held) {
+        const event = held
+        held = null
+        refetchIfNews(qc, event)
+      }
       return ok
     },
     /** Hand a conversation to the assistant, or take it back. */

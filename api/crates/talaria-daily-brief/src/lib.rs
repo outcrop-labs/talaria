@@ -713,7 +713,40 @@ async fn snapshot(
 
 // ── The single writer ────────────────────────────────────────────────────────
 
-async fn append_entries(
+/// The append's one INSERT: every row of the batch from parallel arrays, its
+/// seqs `$2 + 1 ..= $2 + n` in array order, read back oldest first. The jsonb
+/// columns ride as text and are cast here, so every array is a plain text[].
+const APPEND_SQL: &str = "with ins as ( \
+       insert into daily_brief_entries \
+         (brief_id, seq, batch, kind, section, source_key, source_type, source_id, source_href, \
+          fingerprint, supersedes, priority, status_label, badge, title, body, evidence) \
+       select $1::uuid, $2::int + r.ord::int, $3::uuid, r.kind, r.section, r.source_key, \
+              r.source_type, r.source_id, r.source_href, r.fingerprint, r.supersedes::uuid, \
+              r.priority, r.status_label, r.badge::jsonb, r.title, r.body, r.evidence::jsonb \
+         from unnest($4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], \
+                     $10::text[], $11::text[], $12::text[], $13::text[], $14::text[], $15::text[], \
+                     $16::text[], $17::text[]) \
+              with ordinality as r(kind, section, source_key, source_type, source_id, source_href, \
+                                   fingerprint, supersedes, priority, status_label, badge, title, \
+                                   body, evidence, ord) \
+       returning ";
+
+/// Append a batch to a brief's log: the one way content reaches it.
+///
+/// ONE COMMIT PER APPEND. The seq claim and every row of the batch are one
+/// transaction — the claim's UPDATE, then a single multi-row INSERT — so a
+/// check-off is one commit rather than two, and a sweep's batch of N is one
+/// rather than N+1. On a disk where a commit waits on a slow flush that count
+/// is most of what the person waits for. It is also the stronger guarantee:
+/// a batch lands whole or not at all, where row-by-row could leave a claimed
+/// seq range half filled.
+///
+/// The mirror and the realtime nudge happen after the commit, never inside
+/// it — both are derived, and neither may hold the log's transaction open.
+///
+/// Public for the live proof (api/tests/it/brief_append_live.rs); the engine's
+/// own open, sweep and mark are its only callers in the product.
+pub async fn append_entries(
     deps: &BriefDeps,
     brief_id: &str,
     user_id: &str,
@@ -723,74 +756,86 @@ async fn append_entries(
         return Ok(Vec::new());
     }
     let count = rows.len() as i64;
+    // One id for this whole append. Minted here rather than defaulted in the
+    // schema because the batch IS this call — a per-row default would give
+    // every row its own and the timeline would be a flat list again.
+    let batch = Uuid::new_v4().to_string();
 
+    // The batch as columns, in row order — the order the seqs follow.
+    let col = |f: fn(&NewEntry) -> Option<String>| rows.iter().map(f).collect::<Vec<_>>();
+    let kinds = col(|r| Some(r.kind.clone()));
+    let sections = col(|r| Some(r.section.clone()));
+    let source_keys = col(|r| r.source_key.clone());
+    let source_types = col(|r| r.source_type.clone());
+    let source_ids = col(|r| r.source_id.clone());
+    let source_hrefs = col(|r| r.source_href.clone());
+    let fingerprints = col(|r| r.fingerprint.clone());
+    let supersedes = col(|r| r.supersedes.clone());
+    let priorities = col(|r| r.priority.clone());
+    let status_labels = col(|r| r.status_label.clone());
+    let badges = col(|r| r.badge.as_ref().map(Value::to_string));
+    let titles = col(|r| Some(r.title.clone()));
+    let bodies = col(|r| Some(r.body.clone()));
+    let evidence = col(|r| Some(r.evidence.to_string()));
+
+    let mut tx = deps
+        .state
+        .pg
+        .begin()
+        .await
+        .map_err(|e| format!("append begin: {e}"))?;
     let end: Option<i64> = sqlx::query_scalar(
         "update daily_briefs set last_seq = last_seq + $2::int where id = $1::uuid returning last_seq::int8",
     )
     .bind(brief_id)
     .bind(count)
-    .fetch_optional(&deps.state.pg)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| format!("seq claim: {e}"))?;
     let Some(end) = end else {
         return Err("brief disappeared while appending".into());
     };
     let start = end - count;
-    // One id for this whole append. Minted here rather than defaulted in the
-    // schema because the batch IS this call — a per-row default would give
-    // every row its own and the timeline would be a flat list again.
-    let batch = Uuid::new_v4().to_string();
 
-    let mut inserted: Vec<BriefEntry> = Vec::new();
-    for (i, row) in rows.iter().enumerate() {
-        // AssertSqlSafe: the interpolation is ENTRY_COLS, this module's list.
-        let sql = format!(
-            "insert into daily_brief_entries \
-               (brief_id, seq, batch, kind, section, source_key, source_type, source_id, source_href, \
-                fingerprint, supersedes, priority, status_label, badge, title, body, evidence) \
-             values ($1::uuid, $2, $3::uuid, $4, $5, $6, $7, $8, $9, $10, $11::uuid, $12, $13, $14, $15, $16, $17) \
-             returning {ENTRY_COLS}"
-        );
-        let out: Option<EntryRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
-            .bind(brief_id)
-            .bind(start + i as i64 + 1)
-            .bind(&batch)
-            .bind(&row.kind)
-            .bind(&row.section)
-            .bind(&row.source_key)
-            .bind(&row.source_type)
-            .bind(&row.source_id)
-            .bind(&row.source_href)
-            .bind(&row.fingerprint)
-            .bind(&row.supersedes)
-            .bind(&row.priority)
-            .bind(&row.status_label)
-            .bind(&row.badge)
-            .bind(&row.title)
-            .bind(&row.body)
-            .bind(&row.evidence)
-            .fetch_optional(&deps.state.pg)
-            .await
-            .map_err(|e| format!("entry insert: {e}"))?;
-        if let Some(out) = out {
-            inserted.push(BriefEntry::from(out));
-        }
-    }
+    // AssertSqlSafe: the interpolations are APPEND_SQL and ENTRY_COLS, this
+    // module's own statement and column list.
+    let sql = format!("{APPEND_SQL}{ENTRY_COLS}) select * from ins order by seq");
+    let out: Vec<EntryRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(brief_id)
+        .bind(start)
+        .bind(&batch)
+        .bind(&kinds)
+        .bind(&sections)
+        .bind(&source_keys)
+        .bind(&source_types)
+        .bind(&source_ids)
+        .bind(&source_hrefs)
+        .bind(&fingerprints)
+        .bind(&supersedes)
+        .bind(&priorities)
+        .bind(&status_labels)
+        .bind(&badges)
+        .bind(&titles)
+        .bind(&bodies)
+        .bind(&evidence)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| format!("entry insert: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("append commit: {e}"))?;
+    let inserted: Vec<BriefEntry> = out.into_iter().map(BriefEntry::from).collect();
 
     // The mirror and the nudge are both DERIVED, so neither may take the append
     // down with it. A brief whose artifact failed to re-render is a brief with
     // a stale share link; a brief that failed to append is a brief that lost a
-    // day.
-    {
-        let pg = deps.state.pg.clone();
-        let brief_id = brief_id.to_string();
-        let user_id = user_id.to_string();
-        tokio::spawn(async move {
-            if let Err(e) = artifact::mirror_brief_artifact(&pg, &brief_id, &user_id).await {
-                tracing::error!("[daily-brief] artifact mirror failed for {brief_id}: {e}");
-            }
-        });
-    }
+    // day. The mirror is coalesced per brief: a burst of appends re-renders
+    // once more after the one in flight, not once per append.
+    artifact::mirror_brief_artifact_soon(
+        deps.state.pg.clone(),
+        brief_id.to_string(),
+        user_id.to_string(),
+    );
     publish_user(
         &deps.realtime,
         user_id,
@@ -1077,7 +1122,94 @@ pub struct SweepResult {
     pub resolved: usize,
 }
 
-/// Recompute the sources and append what moved. NEVER rewrites.
+/// Who is asking for a sweep. The two differ only in how early the claim
+/// counts the brief as due (`sweep_window_ms`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sweeper {
+    /// The scheduled pass, on its five-minute tick.
+    Job,
+    /// A reader's GET, which sweeps first only when the job has fallen behind.
+    Read,
+}
+
+/// How far short of `sweep_minutes` the JOB may claim a brief.
+///
+/// The claim is stamped with the tick's own instant, and two ticks are five
+/// minutes apart only to within the scheduler's jitter: the instant is read
+/// after the Redis lease answers, so a tick whose lease came back a few ms
+/// faster than the last one's reads as 4:59.99 later — and an exact window
+/// would skip that tick and put the cadence back to every ten minutes, the
+/// bug the claim exists to fix. A minute is far above any jitter and far
+/// below the tick. A reader gets no slack: it sweeps only once a full window
+/// has passed, which is to say only when the job is late.
+const JOB_TICK_SLACK_MS: i64 = 60_000;
+
+/// The age a brief's last claim must reach before `by` may sweep it again.
+fn sweep_window_ms(config: &BriefConfig, by: Sweeper) -> i64 {
+    let full = config.sweep_minutes * 60_000;
+    match by {
+        Sweeper::Job => (full - JOB_TICK_SLACK_MS).max(0),
+        Sweeper::Read => full,
+    }
+}
+
+/// Claim the brief for a sweep stamped `at_ms`, or learn that someone else
+/// holds it. A compare-and-set on `last_swept_at`, taken BEFORE the sweep
+/// starts, so it is also the single-flight guard: a second sweep of the same
+/// brief — another reader, the job, another instance — finds a fresh stamp
+/// and backs off instead of running the sources, the drafts and the model
+/// note a second time and appending the same lines twice. Two concurrent
+/// claims serialize on the row lock, and the loser re-reads the winner's
+/// stamp, so exactly one of them gets the row.
+///
+/// Stamped with the CALLER'S instant (the tick's `now_ms`, a reader's wall
+/// clock), not `now()` at the end of the work: a sweep that took thirty
+/// seconds used to push its own next turn thirty seconds past the next tick,
+/// so the job swept each brief every other tick, and a read found one due
+/// half the time.
+async fn claim_sweep(
+    pg: &PgPool,
+    brief_id: &str,
+    at_ms: i64,
+    window_ms: i64,
+) -> Result<bool, sqlx::Error> {
+    let claimed: Option<i32> = sqlx::query_scalar(
+        "update daily_briefs set last_swept_at = to_timestamp($2::float8 / 1000) \
+          where id = $1::uuid \
+            and (last_swept_at is null \
+                 or last_swept_at <= to_timestamp(($2::float8 - $3::float8) / 1000)) \
+          returning 1",
+    )
+    .bind(brief_id)
+    .bind(at_ms as f64)
+    .bind(window_ms as f64)
+    .fetch_optional(pg)
+    .await?;
+    Ok(claimed.is_some())
+}
+
+/// Hand a claim back after a sweep that failed: the stamp returns to what it
+/// was, so the next read or tick retries exactly as it did before the claim
+/// existed (a failed sweep never stamped). Only while the stamp is still this
+/// claim's — a later claim is somebody else's and stays.
+async fn release_sweep(pg: &PgPool, brief_id: &str, at_ms: i64, previous_ms: Option<i64>) {
+    let released = sqlx::query(
+        "update daily_briefs set last_swept_at = to_timestamp($3::float8 / 1000) \
+          where id = $1::uuid and last_swept_at = to_timestamp($2::float8 / 1000)",
+    )
+    .bind(brief_id)
+    .bind(at_ms as f64)
+    .bind(previous_ms.map(|ms| ms as f64))
+    .execute(pg)
+    .await;
+    if let Err(e) = released {
+        tracing::error!("[daily-brief] releasing the sweep claim on {brief_id} failed: {e}");
+    }
+}
+
+/// Recompute the sources and append what moved. NEVER rewrites. The
+/// scheduled pass's sweep: claims the brief first (see `claim_sweep`) and
+/// does nothing when the claim is refused.
 ///
 /// Three verbs and one refusal:
 ///   · a key the log has never seen         → append 'item'
@@ -1096,19 +1228,48 @@ pub async fn sweep_brief(
     user: &BriefUser,
     at_ms: i64,
 ) -> Result<SweepResult, String> {
-    let none = SweepResult::default();
-    let config = brief_config(&deps.state.pg).await;
-    let stored = get_timezone(&deps.state.pg, &user.id)
+    Ok(claim_and_sweep(deps, user, at_ms, Sweeper::Job)
+        .await?
+        .unwrap_or_default())
+}
+
+/// Find the person's brief for `at_ms`, claim it for `by`, and sweep it.
+/// None means no sweep ran: no row, birth in flight, or the claim refused —
+/// another sweep holds the brief, or one already ran inside the window.
+async fn claim_and_sweep(
+    deps: &BriefDeps,
+    user: &BriefUser,
+    at_ms: i64,
+    by: Sweeper,
+) -> Result<Option<SweepResult>, String> {
+    let pg = &deps.state.pg;
+    let config = brief_config(pg).await;
+    let stored = get_timezone(pg, &user.id)
         .await
         .map_err(|e| format!("timezone read: {e}"))?;
     let zone = zone_for(stored.as_deref(), &config.time_zone);
     let date = brief_window(&config, &zone, at_ms).date;
-    let Some(row) = load_row(&deps.state.pg, &user.id, &date)
+    let Some(row) = load_row(pg, &user.id, &date)
         .await
         .map_err(|e| format!("brief read: {e}"))?
     else {
-        return Ok(none);
+        return Ok(None);
     };
+    sweep_row_if_due(deps, user, &config, &zone, &row, at_ms, by).await
+}
+
+/// The sweep of a brief row already in hand, when it is due for `by` and the
+/// claim is won. Shared by the scheduled pass (which has the row from its own
+/// read) and `claim_and_sweep`.
+async fn sweep_row_if_due(
+    deps: &BriefDeps,
+    user: &BriefUser,
+    config: &BriefConfig,
+    zone: &str,
+    row: &BriefRow,
+    at_ms: i64,
+    by: Sweeper,
+) -> Result<Option<SweepResult>, String> {
     // NOT DURING BIRTH. A row with last_seq === 0 is an open mid-flight — the
     // lede and first items have not landed — and a sweep that ran now would
     // race the open's own append: the same source keys written twice, a lede
@@ -1116,12 +1277,42 @@ pub async fn sweep_brief(
     // owns the document until its first batch lands; sweeps are for following
     // one that exists.
     if row.last_seq == 0 {
-        return Ok(none);
+        return Ok(None);
     }
+    let window_ms = sweep_window_ms(config, by);
+    // The cheap refusal first: a brief swept inside the window costs no
+    // write. The claim below is the real decision.
+    if !sweep_due(row.last_swept_ms, window_ms, at_ms) {
+        return Ok(None);
+    }
+    // CLAIMED BEFORE ANY WORK. See `claim_sweep`: one sweep at a time per
+    // brief, stamped with this caller's instant.
+    let pg = &deps.state.pg;
+    let claimed = claim_sweep(pg, &row.id, at_ms, window_ms)
+        .await
+        .map_err(|e| format!("sweep claim: {e}"))?;
+    if !claimed {
+        return Ok(None);
+    }
+    let result = sweep_claimed(deps, user, row, zone, at_ms).await;
+    if result.is_err() {
+        release_sweep(pg, &row.id, at_ms, row.last_swept_ms).await;
+    }
+    result.map(Some)
+}
 
+/// The sweep itself, on a brief this caller has claimed.
+async fn sweep_claimed(
+    deps: &BriefDeps,
+    user: &BriefUser,
+    row: &BriefRow,
+    zone: &str,
+    at_ms: i64,
+) -> Result<SweepResult, String> {
+    let none = SweepResult::default();
     let (entries, first) = tokio::join!(
         load_brief_entries(&deps.state.pg, &row.id),
-        snapshot(&deps.state, user, &zone, row.agent_model.as_deref(), at_ms),
+        snapshot(&deps.state, user, zone, row.agent_model.as_deref(), at_ms),
     );
     let entries = entries.map_err(|e| format!("entries read: {e}"))?;
 
@@ -1143,7 +1334,7 @@ pub async fn sweep_brief(
             0
         }
     };
-    let fresh_drafts = match draft_pending(deps, user, &row, &first.comms).await {
+    let fresh_drafts = match draft_pending(deps, user, row, &first.comms).await {
         Ok(n) => n,
         Err(e) => {
             tracing::error!("[daily-brief] drafting replies failed for {}: {e}", user.id);
@@ -1152,7 +1343,7 @@ pub async fn sweep_brief(
     };
     let drafted = released + fresh_drafts;
     let second = if drafted > 0 {
-        Some(snapshot(&deps.state, user, &zone, row.agent_model.as_deref(), at_ms).await)
+        Some(snapshot(&deps.state, user, zone, row.agent_model.as_deref(), at_ms).await)
     } else {
         None
     };
@@ -1306,11 +1497,9 @@ pub async fn sweep_brief(
         resolved_count += 1;
     }
 
+    // Nothing moved. The claim already stamped this sweep; there is nothing
+    // else to write.
     if appends.is_empty() {
-        let _ = sqlx::query("update daily_briefs set last_swept_at = now() where id = $1::uuid")
-            .bind(&row.id)
-            .execute(&deps.state.pg)
-            .await;
         return Ok(none);
     }
 
@@ -1319,17 +1508,13 @@ pub async fn sweep_brief(
     // the whole document — because a note is about the change, and handing it
     // the day so far is how a delta line turns into a second, competing
     // summary.
-    let note = write_note(deps, &row, &appends).await.unwrap_or(None);
+    let note = write_note(deps, row, &appends).await.unwrap_or(None);
     let mut to_append: Vec<NewEntry> = Vec::with_capacity(appends.len() + 1);
     if let Some(note) = note {
         to_append.push(note);
     }
     to_append.extend(appends);
     let written = append_entries(deps, &row.id, &user.id, to_append).await?;
-    let _ = sqlx::query("update daily_briefs set last_swept_at = now() where id = $1::uuid")
-        .bind(&row.id)
-        .execute(&deps.state.pg)
-        .await;
     Ok(SweepResult {
         appended: written.len(),
         added,
@@ -1640,29 +1825,18 @@ pub async fn get_brief(
 /// latency is visible, and sweeping afterwards would hand them the stale page
 /// and the fresh one a realtime nudge later — a document that visibly rewrites
 /// itself on arrival, which is the exact impression an append-only brief must
-/// never give. None means "nothing to do" (no row, birth in flight, or the
-/// throttle refusing); the route logs an Err and reads anyway.
+/// never give. None means "nothing to do" (no row, birth in flight, the
+/// throttle refusing, or another sweep holding the claim); the route logs an
+/// Err and reads anyway.
+///
+/// With the job claiming every brief on every tick, a read finds one due only
+/// when the job has fallen a full window behind — a missed tick, a deploy, a
+/// pass still running. That is the case this keeps.
 pub async fn sweep_if_due(
     deps: &BriefDeps,
     user: &BriefUser,
 ) -> Result<Option<SweepResult>, String> {
-    let at = wall_ms();
-    let config = brief_config(&deps.state.pg).await;
-    let stored = get_timezone(&deps.state.pg, &user.id)
-        .await
-        .map_err(|e| format!("timezone read: {e}"))?;
-    let zone = zone_for(stored.as_deref(), &config.time_zone);
-    let date = brief_window(&config, &zone, at).date;
-    let row = load_row(&deps.state.pg, &user.id, &date)
-        .await
-        .map_err(|e| format!("brief read: {e}"))?;
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    if row.last_seq == 0 || !sweep_due(&row, &config, at) {
-        return Ok(None);
-    }
-    sweep_brief(deps, user, at).await.map(Some)
+    claim_and_sweep(deps, user, wall_ms(), Sweeper::Read).await
 }
 
 /// Move the reader's cursor. The only update this feature performs on a brief,
@@ -1950,14 +2124,14 @@ pub async fn run_brief_pass(deps: &BriefDeps) -> BriefPassResult {
                 }
             }
             Ok(Some(row)) => {
-                if !sweep_due(&row, &config, deps.now_ms) {
-                    continue;
-                }
-                match sweep_brief(deps, &user, deps.now_ms).await {
-                    Ok(swept) => {
+                match sweep_row_if_due(deps, &user, &config, &zone, &row, deps.now_ms, Sweeper::Job)
+                    .await
+                {
+                    Ok(Some(swept)) => {
                         result.swept += 1;
                         result.appended += swept.appended;
                     }
+                    Ok(None) => {}
                     Err(e) => {
                         result.failed += 1;
                         tracing::error!("[daily-brief] pass failed for {}: {e}", user.id);
@@ -1969,9 +2143,13 @@ pub async fn run_brief_pass(deps: &BriefDeps) -> BriefPassResult {
     result
 }
 
-fn sweep_due(row: &BriefRow, config: &BriefConfig, at_ms: i64) -> bool {
-    row.last_swept_ms
-        .map(|ms| at_ms - ms >= config.sweep_minutes * 60_000)
+/// Whether a brief last claimed at `last_swept_ms` may be swept at `at_ms`
+/// by a sweeper whose window is `window_ms` (`sweep_window_ms`). Never swept
+/// is always due. The same test the claim's WHERE makes in SQL, read first so
+/// a brief inside its window costs no write at all.
+fn sweep_due(last_swept_ms: Option<i64>, window_ms: i64, at_ms: i64) -> bool {
+    last_swept_ms
+        .map(|ms| at_ms - ms >= window_ms)
         .unwrap_or(true)
 }
 
@@ -2278,32 +2456,66 @@ mod tests {
         assert_eq!(row.last_seq, 0);
     }
 
-    #[test]
-    fn sweep_due_reads_the_throttle_honestly() {
-        let config = BriefConfig {
+    fn five_minute_config() -> BriefConfig {
+        BriefConfig {
             workday_start_hour: 9,
             lead_hours: 2,
             time_zone: "UTC".into(),
             sweep_minutes: 5,
-        };
-        let row = |swept: Option<i64>| BriefRow {
-            id: "b".into(),
-            user_id: "u".into(),
-            brief_date: "2026-08-29".into(),
-            zone: "UTC".into(),
-            agent_model: None,
-            agent_name: None,
-            artifact_id: None,
-            last_seq: 1,
-            read_seq: 0,
-            last_swept_ms: swept,
-            created_ms: 0,
-        };
+        }
+    }
+
+    #[test]
+    fn sweep_due_reads_the_throttle_honestly() {
+        let config = five_minute_config();
+        let read = sweep_window_ms(&config, Sweeper::Read);
         let now = 1_790_481_420_000;
-        assert!(sweep_due(&row(None), &config, now));
-        assert!(!sweep_due(&row(Some(now - 60_000)), &config, now));
+        assert!(sweep_due(None, read, now));
+        assert!(!sweep_due(Some(now - 60_000), read, now));
         // Exactly at the throttle still sweeps — the test is >=.
-        assert!(sweep_due(&row(Some(now - 300_000)), &config, now));
+        assert!(sweep_due(Some(now - 300_000), read, now));
+    }
+
+    // THE CADENCE. The job claims a brief with its tick's own instant, so the
+    // next tick five minutes later finds it due however long the sweep took.
+    // Stamping `now()` at the END of the work — the old shape — moved the
+    // stamp past the tick by the sweep's own duration, the next tick found it
+    // four and a half minutes old, and every brief was swept every other tick.
+    #[test]
+    fn the_job_sweeps_every_tick_however_long_the_last_sweep_ran() {
+        let config = five_minute_config();
+        let job = sweep_window_ms(&config, Sweeper::Job);
+        let tick = 1_790_481_420_000;
+        let sweep_ran_ms = 30_000;
+        let next_tick = tick + 5 * 60_000;
+        // Claimed at tick T: due at T + 5 min, the sweep's 30 s irrelevant.
+        assert!(sweep_due(Some(tick), job, next_tick));
+        // A tick whose clock read a few ms early is still due — the slack.
+        assert!(sweep_due(Some(tick), job, next_tick - 20));
+        // The old end-of-sweep stamp, read with the full window, was not.
+        let full = config.sweep_minutes * 60_000;
+        assert!(!sweep_due(Some(tick + sweep_ran_ms), full, next_tick));
+        // And the job never sweeps twice inside one tick.
+        assert!(!sweep_due(Some(tick), job, tick + 60_000));
+    }
+
+    // A READER sweeps first only when the job is a full window behind; inside
+    // the window the job's last claim stands.
+    #[test]
+    fn a_reader_sweeps_only_when_the_job_is_late() {
+        let config = five_minute_config();
+        let read = sweep_window_ms(&config, Sweeper::Read);
+        let tick = 1_790_481_420_000;
+        assert!(!sweep_due(Some(tick), read, tick + 4 * 60_000));
+        assert!(!sweep_due(Some(tick), read, tick + 5 * 60_000 - 1));
+        assert!(sweep_due(Some(tick), read, tick + 5 * 60_000));
+        // The job's slack never goes below zero, whatever the config says.
+        let one_minute = BriefConfig {
+            sweep_minutes: 1,
+            ..five_minute_config()
+        };
+        assert_eq!(sweep_window_ms(&one_minute, Sweeper::Job), 0);
+        assert_eq!(sweep_window_ms(&one_minute, Sweeper::Read), 60_000);
     }
 
     // THE CROSS-DAY SUPPRESSION, as its one decision reads. Every assertion

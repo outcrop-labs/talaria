@@ -28,6 +28,7 @@ import { browserLeaderEdges, startNotifyLeader, type NotifyLeader } from '@/lib/
 import { clientId, remintClientId } from '@/lib/notify-presence'
 import { noteStreamEvent, setHubRole, setStreamState } from '@/lib/notify-status.svelte'
 import type { PresenceEvent, ResyncEvent, SessionEvent } from './notify-wire'
+import { briefEventIsNews, type BriefResponse } from './daily-brief-types'
 
 /** The wire's id-shaped events — camelCase, tagged `type`, nothing else. The
  *  contract's additions (notify-wire.ts) are optional fields on two of them
@@ -399,7 +400,15 @@ export function useUserEventInvalidation(): void {
           if (designRunIs(qc, event.runId)) void qc.invalidateQueries({ queryKey: ['agent-design'] })
           break
         case 'brief':
-          void qc.invalidateQueries({ queryKey: ['daily-brief'] })
+          // MARKED STALE HERE, REFETCHED THERE. The mounted brief has its own
+          // listener (useBriefLive), the one that refetches — after dropping
+          // an event its page already covers and holding one that lands
+          // while a check-off is in flight. Two listeners that both refetched
+          // cancelled and restarted each other's GET on every event. This one
+          // only makes sure a page nobody has mounted reads fresh next time.
+          if (briefEventIsNews(qc.getQueryData<BriefResponse>(['daily-brief']), event)) {
+            void qc.invalidateQueries({ queryKey: ['daily-brief'], refetchType: 'none' })
+          }
           break
         case 'session':
           // The api ended the stream because the session behind it ended (a

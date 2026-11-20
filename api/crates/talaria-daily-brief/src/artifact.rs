@@ -8,14 +8,18 @@
 // Rewriting the body wholesale from the log on every append is boring and
 // correct, and it costs one UPDATE.
 //
-// IT IS ALSO WHY NOTHING WAITS ON IT. `append_entries` fires this detached and
-// logs a failure: a brief whose artifact did not re-render is a brief with a
-// stale share link, which is recoverable on the next append. A brief that
-// failed to append has lost part of somebody's day, which is not.
+// IT IS ALSO WHY NOTHING WAITS ON IT. `append_entries` fires this detached
+// (through `mirror_brief_artifact_soon`, which coalesces a burst) and logs a
+// failure: a brief whose artifact did not re-render is a brief with a stale
+// share link, which is recoverable on the next append. A brief that failed to
+// append has lost part of somebody's day, which is not.
 //
 // VERSIONS COME FREE. `save_artifact` snapshots into `internal_versions` on
 // every body change, so the artifact's history is a rough record of how the day
 // accumulated — a second, human-shareable view of the same append-only shape.
+
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
 
 use sqlx::PgPool;
 
@@ -48,6 +52,79 @@ type MirrorRow = (
     Option<String>,
     Option<String>,
 );
+
+/// Mirrors in flight in this process, by brief id. The value is the DIRTY
+/// flag: an append landed while that brief's mirror was rendering.
+static MIRRORS: LazyLock<Mutex<HashMap<String, bool>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Re-render the brief's artifact soon, detached, at most one at a time per
+/// brief.
+///
+/// COALESCED, because every render reads the whole log: an append that lands
+/// while one is in flight only marks the brief dirty, and the render in
+/// flight goes round once more when it finishes. A burst of check-offs costs
+/// the render already running plus one, not one per click — each of which
+/// was four or five more commits (the folder, the title, the body, the
+/// version snapshot) queued behind the person's next click on a slow disk.
+/// The last render always reads the log after the last append, so the shared
+/// document ends in the same state it always did.
+pub fn mirror_brief_artifact_soon(pg: PgPool, brief_id: String, user_id: String) {
+    {
+        let mut inflight = MIRRORS.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(dirty) = inflight.get_mut(&brief_id) {
+            *dirty = true;
+            return;
+        }
+        inflight.insert(brief_id.clone(), false);
+    }
+    tokio::spawn(async move {
+        // A render that panics must not leave the brief marked in flight for
+        // the life of the process — every later append would only mark it
+        // dirty and nothing would ever render it again.
+        let mut held = InFlight(Some(brief_id.clone()));
+        loop {
+            if let Err(e) = mirror_brief_artifact(&pg, &brief_id, &user_id).await {
+                tracing::error!("[daily-brief] artifact mirror failed for {brief_id}: {e}");
+            }
+            // Decided and released under ONE lock: an append that lands between
+            // "not dirty" and the removal would otherwise mark a brief nobody
+            // is rendering any more, and its render would be lost.
+            let again = {
+                let mut inflight = MIRRORS.lock().unwrap_or_else(|p| p.into_inner());
+                match inflight.get_mut(&brief_id) {
+                    Some(dirty) if *dirty => {
+                        *dirty = false;
+                        true
+                    }
+                    _ => {
+                        inflight.remove(&brief_id);
+                        false
+                    }
+                }
+            };
+            if !again {
+                held.0 = None;
+                break;
+            }
+        }
+    });
+}
+
+/// Clears a brief's in-flight mark if its render task ends without doing so
+/// itself (a panic). The ordinary exit clears it under the lock and disarms.
+struct InFlight(Option<String>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Some(id) = self.0.take() {
+            MIRRORS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&id);
+        }
+    }
+}
 
 /// Re-render the brief's artifact from the log. Creates it on first append.
 /// Failures are the caller's to log — this returns them instead of printing,
