@@ -1,0 +1,80 @@
+{
+  "tasks": [
+    {
+      "id": "86a1b2c3d",
+      "custom_id": "PROJ-7",
+      "name": "Ship the importer",
+      "text_content": "Bold plan",
+      "description": "Bold plan",
+      "markdown_description": "**Bold** plan",
+      "status": { "status": "in progress", "color": "#4194f6", "orderindex": 1, "type": "custom" },
+      "orderindex": "1.00000000000000000000000000000000",
+      "date_created": "1764000000000",
+      "date_updated": "1766000000000",
+      "date_closed": null,
+      "date_done": null,
+      "archived": false,
+      "creator": { "id": 183, "username": "Dana Reyes", "color": "#827718", "email": "dana@example.com", "profilePicture": null },
+      "assignees": [
+        { "id": 183, "username": "Dana Reyes", "color": "#827718", "initials": "DR", "email": "Dana@Example.com", "profilePicture": null }
+      ],
+      "watchers": [],
+      "checklists": [],
+      "tags": [
+        { "name": "backend", "tag_fg": "#fff", "tag_bg": "#000", "creator": 183 },
+        { "name": "q4", "tag_fg": "#fff", "tag_bg": "#000", "creator": 183 }
+      ],
+      "parent": null,
+      "top_level_parent": null,
+      "priority": { "color": "#ffcc00", "id": "2", "orderindex": "2", "priority": "high" },
+      "due_date": "1767225600000",
+      "start_date": "1766000000000",
+      "points": null,
+      "time_estimate": null,
+      "custom_fields": [],
+      "list": { "id": "901100", "name": "Sprint board", "access": true },
+      "folder": { "id": "90110", "name": "hidden", "hidden": true, "access": true },
+      "space": { "id": "9011" },
+      "url": "https://app.clickup.com/t/86a1b2c3d"
+    },
+    {
+      "id": "86a1b2c3e",
+      "custom_id": null,
+      "name": "Old closed work",
+      "text_content": "",
+      "description": "",
+      "status": { "status": "complete", "color": "#6bc950", "orderindex": 3, "type": "closed" },
+      "date_created": "1760000000000",
+      "date_updated": "1761000000000",
+      "date_closed": "1761000000000",
+      "archived": false,
+      "creator": { "id": "184", "username": "Lee", "email": null },
+      "assignees": [],
+      "tags": [],
+      "parent": null,
+      "top_level_parent": null,
+      "priority": null,
+      "due_date": null,
+      "start_date": null,
+      "list": { "id": "901100" },
+      "url": "https://app.clickup.com/t/86a1b2c3e"
+    },
+    {
+      "id": "86a1b2c3f",
+      "custom_id": null,
+      "name": "A sub-task",
+      "status": { "status": "to do", "color": "#d3d3d3", "orderindex": 0, "type": "open" },
+      "date_created": "1765000000000",
+      "date_updated": "1765000000000",
+      "archived": false,
+      "assignees": [],
+      "tags": [],
+      "parent": "86a1b2c3e",
+      "top_level_parent": "86a1b2c3d",
+      "priority": { "id": "4", "priority": "low" },
+      "list": { "id": "901100" },
+      "url": "https://app.clickup.com/t/86a1b2c3f"
+    }
+  ],
+  "last_page": true
+}

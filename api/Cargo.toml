@@ -233,6 +233,7 @@ talaria-auth = { path = "crates/talaria-auth" }
 
 talaria-auth-config = { path = "crates/talaria-auth-config" }
 
+talaria-board-sync = { path = "crates/talaria-board-sync" }
 talaria-boards = { path = "crates/talaria-boards" }
 
 talaria-body = { path = "crates/talaria-body" }
@@ -257,6 +258,7 @@ talaria-chips = { path = "crates/talaria-chips" }
 
 talaria-claim = { path = "crates/talaria-claim" }
 
+talaria-clickup = { path = "crates/talaria-clickup" }
 talaria-coding-accounts = { path = "crates/talaria-coding-accounts" }
 
 talaria-collate = { path = "crates/talaria-collate" }
@@ -718,6 +720,7 @@ talaria-attribution = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-auth = { workspace = true }
 talaria-auth-config = { workspace = true }
+talaria-board-sync = { workspace = true }
 talaria-boards = { workspace = true }
 talaria-body = { workspace = true }
 talaria-brain-health = { workspace = true }
@@ -730,6 +733,7 @@ talaria-channels = { workspace = true }
 talaria-chat-persist = { workspace = true }
 talaria-chips = { workspace = true }
 talaria-claim = { workspace = true }
+talaria-clickup = { workspace = true }
 talaria-comms-decay = { workspace = true }
 talaria-config = { workspace = true }
 talaria-conversations = { workspace = true }

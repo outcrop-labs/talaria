@@ -375,6 +375,7 @@ pub async fn put(
         attachments,
         add_time_spent_seconds,
         status_note: None,
+        quiet: false,
     };
     let deps = TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     // A description that GAINS an @mention notifies the people it gains —

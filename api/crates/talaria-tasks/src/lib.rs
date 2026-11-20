@@ -61,7 +61,8 @@ const TASK_SELECT: &str = "select t.id::text as id, t.board_id::text as board_id
   (trunc(extract(epoch from t.updated_at) * 1000))::bigint as updated_at_ms, \
   (trunc(extract(epoch from t.completed_at) * 1000))::bigint as completed_at_ms, \
   (trunc(extract(epoch from t.approved_at) * 1000))::bigint as approved_at_ms, \
-  (trunc(extract(epoch from t.archived_at) * 1000))::bigint as archived_at_ms \
+  (trunc(extract(epoch from t.archived_at) * 1000))::bigint as archived_at_ms, \
+  t.external_key \
   from tasks t join boards b on b.id = t.board_id";
 
 /// The wide row exactly as selected. jsonb lands as `Value` and is typed
@@ -97,6 +98,7 @@ struct TaskRow {
     completed_at_ms: Option<i64>,
     approved_at_ms: Option<i64>,
     archived_at_ms: Option<i64>,
+    external_key: Option<String>,
 }
 
 impl From<TaskRow> for Task {
@@ -129,6 +131,7 @@ impl From<TaskRow> for Task {
             completed_at: r.completed_at_ms.map(epoch_ms_to_iso),
             approved_at: r.approved_at_ms.map(epoch_ms_to_iso),
             archived_at: r.archived_at_ms.map(epoch_ms_to_iso),
+            external_key: r.external_key,
         }
     }
 }
@@ -570,6 +573,9 @@ struct UpdateNotices {
     archived_now: bool,
     review_keys: Vec<String>,
     actor: String,
+    /// A mirrored write: the workchain hand-off and the review resolution
+    /// run, and no person is told.
+    quiet: bool,
 }
 
 /// Spawn everything `update_task` tells people, in one detached task — see
@@ -585,6 +591,7 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             archived_now,
             review_keys,
             actor,
+            quiet,
         } = n;
         let id = cur.id.clone();
         let href = format!("/boards/{}/{}", cur.board_id, id);
@@ -629,8 +636,14 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             // Watchers, assigned humans and the creator hear about status
             // moves (never the actor), and `ticket_audience` re-reads board
             // membership at this moment — the write-time checks are not
-            // enough, access changes after a watch is stored.
-            match ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await {
+            // enough, access changes after a watch is stored. A mirrored
+            // write tells nobody: the tracker it came from already did.
+            let audience = if quiet {
+                Ok(Vec::new())
+            } else {
+                ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await
+            };
+            match audience {
                 Ok(mut audience) => {
                     // ONE ACTION, ONE ROW. A person this same patch assigns is
                     // told by the `task-assigned` row below, so they leave
@@ -659,8 +672,8 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
                 Err(e) => tracing::error!("tasks: status audience read failed: {e}"),
             }
         }
-        // NEWLY added humans get an inbox nudge.
-        if !newly.is_empty() {
+        // NEWLY added humans get an inbox nudge (not on a mirrored write).
+        if !newly.is_empty() && !quiet {
             notify_task_users(
                 &deps.notify,
                 &newly,
@@ -902,6 +915,15 @@ pub struct NewTask<'a> {
     /// The column the creator put it in (a person's "add card" in a column);
     /// None is the board's intake. Never chosen by its assignees.
     pub status: Option<&'a str>,
+    /// The other tracker's id for this ticket (`clickup:<task id>`), written in
+    /// the same insert so the unique index makes a re-run update, never
+    /// duplicate. None for every ticket made in Talaria.
+    pub external_key: Option<&'a str>,
+    /// A MIRRORED create (a tracker sync): no `task-assigned` notice, no
+    /// per-ticket board event (the writer publishes one per batch), and no
+    /// TicketCreated to apps — the writer emits that itself when the
+    /// connection says apps should hear imported tickets.
+    pub quiet: bool,
 }
 
 /// The board's pickup column — `StatusMeta::assigned_key`, the first usable
@@ -999,9 +1021,9 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     let (id,): (String,) = sqlx::query_as(
         "insert into tasks (board_id, ticket_no, title, description, priority, effort, \
          assignees, due_date, start_date, color, estimated_hours, parent_id, tags, \
-         created_by, status) \
+         created_by, status, external_key) \
          values ($1::uuid, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, \
-         $11::numeric, $12::uuid, $13, $14, $15) returning id::text",
+         $11::numeric, $12::uuid, $13, $14, $15, $16) returning id::text",
     )
     .bind(input.board_id)
     .bind(ticket_no)
@@ -1018,6 +1040,7 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     .bind(serde_json::json!(input.tags))
     .bind(input.created_by)
     .bind(&status)
+    .bind(input.external_key)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1041,6 +1064,11 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     // starts nothing. Detached: the row is the record, the push is a
     // delivery.
     spawn_dispatch(deps, task.clone(), None);
+    // A mirrored create stops here: its people were told by the tracker it
+    // came from, and the sync publishes one board event per batch.
+    if input.quiet {
+        return Ok(task);
+    }
     // Apps whose triggers name it hear that a ticket exists — its id and its
     // board, never its text (talaria-platform-events).
     talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketCreated {
@@ -1648,6 +1676,7 @@ pub async fn update_task(
             archived_now: patch.archived == Some(true) && cur.archived_at.is_none(),
             review_keys: meta.review_keys.clone(),
             actor: who.id.clone(),
+            quiet: patch.quiet,
         },
     );
 
@@ -1846,15 +1875,18 @@ pub async fn update_task(
         };
         log_activity(pg, id, &who.id, "attachments", &what).await?;
     }
-    publish_board(
-        &deps.realtime,
-        &cur.board_id,
-        &BoardEvent {
-            kind_tag: "task",
-            task_id: Some(id.to_string()),
-            deleted: None,
-        },
-    );
+    // A mirrored write's board event is the writer's, one per batch.
+    if !patch.quiet {
+        publish_board(
+            &deps.realtime,
+            &cur.board_id,
+            &BoardEvent {
+                kind_tag: "task",
+                task_id: Some(id.to_string()),
+                deleted: None,
+            },
+        );
+    }
     get_task(pg, id).await.map_err(TaskError::Db)
 }
 

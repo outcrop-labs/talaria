@@ -1,0 +1,21 @@
+{
+  "id": "901100",
+  "name": "Sprint board",
+  "orderindex": 0,
+  "content": "",
+  "status": null,
+  "priority": null,
+  "assignee": null,
+  "task_count": 214,
+  "due_date": null,
+  "start_date": null,
+  "folder": { "id": "90110", "name": "hidden", "hidden": true, "access": true },
+  "space": { "id": "9011", "name": "Engineering", "access": true },
+  "archived": false,
+  "statuses": [
+    { "id": "p1", "status": "complete", "orderindex": 3, "color": "#6bc950", "type": "closed" },
+    { "id": "p2", "status": "to do", "orderindex": 0, "color": "#d3d3d3", "type": "open" },
+    { "id": "p3", "status": "in progress", "orderindex": 1, "color": "#4194f6", "type": "custom" },
+    { "id": "p4", "status": "qa", "orderindex": 2, "color": "#f9d900", "type": "custom" }
+  ]
+}

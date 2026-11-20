@@ -181,6 +181,11 @@ pub mod group_key {
     pub fn agent_design(design_id: &str) -> String {
         format!("agent-design:{design_id}")
     }
+    /// One board sync's health (a rejected credential, a failed run): a
+    /// second failure refreshes the open row instead of filing another.
+    pub fn board_sync(sync_id: &str) -> String {
+        format!("board-sync:{sync_id}")
+    }
 }
 
 /// The entity kinds a row can be about (the stored `entity_type`).
@@ -221,6 +226,7 @@ mod tests {
             "outreach:margaret:2026-10-31"
         );
         assert_eq!(group_key::agent_design("d1"), "agent-design:d1");
+        assert_eq!(group_key::board_sync("s1"), "board-sync:s1");
         assert_eq!(entity::AGENT_DESIGN, "agent_design");
         assert_eq!(
             [

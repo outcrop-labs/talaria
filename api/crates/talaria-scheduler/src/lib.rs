@@ -132,6 +132,10 @@ pub enum JobName {
     /// What each GitHub host's App asks for and what each installation has
     /// accepted (talaria-git-hosts' holdings record), read every ten minutes.
     GitHostHoldings,
+    /// The board syncs that are due (talaria-board-sync): enqueues one
+    /// `clickup-sync` run per due board, every minute. Required — a sync that
+    /// silently stops is the stale board this job exists to prevent.
+    BoardSync,
 }
 
 impl JobName {
@@ -167,6 +171,7 @@ impl JobName {
             JobName::HermesChannel => "hermes-channel",
             JobName::WorkbenchHarnessChannel => "workbench-harness-channel",
             JobName::GitHostHoldings => "git-host-holdings",
+            JobName::BoardSync => "board-sync",
         }
     }
 }
@@ -189,6 +194,7 @@ pub const REQUIRED_JOBS: &[JobName] = &[
     JobName::RunReclaim,
     JobName::DailyBrief,
     JobName::BlurbRewrite,
+    JobName::BoardSync,
 ];
 
 /// The work. `Ok(Some(sentence))` is a short human line for the log,
@@ -1248,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn the_required_table_is_the_eight_plus_the_new_sweep() {
+    fn the_required_table_is_the_eight_plus_the_new_sweep_and_the_board_sync() {
         let names: Vec<&str> = REQUIRED_JOBS.iter().map(|n| n.as_str()).collect();
         assert_eq!(
             names,
@@ -1262,6 +1268,7 @@ mod tests {
                 "run-reclaim",
                 "daily-brief",
                 "blurb-rewrite",
+                "board-sync",
             ]
         );
     }

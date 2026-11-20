@@ -1593,6 +1593,8 @@ mod live_db {
                     tags: &[],
                     created_by: &self.email,
                     status,
+                    external_key: None,
+                    quiet: false,
                 },
             )
             .await

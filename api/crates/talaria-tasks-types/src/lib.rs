@@ -133,6 +133,10 @@ pub struct Task {
     /// release ahead of it. A person moves it to done when it really is.
     pub approved_at: Option<String>,
     pub archived_at: Option<String>,
+    /// Where the ticket came from when another tracker made it — the board
+    /// sync's `clickup:<task id>` (talaria-board-sync). Null for every ticket
+    /// made in Talaria. Appended last on the wire.
+    pub external_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,6 +194,12 @@ pub struct TaskPatch {
     pub attachments: Option<serde_json::Value>,
     pub add_time_spent_seconds: Option<f64>,
     pub status_note: Option<String>,
+    /// A MIRRORED write — a tracker sync copying a change somebody already made
+    /// in the other tracker, where its own people were told. No person is told
+    /// again (the status and assignment notices are skipped; the workchain
+    /// hand-off and the review-approval resolution still run), and no
+    /// per-ticket board event goes out: the writer publishes one per batch.
+    pub quiet: bool,
 }
 
 pub async fn update_task(

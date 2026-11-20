@@ -2520,6 +2520,7 @@ mod tests {
             completed_at: None,
             approved_at: None,
             archived_at: None,
+            external_key: None,
         }
     }
 
