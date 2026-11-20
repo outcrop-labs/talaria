@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { afterEach, test, vi } from 'vitest'
 import {
   QUICK_PRESETS,
-  availableCadences,
   availableEvents,
   channelChoice,
   channelValue,
@@ -29,8 +28,9 @@ import { HttpError } from './fetch-json'
 afterEach(() => vi.unstubAllGlobals())
 
 // The registry as the server serves it today (talaria_notify::boards
-// registry_wire): every event and cadence available — Due since the due-date
-// reminders, the daily digest since the board digest.
+// registry_wire): every event available — Due since the due-date reminders —
+// and the daily digest listed but not available: it was withdrawn before
+// release (Home's Inbox is the once-a-day view), so nothing here offers it.
 const REGISTRY: BoardRegistry = {
   events: [
     { id: 'created', label: 'New ticket on the board', available: true, boardWideOnly: true },
@@ -50,16 +50,23 @@ const REGISTRY: BoardRegistry = {
   ],
   cadences: [
     { id: 'instant', label: 'Instant', available: true },
-    { id: 'digest', label: 'Daily digest', available: true },
+    { id: 'digest', label: 'Daily digest', available: false },
   ],
 }
 
-// An older server's registry: Due and the daily digest listed, not yet
-// available (it refuses them), so the client must not offer or promise them.
+// An older server's registry: Due listed, not yet available (it refuses it),
+// so the client must not offer or promise it.
 const OLDER: BoardRegistry = {
   ...REGISTRY,
   events: REGISTRY.events.map((e) => (e.id === 'due' ? { ...e, available: false } : e)),
-  cadences: REGISTRY.cadences.map((c) => (c.id === 'digest' ? { ...c, available: false } : c)),
+}
+
+// A testing build that served the digest, between its merge and its
+// withdrawal: the registry marked it available and a read could say digest.
+// The client still offers and says nothing of it.
+const DIGEST_SERVED: BoardRegistry = {
+  ...REGISTRY,
+  cadences: REGISTRY.cadences.map((c) => ({ ...c, available: true })),
 }
 
 const NO_CHANNELS = { alerts: null, email: null }
@@ -69,6 +76,7 @@ const expand = (preset: BoardPreset, cadence: BoardCadence = 'instant', over: Pa
 }
 
 const PRESETS: BoardPreset[] = ['all', 'participating', 'mentions', 'off', 'custom']
+// Both ids the wire can carry, so a stray digest from a server is covered.
 const CADENCES: BoardCadence[] = ['instant', 'digest']
 const SOURCES: BoardSource[] = ['board', 'default', 'builtin']
 
@@ -82,15 +90,38 @@ test('the quick presets are the menu, in order, worded by the registry', () => {
   for (const p of PRESETS) assert.ok(presetLabel(null, p).length > 0)
 })
 
-test('only what has a producer is offered: today every event and cadence, on an older server not Due or the digest', () => {
-  assert.deepEqual(availableCadences(REGISTRY).map((c) => c.id), ['instant', 'digest'])
+test('only what has a producer is offered: today every event, on an older server not Due', () => {
   assert.deepEqual(
     availableEvents(REGISTRY).map((e) => e.id),
     ['created', 'assigned', 'status', 'comment', 'mention', 'due', 'completed'],
   )
-  assert.deepEqual(availableCadences(OLDER).map((c) => c.id), ['instant'])
   assert.ok(!availableEvents(OLDER).some((e) => e.id === 'due'))
-  assert.deepEqual(availableCadences(null), [])
+  assert.deepEqual(availableEvents(null), [])
+})
+
+test('no daily digest: no word of it, and every write is instant — even from a server that served one', () => {
+  for (const registry of [REGISTRY, DIGEST_SERVED]) {
+    for (const preset of PRESETS) {
+      for (const source of SOURCES) {
+        const effective = expand(preset, 'digest')
+        // The bell's name and the summary say what the setting is, never a digest.
+        assert.doesNotMatch(controlName({ effective, source }, registry), /digest/i, `${preset}/${source}`)
+        assert.doesNotMatch(levelWords(effective, registry), /digest/i)
+        for (const channels of [false, true]) {
+          const line = summary(effective, registry, channels)
+          assert.doesNotMatch(line, /digest|once a day/i, `${preset} summary`)
+          assert.equal(line, summary(expand(preset), registry, channels), `${preset}: the digest reads as instant`)
+        }
+      }
+      // A change from a setting a server reported as a digest writes instant.
+      for (const other of QUICK_PRESETS) {
+        assert.equal(writeFrom(expand(preset, 'digest'), { preset: other }, registry).cadence, 'instant', `${preset}→${other}`)
+      }
+      assert.equal(writeFrom(expand(preset, 'digest'), { channels: { email: true } }, registry).cadence, 'instant')
+    }
+  }
+  // And what a write shows while it is on its way is instant too.
+  assert.equal(expandWrite({ preset: 'all' }, REGISTRY).cadence, 'instant')
 })
 
 test('every preset × cadence × source: one glyph, one name, tooltip and label agree', () => {
@@ -102,10 +133,9 @@ test('every preset × cadence × source: one glyph, one name, tooltip and label 
         assert.equal(glyphOf(effective), glyphs[preset], `${preset} glyph`)
         const name = controlName({ effective, source }, REGISTRY)
         const level = presetLabel(REGISTRY, preset).toLowerCase()
-        const digest = cadence === 'digest' && preset !== 'off' ? ', daily digest' : ''
         const inherited = source === 'board' ? '' : ' (your default)'
-        assert.equal(name, `Board notifications: ${level}${digest}${inherited}`, `${preset}/${cadence}/${source}`)
-        assert.equal(levelWords(effective, REGISTRY), `${level}${digest}`)
+        assert.equal(name, `Board notifications: ${level}${inherited}`, `${preset}/${cadence}/${source}`)
+        assert.equal(levelWords(effective, REGISTRY), level)
         assert.ok(sourceWords(source).length > 0)
       }
     }
@@ -117,30 +147,16 @@ test('every preset × cadence × source: one glyph, one name, tooltip and label 
   assert.equal(sourceWords('builtin'), 'The standard default')
 })
 
-test('the summary says what reaches you, over which tickets, when — and Off what still does', () => {
+test('the summary says what reaches you, over which tickets — and Off what still does', () => {
   assert.equal(
     summary(expand('participating'), REGISTRY, false),
     'Assigned to me, Status change, Comment or reply, Mention and Ticket completed — on tickets you’re in, as it happens.',
   )
-  // A digest rolls up what it can; what points at you still comes at once.
-  assert.equal(
-    summary(expand('participating', 'digest'), REGISTRY, false),
-    'Status change, Comment or reply and Ticket completed — on tickets you’re in, rolled up once a day; Assigned to me and Mention as it happens.',
-  )
-  assert.equal(summary(expand('mentions', 'digest'), REGISTRY, false), 'Assigned to me and Mention — as it happens; what points at you never waits for a digest.')
-  assert.equal(
-    summary(expand('custom', 'digest', { events: ['comment'] }), REGISTRY, false),
-    'Comment or reply — on tickets you’re in, rolled up once a day.',
-  )
+  assert.equal(summary(expand('mentions'), REGISTRY, false), 'Assigned to me and Mention — on tickets you’re in, as it happens.')
   // All names Due among what it brings, now that Due has a producer.
   assert.equal(
     summary(expand('all'), REGISTRY, false),
     'New ticket on the board, Assigned to me, Status change, Comment or reply, Mention, Due soon or overdue and Ticket completed — on every ticket on the board, as it happens.',
-  )
-  // All on the digest: Due is rolled up with the rest; what points at you is not.
-  assert.equal(
-    summary(expand('all', 'digest'), REGISTRY, false),
-    'New ticket on the board, Status change, Comment or reply, Due soon or overdue and Ticket completed — on every ticket on the board, rolled up once a day; Assigned to me and Mention as it happens.',
   )
   // An older server with no Due producer: All covers it, the sentence does not promise it.
   assert.match(summary(expand('all'), OLDER, false), /— on every ticket on the board, as it happens\.$/)

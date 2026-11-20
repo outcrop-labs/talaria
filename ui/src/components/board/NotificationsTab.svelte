@@ -25,10 +25,9 @@
   // setting for this board — every role has one, a viewer included, and it
   // is the only tab a viewer's modal shows. The bell beside the board's gear
   // sets the four presets in one click; this is the rest: Custom events and
-  // which tickets, the daily digest once it is served, and the board's own
-  // Alerts and Email (`board-channels`). The server holds it
-  // (lib/board-notify.ts); a write puts its answer into the query the bell
-  // reads too.
+  // which tickets, and the board's own Alerts and Email (`board-channels`).
+  // The server holds it (lib/board-notify.ts); a write puts its answer into
+  // the query the bell reads too.
   let { board }: { board: Board } = $props()
 
   const qc = useQueryClient()

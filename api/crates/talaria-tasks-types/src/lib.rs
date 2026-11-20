@@ -78,18 +78,6 @@ impl TaskError {
 
 pub type TaskResult<T> = Result<T, TaskError>;
 
-/// The actor a board's ClickUp sync writes tickets as (`created_by` and the
-/// activity actor — talaria-board-sync's `SYNC_ACTOR` is this constant). It
-/// is here, below both engines, so a reader of the activity log can name it
-/// without depending on the sync (RUST-MIGRATION.md: types outrank engines).
-pub const CLICKUP_SYNC_ACTOR: &str = "clickup-sync";
-
-/// Every actor whose ticket writes MIRROR another tracker: those writes are
-/// `quiet` (no per-ticket row, no board-activity row — the other tracker
-/// already told its people), and the daily board digest leaves their
-/// activity rows out of its counts for the same reason.
-pub const MIRROR_ACTORS: &[&str] = &[CLICKUP_SYNC_ACTOR];
-
 pub fn is_human_assignee(a: &str) -> bool {
     a.starts_with("user:")
 }

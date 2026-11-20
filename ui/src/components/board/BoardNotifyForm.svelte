@@ -7,7 +7,6 @@
   import { useAutosave } from '@/components/settings/autosave.svelte'
   import { cn } from '@/lib/cn'
   import {
-    availableCadences,
     availableEvents,
     channelChoice,
     channelValue,
@@ -18,7 +17,6 @@
     sourceWords,
     summary,
     writeFrom,
-    type BoardCadence,
     type BoardChannels,
     type BoardEffective,
     type BoardNotifyState,
@@ -34,8 +32,9 @@
   // Settings → Notifications draw it alike. Every control saves on change
   // (UI-CONVENTIONS: pickers apply immediately) and shows the server's answer;
   // while a write is on its way it shows what was asked, and a refusal puts
-  // the old value back with the server's sentence. The words for presets,
-  // events and cadences are the server's registry.
+  // the old value back with the server's sentence. The words for presets and
+  // events are the server's registry. There is no cadence to choose: a board
+  // setting always comes as it happens (lib/board-notify.ts).
   let {
     value,
     registry,
@@ -70,7 +69,7 @@
   const eff = $derived(pending ?? value.effective)
   const ownLayer = $derived(subject === 'board' ? value.source === 'board' : value.source === 'default')
 
-  async function change(c: Partial<Omit<BoardNotifyWrite, 'channels'>> & { channels?: Partial<BoardChannels> }, key: string) {
+  async function change(c: Partial<Omit<BoardNotifyWrite, 'channels' | 'cadence'>> & { channels?: Partial<BoardChannels> }, key: string) {
     if (busy) return
     const w = writeFrom(eff, c, registry)
     error = null
@@ -120,7 +119,6 @@
     return `${names.join(', ')} — on ${scopeWords(p.scope ?? 'mine')}.`
   }
 
-  const cadences = $derived(availableCadences(registry))
   const SCOPES: Array<{ id: BoardScope; label: string }> = [
     { id: 'mine', label: 'Tickets I’m in' },
     { id: 'board', label: 'Every ticket' },
@@ -197,20 +195,6 @@
       {/if}
       </div>
     </SettingsRow>
-
-    {#if cadences.length > 1 && eff.preset !== 'off'}
-      <SettingsRow
-        label="When"
-        hint="As it happens, or rolled up once a day at the daily digest’s hour. Assignments, @mentions and tickets you watch yourself still come at once."
-        saved={autosave.saved('cadence')}
-      >
-        <Segmented
-          options={cadences.map((c) => ({ id: c.id, label: c.label }))}
-          value={eff.cadence}
-          onChange={(c: BoardCadence) => void change({ cadence: c }, 'cadence')}
-        />
-      </SettingsRow>
-    {/if}
 
     {#if channelsServed}
       <SettingsRow
