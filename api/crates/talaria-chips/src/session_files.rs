@@ -176,7 +176,7 @@ pub fn generic_google_label(label: &str, url: &str) -> bool {
             GoogleType::Drive,
         ]
         .iter()
-        .any(|t| label == t.noun())
+        .any(|t| label.eq_ignore_ascii_case(t.noun()))
 }
 
 /// A Google chip's title. `title` when the producer set one; otherwise a
@@ -326,21 +326,62 @@ pub fn candidates(
     out
 }
 
-/// The title the session already gives one Google file, by the same reading
-/// the pane's list makes (`candidates`): the newest title a chip on one of the
-/// messages gave it, else the one its pin carries. None when the session has
-/// never named it. The agent door that opens a Google file lands its chip with
-/// this title, so the tab reads as the file is called rather than "Google Doc".
+/// The chip key that marks a Google chip's `title` as only the text of a
+/// markdown link an agent passed to the door that opens a file in the pane
+/// (`[Q3 numbers](https://docs…)`), not a name Google or a pin gave. The
+/// pane lists it like any other title; what it changes is precedence
+/// (`session_google_title`): a Google read or a pin outranks it, and the
+/// next link's text may replace it — so an agent can correct a tab it named
+/// wrong, but never one Google named.
+pub const NAME_FROM: &str = "nameFrom";
+/// `NAME_FROM`'s value on a chip whose title is a link's text.
+pub const NAME_FROM_LINK: &str = "link";
+
+/// A Google file's name as the session knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionGoogleName {
+    pub title: String,
+    /// Only the text of an earlier markdown link (`NAME_FROM_LINK`).
+    pub from_link: bool,
+}
+
+/// The name the session already gives one Google file: the newest title a
+/// chip on one of the messages gave it from Google, else the one its pin
+/// carries, else the newest link text an earlier open landed (`from_link`).
+/// None when the session has never named it. The agent door that opens a
+/// Google file lands its chip with this name, so the tab reads as the file
+/// is called rather than "Google Doc".
 pub fn session_google_title(
     messages: &[TrailMessage],
     pinned: &Value,
     file: &GoogleFile,
-) -> Option<String> {
+) -> Option<SessionGoogleName> {
     let key = file.key();
-    candidates(messages, pinned, None)
+    let (mut named, mut linked) = (None, None);
+    for chip in messages.iter().filter_map(|m| m.chips.as_array()).flatten() {
+        for (seen, title) in files_on(chip) {
+            if seen.key() != key {
+                continue;
+            }
+            if str_of(chip, NAME_FROM) == Some(NAME_FROM_LINK) {
+                linked = title.or(linked);
+            } else {
+                named = title.or(named);
+            }
+        }
+    }
+    let pin_title = pinned
+        .as_array()
         .into_iter()
-        .find(|c| c.file.key() == key)
-        .and_then(|c| c.title)
+        .flatten()
+        .find(|p| str_of(p, "kind") == Some("google") && str_of(p, "id") == Some(file.id.as_str()))
+        .and_then(|p| str_of(p, "title"))
+        .map(str::to_string);
+    let name = |title, from_link| SessionGoogleName { title, from_link };
+    named
+        .or(pin_title)
+        .map(|t| name(t, false))
+        .or_else(|| linked.map(|t| name(t, true)))
 }
 
 /// The artifact ids the candidates name — what the route looks up.
@@ -876,15 +917,15 @@ mod tests {
                          "href": "https://docs.google.com/spreadsheets/d/1budget/edit" }]),
             ),
         ];
+        let title = |m: &[TrailMessage], p: &Value, f: &GoogleFile| {
+            session_google_title(m, p, f).map(|n| (n.title, n.from_link))
+        };
         assert_eq!(
-            session_google_title(&messages, &json!([]), &sheet).as_deref(),
-            Some("Budget 2027")
+            title(&messages, &json!([]), &sheet),
+            Some(("Budget 2027".to_string(), false))
         );
         // Only the generic label so far: no name to land.
-        assert_eq!(
-            session_google_title(&messages[..1], &json!([]), &sheet),
-            None
-        );
+        assert_eq!(title(&messages[..1], &json!([]), &sheet), None);
         // A pin that carries a title names a file no chip did.
         let pinned = json!([{ "kind": "google", "id": "1pinned", "title": "Roadmap",
                               "mime": "application/vnd.google-apps.document" }]);
@@ -893,15 +934,65 @@ mod tests {
             kind: GoogleType::Document,
         };
         assert_eq!(
-            session_google_title(&[], &pinned, &doc).as_deref(),
-            Some("Roadmap")
+            title(&[], &pinned, &doc),
+            Some(("Roadmap".to_string(), false))
         );
         // A file the session never mentioned has no name here.
         let other = GoogleFile {
             id: "1other".into(),
             kind: GoogleType::Document,
         };
-        assert_eq!(session_google_title(&messages, &pinned, &other), None);
+        assert_eq!(title(&messages, &pinned, &other), None);
+    }
+
+    #[test]
+    fn a_link_named_file_keeps_that_name_only_until_google_or_a_pin_names_it() {
+        let doc = GoogleFile {
+            id: "1linked".into(),
+            kind: GoogleType::Document,
+        };
+        let url = "https://docs.google.com/document/d/1linked/edit";
+        let link_chip = |t: &str| {
+            json!([{ "id": "source:ll", "kind": "source", "label": t, "title": t,
+                     "href": url, "nameFrom": "link" }])
+        };
+        let title = |m: &[TrailMessage], p: &Value| {
+            session_google_title(m, p, &doc).map(|n| (n.title, n.from_link))
+        };
+        // An open with a link's text: the session's name, marked as the link's.
+        let mut messages = vec![msg("t1", link_chip("Draft"))];
+        assert_eq!(
+            title(&messages, &json!([])),
+            Some(("Draft".to_string(), true))
+        );
+        // A later link's text is the newer link name.
+        messages.push(msg("t2", link_chip("Q3 Budget")));
+        assert_eq!(
+            title(&messages, &json!([])),
+            Some(("Q3 Budget".to_string(), true))
+        );
+        // A pin's title outranks every link's text…
+        let pinned = json!([{ "kind": "google", "id": "1linked", "title": "Roadmap" }]);
+        assert_eq!(
+            title(&messages, &pinned),
+            Some(("Roadmap".to_string(), false))
+        );
+        // …and so does a Google read's, whenever it came.
+        messages.insert(
+            0,
+            msg(
+                "t0",
+                json!([{ "id": "source:ll", "kind": "source", "label": "Budget",
+                         "title": "Budget", "href": url }]),
+            ),
+        );
+        assert_eq!(
+            title(&messages, &pinned),
+            Some(("Budget".to_string(), false))
+        );
+        // The pane still lists the newest title, link text or not.
+        let listed = candidates(&messages, &json!([]), None);
+        assert_eq!(listed[0].title.as_deref(), Some("Q3 Budget"));
     }
 
     #[test]
@@ -910,6 +1001,7 @@ mod tests {
         assert!(generic_google_label(url, url));
         assert!(generic_google_label("docs.google.com", url));
         assert!(generic_google_label("Google Doc", url));
+        assert!(generic_google_label("google sheet", url));
         assert!(generic_google_label("  ", url));
         assert!(!generic_google_label("Launch plan", url));
     }

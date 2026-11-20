@@ -32,10 +32,12 @@
 // earlier tool results can bring one back without crawling list_documents.
 //
 // A GOOGLE FILE LANDS WITH ITS NAME when one is already known: the title the
-// session gives it (a chip a Google read left, or its pin — the pane's own
-// list), else the text of a markdown link, `[Q3 numbers](https://docs…)`.
-// Nothing asks Google: a file nobody named still reads as "Google Sheet"
-// until it is read or opened.
+// session got from Google (a chip a Google read left) or its pin, else the
+// text of a markdown link, `[Q3 numbers](https://docs…)`, else an earlier
+// link's text. A link's text is marked as such on the chip (`NAME_FROM`), so
+// the next link may correct it while a name Google gave stands. Nothing asks
+// Google: a file nobody named still reads as "Google Sheet" until the agent
+// reads it, or opens it with a link that names it.
 //
 // No audit row: opening a file is chatter (API-CONVENTIONS § Audit).
 
@@ -52,7 +54,8 @@ use talaria_artifacts::agent_access::{agent_edits_artifact, agent_readable, agen
 use talaria_artifacts::{ArtifactHead, artifact_heads, get_artifact, guarded};
 use talaria_body::{optional_max_string_member, parse};
 use talaria_chips::session_files::{
-    FileRef, SessionFile, TrailMessage, file_named_by, generic_google_label, session_google_title,
+    FileRef, NAME_FROM, NAME_FROM_LINK, SessionFile, SessionGoogleName, TrailMessage,
+    file_named_by, generic_google_label, session_google_title,
 };
 use talaria_chips::{
     GoogleFile, Landed, Target, classify_href, conversation_hint, document_chip, google_file_chip,
@@ -111,11 +114,37 @@ fn markdown_link(s: &str) -> Option<(String, String)> {
     (!dest.is_empty()).then(|| (text.trim().to_string(), dest.to_string()))
 }
 
-/// The name a markdown link's text gives a Google file: cleaned to one line,
-/// and nothing when the text is only the URL, its host, or what the file is.
+/// The name a markdown link's text gives a Google file: cleaned to one line
+/// FIRST, so a zero-width mark cannot hide "Google Doc" from the check, and
+/// nothing when what is left is only a link (any URL, or another spelling of
+/// a file link), the URL's host, or what the file is.
 fn link_title(text: Option<&str>, url: &str) -> Option<String> {
-    text.filter(|t| !generic_google_label(t, url))
-        .and_then(clean_focus_title)
+    let title = clean_focus_title(text?)?;
+    let lower = title.to_ascii_lowercase();
+    let a_link = lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || file_named_by(&title).is_some();
+    (!a_link && !generic_google_label(&title, url)).then_some(title)
+}
+
+/// The name a Google file lands with: a name the session got from Google or
+/// a pin, else the text of the link passed now, else an earlier link's text.
+/// A link never outranks Google's name, and a fresh link's text replaces an
+/// older one — so an agent can correct a tab it named wrong. Pure, so the
+/// order is a unit test.
+fn google_name(
+    session: Option<SessionGoogleName>,
+    link: Option<String>,
+) -> Option<SessionGoogleName> {
+    match session {
+        Some(n) if !n.from_link => Some(n),
+        earlier => link
+            .map(|title| SessionGoogleName {
+                title,
+                from_link: true,
+            })
+            .or(earlier),
+    }
 }
 
 /// The body, read: exactly one of `documentId` / `url`, or neither to list.
@@ -363,17 +392,24 @@ pub async fn post(
             open_artifact(&state, &caller, &landed, &kind, &requester, who, &id).await
         }
         Ask::Open(FileRef::Google(file), link_named) => {
-            // THE NAME THE SESSION ALREADY GIVES IT, else the link's text.
-            // The session's is a Google answer or a pin; the link's is the
-            // agent's own word for it — so the session's wins. A session
-            // name with nothing printable left once cleaned is no name at
-            // all, and the link's text (cleaned the same way) stands in.
+            // GOOGLE'S NAME FOR IT, else the link's text (`google_name`).
+            // A session name with nothing printable left once cleaned is no
+            // name at all, and the link's text (cleaned the same way) stands
+            // in.
             let named = match google_title_in_session(&state.pg, &conversation_id, &file).await {
                 Ok(t) => t,
                 Err(e) => return Ok(internal("[open] trail read failed", e)),
             };
-            let title = named.or(link_named);
-            let chip = google_file_chip(&file, title.as_deref());
+            let name = google_name(named, link_named);
+            let title = name.as_ref().map(|n| n.title.clone());
+            let mut chip = google_file_chip(&file, title.as_deref());
+            // Link text is marked as link text, so the next link may
+            // correct it and a Google read outranks it.
+            if let (Some(n), Some(obj)) = (&name, chip.as_object_mut())
+                && n.from_link
+            {
+                obj.insert(NAME_FROM.into(), json!(NAME_FROM_LINK));
+            }
             let already = match already_on(&state.pg, &landed, &chip).await {
                 Ok(a) => a,
                 Err(e) => return Ok(internal("[open] row read failed", e)),
@@ -415,15 +451,15 @@ pub async fn post(
     }
 }
 
-/// The title this conversation already gives a Google file — the pane's own
-/// reading of its chips and pins (`session_google_title`), cleaned to one
-/// line: a Google file's title is anyone's to set, and it is quoted back to
-/// the model in the answer.
+/// The name this conversation already gives a Google file — read from its
+/// chips and pins (`session_google_title`), cleaned to one line: a Google
+/// file's title is anyone's to set, and it is quoted back to the model in the
+/// answer.
 async fn google_title_in_session(
     pg: &sqlx::PgPool,
     conversation_id: &str,
     file: &GoogleFile,
-) -> Result<Option<String>, sqlx::Error> {
+) -> Result<Option<SessionGoogleName>, sqlx::Error> {
     let (rows, pinned) = conversation_file_trail(pg, conversation_id).await?;
     let trail: Vec<TrailMessage> = rows
         .into_iter()
@@ -433,9 +469,12 @@ async fn google_title_in_session(
             requested_by,
         })
         .collect();
-    Ok(session_google_title(&trail, &pinned, file)
-        .as_deref()
-        .and_then(clean_focus_title))
+    Ok(session_google_title(&trail, &pinned, file).and_then(|n| {
+        clean_focus_title(&n.title).map(|title| SessionGoogleName {
+            title,
+            from_link: n.from_link,
+        })
+    }))
 }
 
 /// The session's files for the agent: what the person's pane lists, newest
@@ -646,6 +685,34 @@ mod tests {
     }
 
     #[test]
+    fn google_names_a_file_and_a_link_only_names_what_google_did_not() {
+        let n = |title: &str, from_link| SessionGoogleName {
+            title: title.into(),
+            from_link,
+        };
+        let pick = |s, l: Option<&str>| {
+            google_name(s, l.map(str::to_string)).map(|n| (n.title, n.from_link))
+        };
+        let got = |t: &str, from_link| Some((t.to_string(), from_link));
+        // Google's name (or a pin's) beats any link's text.
+        assert_eq!(
+            pick(Some(n("Budget", false)), Some("Draft")),
+            got("Budget", false)
+        );
+        assert_eq!(pick(Some(n("Budget", false)), None), got("Budget", false));
+        // A fresh link's text replaces an earlier link's: the agent can
+        // correct a tab it named wrong.
+        assert_eq!(
+            pick(Some(n("Draft", true)), Some("Q3 Budget")),
+            got("Q3 Budget", true)
+        );
+        // A bare link keeps the earlier link's name, still marked as a link's.
+        assert_eq!(pick(Some(n("Draft", true)), None), got("Draft", true));
+        assert_eq!(pick(None, Some("Q3 Budget")), got("Q3 Budget", true));
+        assert_eq!(pick(None, None), None);
+    }
+
+    #[test]
     fn a_markdown_link_names_a_google_file_and_never_a_talaria_one() {
         // The text of a link the agent copied is the file's name for its tab…
         match body(
@@ -667,11 +734,18 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        // Text that is only the URL, its host or what the file is names nothing.
+        // Text that is only a link, its host or what the file is names
+        // nothing — another spelling of the url, or a zero-width mark hiding
+        // the noun until it is cleaned, included.
         for text in [
             "https://docs.google.com/document/d/1doc/edit",
+            "https://docs.google.com/document/d/1doc/edit?usp=sharing",
+            "HTTPS://example.com/elsewhere",
+            "/artifacts?a=9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2",
             "docs.google.com",
             "Google Doc",
+            "Google Doc\u{200B}",
+            "google doc",
             "",
         ] {
             let url = format!("[{text}](https://docs.google.com/document/d/1doc/edit)");

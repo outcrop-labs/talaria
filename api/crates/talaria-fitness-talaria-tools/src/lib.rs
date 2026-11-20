@@ -730,7 +730,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                 "type": "object",
                 "properties": {
                     "documentId": str_schema("A Talaria document, sheet, page or uploaded file id — from list_documents, search_knowledge or this session's file list"),
-                    "url": str_schema("A Talaria document link (/artifacts?a=…) or a Google Docs, Sheets, Slides or Drive link — as a markdown link, [title](url), a Google file's tab is named by the title"),
+                    "url": str_schema("A Talaria document link (/artifacts?a=…) or a Google Docs, Sheets, Slides or Drive link — as a markdown link, [title](url), the title names a Google file's tab unless this session already has the file's own name (from reading it)"),
                     "conversationId": str_schema("The conversation you are answering in — your prompt's conversation line carries it. Pass it so the file opens in this thread and not another one you are also in."),
                 },
                 "required": [],

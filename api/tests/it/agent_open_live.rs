@@ -506,6 +506,16 @@ async fn a_google_file_lands_with_the_name_the_session_or_the_link_gives_it() {
         Some(json!("Q3 numbers")),
         "{chips}"
     );
+    // The link's text is marked as the link's; Google's name is not.
+    let marked = |id_part: &str| {
+        chips.as_array().and_then(|all| {
+            all.iter()
+                .find(|c| c["href"].as_str().is_some_and(|h| h.contains(id_part)))
+                .map(|c| c["nameFrom"].clone())
+        })
+    };
+    assert_eq!(marked("1liveLinkedSheet"), Some(json!("link")), "{chips}");
+    assert_eq!(marked("1liveNamedDoc"), Some(Value::Null), "{chips}");
     // …and the person's pane lists both tabs by name.
     let listed = files(&state, &cookie, &conv).await;
     let named = |key: &str| file(&listed, key).map(|f| f["title"].clone());
@@ -553,6 +563,24 @@ async fn a_google_file_lands_with_the_name_the_session_or_the_link_gives_it() {
     assert!(
         names(&chips_of(&state.pg, &row2).await, doc_url),
         "the canonical url"
+    );
+
+    // A second link with other text for the file the first link named: the
+    // newer text, since no Google read ever named it — the agent can correct
+    // a tab it named wrong.
+    let (status, body) = open(
+        &state,
+        &key,
+        json!({ "url": "[Q3 Budget](https://docs.google.com/spreadsheets/d/1liveLinkedSheet/edit)" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["file"]["title"], json!("Q3 Budget"), "{body}");
+    let listed = files(&state, &cookie, &conv).await;
+    assert_eq!(
+        file(&listed, "google:1liveLinkedSheet").map(|f| f["title"].clone()),
+        Some(json!("Q3 Budget")),
+        "{listed:?}"
     );
 }
 
