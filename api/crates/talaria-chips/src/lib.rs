@@ -111,8 +111,12 @@ pub fn bare_tool_name(tool: &str) -> &str {
 
 /// A ticket tool's answer was a REFUSAL: a 403 as the toolkit words it
 /// (`Talaria API 403: …`), or the api's own `{error}` body. Never a landed
-/// write's answer, whose ticket text may say anything.
+/// write's answer — `{ task, … }`, the ticket itself, whose title or
+/// description may say anything, "Talaria API 403" included.
 fn is_refusal(result: &str, result_v: &Value) -> bool {
+    if result_v.get("task").is_some() {
+        return false;
+    }
     result.contains("Talaria API 403") || result_v.get("error").is_some()
 }
 
@@ -2942,6 +2946,16 @@ mod tests {
                 name,
                 r#"{"taskId":"ABC-12","status":"in_progress","conversationId":"c-1"}"#,
                 r#"{"task":{"id":"t-2","boardId":"b-1","title":"We cannot ship this","description":"agents cannot fix it alone"}}"#,
+            );
+            assert!(ok.iter().all(|c| c["kind"] != "approval"), "{name}: {ok:?}");
+        }
+        // Not even when the ticket's own text quotes a refusal: a landed
+        // answer is the ticket, whatever it says.
+        for name in ["mcp_talaria_triage_ticket", "mcp_talaria_move_ticket"] {
+            let ok = chips_from_tool(
+                name,
+                r#"{"taskId":"ABC-12","boardId":"b-9","status":"triage"}"#,
+                r#"{"task":{"id":"t-2","boardId":"b-9","title":"Talaria API 403: agents cannot take a ticket out of review"},"moved":{}}"#,
             );
             assert!(ok.iter().all(|c| c["kind"] != "approval"), "{name}: {ok:?}");
         }

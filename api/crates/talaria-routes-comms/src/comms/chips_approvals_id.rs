@@ -65,6 +65,18 @@ pub async fn post(
     if row.kind == talaria_approval_cards::KIND {
         return Ok(answer_card(&state, &user, &row, &decision).await);
     }
+    let owner_or_admin =
+        row.owner_user_id.as_deref() == Some(user.id.as_str()) || user.role == "admin";
+    // Saying NO to a ticket card grants nothing, so whoever could always
+    // answer a card (its owner, an admin) may still decline it without
+    // editing the board. Only an approval runs a move, and that is the
+    // board's to gate.
+    if decision == "reject" && is_ticket_approval(&row.kind) && owner_or_admin {
+        if let Err(e) = mark_approval(&state.pg, &row.id, "denied", &user.id).await {
+            return Ok(internal("[chips] deny failed", e));
+        }
+        return Ok(Json(json!({ "status": "denied", "tools": [] })).into_response());
+    }
     // A ticket move is gated on the ticket's board, and its payload's ticket
     // (a ref or an id) is resolved here, once, for the gate and the move.
     let ticket = if is_ticket_approval(&row.kind) {
@@ -73,9 +85,7 @@ pub async fn post(
             Err(response) => return Ok(response),
         }
     } else {
-        let allowed =
-            row.owner_user_id.as_deref() == Some(user.id.as_str()) || user.role == "admin";
-        if !allowed {
+        if !owner_or_admin {
             return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
         }
         None

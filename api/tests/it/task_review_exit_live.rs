@@ -21,7 +21,8 @@
 //   board move   the asker must edit BOTH boards; askedBy rides the audit row
 //   the card     a refused move's card: a board editor (not the agent's owner,
 //                not an admin) approves it and the move is theirs; a viewer
-//                gets 403; a card carrying a ref resolves it
+//                gets 403; a card carrying a ref resolves it; the card's
+//                owner may decline it without editing the board
 //
 // House rule: #[ignore]d, run against a migrated database:
 //
@@ -718,26 +719,28 @@ async fn a_channel_reply_answers_only_the_message_it_was_started_for() {
     share(&pg, &b, &eve, "editor").await;
     share(&pg, &b, &vic, "viewer").await;
     let (model, key) = agent(&state, "s", &[&b]).await;
-    let (id, tref) = ticket(&pg, &b, "quality_review").await;
-    let attempt = |thread: String| {
+    // A ticket has one discussion room, so each room case has its own.
+    let attempt = |ticket: String, thread: String| {
         let state = state.clone();
         let key = key.clone();
-        let id = id.clone();
         async move {
             as_agent(
                 &state,
                 &key,
                 "PUT",
-                &put(&id),
+                &put(&ticket),
                 json!({ "status": "inbox", "conversationId": thread }),
             )
             .await
         }
     };
+    let mut tickets = Vec::new();
 
     // The relevance window: Vic (a viewer) asked, the agent's reply was
     // still being decided, and Eve (an editor) posted before its row landed.
     // The reply answers Vic, so Vic's authority is the one checked.
+    let (id, _) = ticket(&pg, &b, "quality_review").await;
+    tickets.push(id.clone());
     let r = room(&pg, &ada, &id, "trx-stamp-window").await;
     let vics = channel_row(
         &pg,
@@ -758,7 +761,7 @@ async fn a_channel_reply_answers_only_the_message_it_was_started_for() {
     )
     .await;
     channel_row(&pg, &r, ("agent", &model), "", "streaming", Some(&vics)).await;
-    let (s, body) = attempt(r).await;
+    let (s, body) = attempt(id, r).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
     assert!(
         err(&body).contains(&format!(
@@ -769,6 +772,8 @@ async fn a_channel_reply_answers_only_the_message_it_was_started_for() {
 
     // Two replies streaming side by side: the call names only the room, so
     // which one is asking cannot be told.
+    let (id, _) = ticket(&pg, &b, "quality_review").await;
+    tickets.push(id.clone());
     let r = room(&pg, &ada, &id, "trx-stamp-two").await;
     let first = channel_row(
         &pg,
@@ -790,11 +795,13 @@ async fn a_channel_reply_answers_only_the_message_it_was_started_for() {
     )
     .await;
     channel_row(&pg, &r, ("agent", &model), "", "streaming", Some(&second)).await;
-    let (s, body) = attempt(r).await;
+    let (s, body) = attempt(id, r).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
     assert!(err(&body).contains("more than one reply"), "{body}");
 
     // A reply row with no stamp answers nobody, whoever posted before it.
+    let (id, _) = ticket(&pg, &b, "quality_review").await;
+    tickets.push(id.clone());
     let r = room(&pg, &ada, &id, "trx-stamp-none").await;
     channel_row(
         &pg,
@@ -806,12 +813,14 @@ async fn a_channel_reply_answers_only_the_message_it_was_started_for() {
     )
     .await;
     channel_row(&pg, &r, ("agent", &model), "", "streaming", None).await;
-    let (s, body) = attempt(r).await;
+    let (s, body) = attempt(id, r).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
     assert!(err(&body).contains("no person behind it"), "{body}");
 
     // A click through the REAL channel door: `drafted: true` marks the row,
     // and the reply answering it cites nobody.
+    let (id, tref) = ticket(&pg, &b, "quality_review").await;
+    tickets.push(id.clone());
     let channel: talaria_api::channels::CreatedChannel =
         talaria_api::channels::create_channel(&pg, &ada, "trx-stamp-drafted", None, "channel")
             .await
@@ -847,12 +856,14 @@ async fn a_channel_reply_answers_only_the_message_it_was_started_for() {
         Some(&posted),
     )
     .await;
-    let (s, body) = attempt(channel.id.clone()).await;
+    let (s, body) = attempt(id, channel.id.clone()).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
     assert!(err(&body).contains("only clicked"), "{body}");
 
-    assert_eq!(status_of(&pg, &id).await.0, "quality_review");
-    assert!(audit_after(&pg, "task.review_exit", &id).await.is_empty());
+    for id in &tickets {
+        assert_eq!(status_of(&pg, id).await.0, "quality_review");
+        assert!(audit_after(&pg, "task.review_exit", id).await.is_empty());
+    }
     // The rooms go with the ticket; a plain channel outlives its creator.
     sqlx::query("delete from channels where id = $1::uuid")
         .bind(&channel.id)
@@ -1065,5 +1076,50 @@ async fn a_board_editor_approves_the_card_and_a_viewer_cannot() {
     .await
     .unwrap();
     assert_eq!(actor, eve_email);
+
+    // Saying no grants nothing: the card's owner may decline it without
+    // editing the board, while a viewer who does not own it still may not,
+    // and the owner still cannot approve it.
+    let reject = json!({ "decision": "reject" });
+    let unowned = card(
+        &pg,
+        "ticket_move",
+        &model,
+        json!({ "taskId": id, "status": "inbox" }),
+    )
+    .await;
+    let (s, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/chat/chips/approvals/{unowned}"),
+        Some(&vic_cookie),
+        Some(reject.clone()),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    let (owned,): (String,) = sqlx::query_as(
+        "insert into chat_approvals (kind, summary, payload, external_id, agent_model, status, owner_user_id) \
+         values ('ticket_move', 'Move ticket', $1, $2, $3, 'pending', $4::uuid) returning id::text",
+    )
+    .bind(json!({ "taskId": id, "status": "inbox" }))
+    .bind(format!("live:{}", uuid::Uuid::new_v4()))
+    .bind(&model)
+    .bind(&vic)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    let path = format!("/api/chat/chips/approvals/{owned}");
+    let (s, body) = call_json(
+        &state,
+        "POST",
+        &path,
+        Some(&vic_cookie),
+        Some(json!({ "decision": "approve" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{body}");
+    let (s, body) = call_json(&state, "POST", &path, Some(&vic_cookie), Some(reject)).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "denied");
     sweep(&pg, "c").await;
 }
