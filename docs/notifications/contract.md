@@ -270,8 +270,9 @@ list.
 **`features`** in the contract: `seq`, `classes`, `channels`, `dnd-store`,
 `presence-store`, `ack`, `devices`, `read-ids`, `channel-levels-store`. Each stream adds
 its own in its own module's `FEATURES` (the per-board settings: `board-prefs`, which also
-means `GET`/`PATCH /api/notifications` carry `boards`; and `board-channels`, a board's own
-Alerts and Email, carried on its rows as I-26's override).
+means `GET`/`PATCH /api/notifications` carry `boards`; `board-channels`, a board's own
+Alerts and Email, carried on its rows as I-26's override; and `task-due`, the due-date
+reminders a setting may name).
 
 ## The live stream (I-16, I-19)
 

@@ -274,6 +274,7 @@ export const GROUP = {
   thread: (conversationId: string) => `thread:${conversationId}`,
   taskStatus: (taskId: string) => `task:${taskId}:status`,
   taskComments: (taskId: string) => `task:${taskId}:comments`,
+  taskDue: (taskId: string) => `task:${taskId}:due`,
   channelActivity: (channelId: string) => `channel:${channelId}:activity`,
   channelThread: (rootMessageId: string) => `reply:${rootMessageId}`,
   mcpDown: (serverId: string) => `mcp:${serverId}:down`,

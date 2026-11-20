@@ -81,6 +81,10 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
         "participating",
         "Replied in a thread you're in",
     ),
+    // A ticket you are in is due within a day, or overdue — filed only to
+    // someone whose setting for the board names due dates (opt-in; the
+    // `task-due` job, talaria-tasks `due`).
+    ("task-due", "participating", "Due soon or overdue"),
     // Outcomes.
     ("research", "work_complete", "Research ready"),
     // An agent design finished (or failed) while its modal was closed.
@@ -280,7 +284,7 @@ pub const CLASSES: &[ClassDef] = &[
     ClassDef {
         id: "participating",
         label: "Threads you're in",
-        blurb: "Replies and comments on tickets and threads you take part in.",
+        blurb: "Replies and comments on tickets and threads you take part in, and the due dates you asked to be reminded of.",
         category: Category::Direct,
         defaults: ch(true, true, false),
         breaks_through: false,
@@ -345,7 +349,7 @@ pub const CLASSES: &[ClassDef] = &[
     ClassDef {
         id: "board_activity",
         label: "Board activity",
-        blurb: "New tickets, moves and comments on boards you set to hear every ticket.",
+        blurb: "New tickets, moves, comments and due dates on boards you set to hear every ticket.",
         category: Category::Following,
         defaults: ch(false, false, false),
         breaks_through: false,
@@ -550,6 +554,8 @@ mod tests {
             ("thread-reply", "participating"),
             ("channel-message", "channel_activity"),
             ("board-activity", "board_activity"),
+            // A due-date reminder for a ticket you are in: you take part.
+            ("task-due", "participating"),
         ] {
             assert_eq!(notify_class_of(kind), class, "kind {kind}");
         }
@@ -652,7 +658,7 @@ mod tests {
         assert!(kinds_of("mention").starts_with(&["mention", "kb-comment"]));
         assert_eq!(
             kinds_of("participating"),
-            ["task-comment", "thread-reply", "participating"]
+            ["task-comment", "thread-reply", "task-due", "participating"]
         );
         assert!(kinds_of("no-such-class").is_empty());
         assert!(!known.contains(&"brand-new-kind"));
@@ -679,6 +685,7 @@ mod tests {
             "dm",
             "agent-reply",
             "task-comment",
+            "task-due",
             "agent_blocked",
         ] {
             assert!(k.contains(&kind), "{kind}");

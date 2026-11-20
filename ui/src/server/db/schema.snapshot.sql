@@ -1711,7 +1711,9 @@ CREATE TABLE public.tasks (
     start_date timestamp with time zone,
     color text,
     approved_at timestamp with time zone,
-    external_key text
+    external_key text,
+    due_soon_for timestamp with time zone,
+    overdue_for timestamp with time zone
 );
 CREATE TABLE public.team_agents (
     team_id uuid NOT NULL,
@@ -2501,6 +2503,7 @@ CREATE INDEX task_workchain_edges_to ON public.task_workchain_edges USING btree 
 CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_steps USING btree (task_id);
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
+CREATE INDEX tasks_due_scan_idx ON public.tasks USING btree (due_date) WHERE ((due_date IS NOT NULL) AND (archived_at IS NULL));
 CREATE UNIQUE INDEX tasks_external_key_idx ON public.tasks USING btree (external_key) WHERE (external_key IS NOT NULL);
 CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_affinity_idx ON public.usage_events USING btree (agent_model, affinity_key) WHERE (affinity_key IS NOT NULL);

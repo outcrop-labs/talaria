@@ -33,6 +33,7 @@ use talaria_tasks_types::DispatchTicket;
 
 mod asked;
 pub use asked::{AskPlace, Asker, Unproven, choose_ask, names_ticket};
+pub mod due;
 mod moving;
 pub use moving::{
     MoveError, MoveOutcome, MoveRequest, MoveSummary, Mover, PickRefusal, StatusHow, StatusPick,
@@ -363,6 +364,10 @@ struct TaskNotification {
     /// later one in the window updates the count and the body ("Moved 4 times
     /// — now in review") without ringing again. Past the window: a fresh row.
     status_burst: Option<String>,
+    /// One open row per person under this key, re-alerting with the newest
+    /// words (`Coalesce::Realert`): a ticket's due-date reminders
+    /// (`group_key::task_due`), so "overdue" takes over an unread "due soon".
+    group_key: Option<String>,
 }
 
 /// How long a ticket's status moves keep coalescing into one row: ten
@@ -428,8 +433,8 @@ async fn reword_status_row(
 }
 
 /// Who a ticket row says caused it (I-11): a person by their users.id when the
-/// actor string names one, the judge as the system, otherwise an agent by its
-/// model id.
+/// actor string names one, the judge or the due-date scan as the system,
+/// otherwise an agent by its model id.
 fn task_actor(actor: &str, self_id: Option<&str>) -> NotifyActor {
     match self_id {
         Some(id) => NotifyActor {
@@ -441,6 +446,11 @@ fn task_actor(actor: &str, self_id: Option<&str>) -> NotifyActor {
             kind: ActorKind::System,
             id: actor.to_string(),
             label: "Judge".to_string(),
+        },
+        None if actor == due::ACTOR => NotifyActor {
+            kind: ActorKind::System,
+            id: actor.to_string(),
+            label: due::ACTOR_LABEL.to_string(),
         },
         None => NotifyActor {
             kind: ActorKind::Agent,
@@ -492,8 +502,26 @@ async fn notify_ticket_event(
     if candidates.is_empty() {
         return HashSet::new();
     }
-    let (mut ticket, activity) =
-        split(board_prefs::listeners(&notify.pg, board_id, ev, candidates).await);
+    let decided = board_prefs::listeners(&notify.pg, board_id, ev, candidates).await;
+    file_decided(notify, board_id, ev, decided, actor, n, line).await
+}
+
+/// `notify_ticket_event`'s filing, from decisions already made — the due
+/// scan decides with `board_prefs::try_listeners`, so a settings read that
+/// fails keeps its ticket for the next pass instead of telling nobody.
+async fn file_decided(
+    notify: &NotifyDeps,
+    board_id: &str,
+    ev: board_prefs::BoardEvent,
+    decided: Vec<(Candidate, Delivery, ChannelOverride)>,
+    actor: &str,
+    n: Option<&TaskNotification>,
+    line: &str,
+) -> HashSet<String> {
+    if decided.is_empty() {
+        return HashSet::new();
+    }
+    let (mut ticket, activity) = split(decided);
     // Self-exclusion by actor EMAIL: the actor id is an email for humans, a
     // model id for agents and `judge:<model>` for the platform, and only the
     // email names a row in users.
@@ -548,20 +576,32 @@ async fn bystanders(
     have: &[Candidate],
     skip: &HashSet<String>,
 ) -> Vec<Candidate> {
-    if !board_prefs::board_wide_possible(pg, board_id).await {
-        return Vec::new();
-    }
-    match talaria_boards::board_audience(pg, board_id).await {
-        Ok(all) => all
-            .into_iter()
-            .filter(|u| !skip.contains(u) && !have.iter().any(|c| &c.user_id == u))
-            .map(Candidate::bystander)
-            .collect(),
-        Err(e) => {
+    try_bystanders(pg, board_id, have, skip)
+        .await
+        .unwrap_or_else(|e| {
             tracing::error!("tasks: board audience read failed: {e}");
             Vec::new()
-        }
+        })
+}
+
+/// `bystanders`, with a membership read that fails answered as the caller's
+/// error: the due scan retries the ticket rather than leave out the people
+/// who chose to hear the whole board.
+async fn try_bystanders(
+    pg: &PgPool,
+    board_id: &str,
+    have: &[Candidate],
+    skip: &HashSet<String>,
+) -> Result<Vec<Candidate>, sqlx::Error> {
+    if !board_prefs::board_wide_possible(pg, board_id).await {
+        return Ok(Vec::new());
     }
+    Ok(talaria_boards::board_audience(pg, board_id)
+        .await?
+        .into_iter()
+        .filter(|u| !skip.contains(u) && !have.iter().any(|c| &c.user_id == u))
+        .map(Candidate::bystander)
+        .collect())
 }
 
 /// ONE counting row per board per person for the events on tickets they are
@@ -648,6 +688,7 @@ async fn file_ticket_rows(
         let mut meta = NotifyMeta {
             entity: Some(NotifyEntity::new(entity::TASK, n.task_id.as_str())),
             actor: Some(who.clone()),
+            group_key: n.group_key.clone(),
             channels: *channels,
             ..Default::default()
         };
@@ -828,6 +869,7 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
                 href: Some(href.clone()),
                 task_id: id.clone(),
                 status_burst: None,
+                group_key: None,
             };
             let line = assigned.title.clone();
             notify_ticket_event(
@@ -898,6 +940,7 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
                     href: Some(href.clone()),
                     task_id: id.clone(),
                     status_burst: Some(now),
+                    group_key: None,
                 };
                 let line = status.title.clone();
                 notify_ticket_event(
@@ -1402,6 +1445,7 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
                 href: Some(format!("/boards/{board_id}/{id_for_href}")),
                 task_id: id_for_href.clone(),
                 status_burst: None,
+                group_key: None,
             };
             let line = assigned.title.clone();
             let candidates: Vec<Candidate> = human_assignee_ids(&assignees)
@@ -3247,6 +3291,7 @@ pub async fn complete_quality_review(
                     href: Some(href),
                     task_id: id,
                     status_burst: Some(now),
+                    group_key: None,
                 }),
                 &line,
             )
@@ -3783,6 +3828,23 @@ mod tests {
             ]
         );
         assert_eq!(activity, [("b".to_string(), quiet)]);
+    }
+
+    // A board's membership that cannot be read: `bystanders` answers nobody
+    // (an event's own audience still hears it), `try_bystanders` answers the
+    // error, so the due scan keeps the ticket for its next pass rather than
+    // leave out the people who chose the whole board. No database: the pool
+    // points at a closed port (the board-wide probe answers true on a fault).
+    #[tokio::test]
+    async fn a_failed_membership_read_is_the_due_scans_to_retry() {
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(300))
+            .connect_lazy("postgres://nobody@127.0.0.1:9/none")
+            .unwrap();
+        let board = "00000000-0000-0000-0000-00000000000b";
+        let none = HashSet::new();
+        assert!(try_bystanders(&pg, board, &[], &none).await.is_err());
+        assert!(bystanders(&pg, board, &[], &none).await.is_empty());
     }
 
     /// The decisions `spawn_update_notices` makes for one person a patch
