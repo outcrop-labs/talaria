@@ -180,6 +180,22 @@ pub async fn live_run(
     .await
 }
 
+/// The runs engine's real edges, assembled here rather than read from the
+/// boot-injected dispatch seam: a process with the schedule off never runs the
+/// boot wiring, and a person's Sync now must still start (and drive) its run.
+async fn run_deps(state: &AppState) -> Result<talaria_runs_run::RunDeps, String> {
+    let redis = state
+        .redis()
+        .await
+        .map_err(|e| format!("the sync could not be started: redis is unavailable ({e})"))?;
+    let realtime = talaria_realtime::RealtimeDeps::publish_only(Some(redis.clone()));
+    Ok(talaria_runs_decide::assembly::real_run_deps(
+        state.pg.clone(),
+        redis,
+        realtime,
+    ))
+}
+
 fn is_unique_violation(e: &sqlx::Error) -> bool {
     e.as_database_error().and_then(|d| d.code()).as_deref() == Some("23505")
 }
@@ -201,15 +217,7 @@ pub async fn start_run(
     {
         return Ok(Started::Live(id));
     }
-    let redis = state
-        .redis()
-        .await
-        .map_err(|e| format!("the sync could not be started: redis is unavailable ({e})"))?;
-    let realtime = talaria_realtime::RealtimeDeps::publish_only(Some(redis.clone()));
-    let Some(build) = talaria_tasks_types::BUILD_DISPATCH.get() else {
-        return Err("the run engine is not wired in this process".into());
-    };
-    let deps = build(state.pg.clone(), redis, realtime);
+    let deps = run_deps(state).await?;
     let input = Input {
         sync_id: sync.id.clone(),
         mode,
@@ -263,12 +271,7 @@ pub async fn cancel_live(state: &AppState, board_id: &str, reason: &str) -> Resu
     else {
         return Ok(());
     };
-    let redis = state.redis().await.map_err(|e| e.to_string())?;
-    let realtime = talaria_realtime::RealtimeDeps::publish_only(Some(redis.clone()));
-    let Some(build) = talaria_tasks_types::BUILD_DISPATCH.get() else {
-        return Err("the run engine is not wired in this process".into());
-    };
-    let deps = build(state.pg.clone(), redis, realtime);
+    let deps = run_deps(state).await?;
     talaria_runs_run::cancel_run(&id, Some(reason.to_string()), &deps)
         .await
         .map(|_| ())

@@ -4360,6 +4360,7 @@ dependencies = [
  "talaria-notify",
  "talaria-platform-events",
  "talaria-realtime",
+ "talaria-runs-decide",
  "talaria-runs-define",
  "talaria-runs-run",
  "talaria-scheduler",

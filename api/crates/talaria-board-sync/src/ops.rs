@@ -414,7 +414,8 @@ pub async fn replace_credential(
     sqlx::query(
         "update board_syncs set credential_sealed = $2, credential_hint = $3, credential_account = $4, \
            state = case when state = 'needs_credential' then 'active' else state end, \
-           next_sync_at = case when interval_minutes is null then null else now() end, \
+           next_sync_at = case when interval_minutes is null then null \
+                               else now() + (interval_minutes * interval '1 minute') end, \
            run_problems = '[]'::jsonb, updated_at = now() \
          where id = $1::uuid",
     )

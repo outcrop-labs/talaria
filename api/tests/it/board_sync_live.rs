@@ -287,7 +287,6 @@ async fn imported(pg: &PgPool, board: &str) -> Vec<(String, String, String, Opti
 #[ignore]
 async fn a_board_syncs_from_a_clickup_list_end_to_end() {
     crate::support::wire_boot_seams();
-    let _ = talaria_tasks_types::BUILD_DISPATCH.set(Arc::new(talaria_work_dispatch::dispatch_deps));
     let cu = stand_in().await;
     // SAFETY: set once, before the first ClickUp call, to the values every
     // reader in this binary may see.

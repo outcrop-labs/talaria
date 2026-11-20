@@ -1,0 +1,21 @@
+- **A board can sync from a ClickUp list (part 1: the engine and its API; the Board settings tab follows).** A board owner connects one list with a ClickUp personal token, through `POST /api/boards/{id}/sync` after `…/sync/browse` and a no-write `…/sync/preview`. The sync is one way, ClickUp → Talaria. A durable `clickup-sync` run makes or updates one ticket per task through the task engine: status by an explicit, saved mapping, assignees matched by email, priority, dates, labels, the description, attachments up to 25 MB, and comments attributed as "Name (ClickUp)" with their original times. It runs on the new required `board-sync` job (manual, 15 minutes, hourly or daily) and on Sync now (`POST …/sync/runs`, owner or editor). `POST /api/tasks/{id}/resync` forces one ticket to match ClickUp.
+  - **Keyed, quiet, never destructive.** Re-runs update and never duplicate: tickets are keyed by `tasks.external_key`, comments by `channel_messages.import_key`. The sync's writes notify nobody, and the board gets one live event per batch. Archived, deleted and moved tasks mark their tickets and are never deleted, and a ticket deleted in Talaria is never made again.
+  - **Who wins a conflict.** The rule is field by field: a ClickUp change wins for the fields ClickUp changed, and Talaria edits to other fields stay. Labels and human assignees merge as sets, and agent assignees are never touched.
+  - **Unmapped statuses.** They park in the first open column without agent pickup and are listed as problems, never guessed.
+  - **Moves the sync will not make.** It never moves a ticket out of review or Blocked, never out of a column where an agent's work session is live, and never into a pickup column while the ticket has agent assignees. It lists a problem instead.
+  - **The token belongs to the board.** It is sealed in `board_syncs`, re-sealed by key rotation and listed in Admin → Secrets. When ClickUp refuses it, the run stops before reading any task, the connection waits for a new token, and the board's owners and the admins get one grouped notice. Replacing the token keeps the mapping and the history.
+  - The engine and runbook are in docs/BOARD-SYNC.md.
+  Verified: CI (this PR's checks) is the proof: clippy, the unit suites (the client against JSON fixtures; the run's checkpoint handling against an in-memory ClickUp and Talaria covering re-entry, rate-limit back-off, the time budget, a crash between create and move, the move guards, remap, tombstones and the sweep guard) and the new `board_sync_live` module, which drives the routes and the runs engine against a loopback ClickUp stand-in. No real ClickUp workspace was available, so the fixtures follow ClickUp's documented shapes.
+  - **Locally exercised:** a worktree stack (an api built locally, a fresh database) against a ClickUp stand-in serving the exact v2 paths, every case by authed curl:
+    - browse and preview;
+    - the first import: 8 tickets with the closed task moved to done in two writes, QA parked in Inbox with a problem, sub- and sub-sub-tasks under the top-level parent, Dana assigned and Sam, Zed and a guest each listed, the 52-character tag and a 24,000-character description cut, three comments and a threaded reply in time order, the small file copied and the 212 MB file never fetched, and zero notifications;
+    - Sync now twice with no duplicates;
+    - a Talaria title edit surviving a ClickUp priority change, then ClickUp winning on the same field, then a forced re-sync;
+    - a remap that moved only the ticket the person had not touched, with no ClickUp calls;
+    - archive, delete and move marked, and a ClickUp close held because the ticket was in review;
+    - a ticket deleted in Talaria not made again;
+    - a revoked token: needs_credential, one notice each for the owner and the admin, and 409 on Sync now. Replacing the token restored the sync with the mapping kept;
+    - Admin → Secrets listing the token, and a key rotation re-sealing it with the next sync still reading it;
+    - the job starting a due sync and advancing the schedule;
+    - disconnect keeping the tickets editable, and a reconnect re-attaching all eight items with no duplicates;
+    - with `TALARIA_SCHEDULER=off`, a schedule-off warning, and Sync now still syncing.

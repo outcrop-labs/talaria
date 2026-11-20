@@ -22,6 +22,7 @@ talaria-clickup = { workspace = true }
 talaria-notify = { workspace = true }
 talaria-platform-events = { workspace = true }
 talaria-realtime = { workspace = true }
+talaria-runs-decide = { workspace = true }
 talaria-runs-define = { workspace = true }
 talaria-runs-run = { workspace = true }
 talaria-scheduler = { workspace = true }
