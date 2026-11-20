@@ -10,6 +10,14 @@
 // besides). A board that is archived is skipped: an archived board takes no
 // imports.
 //
+// A DUE SYNC WAITS OUT A RUN THAT READS NO LIST. While the board's live run
+// is a remap or a one-ticket re-sync, the connection stays due and unclaimed:
+// claiming it would only meet that run (one live run per board) and push the
+// list read a whole interval out. The next tick after that run ends claims
+// it. That is what makes Resume prompt (it sets next_sync_at to now, store.rs
+// write_edit) when the owner fixed the mapping while paused — the remap that
+// edit started may still be running when they press Resume.
+//
 // It also prunes: finished sync runs older than RUN_KEEP_DAYS go, except each
 // connection's last run (the status reads it). One run per board per tick is
 // otherwise a row a minute forever.
@@ -43,6 +51,8 @@ pub fn register_board_sync_job(state: AppState) {
 }
 
 /// Claim the due connections and push their next time out, in one statement.
+/// A board whose live run reads no list (a remap, a one-ticket re-sync) is
+/// left due for a later tick (see the header).
 async fn claim_due(pg: &sqlx::PgPool) -> Result<Vec<String>, sqlx::Error> {
     let rows: Vec<(String,)> = sqlx::query_as(
         "with due as ( \
@@ -50,6 +60,9 @@ async fn claim_due(pg: &sqlx::PgPool) -> Result<Vec<String>, sqlx::Error> {
            where s.state = 'active' and s.interval_minutes is not null \
              and s.next_sync_at is not null and s.next_sync_at <= now() \
              and b.archived_at is null \
+             and not exists (select 1 from runs r where r.kind = $2 and r.subject_id = s.board_id::text \
+                             and r.state in ('queued', 'running', 'awaiting') \
+                             and r.input->>'mode' in ('remap', 'ticket')) \
            order by s.next_sync_at asc limit $1 \
            for update of s skip locked \
          ) \
@@ -58,6 +71,7 @@ async fn claim_due(pg: &sqlx::PgPool) -> Result<Vec<String>, sqlx::Error> {
          from due where s.id = due.id returning s.id::text",
     )
     .bind(CLAIM_LIMIT)
+    .bind(KIND)
     .fetch_all(pg)
     .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())

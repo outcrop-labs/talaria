@@ -331,6 +331,22 @@ export function pausedHint(sync: Pick<BoardSync, 'pausedBy' | 'pausedAt'>, now: 
   return `${pausedLine(sync, now)} — ${canResume ? 'resume it in Board settings → Sync to sync again' : 'a board owner resumes it in Board settings → Sync'}`
 }
 
+const CADENCE_PHRASE: Record<number, string> = { 15: 'every 15 minutes', 60: 'every hour', 1440: 'once a day' }
+
+/** The toast after Resume, from the projection the PUT answered. A scheduled
+ *  sync is due at once (the engine sets next_sync_at to now), so the
+ *  scheduler's next tick catches the board up; a manual one waits for Sync
+ *  now; with the schedule off on this instance only Sync now syncs. The toast
+ *  host shows a body on one truncated line, so each fits in about 45
+ *  characters. */
+export function resumedToast(sync: Pick<BoardSync, 'intervalMinutes' | 'schedulerArmed'>): { title: string; body: string } {
+  const title = 'Sync resumed'
+  if (sync.intervalMinutes == null) return { title, body: 'Manual — press Sync now to catch up.' }
+  if (!sync.schedulerArmed) return { title, body: 'Scheduled syncs are off — press Sync now.' }
+  const every = CADENCE_PHRASE[sync.intervalMinutes] ?? `every ${sync.intervalMinutes} minutes`
+  return { title, body: `Syncs within a minute, then ${every}.` }
+}
+
 /** What the board's chip says, most urgent first: a dead credential, a run
  *  going, paused, a list that is gone, a failed run, the schedule switched off
  *  on this instance, overdue, then the last sync. NEVER SILENTLY STALE — every

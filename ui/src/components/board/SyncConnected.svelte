@@ -25,6 +25,7 @@
     lastRunNote,
     pausedHint,
     replaceSyncCredential,
+    resumedToast,
     sameMap,
     statusMapOf,
     syncIntake,
@@ -98,11 +99,12 @@
     }
   }
 
-  /** One edit of the connection; true when the server took it. */
-  async function update(input: UpdateInput, what: string, failed: string): Promise<boolean> {
+  /** One edit of the connection; the projection the server answered, or null
+   *  when it refused. */
+  async function update(input: UpdateInput, what: string, failed: string): Promise<{ sync: BoardSync } | null> {
     const r = await act(what, () => updateBoardSync(board.id, input), failed)
     if (r) put(r)
-    return !!r
+    return r
   }
 
   async function saveMapping() {
@@ -121,13 +123,13 @@
     update({ intervalMinutes: cadenceMinutes(id) }, 'cadence', 'Could not change the schedule')
 
   async function setPaused(pause: boolean) {
-    if (await update({ paused: pause }, 'pause', pause ? 'Could not pause the sync' : 'Could not resume the sync')) {
-      pushToast(
-        pause
-          ? { title: 'Sync paused', body: 'Nothing syncs from ClickUp until you resume it — not the schedule, Sync now or a ticket’s re-sync.', tone: 'success' }
-          : { title: 'Sync resumed', body: 'The schedule is back on, and Sync now works again.', tone: 'success' },
-      )
-    }
+    const r = await update({ paused: pause }, 'pause', pause ? 'Could not pause the sync' : 'Could not resume the sync')
+    if (!r) return
+    pushToast(
+      pause
+        ? { title: 'Sync paused', body: 'Nothing syncs from ClickUp until you resume it — not the schedule, Sync now or a ticket’s re-sync.', tone: 'success' }
+        : { ...resumedToast(r.sync), tone: 'success' },
+    )
   }
 
   async function runNow() {

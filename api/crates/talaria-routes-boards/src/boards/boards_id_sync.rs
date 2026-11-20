@@ -11,7 +11,7 @@
 //            mapping change re-places what the old mapping placed; `paused`
 //            true freezes the sync (no scheduled run, Sync now or re-sync
 //            until it is resumed, and the live run is stopped), false
-//            resumes it — owner.
+//            resumes it, and a scheduled sync is due at once — owner.
 //   DELETE disconnect → {ok}: future syncs stop; every imported ticket stays,
 //            editable, owned by Talaria — owner.
 // The token is never logged and never answered; the projection carries its
@@ -220,7 +220,8 @@ pub async fn put(
         Ok(v) => v,
         Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    // true freezes the sync until an owner resumes it; false resumes it.
+    // true freezes the sync until an owner resumes it; false resumes it, and a
+    // scheduled sync runs at the scheduler's next tick.
     let paused = match optional_boolean_member(obj, "paused") {
         Ok(v) => v,
         Err(_) => {

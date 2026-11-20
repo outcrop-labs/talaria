@@ -1618,6 +1618,279 @@ async fn a_pause_freezes_the_sync_until_an_owner_resumes_it_run() {
     assert_eq!(status, StatusCode::OK);
 }
 
+// ── Resume syncs promptly ───────────────────────────────────────────────────
+
+/// Seconds from the database's now to the connection's next sync — negative
+/// once it is past — or None when it has none.
+async fn next_sync_in_s(pg: &PgPool, board: &str) -> Option<f64> {
+    let (s,): (Option<f64>,) = sqlx::query_as(
+        "select extract(epoch from next_sync_at - now())::float8 from board_syncs \
+         where board_id = $1::uuid and state <> 'disconnected'",
+    )
+    .bind(board)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    s
+}
+
+/// The board's newest sync run and its mode.
+async fn newest_run(pg: &PgPool, board: &str) -> (String, String) {
+    sqlx::query_as(
+        "select id::text, coalesce(input->>'mode', '') from runs \
+         where kind = 'clickup-sync' and subject_id = $1 order by created_at desc limit 1",
+    )
+    .bind(board)
+    .fetch_one(pg)
+    .await
+    .unwrap()
+}
+
+#[test]
+#[ignore]
+fn a_resumed_sync_catches_up_at_the_next_tick_and_a_manual_one_waits_for_sync_now() {
+    RT.block_on(
+        a_resumed_sync_catches_up_at_the_next_tick_and_a_manual_one_waits_for_sync_now_run(),
+    );
+}
+
+async fn a_resumed_sync_catches_up_at_the_next_tick_and_a_manual_one_waits_for_sync_now_run() {
+    crate::support::wire_boot_seams();
+    let cu = stand_in().await;
+    // Held to the end: the module's other test that ticks the scheduler (the
+    // pause test) holds it too, so no tick of theirs claims this board.
+    let _clickup = point_at(&cu).await;
+    let state = live_app_state().await;
+    let pg = state.pg.clone();
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let list = format!("R{tag}");
+    let task_id = format!("RA{tag}");
+    let (board, _owner, [own, ed, view]) = board_with_people(&state, &tag, "Resume board").await;
+    cu.world.lock().unwrap().lists.insert(
+        list.clone(),
+        vec![cu_task(
+            &task_id,
+            "to do",
+            false,
+            1_900_000_000_000,
+            json!({"list": {"id": list}}),
+        )],
+    );
+    // Daily: one interval out is a whole day, which is what Resume must not
+    // wait for.
+    let (status, body) = call_json(
+        &state,
+        "POST",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({
+            "token": "pk_resume_test_token_2468",
+            "listId": list,
+            "statusMap": {"to do": "inbox", "in progress": "in_progress"},
+            "intervalMinutes": 1440
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (s, err) = wait_run(&pg, body["runId"].as_str().unwrap()).await;
+    assert_eq!(s, "done", "{err:?}");
+    let original = format!("ClickUp task {task_id}");
+    assert_eq!(ticket(&pg, &board, &task_id).await["title"], original);
+    assert!(
+        next_sync_in_s(&pg, &board).await.unwrap() > 1439.0 * 60.0,
+        "a connected daily sync runs next a day out"
+    );
+
+    // ── a scheduled sync: Resume makes it due now ──────────────────────────
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"paused": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"]["state"], "paused");
+    assert_eq!(next_sync_in_s(&pg, &board).await, None);
+    let renamed = "Renamed in ClickUp during the freeze";
+    set_task(
+        &cu,
+        &list,
+        cu_task(
+            &task_id,
+            "to do",
+            false,
+            1_900_000_100_000,
+            json!({"list": {"id": list}, "name": renamed}),
+        ),
+    );
+
+    // The owner fixed the mapping while paused, and its remap is still
+    // running when they press Resume. An `awaiting` row stands in for that
+    // live run: the reclaim sweep never advances an awaiting row, so it stays
+    // live exactly as long as this test holds it.
+    let (sync_id,): (String,) = sqlx::query_as(
+        "select id::text from board_syncs where board_id = $1::uuid and state <> 'disconnected'",
+    )
+    .bind(&board)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    let (remap,): (String,) = sqlx::query_as(
+        "insert into runs (kind, subject_type, subject_id, state, phase, input) \
+         values ('clickup-sync', 'board', $1, 'awaiting', 'Applying the new status mapping', \
+           jsonb_build_object('syncId', $2::text, 'mode', 'remap')) returning id::text",
+    )
+    .bind(&board)
+    .bind(&sync_id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"paused": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"]["state"], "active");
+    assert_eq!(body["sync"]["intervalMinutes"], 1440);
+    assert!(body["sync"]["nextSyncAt"].is_string(), "{}", body["sync"]);
+    let due = next_sync_in_s(&pg, &board).await.unwrap();
+    assert!(
+        (-30.0..=1.0).contains(&due),
+        "a resumed scheduled sync is due now, not an interval out: {due}s"
+    );
+    let (status, st) = call_json(
+        &state,
+        "GET",
+        &format!("/api/boards/{board}/sync"),
+        Some(&view),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(st["sync"]["overdue"], false, "{}", st["sync"]);
+
+    // The tick leaves it due while the board's live run reads no list: a
+    // claim would only meet that run and push the read a day out.
+    let runs = sync_runs(&pg, &board).await;
+    talaria_board_sync::job::tick(&state).await.unwrap();
+    assert_eq!(
+        sync_runs(&pg, &board).await,
+        runs,
+        "no run beside the remap"
+    );
+    assert!(
+        next_sync_in_s(&pg, &board).await.unwrap() <= 1.0,
+        "the tick claimed the sync while a remap held the board"
+    );
+    assert_eq!(ticket(&pg, &board, &task_id).await["title"], original);
+
+    // The remap ends; the next tick claims the sync and the board catches up.
+    sqlx::query(
+        "update runs set state = 'done', result = '{}'::jsonb, finished_at = now(), \
+           updated_at = now() where id = $1::uuid",
+    )
+    .bind(&remap)
+    .execute(&pg)
+    .await
+    .unwrap();
+    let hits = list_hits(&cu, &list, &[&task_id]);
+    talaria_board_sync::job::tick(&state).await.unwrap();
+    assert_eq!(sync_runs(&pg, &board).await, runs + 1);
+    let (caught_up, mode) = newest_run(&pg, &board).await;
+    assert_eq!(mode, "scheduled", "the scheduler started the catch-up");
+    let (s, err) = wait_run(&pg, &caught_up).await;
+    assert_eq!(s, "done", "{err:?}");
+    assert_eq!(
+        ticket(&pg, &board, &task_id).await["title"],
+        renamed,
+        "the catch-up applied what ClickUp changed during the freeze"
+    );
+    assert!(list_hits(&cu, &list, &[&task_id]) > hits);
+    assert!(
+        next_sync_in_s(&pg, &board).await.unwrap() > 1439.0 * 60.0,
+        "after the catch-up the schedule carries on a day out"
+    );
+
+    // ── a manual sync: Resume leaves it unscheduled ────────────────────────
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"intervalMinutes": null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["sync"]["nextSyncAt"].is_null(), "{}", body["sync"]);
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"paused": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"]["state"], "paused");
+    let renamed_again = "Renamed in ClickUp during the second freeze";
+    set_task(
+        &cu,
+        &list,
+        cu_task(
+            &task_id,
+            "to do",
+            false,
+            1_900_000_200_000,
+            json!({"list": {"id": list}, "name": renamed_again}),
+        ),
+    );
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"paused": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"]["state"], "active");
+    assert!(body["sync"]["intervalMinutes"].is_null());
+    assert!(
+        body["sync"]["nextSyncAt"].is_null(),
+        "a resumed manual sync stays unscheduled: {}",
+        body["sync"]
+    );
+    assert_eq!(next_sync_in_s(&pg, &board).await, None);
+    let runs = sync_runs(&pg, &board).await;
+    talaria_board_sync::job::tick(&state).await.unwrap();
+    assert_eq!(
+        sync_runs(&pg, &board).await,
+        runs,
+        "the schedule ran a manual sync"
+    );
+    assert_eq!(ticket(&pg, &board, &task_id).await["title"], renamed);
+    // Sync now is how a manual sync catches up.
+    synced(&state, &board, &ed).await;
+    assert_eq!(ticket(&pg, &board, &task_id).await["title"], renamed_again);
+
+    let (status, _) = call_json(
+        &state,
+        "DELETE",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
 // ── workchains: only a move into a done column hands a step on ──────────────
 
 /// The real push side, the way the process wires it at boot (talaria-jobs):

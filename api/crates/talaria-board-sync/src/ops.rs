@@ -15,7 +15,10 @@
 // and an editor's Sync now must not undo that. The pause records who and when
 // (paused_by, paused_at) for the board to show. A mapping edit still applies
 // while paused, through a remap run that reads nothing from ClickUp, and
-// Disconnect works from any state.
+// Disconnect works from any state. RESUME IS PROMPT: it makes a scheduled
+// sync due at once (store::write_edit), so the scheduler's next tick catches
+// the board up on what changed during the freeze; a manual sync stays
+// unscheduled and waits for Sync now.
 
 use serde::Serialize;
 use serde_json::{Value, json};

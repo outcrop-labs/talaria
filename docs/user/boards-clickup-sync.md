@@ -145,9 +145,10 @@ when. You can still change the status mapping while the sync is paused. Tickets 
 the new mapping at once, without reading ClickUp. You can also change the schedule,
 replace the token or disconnect.
 
-A board owner presses **Resume**, in the chip's panel or in Board settings → sync. The
-schedule starts again, and **Sync now** works again. The next sync picks up everything
-that changed in ClickUp while the sync was paused.
+A board owner presses **Resume**, in the chip's panel or in Board settings → sync, and
+**Sync now** works again. A sync on a schedule runs within a minute of Resume and picks
+up everything that changed in ClickUp while it was paused. After that it runs on its
+schedule again. A manual sync does not run on Resume: press **Sync now** to catch up.
 
 ## Problems, and how to fix each
 

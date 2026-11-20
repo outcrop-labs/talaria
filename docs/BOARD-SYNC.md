@@ -218,6 +218,11 @@ registration refuses to arm the schedule. Each tick:
 
 - starts a run for every active connection that is due (a paused one never is);
 - moves the connection's next sync out by one interval, whatever the outcome;
+- leaves a due connection unclaimed while its board's live run reads no list (a remap or
+  a one-ticket re-sync). Claiming it would only meet that run, one live run per board,
+  and push the list read a whole interval out. The next tick after that run ends claims
+  it. This keeps Resume prompt when the owner fixed the mapping while paused, since the
+  remap that edit started can still be running;
 - skips archived boards;
 - prunes finished sync runs older than 14 days, keeping each connection's last run.
 
@@ -259,19 +264,24 @@ sync is paused, nothing reads ClickUp:
 are a board owner's, the same people who configure the sync. The pause records who
 pressed it and when (`board_syncs.paused_by`, `paused_at`). The status answers them as
 `pausedBy` (`{id, name, email}`) and `pausedAt`, so the board shows "Paused by Dana Reyes ·
-5m ago" to every member. Resume clears both, turns the connection active, and sets the
-next sync one interval out. A `PUT` that names no `paused` never changes the state: the
-write works it out from the row it locks, not from an earlier read, so a mapping or
-schedule edit saved just as someone presses Pause leaves the pause in place. Whether the
-map changed (a new map version and a remap) is read from that row too, so a map saved
-over another owner's edit still remaps.
+5m ago" to every member. Resume clears both and turns the connection active. On a
+schedule it sets the next sync to now, not one interval out, so the scheduler's next tick
+(within a minute) claims it and the board catches up on what changed in ClickUp during
+the freeze; that run reads from the watermark the pause kept, and the schedule carries
+on from there. A manual sync stays unscheduled on Resume and waits for **Sync now**.
+
+A `PUT` that names no `paused` never changes the state: the write works it out from the
+row it locks, not from an earlier read, so a mapping or schedule edit saved just as
+someone presses Pause leaves the pause in place. Whether the map changed (a new map
+version and a remap) is read from that row too, so a map saved over another owner's edit
+still remaps.
 
 What still works while paused:
 
 - **a mapping change.** It applies through a remap run, which reads nothing from ClickUp
   ("fixing the mapping" is a reason to pause), so the owner sees the fix at once;
 - **the schedule and the options**, which take effect on Resume. A paused sync has no next
-  sync;
+  sync; a scheduled one is due the moment it resumes;
 - **Replace credential.** The sync stays paused, with no next sync and no run. A sync whose
   token died while it was paused returns to paused, not active, when the token is
   replaced;
