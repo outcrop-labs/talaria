@@ -252,7 +252,10 @@ The number in brackets is the job's `max_run_ms`. It is also how long a process 
 mid-pass holds the job's lease, so it bounds how late the first deferred push or mail
 after a crash can be. It is kept short on purpose: a pass that outlives it is reported as
 hung, and a second instance starting meanwhile is harmless, because every claim skips
-locked rows.
+locked rows. `task-due` is the exception: its claim takes no lock, so the lease, renewed
+while a pass runs, is all that keeps two passes apart. A pass that overlaps another anyway
+(its lease lost to a Redis fault mid-pass) files the tickets both read again, into the
+same open `task_due` row: a second alert, never a second row.
 
 Three environment variables exist for live tests only. Each logs a warning at boot:
 

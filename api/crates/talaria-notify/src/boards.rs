@@ -578,24 +578,49 @@ fn fold(candidates: &[Candidate]) -> Vec<Candidate> {
 /// their settings for it and their defaults. A read that fails is logged
 /// and answers the built-in for everyone — the audiences the producers had
 /// before boards had a setting — never silence.
+///
+/// Not for an event whose built-in IS silence: no built-in names `Due`, so
+/// for due dates that fallback would tell nobody. The `task-due` scan asks
+/// `try_listeners` and keeps the ticket for its next pass instead.
 pub async fn listeners(
     pg: &PgPool,
     board_id: &str,
     ev: BoardEvent,
     candidates: &[Candidate],
 ) -> Vec<(Candidate, Delivery)> {
-    let folded = fold(candidates);
-    if folded.is_empty() {
-        return Vec::new();
-    }
-    let ids: Vec<String> = folded.iter().map(|c| c.user_id.clone()).collect();
-    let prefs = match read_prefs(pg, board_id, &ids).await {
-        Ok(p) => p,
+    match try_listeners(pg, board_id, ev, candidates).await {
+        Ok(decided) => decided,
         Err(e) => {
             tracing::error!("[notifications] board settings read failed: {e}");
-            HashMap::new()
+            decide(fold(candidates), &HashMap::new(), ev)
         }
-    };
+    }
+}
+
+/// `listeners`, with a read that fails answered as the caller's error rather
+/// than the built-in.
+pub async fn try_listeners(
+    pg: &PgPool,
+    board_id: &str,
+    ev: BoardEvent,
+    candidates: &[Candidate],
+) -> Result<Vec<(Candidate, Delivery)>, sqlx::Error> {
+    let folded = fold(candidates);
+    if folded.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<String> = folded.iter().map(|c| c.user_id.clone()).collect();
+    let prefs = read_prefs(pg, board_id, &ids).await?;
+    Ok(decide(folded, &prefs, ev))
+}
+
+/// Each folded candidate's delivery from the settings read for them (a
+/// person missing from `prefs` has the built-in).
+fn decide(
+    folded: Vec<Candidate>,
+    prefs: &HashMap<String, (Option<BoardPref>, Option<BoardPref>)>,
+    ev: BoardEvent,
+) -> Vec<(Candidate, Delivery)> {
     folded
         .into_iter()
         .map(|c| {
@@ -693,7 +718,9 @@ fn hears_board(stored: &Value) -> bool {
 /// board and no more. A read that fails answers true: the full read is the
 /// safe side. `hears_due` below is the same predicate over a stored setting,
 /// pinned to `BoardPref::wants(Due)` for every setting; the SQL is exercised
-/// live (`task_due_live`).
+/// leg by leg live (`task_due_live`: a Custom row naming due throughout, and
+/// in `a_default_or_all_opts_in_as_well` a default naming due on a board where
+/// nobody has a row, then a board row of All).
 pub async fn due_possible(pg: &PgPool, board_id: &str) -> bool {
     match sqlx::query_scalar::<_, bool>(
         "select exists (select 1 from board_notify_prefs \
@@ -1470,6 +1497,33 @@ mod tests {
         // A daily digest holds them for the digest.
         let digest = BoardPref::preset(Preset::All, Cadence::Digest);
         assert_eq!(resolve(&digest, Due, &involved), Delivery::Digest);
+    }
+
+    // A settings read that fails: `listeners` answers the built-in, which
+    // keeps a status move's audience but tells nobody of a due date, so the
+    // due scan asks `try_listeners`, which hands the error back for the scan
+    // to retry. No database: the pool points at a closed port.
+    #[tokio::test]
+    async fn a_failed_settings_read_is_the_due_scans_to_retry() {
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(300))
+            .connect_lazy("postgres://nobody@127.0.0.1:9/none")
+            .unwrap();
+        let board = "00000000-0000-0000-0000-00000000000b";
+        let who = [Candidate::involved("00000000-0000-0000-0000-000000000001")];
+        assert!(try_listeners(&pg, board, Due, &who).await.is_err());
+        let status = listeners(&pg, board, Status, &who).await;
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].1, Delivery::Ticket, "the built-in keeps it");
+        let due = listeners(&pg, board, Due, &who).await;
+        assert_eq!(due[0].1, Delivery::Skip, "the built-in is silence");
+        // Nobody to decide for: no read, so no error.
+        assert!(
+            try_listeners(&pg, board, Due, &[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

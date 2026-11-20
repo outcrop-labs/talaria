@@ -275,6 +275,12 @@ two thresholds of a ticket's due date: **due soon** (less than a day ahead) and
   while nobody on its board could hear one is marked all the same, with no audience read
   (`boards::due_possible`, one query per board per pass). A setting changed later applies
   to the next threshold, never to one already passed.
+- **A read that fails is retried, never silence.** Elsewhere a settings or membership
+  read that fails falls back to the built-in, which keeps the audiences producers had
+  before boards had a setting. The built-in names no due date, so for a reminder that
+  fallback would tell nobody and then mark the ticket. The scan's reads (the ticket's
+  audience, the board's membership, the settings) answer their error instead, and the
+  ticket stays unmarked for the next pass.
 - **Skipped:** archived tickets, tickets on archived boards, and closed ones (a done
   column on the ticket's own board, or failed or cancelled). A closed ticket is not
   marked, so one reopened while its due date is still in the band is still reminded.

@@ -48,7 +48,7 @@ use talaria_scheduler::{JobName, JobSpec};
 use talaria_statuses::OFF_BOARD_STATUSES;
 use talaria_tasks_types::json_strings;
 
-use super::{TaskNotification, bystanders, notify_ticket_event, ticket_audience};
+use super::{TaskNotification, file_decided, ticket_audience, try_bystanders};
 
 /// Who a reminder says caused it. `task_actor` answers a system actor
 /// ("Due dates") for this id: never a person, so nobody is left out as the
@@ -185,14 +185,19 @@ async fn mark(pg: &PgPool, task_id: &str, due_ms: i64, th: Threshold) -> Result<
 
 /// Tell one ticket's reminder to everyone whose setting for its board names
 /// due dates: the ticket's own audience a `task-due` row, the people who hear
-/// the whole board its activity row. An audience that cannot be read is an
-/// error, so the ticket stays unmarked and the next pass tries again.
+/// the whole board its activity row. Every read behind it — the ticket's
+/// audience, the board's membership, the settings — answers its error rather
+/// than a fallback: the built-in other events fall back to names no due
+/// date, so for a reminder a fallback would be silence, with the ticket then
+/// marked. An error leaves the ticket unmarked and the next pass tries again.
 async fn remind(notify: &NotifyDeps, t: &DueRow, th: Threshold) -> Result<(), sqlx::Error> {
     let assignees = json_strings(&t.assignees);
     let mut candidates =
         ticket_audience(&notify.pg, &t.id, &t.board_id, &assignees, &t.created_by).await?;
-    let rest = bystanders(&notify.pg, &t.board_id, &candidates, &HashSet::new()).await;
+    let rest = try_bystanders(&notify.pg, &t.board_id, &candidates, &HashSet::new()).await?;
     candidates.extend(rest);
+    let decided =
+        board_prefs::try_listeners(&notify.pg, &t.board_id, BoardEvent::Due, &candidates).await?;
     let label = t.ticket_ref.clone().unwrap_or_else(|| t.title.clone());
     let n = TaskNotification {
         kind: "task-due".into(),
@@ -204,11 +209,11 @@ async fn remind(notify: &NotifyDeps, t: &DueRow, th: Threshold) -> Result<(), sq
         group_key: Some(group_key::task_due(&t.id)),
     };
     let line = n.title.clone();
-    notify_ticket_event(
+    file_decided(
         notify,
         &t.board_id,
         BoardEvent::Due,
-        &candidates,
+        decided,
         ACTOR,
         Some(&n),
         &line,

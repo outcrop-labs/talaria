@@ -3,10 +3,11 @@
 // nobody's setting naming due dates nobody is told, and a watch turns on
 // nothing new, but the thresholds are marked all the same; a Custom set over
 // the tickets you are in reminds you once per threshold — "due soon", then
-// "overdue" into the same row — and moving the due date re-arms it; closed,
-// archived and long-overdue tickets are not news; All puts the rest of the
-// board's reminders on its one activity row; someone who left the board hears
-// nothing.
+// "overdue" into the same row — and moving the due date re-arms it; a default
+// for every board and a board row of All opt in too; closed, archived and
+// long-overdue tickets are not news; a whole-board setting puts the rest of
+// the board's reminders on its one activity row; someone who left the board
+// hears nothing.
 // The settings go in through the REAL router with minted sessions; the scan
 // is the job's own pass (`talaria_tasks::due::tick`), run in place of waiting
 // for the scheduler, one at a time as the job's lease runs it. A pass reads
@@ -252,15 +253,17 @@ async fn ticket_ref(state: &AppState, task: &str) -> String {
 }
 
 // EXISTING USERS SEE NO CHANGE. Nobody on the board chose due dates: the
-// assignee, the creator, a viewer and a person watching the ticket themselves
-// all hear nothing — a watch turns on nothing new — and the thresholds are
-// marked all the same, so choosing due dates later never replays one that
-// already passed.
+// assignee, the creator and a viewer all hear nothing, and the thresholds
+// are marked all the same, so choosing due dates later never replays one
+// that already passed. Then a board where the creator chose them before the
+// pass, so the full read runs (the probe is true): she hears it, while the
+// assignee and a viewer watching the ticket herself, neither with a setting,
+// hear nothing — a watch turns on nothing new.
 #[tokio::test]
 #[ignore = "needs a live dev database and redis (ui/.env)"]
 async fn nobody_hears_a_due_date_until_they_opt_in() {
     let state = live_app_state().await;
-    let (_ada, _, ada_c) = mint(&state, "Ada", "admin").await;
+    let (ada, _, ada_c) = mint(&state, "Ada", "admin").await;
     let (bob, bob_e, _) = mint(&state, "Bob", "member").await;
     let (cy, cy_e, cy_c) = mint(&state, "Cy", "member").await;
     let b = board(
@@ -272,14 +275,6 @@ async fn nobody_hears_a_due_date_until_they_opt_in() {
     .await;
     let soon = ticket_due(&state, &b, &ada_c, "Soon", &bob, 60).await;
     let late = ticket_due(&state, &b, &ada_c, "Late", &bob, -5).await;
-    ok(
-        &state,
-        "POST",
-        &format!("/api/tasks/{soon}/watchers"),
-        &cy_c,
-        json!({ "watcher": cy_e }),
-    )
-    .await;
     pass(&state).await;
     assert_eq!(anyone_told(&state, &soon).await, 0, "nobody opted in");
     assert_eq!(anyone_told(&state, &late).await, 0, "nobody opted in");
@@ -301,6 +296,102 @@ async fn nobody_hears_a_due_date_until_they_opt_in() {
     pass(&state).await;
     assert_eq!(anyone_told(&state, &soon).await, 0);
     assert_eq!(anyone_told(&state, &late).await, 0);
+
+    // Ada chose due dates on this board before its ticket comes due, so the
+    // pass reads the ticket's audience and every setting in it. Cy watches
+    // the ticket herself (a deliberate watch) and has no setting; Bob is
+    // assigned and has none.
+    let b2 = board(
+        &state,
+        &ada_c,
+        "td watch",
+        &[(&bob_e, "editor"), (&cy_e, "viewer")],
+    )
+    .await;
+    set(
+        &state,
+        &b2,
+        &ada_c,
+        json!({ "preset": "custom", "events": ["due"] }),
+    )
+    .await;
+    let watched = ticket(&state, &b2, &ada_c, "Watched", &bob).await;
+    ok(
+        &state,
+        "POST",
+        &format!("/api/tasks/{watched}/watchers"),
+        &cy_c,
+        json!({ "watcher": cy_e }),
+    )
+    .await;
+    due_in(&state, &watched, 60).await;
+    pass(&state).await;
+    let rows = due_rows(&state, &ada, &watched).await;
+    assert_eq!(rows.len(), 1, "the creator chose due dates: {rows:?}");
+    assert!(
+        due_rows(&state, &cy, &watched).await.is_empty(),
+        "a watch turns on nothing new"
+    );
+    assert!(activity_rows(&state, &cy, &b2).await.is_empty());
+    assert!(
+        due_rows(&state, &bob, &watched).await.is_empty(),
+        "assigned, no setting"
+    );
+    assert_eq!(anyone_told(&state, &watched).await, 1);
+}
+
+// The other ways in: a default for every board, with no row for this board
+// (the probe's default leg reads users.notify_prefs -> 'boards'), and a
+// board row of preset All. Each person is the only one on their board with
+// anything stored, so their own leg is what opens the full read.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_default_or_all_opts_in_as_well() {
+    let state = live_app_state().await;
+    let (_ada, _, ada_c) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c) = mint(&state, "Bob", "member").await;
+    let b = board(&state, &ada_c, "td default", &[(&bob_e, "editor")]).await;
+    ok(
+        &state,
+        "PATCH",
+        "/api/notifications",
+        &bob_c,
+        json!({ "boards": { "preset": "custom", "events": ["due"] } }),
+    )
+    .await;
+    let rows: i64 =
+        sqlx::query_scalar("select count(*) from board_notify_prefs where board_id = $1::uuid")
+            .bind(&b)
+            .fetch_one(&state.pg)
+            .await
+            .unwrap();
+    assert_eq!(rows, 0, "no row for the board: only the default opts in");
+    let t = ticket(&state, &b, &ada_c, "By default", &bob).await;
+    due_in(&state, &t, 60).await;
+    pass(&state).await;
+    let heard = due_rows(&state, &bob, &t).await;
+    // Clear the default before asserting, so a failure here never leaves a
+    // due default behind to open the probe for every other board.
+    ok(
+        &state,
+        "PATCH",
+        "/api/notifications",
+        &bob_c,
+        json!({ "boards": null }),
+    )
+    .await;
+    assert_eq!(heard.len(), 1, "{heard:?}");
+    assert!(heard[0].title.ends_with(": due soon"), "{heard:?}");
+
+    // A board row of All: the probe's preset leg (All stores no events).
+    let (cy, cy_e, cy_c) = mint(&state, "Cy", "member").await;
+    let b2 = board(&state, &ada_c, "td all", &[(&cy_e, "editor")]).await;
+    set(&state, &b2, &cy_c, json!({ "preset": "all" })).await;
+    let t2 = ticket(&state, &b2, &ada_c, "All of it", &cy).await;
+    due_in(&state, &t2, 60).await;
+    pass(&state).await;
+    let rows = due_rows(&state, &cy, &t2).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
 }
 
 // A Custom set over the tickets you are in: one row per ticket, "due soon"

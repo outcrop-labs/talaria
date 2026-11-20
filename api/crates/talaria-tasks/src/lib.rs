@@ -500,8 +500,26 @@ async fn notify_ticket_event(
     if candidates.is_empty() {
         return HashSet::new();
     }
-    let (mut ticket, activity) =
-        split(board_prefs::listeners(&notify.pg, board_id, ev, candidates).await);
+    let decided = board_prefs::listeners(&notify.pg, board_id, ev, candidates).await;
+    file_decided(notify, board_id, ev, decided, actor, n, line).await
+}
+
+/// `notify_ticket_event`'s filing, from decisions already made — the due
+/// scan decides with `board_prefs::try_listeners`, so a settings read that
+/// fails keeps its ticket for the next pass instead of telling nobody.
+async fn file_decided(
+    notify: &NotifyDeps,
+    board_id: &str,
+    ev: board_prefs::BoardEvent,
+    decided: Vec<(Candidate, Delivery)>,
+    actor: &str,
+    n: Option<&TaskNotification>,
+    line: &str,
+) -> HashSet<String> {
+    if decided.is_empty() {
+        return HashSet::new();
+    }
+    let (mut ticket, activity) = split(decided);
     // Self-exclusion by actor EMAIL: the actor id is an email for humans, a
     // model id for agents and `judge:<model>` for the platform, and only the
     // email names a row in users.
@@ -550,20 +568,32 @@ async fn bystanders(
     have: &[Candidate],
     skip: &HashSet<String>,
 ) -> Vec<Candidate> {
-    if !board_prefs::board_wide_possible(pg, board_id).await {
-        return Vec::new();
-    }
-    match talaria_boards::board_audience(pg, board_id).await {
-        Ok(all) => all
-            .into_iter()
-            .filter(|u| !skip.contains(u) && !have.iter().any(|c| &c.user_id == u))
-            .map(Candidate::bystander)
-            .collect(),
-        Err(e) => {
+    try_bystanders(pg, board_id, have, skip)
+        .await
+        .unwrap_or_else(|e| {
             tracing::error!("tasks: board audience read failed: {e}");
             Vec::new()
-        }
+        })
+}
+
+/// `bystanders`, with a membership read that fails answered as the caller's
+/// error: the due scan retries the ticket rather than leave out the people
+/// who chose to hear the whole board.
+async fn try_bystanders(
+    pg: &PgPool,
+    board_id: &str,
+    have: &[Candidate],
+    skip: &HashSet<String>,
+) -> Result<Vec<Candidate>, sqlx::Error> {
+    if !board_prefs::board_wide_possible(pg, board_id).await {
+        return Ok(Vec::new());
     }
+    Ok(talaria_boards::board_audience(pg, board_id)
+        .await?
+        .into_iter()
+        .filter(|u| !skip.contains(u) && !have.iter().any(|c| &c.user_id == u))
+        .map(Candidate::bystander)
+        .collect())
 }
 
 /// ONE counting row per board per person for the events on tickets they are
@@ -3740,6 +3770,23 @@ mod tests {
         ]);
         assert_eq!(ticket, ["t", "t2"]);
         assert_eq!(activity, ["b"]);
+    }
+
+    // A board's membership that cannot be read: `bystanders` answers nobody
+    // (an event's own audience still hears it), `try_bystanders` answers the
+    // error, so the due scan keeps the ticket for its next pass rather than
+    // leave out the people who chose the whole board. No database: the pool
+    // points at a closed port (the board-wide probe answers true on a fault).
+    #[tokio::test]
+    async fn a_failed_membership_read_is_the_due_scans_to_retry() {
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(300))
+            .connect_lazy("postgres://nobody@127.0.0.1:9/none")
+            .unwrap();
+        let board = "00000000-0000-0000-0000-00000000000b";
+        let none = HashSet::new();
+        assert!(try_bystanders(&pg, board, &[], &none).await.is_err());
+        assert!(bystanders(&pg, board, &[], &none).await.is_empty());
     }
 
     /// The decisions `spawn_update_notices` makes for one person a patch
