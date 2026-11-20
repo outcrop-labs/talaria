@@ -1760,6 +1760,14 @@ async fn a_resumed_sync_catches_up_at_the_next_tick_and_a_manual_one_waits_for_s
     assert_eq!(body["sync"]["state"], "active");
     assert_eq!(body["sync"]["intervalMinutes"], 1440);
     assert!(body["sync"]["nextSyncAt"].is_string(), "{}", body["sync"]);
+    // The answer names the live remap: the Resume toast reads it to say
+    // "after this run" rather than "within a minute".
+    assert_eq!(
+        body["sync"]["liveRun"]["id"],
+        remap.as_str(),
+        "{}",
+        body["sync"]
+    );
     let due = next_sync_in_s(&pg, &board).await.unwrap();
     assert!(
         (-30.0..=1.0).contains(&due),
@@ -1774,7 +1782,44 @@ async fn a_resumed_sync_catches_up_at_the_next_tick_and_a_manual_one_waits_for_s
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        st["sync"]["liveRun"]["id"],
+        remap.as_str(),
+        "{}",
+        st["sync"]
+    );
     assert_eq!(st["sync"]["overdue"], false, "{}", st["sync"]);
+
+    // Held past the overdue line (five minutes) by that remap, the board
+    // still reads syncing, not overdue: something is running.
+    sqlx::query(
+        "update board_syncs set next_sync_at = now() - interval '10 minutes' \
+         where board_id = $1::uuid and state <> 'disconnected'",
+    )
+    .bind(&board)
+    .execute(&pg)
+    .await
+    .unwrap();
+    let (status, st) = call_json(
+        &state,
+        "GET",
+        &format!("/api/boards/{board}/sync"),
+        Some(&view),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        st["sync"]["liveRun"]["id"],
+        remap.as_str(),
+        "{}",
+        st["sync"]
+    );
+    assert_eq!(
+        st["sync"]["overdue"], false,
+        "a sync a live remap holds is not overdue: {}",
+        st["sync"]
+    );
 
     // The tick leaves it due while the board's live run reads no list: a
     // claim would only meet that run and push the read a day out.

@@ -20,9 +20,11 @@
     chipView,
     DOT_FOR_TONE,
     disconnectBoardSync,
+    MAPPING_SAVED_TOAST,
     mappingRows,
     mappingTargets,
     lastRunNote,
+    PAUSED_TOAST,
     pausedHint,
     replaceSyncCredential,
     resumedToast,
@@ -109,7 +111,7 @@
 
   async function saveMapping() {
     if (await update({ statusMap: statusMapOf(draft, targets) }, 'mapping', 'Could not save the mapping')) {
-      pushToast({ title: 'Mapping saved', body: 'Tickets the old mapping placed are moving; a ticket someone moved stays put.', tone: 'success' })
+      pushToast({ ...MAPPING_SAVED_TOAST, tone: 'success' })
     }
   }
 
@@ -127,7 +129,7 @@
     if (!r) return
     pushToast(
       pause
-        ? { title: 'Sync paused', body: 'Nothing syncs from ClickUp until you resume it — not the schedule, Sync now or a ticket’s re-sync.', tone: 'success' }
+        ? { ...PAUSED_TOAST, tone: 'success' }
         : { ...resumedToast(r.sync), tone: 'success' },
     )
   }

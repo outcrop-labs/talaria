@@ -16,8 +16,10 @@ import {
   clickupTaskUrl,
   landsIn,
   lastRunNote,
+  MAPPING_SAVED_TOAST,
   mappingRows,
   mappingTargets,
+  PAUSED_TOAST,
   pausedHint,
   pausedLine,
   pollWhileLive,
@@ -28,6 +30,7 @@ import {
   sameMap,
   statusMapOf,
   syncIntake,
+  TOAST_BODY_MAX,
   targetNote,
   until,
   type BoardSync,
@@ -202,17 +205,31 @@ describe('chipView — never silently stale', () => {
     // The engine arms a resumed scheduled sync for now (store::write_edit):
     // the scheduler's next tick, within a minute, catches the board up.
     expect(resumedToast(sync())).toEqual({ title: 'Sync resumed', body: 'Syncs within a minute, then every hour.' })
-    expect(resumedToast(sync({ intervalMinutes: 15 })).body).toBe('Syncs within a minute, then every 15 minutes.')
+    expect(resumedToast(sync({ intervalMinutes: 15 })).body).toBe('Syncs within a minute, then every 15 min.')
     expect(resumedToast(sync({ intervalMinutes: 1440 })).body).toBe('Syncs within a minute, then once a day.')
     // A manual sync stays unscheduled on Resume: nothing runs until Sync now.
     const manual = resumedToast(sync({ intervalMinutes: null, nextSyncAt: null }))
     expect(manual.body).toBe('Manual — press Sync now to catch up.')
     // With the schedule off on this instance nothing claims the due sync.
     expect(resumedToast(sync({ schedulerArmed: false })).body).toBe('Scheduled syncs are off — press Sync now.')
-    // The toast host truncates a body to one line: every one fits.
-    for (const over of [{}, { intervalMinutes: 15 }, { intervalMinutes: 1440 }, { intervalMinutes: null }, { schedulerArmed: false }]) {
-      expect(resumedToast(sync(over)).body.length).toBeLessThanOrEqual(45)
+    // A mapping change's remap still running at Resume: the scheduler waits
+    // it out (job.rs claim_due), so the toast promises no minute.
+    const remapping = { liveRun: { id: 'rm', phase: 'Applying the new status mapping' } }
+    expect(resumedToast(sync(remapping)).body).toBe('Syncs after this run, then every hour.')
+    // The toast host truncates a body to one line: every one fits, with room
+    // for a wider fallback font — Pause's and a mapping save's too.
+    for (const over of [
+      {},
+      { intervalMinutes: 15 },
+      { intervalMinutes: 1440 },
+      { intervalMinutes: null },
+      { schedulerArmed: false },
+      { ...remapping, intervalMinutes: 15 },
+    ]) {
+      expect(resumedToast(sync(over)).body.length).toBeLessThanOrEqual(TOAST_BODY_MAX)
     }
+    expect(TOAST_BODY_MAX).toBeLessThanOrEqual(42)
+    for (const t of [PAUSED_TOAST, MAPPING_SAVED_TOAST]) expect(t.body.length).toBeLessThanOrEqual(TOAST_BODY_MAX)
     // Just after Resume the projection's next sync is now, and the board says so.
     expect(chipView(sync({ nextSyncAt: iso(0) }), NOW).detail).toBe('Last synced 12m ago. Next sync due now.')
   })
