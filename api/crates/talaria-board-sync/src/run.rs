@@ -1197,11 +1197,14 @@ impl<R: Remote, L: Local> Step<'_, R, L> {
                     "The rest stay in ClickUp",
                 )),
                 Err(CommentFail::Unreadable) => {
+                    // remote_updated_ms stays where it was, so the sweep (not
+                    // the next incremental walk, which reads only tasks
+                    // updated since the watermark) is what retries the task.
                     complete = false;
                     problems.push(Problem::new(
                         "comments-unreadable",
                         "The comments could not be read from ClickUp this time",
-                        "The next sync tries again",
+                        "Sync now (it sweeps) or re-sync the ticket from ClickUp; the daily sweep also tries again",
                     ));
                 }
             }
