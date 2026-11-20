@@ -477,6 +477,20 @@ async fn a_board_syncs_from_a_clickup_list_end_to_end() {
     );
     let atts = ticket(&pg, &board, &format!("A{tag}")).await["attachments"].clone();
     assert_eq!(atts.as_array().map(|a| a.len()), Some(1), "{atts}");
+    // Imported comments light no unread badge: they live only in ticket
+    // rooms, which every unread surface leaves out.
+    assert_eq!(
+        talaria_channels::channel_unread_total(&pg, &dana)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        talaria_channels::channel_unread_total(&pg, &owner)
+            .await
+            .unwrap(),
+        0
+    );
     // Quiet: nobody was notified about sync-made or sync-assigned tickets.
     let (notes,): (i64,) = sqlx::query_as(
         "select count(*)::bigint from notifications where user_id = $1::uuid and kind in ('task-assigned', 'task-status')",
@@ -824,7 +838,7 @@ async fn an_imported_message_lands_once_per_import_key() {
             .unwrap()
     );
     let (n, author_type, at): (i64, String, i64) = sqlx::query_as(
-        "select count(*) over ()::bigint, author_type, (trunc(extract(epoch from created_at) * 1000))::bigint \
+        "select (count(*) over ())::bigint, author_type, (trunc(extract(epoch from created_at) * 1000))::bigint \
          from channel_messages where channel_id = $1::uuid",
     )
     .bind(&channel)
