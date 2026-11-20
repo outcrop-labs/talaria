@@ -76,6 +76,17 @@ pub fn dispatch_deps(
     talaria_runs_decide::assembly::real_run_deps(pg, redis, rt)
 }
 
+/// How a dispatch came out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dispatch {
+    /// A session is live for this ticket+agent, new or already there.
+    Session,
+    /// No session now; the redispatch sweep offers the ticket again.
+    NotNow,
+    /// Every session this pair may have is spent. Only a person can move it.
+    AtCap,
+}
+
 /// Drive one ticket with one agent as a SESSION. Fire-and-forget from task
 /// mutations; re-entry for the same ticket+agent is a no-op.
 ///
@@ -87,7 +98,7 @@ pub async fn dispatch_ticket_work(
     task: &DispatchTicket,
     agent_model: &str,
     board_name: Option<&str>,
-) -> bool {
+) -> Dispatch {
     let def = work_session_run();
     for generation in 0..MAX_SESSIONS_PER_TICKET_AGENT {
         let id = session_run_id(&task.id, agent_model, generation);
@@ -102,12 +113,12 @@ pub async fn dispatch_ticket_work(
                     "{LOG} {}: could not check for a live session with {agent_model}, not dispatching: {e}",
                     task.id
                 );
-                return false;
+                return Dispatch::NotNow;
             }
         };
         match existing {
             // A live (or parked) run at this generation IS the session.
-            Some(row) if !is_terminal(row.state) => return true,
+            Some(row) if !is_terminal(row.state) => return Dispatch::Session,
             // ERRED JUST NOW: the step that failed may still be running —
             // an idle deadline fires on SILENCE, and the persona's tool loop
             // can be mid-build with the stream gone. The next generation
@@ -123,7 +134,7 @@ pub async fn dispatch_ticket_work(
                      its turn settle before a new one",
                     task.id
                 );
-                return false;
+                return Dispatch::NotNow;
             }
             // Finished: that session is over, the next generation may start
             // a new one.
@@ -157,17 +168,17 @@ pub async fn dispatch_ticket_work(
             start: Some(true),
         };
         match enqueue(def, input, opts, deps).await {
-            Ok(_) => return true,
+            Ok(_) => return Dispatch::Session,
             // Somebody else claimed this exact session between our read and
             // our insert — and what they inserted is a live session for this
             // ticket and agent, so standing down is correct.
-            Err(e) if is_duplicate_key(&e) => return true,
+            Err(e) if is_duplicate_key(&e) => return Dispatch::Session,
             Err(e) => {
                 tracing::error!(
                     "{LOG} {}: could not start a work session with {agent_model}: {e}",
                     task.id
                 );
-                return false;
+                return Dispatch::NotNow;
             }
         }
     }
@@ -177,7 +188,45 @@ pub async fn dispatch_ticket_work(
          agent that cannot close it; a person should look at it.",
         task.id
     );
-    false
+    Dispatch::AtCap
+}
+
+async fn surface_session_cap(pg: &PgPool, task_id: &str, agent_model: &str) {
+    if let Err(e) = log_session_cap_once(pg, task_id, agent_model).await {
+        tracing::error!("{LOG} {task_id}: the session cap line did not land: {e}");
+    }
+}
+
+/// The cap line, once per ticket and agent. Dispatches race (task mutations
+/// fire them and the sweep re-offers), so the check and the insert share one
+/// transaction under a lock on the pair: the second waits for the first to
+/// commit and then sees its line.
+async fn log_session_cap_once(
+    pg: &PgPool,
+    task_id: &str,
+    agent_model: &str,
+) -> Result<(), sqlx::Error> {
+    let line = format!(
+        "has had {MAX_SESSIONS_PER_TICKET_AGENT} work sessions on this ticket and will not start \
+         another — a person should look at it"
+    );
+    let mut tx = pg.begin().await?;
+    sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("session-cap:{task_id}:{agent_model}"))
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "insert into task_activity (task_id, actor, type, description) \
+         select $1::uuid, $2, 'session_cap', $3 \
+         where not exists (select 1 from task_activity \
+                           where task_id = $1::uuid and actor = $2 and type = 'session_cap')",
+    )
+    .bind(task_id)
+    .bind(agent_model)
+    .bind(&line)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
 }
 
 /// Dispatch to every AGENT assignee when the ticket sits in an agent-start
@@ -336,11 +385,11 @@ pub async fn maybe_dispatch_ticket(
         let subject = talaria_agent_auth::AgentSubject::Model(agent.clone());
         match tasks::agent_ticket_refusal(pg, &target, &subject, tasks::AgentIntent::Write).await {
             Ok(Some(_refusal)) => continue,
-            Ok(None) => {
-                if dispatch_ticket_work(deps, task, &agent, None).await {
-                    talaria_work_wait::clear_waiting(pg, &task.id).await;
-                }
-            }
+            Ok(None) => match dispatch_ticket_work(deps, task, &agent, None).await {
+                Dispatch::Session => talaria_work_wait::clear_waiting(pg, &task.id).await,
+                Dispatch::NotNow => {}
+                Dispatch::AtCap => surface_session_cap(pg, &task.id, &agent).await,
+            },
             Err(e) => {
                 tracing::error!("{LOG} {}: dispatch to {agent} threw: {e}", task.id);
             }
@@ -995,6 +1044,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_session_cap_is_its_own_outcome() {
+        let spent = (0..MAX_SESSIONS_PER_TICKET_AGENT)
+            .map(|n| (session_id("t-1", "claude-opus-4-5", n), RunState::Done))
+            .collect();
+        let store = WalkStore::with(spent);
+        let outcome =
+            dispatch_ticket_work(&deps(store.clone()), &ticket(), "claude-opus-4-5", None).await;
+        assert_eq!(outcome, Dispatch::AtCap);
+        assert!(store.inserted.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn a_duplicate_key_is_the_race_resolving_not_a_failure() {
         let store = WalkStore::racing_first_insert();
         dispatch_ticket_work(&deps(store.clone()), &ticket(), "claude-opus-4-5", None).await;
@@ -1156,6 +1217,57 @@ mod live_db {
             mixed_row.assignees,
             vec![person.clone(), "sweep-live-agent".to_string()]
         );
+
+        sqlx::query("delete from users where id = $1::uuid")
+            .bind(&user)
+            .execute(&pg)
+            .await
+            .expect("cleanup");
+    }
+
+    /// Dispatches that reach the cap together land its line once, and a later
+    /// sweep adds none.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn racing_dispatches_land_the_session_cap_line_once() {
+        let pg = pg().await;
+        let tag = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let email = format!("cap-race-{tag}@link-test.invalid");
+        let user: String = sqlx::query_scalar(
+            "insert into users (sub, email, name, role) values ($1, $1, 'Cap Race', 'member') \
+             returning id::text",
+        )
+        .bind(&email)
+        .fetch_one(&pg)
+        .await
+        .expect("insert user");
+        let board: String = sqlx::query_scalar(
+            "insert into boards (name, owner_id) values ('cap-race', $1::uuid) returning id::text",
+        )
+        .bind(&user)
+        .fetch_one(&pg)
+        .await
+        .expect("insert board");
+        let agent = format!("cap-race-{tag}");
+        let task = ticket(&pg, &board, "in_progress", serde_json::json!([agent])).await;
+
+        let racers = (0..6).map(|_| surface_session_cap(&pg, &task, &agent));
+        futures_util::future::join_all(racers).await;
+        surface_session_cap(&pg, &task, &agent).await;
+
+        let lines: i64 = sqlx::query_scalar(
+            "select count(*) from task_activity \
+             where task_id = $1::uuid and actor = $2 and type = 'session_cap'",
+        )
+        .bind(&task)
+        .bind(&agent)
+        .fetch_one(&pg)
+        .await
+        .expect("count");
+        assert_eq!(lines, 1);
 
         sqlx::query("delete from users where id = $1::uuid")
             .bind(&user)

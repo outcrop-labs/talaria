@@ -255,7 +255,7 @@ Source: [`api/crates/talaria-routes-boards/src/tasks/tasks_id_work_sessions.rs`]
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{sessions}` | 200, 400, 403, 404, 409 | — |
+| GET | `session` | — | `{sessions, lineages}` | 200, 400, 403, 404, 409 | — |
 
 ## `/api/workflows`
 

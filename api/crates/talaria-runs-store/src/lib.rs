@@ -990,6 +990,21 @@ pub async fn run_checkpoints(pg: &PgPool, id: &str) -> Result<Vec<RunCheckpoint>
         .collect()
 }
 
+/// A run's place among the attempts of one piece of work. A run nobody rewound
+/// is attempt 1 of the lineage its own id names.
+#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RunLineage {
+    pub lineage_id: String,
+    pub attempt_no: i32,
+    pub rewound_from_run_id: Option<String>,
+    pub rewound_from_seq: Option<i64>,
+}
+
+/// The `runs` columns [`RunLineage`] decodes from, for a select of its own.
+pub const LINEAGE_COLS: &str = "coalesce(lineage_id, id)::text as lineage_id, attempt_no, \
+                                rewound_from_run_id::text as rewound_from_run_id, rewound_from_seq";
+
 /// The run this kind is currently doing, or None. `awaiting` counts as active —
 /// a run parked on a question is not finished, however long it sits.
 pub async fn active_run_of_kind(

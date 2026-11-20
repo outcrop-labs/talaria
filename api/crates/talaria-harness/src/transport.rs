@@ -173,7 +173,8 @@ pub struct LedgerAttribution {
     /// The agent as the ledger names it: the base persona id, never a tier id.
     pub agent_model: String,
     pub source: LedgerSource,
-    /// The conversation, channel or research run this spend belongs to.
+    /// The conversation, channel, research run or work session this spend
+    /// belongs to.
     pub ref_id: Option<String>,
     /// The ticket this spend belongs to, so it reaches the ticket's cost.
     pub task_id: Option<String>,
