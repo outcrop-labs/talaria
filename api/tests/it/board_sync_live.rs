@@ -8,7 +8,9 @@
 // The module's tests run in parallel, and the ClickUp base is one process-wide
 // env var: each test that syncs holds CLICKUP while it points the client at its
 // own stand-in (`point_at`). Each such test also reads its own list ids, so a
-// scheduler tick that starts another board's sync never answers for it.
+// scheduler tick that starts another board's sync never answers for it. They
+// all share one runtime (`RT`), because the runs engine keeps the first
+// AppState it is armed with.
 //
 // House rule: #[ignore]d, never CI's default job.
 //
@@ -16,7 +18,7 @@
 //     cargo test -p talaria-api --test it board_sync_live:: -- --ignored
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
@@ -31,6 +33,19 @@ const BIG: i64 = 30 * 1024 * 1024;
 
 /// One stand-in at a time (see the header).
 static CLICKUP: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Every test here runs on this one runtime, never a runtime of its own. The
+/// runs engine keeps the first AppState that starts a sync for the life of
+/// the process (`arm_sync_step` is a OnceLock), and a pool lives on the
+/// runtime that opened it: with a runtime per test, each run started after
+/// the first such test ended found that runtime gone, and its step failed
+/// with "pool timed out while waiting for an open connection".
+static RT: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("the module's runtime")
+});
 
 /// Point the ClickUp client at this stand-in, for as long as the guard lives.
 async fn point_at(cu: &StandIn) -> tokio::sync::MutexGuard<'static, ()> {
@@ -353,9 +368,13 @@ async fn imported(pg: &PgPool, board: &str) -> Vec<(String, String, String, Opti
     .unwrap()
 }
 
-#[tokio::test]
+#[test]
 #[ignore]
-async fn a_board_syncs_from_a_clickup_list_end_to_end() {
+fn a_board_syncs_from_a_clickup_list_end_to_end() {
+    RT.block_on(a_board_syncs_from_a_clickup_list_end_to_end_run());
+}
+
+async fn a_board_syncs_from_a_clickup_list_end_to_end_run() {
     crate::support::wire_boot_seams();
     let cu = stand_in().await;
     let _clickup = point_at(&cu).await;
@@ -1053,9 +1072,13 @@ async fn a_board_syncs_from_a_clickup_list_end_to_end() {
     cu.world.lock().unwrap().list_gone = false;
 }
 
-#[tokio::test]
+#[test]
 #[ignore]
-async fn an_imported_message_lands_once_per_import_key() {
+fn an_imported_message_lands_once_per_import_key() {
+    RT.block_on(an_imported_message_lands_once_per_import_key_run());
+}
+
+async fn an_imported_message_lands_once_per_import_key_run() {
     let state = live_app_state().await;
     let pg = state.pg.clone();
     let tag = uuid::Uuid::new_v4().simple().to_string();
@@ -1122,9 +1145,13 @@ async fn an_imported_message_lands_once_per_import_key() {
     assert_eq!(at, 1_700_000_000_000, "the original time");
 }
 
-#[tokio::test]
+#[test]
 #[ignore]
-async fn the_secret_inventory_lists_and_clears_a_sync_credential() {
+fn the_secret_inventory_lists_and_clears_a_sync_credential() {
+    RT.block_on(the_secret_inventory_lists_and_clears_a_sync_credential_run());
+}
+
+async fn the_secret_inventory_lists_and_clears_a_sync_credential_run() {
     let state = live_app_state().await;
     let pg = state.pg.clone();
     let tag = uuid::Uuid::new_v4().simple().to_string();
@@ -1288,9 +1315,13 @@ async fn synced(state: &talaria_state::AppState, board: &str, cookie: &str) -> V
 
 // ── pause freezes the sync ───────────────────────────────────────────────────
 
-#[tokio::test]
+#[test]
 #[ignore]
-async fn a_pause_freezes_the_sync_until_an_owner_resumes_it() {
+fn a_pause_freezes_the_sync_until_an_owner_resumes_it() {
+    RT.block_on(a_pause_freezes_the_sync_until_an_owner_resumes_it_run());
+}
+
+async fn a_pause_freezes_the_sync_until_an_owner_resumes_it_run() {
     crate::support::wire_boot_seams();
     let cu = stand_in().await;
     let _clickup = point_at(&cu).await;
@@ -1631,9 +1662,13 @@ async fn step_blocked(pg: &PgPool, board: &str, task: &str) -> bool {
         .contains(task)
 }
 
-#[tokio::test]
+#[test]
 #[ignore]
-async fn only_a_sync_move_into_a_done_column_hands_a_workchain_step_on() {
+fn only_a_sync_move_into_a_done_column_hands_a_workchain_step_on() {
+    RT.block_on(only_a_sync_move_into_a_done_column_hands_a_workchain_step_on_run());
+}
+
+async fn only_a_sync_move_into_a_done_column_hands_a_workchain_step_on_run() {
     crate::support::wire_boot_seams();
     wire_dispatch();
     let cu = stand_in().await;
