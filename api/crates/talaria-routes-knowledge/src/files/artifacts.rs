@@ -18,12 +18,12 @@ use serde_json::{Value, json};
 use talaria_agent_auth::{AgentSubject, agent_caller};
 use talaria_api_facades::fleet::describe_agent;
 use talaria_api_facades::kb::perms::{
-    EditorGrant, ITEM_ARTIFACT, can_read, can_read_agent, granted_item_ids,
-    granted_item_ids_for_agent, set_editors,
+    EditorGrant, ITEM_ARTIFACT, can_read, granted_item_ids, set_editors,
 };
+use talaria_artifacts::agent_access::agent_readable;
 use talaria_artifacts::{
-    AGENT_CATEGORIES, Artifact, SaveArtifactPatch, agent_category_folder, create_artifact,
-    list_artifacts, named_root_folder, save_artifact,
+    AGENT_CATEGORIES, Artifact, ArtifactHead, SaveArtifactPatch, agent_category_folder,
+    create_artifact, guarded, list_artifacts, named_root_folder, save_artifact,
 };
 use talaria_audit::{AuditEntry, log_audit, spawn_audit};
 use talaria_body::{
@@ -82,45 +82,32 @@ fn parse_body(obj: &serde_json::Map<String, Value>) -> Result<Body, String> {
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
     let caller = agent_caller(&state.pg, &headers).await?;
     if let Some(caller) = caller {
-        let name = caller.model.clone();
-        // The LIST must answer the same question the single-artifact GET
-        // answers: a personal assistant reads its owner's private artifacts
-        // too. Without this arm the two planes disagreed — the GET opened
-        // what the browser's own listing never showed.
-        let owner = match talaria_users::assistant_owner_for(
-            &state.pg,
-            &AgentSubject::Caller(caller),
-        )
-        .await
-        {
-            Ok(o) => o,
-            Err(e) => return Ok(internal("[artifacts] owner lookup failed", e)),
-        };
-        let granted = match granted_item_ids_for_agent(&state.pg, ITEM_ARTIFACT, &name).await {
-            Ok(g) => g,
-            Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
-        };
         let artifacts = match list_artifacts(&state.pg).await {
             Ok(a) => a,
             Err(e) => return Ok(internal("[artifacts] list failed", e)),
         };
-        // Agents see org/public artifacts, ones they've been granted, and —
-        // for a personal assistant — the owner's own private ones. `&[]`
-        // grants here is right: the granted-set clause above already covers
-        // grants, so can_read_agent is asked only its owner arm.
+        // The LIST must answer the same question the single-artifact GET
+        // answers: org/public artifacts, ones granted to the agent or a team
+        // it is on, and — for a personal assistant — its owner's own private
+        // ones. Without the owner arm the two planes disagreed: the GET opened
+        // what the browser's own listing never showed. talaria-artifacts'
+        // batch rule (`agent_readable`), not a copy of it.
+        let heads: Vec<ArtifactHead> = artifacts
+            .iter()
+            .map(|a| ArtifactHead {
+                id: a.id.clone(),
+                kind: a.kind.clone(),
+                title: a.title.clone(),
+                guarded: guarded(a),
+            })
+            .collect();
+        let readable = match agent_readable(&state.pg, &caller, &heads).await {
+            Ok(r) => r,
+            Err(e) => return Ok(internal("[artifacts] agent read check failed", e)),
+        };
         let artifacts: Vec<&Artifact> = artifacts
             .iter()
-            .filter(|a| {
-                a.visibility != "private"
-                    || granted.contains(&a.id)
-                    || can_read_agent(
-                        &talaria_artifacts::guarded(a),
-                        &name,
-                        owner.as_deref(),
-                        &[],
-                        &[],
-                    )
-            })
+            .filter(|a| readable.contains(&a.id))
             .collect();
         return Ok(Json(json!({ "artifacts": artifacts })).into_response());
     }
@@ -138,13 +125,7 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Re
         .iter()
         .filter(|a| {
             granted.contains(&a.id)
-                || can_read(
-                    &talaria_artifacts::guarded(a),
-                    Some(&user.id),
-                    who.as_deref(),
-                    &[],
-                    &[],
-                )
+                || can_read(&guarded(a), Some(&user.id), who.as_deref(), &[], &[])
         })
         .collect();
     Ok(Json(json!({ "artifacts": artifacts })).into_response())

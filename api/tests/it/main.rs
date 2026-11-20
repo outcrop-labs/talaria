@@ -21,6 +21,7 @@ mod agent_managers;
 mod agent_open_live;
 mod agent_reply_notify;
 mod app_mcp_sync_live;
+mod artifacts_pull_google_live;
 mod artifacts_read;
 mod attribution;
 mod blueprints_live;

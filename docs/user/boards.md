@@ -23,6 +23,7 @@ Open: **Work → Boards** in the sidebar. Admins can hide Boards from individual
 | See archived tickets | Flip the **archived** chip in the toolbar — archived tickets otherwise leave the board |
 | Review agent work | Open the ticket in **Quality review** → read the result → **Approve** or **Request changes** |
 | Work on my queue | **Work → Inbox** → the Boards tab shows **To triage**, **To review**, **Blocked** |
+| Sync a board from ClickUp | Board settings → **sync** → paste a ClickUp token → pick the list → check the preview → **Connect and start syncing**. [The full guide](./boards-clickup-sync.md) |
 
 ## The three views
 
@@ -134,6 +135,17 @@ Two approvals can wait for you inside a ticket:
 The full agent side of this — mentions, chats, credential handoff, the review walk:
 [Working with agents](./working-with-agents.md).
 
+## Syncing from ClickUp
+
+A board can follow one ClickUp list: each task becomes a ticket, and the board keeps
+following the list on a schedule and on **Sync now**. It is one way — nothing is written back
+to ClickUp. A board owner connects it from Board settings → **sync**; everyone on the board
+sees how it is doing on the **ClickUp ·** chip beside the gear, with the problems it could not
+resolve and how to fix each. A synced ticket links to its ClickUp task, and an editor can
+**Re-sync from ClickUp** from the ticket. Disconnecting stops future syncs and leaves every
+imported ticket on the board. Setup, the mapping, the conflict rule and every problem's fix:
+[Syncing a board from ClickUp](./boards-clickup-sync.md).
+
 ## Who can do what
 
 | | Viewer | Editor | Owner |
@@ -144,6 +156,9 @@ The full agent side of this — mentions, chats, credential handoff, the review 
 | Archive / restore | | ✓ | ✓ |
 | Move a ticket to another board (editor or owner on both) | | ✓ | ✓ |
 | Delete board, move it between teams | | | ✓ |
+| See the ClickUp sync chip and its problems | ✓ | ✓ | ✓ |
+| ClickUp: Sync now, Re-sync a ticket | | ✓ | ✓ |
+| ClickUp: connect, change the mapping or schedule, replace the token, disconnect | | | ✓ |
 | Add or remove an owner | | | ✓ |
 
 Sharing a board requires the person to have signed in once already. Team boards: team members
