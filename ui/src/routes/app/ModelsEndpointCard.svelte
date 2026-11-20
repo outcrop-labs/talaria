@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { KeyRound, SlidersHorizontal } from '@lucide/svelte'
+  import { KeyRound } from '@lucide/svelte'
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import SettingsRowMenu from '@/components/settings/SettingsRowMenu.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import type { MenuIcon } from '@/components/ui/context-menu.svelte'
+  import { cogMenuIcon } from '@/components/ui/settings-cog'
   import ProviderMark from '@/components/fleet/ProviderMark.svelte'
   import type { LlmEndpoint } from '@/lib/fleet-defs'
   import ModelsEndpointModal from './ModelsEndpointModal.svelte'
@@ -41,7 +42,7 @@
     <SettingsRowMenu
       label={`Actions for ${ep.name}`}
       items={[
-        { label: 'Manage', icon: [SlidersHorizontal, { size: 14 }], onSelect: () => (managing = 'manage') },
+        { label: 'Manage', icon: cogMenuIcon, onSelect: () => (managing = 'manage') },
         ...(needsKey ? [{ label: 'Add key', icon: [KeyRound, { size: 14 }] as MenuIcon, onSelect: () => (managing = 'key') }] : []),
       ]}
     />

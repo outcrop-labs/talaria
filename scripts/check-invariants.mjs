@@ -62,6 +62,7 @@ import { checkDropGuard } from './desktop-drop-guard.mjs'
 import { checkReloadKeys } from './desktop-reload-keys.mjs'
 import { checkOsLinks } from './desktop-os-links.mjs'
 import { checkReleaseLatest, selfTest as releaseLatestSelfTest } from './release-latest.mjs'
+import { judgeSettingsGlyphs, selfTest as settingsGlyphSelfTest } from './settings-glyph.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
@@ -1000,6 +1001,56 @@ for (const rule of RULES) {
         'waiting for the next broadcast to walk through.',
       ],
       found,
+    })
+  }
+}
+
+// ONE SETTINGS GEAR. Every door into a settings surface draws its gear from
+// ui/src/components/ui/settings-cog.ts (SettingsButton, cogMenuIcon,
+// SettingsGlyph); three glyphs used to mean "settings" and each view drew its
+// own. The scan, the per-name allowlist (each entry says why it is not a
+// settings door) and the fixtures live in scripts/settings-glyph.mjs. The
+// allowlist gets this file's usual companion: an entry whose file or name is
+// gone fails too, so it cannot rot into an amnesty.
+{
+  const wrong = settingsGlyphSelfTest()
+  if (wrong.length) {
+    failures.push({
+      id: 'settings-glyph-scan-blind',
+      what: 'the settings-gear tripwire no longer flags its own fixtures',
+      fix: ['scripts/settings-glyph.mjs must catch every fixture in its selfTest() before it judges the tree.'],
+      found: wrong.map((text) => ({ path: 'scripts/settings-glyph.mjs', line: 0, text: `self-test: ${text}` })),
+    })
+  }
+  const { violations, stale } = judgeSettingsGlyphs(sources)
+  if (violations.length) {
+    failures.push({
+      id: 'settings-glyph-outside-the-cog',
+      what: 'a gear (or the sliders that used to mean settings) drawn outside the one settings cog',
+      fix: [
+        "A door into settings uses the shared cog from '@/components/ui/settings-cog' (apps:",
+        "'@talaria/sdk'): `<SettingsButton label=\"<Scope> settings\">` for an icon-only door,",
+        '`cogMenuIcon` on a menu entry that opens settings, `SettingsGlyph` beside a visible label.',
+        'A control that holds settings AND other or destructive verbs is split: a SettingsButton for',
+        'the settings, the verbs stay where they were, and Delete goes on the panel\'s danger line.',
+        'A value-faced control (a notification level) keeps its value glyph; its menu ends in a',
+        '`cogMenuIcon` entry to the full settings. docs/UI-CONVENTIONS.md, "Settings cog".',
+        'A gear that is genuinely not a settings door (a destination in app chrome) is an entry in',
+        'SETTINGS_GLYPH_ALLOW with the reason — argued in the PR, not added to pass.',
+      ],
+      found: violations,
+    })
+  }
+  if (stale.length) {
+    failures.push({
+      id: 'settings-glyph-allowlist-entry-gone',
+      what: 'a settings-gear allowlist entry that exempts nothing',
+      fix: [
+        'Delete the entry from SETTINGS_GLYPH_ALLOW in scripts/settings-glyph.mjs (or point it at',
+        'where the file moved). An exemption held open for a file or name that no longer needs it',
+        'is held open for the next per-view gear to walk through.',
+      ],
+      found: stale,
     })
   }
 }

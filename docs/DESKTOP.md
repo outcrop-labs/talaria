@@ -54,7 +54,9 @@ script against each case in `bun run check`. And the webview refuses to navigate
 (`allowed_navigation`), for a page where the script did not get the chance. Pages and their
 frames use `about:`, `blob:` and `data:`, and a sign-in goes to other https origins and back:
 those load. `mailto:`, `tel:` and app links are not page loads, so they go to the OS
-("Links that leave the page" below).
+("Links that leave the page" below). The ghost a drag shows is the engine's too, and on a
+scaled Linux display the shell corrects its size ("Drag images on a HiDPI Linux display"
+below).
 
 ### Links that leave the page
 
@@ -385,6 +387,70 @@ unstable features are semver-exempt, so upgrades are deliberate.
 [tauri#10420]: https://github.com/tauri-apps/tauri/issues/10420
 [tauri#10131]: https://github.com/tauri-apps/tauri/issues/10131
 
+## Drag images on a HiDPI Linux display
+
+On a Linux display scaled above 100%, the ghost that follows the cursor in a drag (a ticket
+card, a Files row, a conversation, a selection) came out the scale factor times the size a
+browser shows: 2× at 200%, and at GNOME's fractional scales, which GTK3 renders at 2. The
+cursor also sat nearer the ghost's corner than the point grabbed. The browser was right,
+and so are Windows and macOS. The cause is WebKitGTK's. It snapshots the dragged element at
+the device scale, then hands GTK the bitmap as a cairo surface with no device scale
+(`DragSourceGtk3.cpp`, `GtkUtilities.cpp`), so GTK treats each device pixel as a logical
+one. The macOS port divides by the scale (`WebViewImpl.mm`), and WebView2 drags with
+Chromium's own code. ui/ sets no drag image and scales nothing.
+
+The shell corrects it at the one call that carries the image. The executable defines
+`gtk_drag_set_icon_surface` itself (`desktop/src-tauri/src/main.rs`; `build.rs` exports it
+by name), and the loader looks in the executable before libgtk-3, so WebKitGTK's call
+lands there first. `drag_icon.rs` gives the surface the web view's scale as its device
+scale and scales its device offset to match. That is `gtk_widget_get_scale_factor` of the
+widget the drag left (`gtk_drag_get_source_widget`), the integer WebKit snapshotted at, and
+it follows the monitor the window is on. The drag context's own source window is GTK's
+hidden ipc popup, whose scale on Wayland is monitor 0's from when it was made, so it is
+read only when a drag has no source widget. `drag_icon.rs` then calls GTK's own function
+with the same arguments. GTK sizes the icon at the CSS size, draws it pixel for pixel, and keeps
+the cursor on the point grabbed. Drag data, actions and events never pass through it. It
+leaves two cases alone: a window at scale 1, and a surface that already carries a device
+scale. The second is the form an upstream fix would take, so a fixed WebKitGTK makes the
+shim a pass-through; remove it once the oldest WebKitGTK the shell supports has the fix.
+The first fitted drag logs one line with the scale, where it was read and the WebKitGTK
+version, for example `talaria-desktop: drag images: WebKitGTK 2.52.5 hands GTK device
+pixels; shown at scale 2 (read from the dragged widget), the web size (drag_icon.rs)`. The
+module's header has the upstream file and line references (WebKitGTK 2.52.5, GTK 3.24.52);
+[WebKit bug 292058][webkit292058] may be the same bug upstream.
+
+**The trade-off.** WebKitGTK passes a `setDragImage(<img>)` preview at the image's natural
+pixels instead of scaling it by the device scale. On a HiDPI Linux display such a ghost
+used to look the web size by accident, and now shows at 1/scale. ui/ never calls
+`setDragImage`, but an app or an agent's HTML artifact that drags with an image preview
+looks smaller there. An element passed to `setDragImage` is snapshotted like the default
+ghost and stays the web size; use that if ui/ ever sets a drag image.
+
+**Checking it.** Two checks need no display.
+`desktop/packaging/linux/check-drag-icon-shim.sh <binary>` asserts that the binary defines
+the symbol (readelf), and that libwebkit2gtk-4.1 binds its call to the binary
+(`LD_DEBUG=bindings`, with `LD_BIND_NOW` so the binding prints before the shell gives up
+for lack of a display). It points the shell at a session bus that does not exist, so on a
+desktop it never reaches, or brings forward, a Talaria that is running. CI's Linux `desktop` job runs it on its build, and
+`desktop-package.yml` runs it on the binary the deb installed. The same job runs a HiDPI
+drag (Gates, below). On a desktop, run `bun run desktop` on the scaled session, or
+`GDK_SCALE=2 bun run desktop` on a 1× screen. Compare each drag with the same one in a
+browser at the same scale:
+
+- a Kanban card, a board list row, a Gantt item, a status in board settings, a column in
+  the Columns menu, a board in the sidebar, a conversation in the chat sidebar, a Files
+  row, a KB doc row, a text selection, and an image: the web size, under the point grabbed;
+- a plain link: unchanged, GTK's default link icon;
+- each drop does what it did, and a drop on empty space is still refused (`DROP_GUARD`);
+- the log has the one "drag images" line, read from the dragged widget, and with
+  `GDK_SCALE=1` on a 1× screen, none;
+- on Wayland with two monitors at different scales (say a 200% laptop panel and a 100%
+  external screen), a card drag on each: the web size on both, also after moving the window
+  across and after changing a monitor's scale while Talaria runs. CI's smoke is X11, where
+  every window has one scale, so only a person can check this.
+
+[webkit292058]: https://bugs.webkit.org/show_bug.cgi?id=292058
+
 ## Threading
 
 Window and webview operations run on the main thread, in the order the geometry section
@@ -699,6 +765,16 @@ without `--force`: run it on a throwaway runner or under a private `HOME`.
 throwaway runners: the exe the Windows installer installed, the binary inside the macOS
 `.app`, and the binary the Linux deb installed (under `xvfb-run`), so a release build that
 freezes on its first open fails the job before anything is attached to a release.
+
+The Linux `desktop` job also guards the drag-image shim ("Drag images on a HiDPI Linux
+display" above). `check-drag-icon-shim.sh` runs on its build. The connect smoke then runs
+again at `GDK_SCALE=2` on a 2880×1800 xvfb screen, with `--drag-icon`. That run's page
+carries the UI's shell hook, so the shell keeps it up. The smoke presses inside a 240×120
+CSS px box in the page with xdotool, moves 40 px, and waits for `dragstart`. Then it reads
+GDK's drag window (the mapped root window typed `_NET_WM_WINDOW_TYPE_DND`) until it holds
+still. It passes only if the window is the box's size × 2, within 2 device px, at the
+pointer minus the grab offset × 2. Without the shim it is the box's size × 4 (960×480 device
+px, 2.00× the web size), and the failure names the ratio and the likely cause.
 
 ## Logs
 

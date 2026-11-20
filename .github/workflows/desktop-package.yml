@@ -428,7 +428,17 @@ jobs:
           [ -n "$exe" ] && [ -x "$exe" ] \
             || { echo "::error::the $pkg deb installed no executable under /usr/bin:"; dpkg -L "$pkg"; exit 1; }
           echo "installed $pkg; its binary is $exe"
+          echo "INSTALLED_EXE=$exe" >> "$GITHUB_ENV"
           xvfb-run -a dbus-run-session -- node desktop/packaging/connect-smoke.mjs "$exe" --wait 90 --force
+
+      # The binary people install still carries the drag-image shim: it
+      # exports gtk_drag_set_icon_surface and WebKitGTK binds to it (the
+      # script's header; ci.yml's desktop job runs the same check on its debug
+      # build, and the HiDPI drag smoke there). The rpm, pacman, flatpak and
+      # AppImage packages carry this same binary.
+      - name: The installed binary carries the drag icon shim
+        if: ${{ !cancelled() && env.INSTALLED_EXE != '' }}
+        run: desktop/packaging/linux/check-drag-icon-shim.sh "$INSTALLED_EXE"
 
       - name: Sign the AppImage for the updater
         env:

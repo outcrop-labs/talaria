@@ -50,6 +50,10 @@ export { buttonClasses } from '@/components/ui/button'
 // reach into ui/src.
 export { fade, fly, scale, slide, flip, QUICK, POP, PANEL, LIST } from '@/lib/motion'
 export { default as IconButton } from '@/components/ui/IconButton.svelte'
+// The one settings gear (docs/UI-CONVENTIONS.md, "Settings cog"): an app's
+// door into its own settings wears the host's gear, never a lucide copy.
+export { default as SettingsButton } from '@/components/ui/SettingsButton.svelte'
+export { SettingsGlyph, cogMenuIcon, COG } from '@/components/ui/settings-cog'
 export { default as ViewHeader } from '@/components/ui/ViewHeader.svelte'
 export { default as Combobox } from '@/components/ui/Combobox.svelte'
 export { type ComboOption } from '@/components/ui/combobox'
