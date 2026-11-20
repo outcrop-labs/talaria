@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hasUnsavedEdits, holdEdits } from './pane-edits'
+import { hasUnsavedEdits, holdEdits, moveWouldDropEdits } from './pane-edits'
 
 describe('pane edits', () => {
   it('answers what the editor showing a file says, and nothing once it is gone', () => {
@@ -20,5 +20,25 @@ describe('pane edits', () => {
     expect(hasUnsavedEdits('a2')).toBe(true)
     releaseNew()
     expect(hasUnsavedEdits('a2')).toBe(false)
+  })
+  it('guards a plan document tab by the plan document, and an artifact tab by its file', () => {
+    let typing = true
+    const releasePlan = holdEdits('plan-doc', () => typing)
+    const releaseFile = holdEdits('file-1', () => true)
+    const plan = { id: 'doc', kind: 'doc' }
+    const file = { id: 'artifact:file-1', kind: 'artifact', ref: 'file-1' }
+    // Typing in the plan: an agent open elsewhere does not move the pane.
+    expect(moveWouldDropEdits(plan, 'artifact:other', 'plan-doc')).toBe(true)
+    // Nor out of a file with unsaved edits.
+    expect(moveWouldDropEdits(file, 'google:abc', 'plan-doc')).toBe(true)
+    // The same tab, nothing shown, or nothing unsaved: free to move.
+    expect(moveWouldDropEdits(file, 'artifact:file-1', 'plan-doc')).toBe(false)
+    expect(moveWouldDropEdits(null, 'artifact:other', 'plan-doc')).toBe(false)
+    expect(moveWouldDropEdits(plan, 'artifact:other', null)).toBe(false)
+    expect(moveWouldDropEdits({ id: 'report', kind: 'report' }, 'artifact:other', 'plan-doc')).toBe(false)
+    typing = false
+    expect(moveWouldDropEdits(plan, 'artifact:other', 'plan-doc')).toBe(false)
+    releasePlan()
+    releaseFile()
   })
 })

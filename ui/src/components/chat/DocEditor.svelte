@@ -19,6 +19,7 @@
   import { errorMessage, postJson } from '@/lib/fetch-json'
   import { toastError } from '@/lib/toast.svelte'
   import { onUserEvent } from '@/lib/user-events.svelte'
+  import { holdEdits } from '@/lib/pane-edits'
   import { p } from '@/router'
 
   let { id, conversationId, syncSignal = 0 }: { id: string; conversationId: string; syncSignal?: number } = $props()
@@ -64,6 +65,12 @@
     })
     return off
   })
+
+  // WHAT A TAB SWITCH WOULD LOSE. The Work pane follows the agent to a file it
+  // opens, and switching away from the plan's tab unmounts this editor — its
+  // autosave with it. So the host asks, before it moves the pane, whether
+  // anything typed here is unsaved (lib/pane-edits).
+  $effect(() => holdEdits(id, () => !!editorRef?.hasUnsavedChanges()))
 
   const save = async () => {
     const body = editorRef?.getMarkdown() ?? artifact?.body ?? ''

@@ -30,3 +30,24 @@ export const hasUnsavedEdits = (id: string | null | undefined): boolean => {
     return false
   }
 }
+
+/** The tab the pane is showing, as far as the guard needs to know it. */
+export interface ShownTab {
+  id: string
+  kind: string
+  ref?: string | null
+}
+
+/** Would moving the pane from `active` to the tab keyed `target` drop unsaved
+ *  edits? An artifact tab asks the document it shows (`ref`); a plan's own tab
+ *  (kind `doc`) asks the plan's document, `planDocId`, which its editor
+ *  registers under. Staying on the same tab never drops anything. */
+export function moveWouldDropEdits(
+  active: ShownTab | null | undefined,
+  target: string,
+  planDocId: string | null | undefined,
+): boolean {
+  if (!active || active.id === target) return false
+  const shown = active.kind === 'artifact' ? active.ref : active.kind === 'doc' ? planDocId : null
+  return hasUnsavedEdits(shown)
+}

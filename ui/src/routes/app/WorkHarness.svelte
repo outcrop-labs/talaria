@@ -82,7 +82,7 @@
     visibleFiles,
     type SessionFile,
   } from '@/lib/session-files'
-  import { hasUnsavedEdits } from '@/lib/pane-edits'
+  import { moveWouldDropEdits } from '@/lib/pane-edits'
   import { bareToolName } from '@/lib/toolkit-tools'
   import {
     MODE_META,
@@ -425,11 +425,11 @@
     const target = focusTarget(changed.filter((f) => takesFocus(f, me?.id, openedHere)))
     for (const f of changed) openedHere.delete(f.key)
     if (!target) return
-    // NEVER OUT FROM UNDER AN EDIT. Switching tabs unmounts the editor, and its
-    // autosave timer dies with it: the file stays on the strip, and the pane
-    // stays where the person is typing.
-    const active = tabsFor(id).active
-    if (active && active.id !== target.key && active.kind === 'artifact' && hasUnsavedEdits(active.ref ?? null)) return
+    // NEVER OUT FROM UNDER AN EDIT — in a file, or in a plan's own document.
+    // Switching tabs unmounts the editor, and its autosave timer dies with it:
+    // the file stays on the strip, and the pane stays where the person is
+    // typing.
+    if (moveWouldDropEdits(tabsFor(id).active, target.key, livingDocId)) return
     if (target.key === reportKey) selectTab(id, REPORT_TAB)
     else syncTouched(id, fileTab(target))
   }
