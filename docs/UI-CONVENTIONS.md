@@ -301,9 +301,10 @@ page-scroll workspace in a fixed-height panel and break its stagger contract.
   too. Terse on screen, precise in the accessibility tree.
 
 - **Icon buttons with tooltips** (`<IconButton title="…">`) for every action
-  whose verb is implied by placement: rail-header "new", surface-header
-  settings, row-hover actions. A labeled `<Button>` is reserved for a page's
-  one or two real actions, and for anything destructive or deploying.
+  whose verb is implied by placement: rail-header "new", row-hover actions.
+  A surface-header settings door is `<SettingsButton label="… settings">`
+  (the gear, below). A labeled `<Button>` is reserved for a page's one or two
+  real actions, and for anything destructive or deploying.
 - **No giant buttons.** `size="sm"` is the default posture for anything in a
   header or rail. Full-width primaries in sidebars are banned.
 - **Autosave by default.** Selects, toggles, and pickers apply on change.
@@ -388,6 +389,54 @@ Two deliberate registers — don't mix them:
   icons, welcome moments. (Nav glyphs were deliberately chosen; keep them.)
 - **lucide-react** is the ACTION register: toolbars, menus, row actions,
   anything clickable inside content.
+
+### Settings cog
+
+Every door into a settings surface wears one gear, from
+`components/ui/settings-cog.ts` (apps: `@talaria/sdk`).
+`scripts/settings-glyph.mjs` fails a gear, or the sliders that used to stand
+in for one, imported or re-exported anywhere else.
+
+- **One glyph.** lucide `Settings`, the standard gear, at the default stroke.
+  `<SettingsButton label>` is the icon-only door, `cogMenuIcon` is the icon of a
+  menu entry that opens settings, and `SettingsGlyph` is the gear beside a
+  visible label. `Settings2` and the sliders read as adjust or filter. `Cog`
+  is the dock's Manage tile: a destination in app chrome, not a door in a view.
+- **One size scale.** `size="sm"` is a 28px target with a 14px glyph, the
+  default; `size="md"` is 32/16 (a view's own header row, such as the board's).
+  The glyph is always half the tile, and the button takes no `class`, so no call
+  site stretches, clips or shrinks it below the 24px floor (WCAG 2.5.8). A gear
+  beside a label is `COG.sm` (14px).
+- **Name the scope, never a bare "Settings".** "<Scope> settings", sentence
+  case, where the scope is the noun the surface configures: Board, Column,
+  Channel or Group, View, Workchain, Notification. On the icon-only door it is
+  the tooltip and the accessible name both (`label`, whose type ends in
+  " settings"). The panel or popover header repeats it.
+- **Colour.** `text-muted` at rest, `text-fg` on hover, focus and while open,
+  from existing tokens. Muted is at least 4.47:1 on every surface a gear sits on
+  in both Mercury themes (ground, panel, raised, hover), above the 3:1 of WCAG
+  1.4.11. The dither field lights on focus as well as hover, so the door
+  brightens on focus too: muted over a lit field is about 2.64:1 at worst (the
+  field is a dot lattice, not a fill), fg is above 7:1. No opacity modifier, no
+  accent, no `ink-dim` (under 3:1).
+- **What is a settings door, and what is not.**
+  - A control whose only job is to open the configuration of the thing in view
+    (a dialog, popover or page) is a door. It wears the gear.
+  - An ⋯ menu of verbs stays an ellipsis. An entry in it that opens the thing's
+    settings wears `cogMenuIcon`; the menu's name ("Actions for X") carries the
+    scope. Sharing and permissions are a verb (Share), not settings.
+  - A value-faced control keeps its value: a notification level shows its bell,
+    @ or bell-off; Group by, the archived chip and the view switch show their
+    value. Its accessible name says whose setting and what the value means
+    ("Channel notifications: mentions only"), and a menu it opens ends in a
+    `cogMenuIcon` entry to the full settings ("Notification settings").
+  - A control that holds settings beside other or destructive verbs is split:
+    the settings go behind a `SettingsButton`, the verbs stay where they were,
+    and Delete goes on that panel's danger line (`DangerLink`). The saved-view
+    gear and the Workchain settings gear are the two in the board views. A
+    settings panel with a danger zone is not mixed.
+- **Who sees the door.** It is offered to the people whose writes it can make;
+  a door that would only 403 is not drawn.
 
 ## Popovers & panels
 
