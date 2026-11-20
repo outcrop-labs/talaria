@@ -283,7 +283,8 @@ describe('notify-wire against the captured api', () => {
     expect(GROUP.channelThread('m1')).toBe('reply:m1')
     expect(GROUP.outreach('margaret', '2026-10-31')).toBe('outreach:margaret:2026-10-31')
     expect(GROUP.agentDesign('d1')).toBe('agent-design:d1')
-    expect(Object.values(ENTITY)).toEqual(['task', 'channel', 'conversation', 'approval', 'mcp_server', 'plan', 'research_run', 'kb_doc', 'agent_design'])
+    expect(GROUP.boardActivity('b1')).toBe('board:b1:activity')
+    expect(Object.values(ENTITY)).toEqual(['task', 'channel', 'conversation', 'approval', 'mcp_server', 'plan', 'research_run', 'kb_doc', 'agent_design', 'board'])
     const v2: ArrivalRecordV2 = { hw: SEQ_ROW.createdAt, seen: { [SEQ_ROW.id]: SEQ_ROW.createdAt }, at: 0, v: 2, seq: TOP.seq }
     expect(v2.seq).toBe(3)
   })

@@ -181,6 +181,11 @@ pub mod group_key {
     pub fn agent_design(design_id: &str) -> String {
         format!("agent-design:{design_id}")
     }
+    /// A board a person hears in full: one open row for every event on its
+    /// tickets they are not in (talaria_notify::boards, I-25).
+    pub fn board_activity(board_id: &str) -> String {
+        format!("board:{board_id}:activity")
+    }
 }
 
 /// The entity kinds a row can be about (the stored `entity_type`).
@@ -198,6 +203,8 @@ pub mod entity {
     /// A person's agent design (talaria-agent-design): resolved when it is
     /// hired, discarded or replaced.
     pub const AGENT_DESIGN: &str = "agent_design";
+    /// A board, for the rows about the board as a whole (`board-activity`).
+    pub const BOARD: &str = "board";
 }
 
 #[cfg(test)]
@@ -221,6 +228,7 @@ mod tests {
             "outreach:margaret:2026-10-31"
         );
         assert_eq!(group_key::agent_design("d1"), "agent-design:d1");
+        assert_eq!(group_key::board_activity("b1"), "board:b1:activity");
         assert_eq!(entity::AGENT_DESIGN, "agent_design");
         assert_eq!(
             [
@@ -231,7 +239,8 @@ mod tests {
                 entity::MCP_SERVER,
                 entity::PLAN,
                 entity::RESEARCH_RUN,
-                entity::KB_DOC
+                entity::KB_DOC,
+                entity::BOARD
             ],
             [
                 "task",
@@ -241,7 +250,8 @@ mod tests {
                 "mcp_server",
                 "plan",
                 "research_run",
-                "kb_doc"
+                "kb_doc",
+                "board"
             ]
         );
         assert_eq!(serde_json::to_string(&Alert::Feed).unwrap(), "\"feed\"");

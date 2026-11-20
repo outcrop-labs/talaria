@@ -623,7 +623,7 @@ pub async fn advance_workchains(
             // created_by is the human-readable attribution the POST stored
             // (email, else name, else 'user') — resolve it to a users.id the
             // notification writer can file a row against, the same email →
-            // id lookup notify_task_users uses for its actor.
+            // id lookup the ticket fan-out (`notify_ticket_event`) uses for its actor.
             let creator_id: Option<(String,)> =
                 sqlx::query_as("select id::text from users where lower(email) = $1 limit 1")
                     .bind(creator.to_lowercase())

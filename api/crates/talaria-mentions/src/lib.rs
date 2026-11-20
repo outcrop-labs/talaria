@@ -70,13 +70,52 @@ impl<'a> MentionSender<'a> {
     }
 }
 
-/// What a surface adds to its mention rows: the thing they are about, and the
+/// What a surface adds to its mention rows: the thing they are about, the
 /// members whose mute is running (their rows land quietly — counted, never
-/// toasted, bannered, pushed or mailed).
+/// toasted, bannered, pushed or mailed), and — for a ticket — the ticket and
+/// its board, so each person's setting for that board decides whether their
+/// mention row is filed at all (talaria_notify::boards).
 #[derive(Clone, Debug, Default)]
 pub struct MentionOpts {
     pub entity: Option<NotifyEntity>,
     pub quiet: HashSet<String>,
+    pub ticket: Option<TicketScope>,
+}
+
+/// The ticket a mention is on, and its board.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TicketScope {
+    pub board_id: String,
+    pub task_id: String,
+}
+
+impl TicketScope {
+    pub fn new(board_id: impl Into<String>, task_id: impl Into<String>) -> Self {
+        Self {
+            board_id: board_id.into(),
+            task_id: task_id.into(),
+        }
+    }
+}
+
+/// The recipients a ticket's board settings keep: everyone, off a ticket;
+/// on one, the people whose setting for its board files the mention (a board
+/// set to Off silences @mentions from it, as a channel at Nothing does — but
+/// a ticket a person watches themselves still reaches them).
+async fn by_board<'a>(
+    notify: &NotifyDeps,
+    to: Vec<&'a Mentionee>,
+    opts: &MentionOpts,
+) -> Vec<&'a Mentionee> {
+    let Some(t) = &opts.ticket else {
+        return to;
+    };
+    let ids: Vec<String> = to.iter().map(|m| m.user_id.clone()).collect();
+    let keep =
+        talaria_notify::boards::mention_listeners(&notify.pg, &t.board_id, &t.task_id, &ids).await;
+    to.into_iter()
+        .filter(|m| keep.contains(&m.user_id))
+        .collect()
 }
 
 /// The members a body @mentions, never the sender — exactly who
@@ -99,7 +138,8 @@ pub fn mentioned_ids(members: &[Mentionee], sender_user_id: &str, content: &str)
 /// the member set, so any surface with a membership list can reuse it.
 /// Per-person notification failures are swallowed (logged) — one person's
 /// failed row never costs the rest theirs, the same posture
-/// notify_task_users takes. Answers who was told.
+/// the ticket fan-out (talaria-tasks `notify_ticket_event`) takes. Answers who
+/// was told.
 ///
 /// `sender_user_id` EMPTY means the sender is not a person — every agent
 /// call site (an agent's channel post, a streamed agent reply) passes `""`
@@ -145,6 +185,7 @@ pub async fn notify_mentions_with(
         .iter()
         .filter(|m| m.user_id != sender.user_id && answers_to(m, &mentions))
         .collect();
+    let to = by_board(notify, to, opts).await;
     notify_these(notify, &to, sender, content, where_, href, opts).await
 }
 
@@ -194,6 +235,7 @@ pub async fn notify_added_mentions(
     opts: &MentionOpts,
 ) -> Vec<String> {
     let to = newly_mentioned(members, sender.user_id, old_content, new_content);
+    let to = by_board(notify, to, opts).await;
     notify_these(notify, &to, sender, new_content, where_, href, opts).await
 }
 
@@ -383,6 +425,7 @@ mod tests {
         let opts = MentionOpts {
             entity: Some(NotifyEntity::new("task", "t-1")),
             quiet: ["muted".to_string()].into_iter().collect(),
+            ..Default::default()
         };
         let person = MentionSender::of("u-1", "Ada");
         let m = mention_meta(&person, &opts, "muted");

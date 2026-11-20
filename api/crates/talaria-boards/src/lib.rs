@@ -110,6 +110,23 @@ pub async fn board_role(
         .max_by_key(|role| role_rank(role)))
 }
 
+/// Every person who can see a board, on both of `board_role`'s legs — a
+/// `board_members` row, or membership of the team that owns it — once each.
+/// The board-wide audience for the people who chose to hear a whole board
+/// (talaria_notify::boards); the union is `board_role`'s, so nobody it names
+/// is someone `board_role` would refuse.
+pub async fn board_audience(pg: &sqlx::PgPool, board_id: &str) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select user_id::text from board_members where board_id = $1::uuid \
+         union \
+         select tm.user_id::text from boards b join team_members tm on tm.team_id = b.team_id \
+         where b.id = $1::uuid",
+    )
+    .bind(board_id)
+    .fetch_all(pg)
+    .await
+}
+
 /// SQL fragment: the board `b` is one this AGENT may touch under its board
 /// policy — `allow_all_agents`, or listed on the board — and not archived.
 /// This is `board_allows_agent`'s question,

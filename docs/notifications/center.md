@@ -29,7 +29,8 @@ invalidation of the bell refreshes the page's views too.
   `entity.type` and `entity.id` goes under one collapsible header; a row about something
   else in between ends the run, so a group never pulls an older row above newer ones. The
   header is "\<name\> · N updates": a ticket key every row carries (`TAL-112`), else the
-  entity type's word ("Ticket", "Channel").
+  entity type's word ("Ticket", "Channel", "Board" — a `board-activity` row is about its
+  board).
 - **The count** is the coalesced row's `count` (W2-P), worded by kind: "3 messages",
   "Moved 4 times", "Down 2 times"; "N updates" otherwise.
 - **The reason** is the row's `reason`, else the registry's reason for its kind.
@@ -54,7 +55,7 @@ under it, each with its name; from `sm` up it is one row with column heads.
 
 Its rows are `classes[]`, grouped by category in the order Needs you, Direct, Following,
 Workspace (a category the client does not know goes last, under its id). Members are not
-served admin-only classes, so today a member's matrix has 9 rows and an admin's 11, with
+served admin-only classes, so today a member's matrix has 11 rows and an admin's 13, with
 no client code knowing why. The cells are `channels[class]`. In-app is always checked and
 cannot be changed. Email is disabled, with the instance switch's explanation, while
 `delivery.emailEnabled` is false. "Reset" writes the registry's defaults as explicit bools

@@ -324,6 +324,45 @@ const RULES = [
       'a client contract; no other file needs to name it.',
     ],
   },
+  {
+    id: 'board-notify-setting-outside-the-fan-outs',
+    lang: 'rust',
+    // A person's notification setting for a board (FR5) may decide only what
+    // THAT person receives. The way it could change what somebody else
+    // receives is a broadcast — a board event to apps, a channel or room
+    // post, a realtime frame, a future board-to-channel feed — reading it. So
+    // the module (`talaria_notify::boards`, never glob-re-exported), its
+    // table and the prefs key are named only by the per-recipient fan-outs
+    // and the caller's own routes below. The allowlist is checked for rot
+    // after the rules run (BOARD_NOTIFY_ALLOW).
+    pattern: /\btalaria_notify::boards\b|\bcrate::boards\b|\bboard_notify_prefs\b|\bBOARDS_KEY\b/,
+    allow: [
+      // the module itself, and the prefs writer that holds its key
+      'api/crates/talaria-notify/src/boards.rs',
+      'api/crates/talaria-notify/src/prefs.rs',
+      // the per-recipient fan-outs: the ticket producers and the mention doors
+      'api/crates/talaria-tasks/src/lib.rs',
+      'api/crates/talaria-tasks/src/moving.rs',
+      'api/crates/talaria-mentions/src/lib.rs',
+      // the caller's own setting: one board, every board, the default
+      'api/crates/talaria-routes-boards/src/boards/boards_id_notify.rs',
+      'api/crates/talaria-routes-comms/src/activity/notifications_boards.rs',
+      'api/crates/talaria-routes-comms/src/activity/notifications.rs',
+    ],
+    what: 'a per-board notification setting read outside the per-recipient fan-outs',
+    fix: [
+      "A person's setting for a board decides what that person receives, and nothing else.",
+      'A broadcast — a board event to apps, a channel or task-room post, a realtime frame,',
+      'a board-to-channel feed — must never read one: that is how one person turning a board',
+      'off would change what everybody else hears.',
+      '',
+      'If this file files rows one recipient at a time and needs the setting, file through',
+      'the existing fan-outs (talaria-tasks `notify_ticket_event`, talaria-mentions',
+      '`MentionOpts.ticket`) or add the file to `allow` on this rule with the reason, in the',
+      'pull request where a reviewer can veto it. A board-level feed is board configuration,',
+      'never a person\'s setting.',
+    ],
+  },
 ]
 
 /** Legal in named files, in a known quantity, and forbidden everywhere else.
@@ -846,6 +885,50 @@ for (const rule of RULES) {
         found: [],
       })
     }
+  }
+}
+
+// The board-setting confinement rule's allowlist and pattern rot the way every
+// allowlist does: a file that moved keeps an exemption that exempts nothing,
+// and a pattern that stopped matching the module's spelling passes on a tree
+// that reads the setting everywhere. So each allowed file must still exist and
+// still name the setting, the module must still hold its table, and the
+// pattern is proven against the spellings it exists to catch (and one it
+// must not).
+{
+  const rule = RULES.find((r) => r.id === 'board-notify-setting-outside-the-fan-outs')
+  const re = new RegExp(rule.pattern.source)
+  const found = []
+  for (const path of rule.allow) {
+    const src = rustSources.get(path)
+    if (src === undefined) found.push({ path, line: 1, text: 'on the allowlist but no longer exists' })
+    else if (!re.test(src)) found.push({ path, line: 1, text: 'on the allowlist but no longer names the setting — delete its entry' })
+  }
+  const home = rustSources.get('api/crates/talaria-notify/src/boards.rs') ?? ''
+  if (!home.includes('board_notify_prefs')) {
+    found.push({ path: 'api/crates/talaria-notify/src/boards.rs', line: 1, text: 'no longer holds board_notify_prefs — point the rule at its new home' })
+  }
+  const mustMatch = [
+    'talaria_notify::boards::listeners(&pg, b, ev, &c)',
+    'use talaria_notify::boards::{self as board_prefs, Candidate};',
+    'sqlx::query("select preset from board_notify_prefs")',
+    'm.insert(BOARDS_KEY.to_string(), v)',
+    'use crate::boards::default_wire;',
+  ]
+  const mustNot = ['talaria_notify::board_activity', 'group_key::board_activity(board_id)', 'talaria_boards::board_audience(pg, id)']
+  for (const t of mustMatch) if (!re.test(t)) found.push({ path: 'scripts/check-invariants.mjs', line: 1, text: `self-test: the pattern misses \`${t}\`` })
+  for (const t of mustNot) if (re.test(t)) found.push({ path: 'scripts/check-invariants.mjs', line: 1, text: `self-test: the pattern matches \`${t}\`` })
+  if (found.length) {
+    failures.push({
+      id: 'board-notify-allowlist-rot',
+      what: "the board-setting confinement rule's allowlist or pattern no longer describes the tree",
+      fix: [
+        "Update `allow` or `pattern` on 'board-notify-setting-outside-the-fan-outs' in this file, in",
+        'the commit that moved the code. An entry that names nothing is an exemption waiting for',
+        'the next broadcast to walk through.',
+      ],
+      found,
+    })
   }
 }
 

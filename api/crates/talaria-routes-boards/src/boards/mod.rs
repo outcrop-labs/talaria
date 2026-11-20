@@ -1,5 +1,5 @@
 // Boards, their members/labels/statuses/views/workchains, per-board agents
-// and events.
+// and events, and the caller's own notification setting for a board.
 pub mod boards;
 pub mod boards_id;
 pub mod boards_id_agent_requests;
@@ -7,6 +7,7 @@ pub mod boards_id_agents;
 pub mod boards_id_events;
 pub mod boards_id_labels;
 pub mod boards_id_members;
+pub mod boards_id_notify;
 pub mod boards_id_statuses;
 pub mod boards_id_tasks;
 pub mod boards_id_templates;

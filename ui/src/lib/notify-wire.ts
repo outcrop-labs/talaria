@@ -280,6 +280,7 @@ export const GROUP = {
   approval: (approvalId: string) => `approval:${approvalId}`,
   outreach: (agent: string, day: string) => `outreach:${agent}:${day}`,
   agentDesign: (designId: string) => `agent-design:${designId}`,
+  boardActivity: (boardId: string) => `board:${boardId}:activity`,
 } as const
 
 /** The entity kinds a row can be about (the server's `entity::*`). */
@@ -293,4 +294,5 @@ export const ENTITY = {
   researchRun: 'research_run',
   kbDoc: 'kb_doc',
   agentDesign: 'agent_design',
+  board: 'board',
 } as const
