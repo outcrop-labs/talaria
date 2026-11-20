@@ -315,12 +315,20 @@ async fn who_of_user(pg: &sqlx::PgPool, user_id: &str) -> Result<Option<String>,
 /// Is a chip with this id already on the landing row? The chip write is
 /// first-wins for links, and a file's touch time is its message's, so a
 /// second open on the same turn moves nothing — and the answer must say so.
+///
+/// A READ OF THE FILE IS NOT AN OPEN OF IT. A Google read on this turn left
+/// the file's chip marked as a read (`talaria_chips::READ_MARK`), which the
+/// pane does not list; this open's unmarked chip replaces it, and the tab
+/// opens. Answering "already linked" there would tell the agent nothing
+/// moved when the person's pane just did.
 async fn already_on(pg: &sqlx::PgPool, landed: &Landed, chip: &Value) -> Result<bool, sqlx::Error> {
     let Some(id) = chip.get("id").and_then(Value::as_str) else {
         return Ok(false);
     };
     let row: Option<(bool,)> = sqlx::query_as(
-        "select chips @> jsonb_build_array(jsonb_build_object('id', $2::text)) \
+        "select exists (select 1 from jsonb_array_elements(chips) c \
+                         where c->>'id' = $2::text \
+                           and c->'read' is distinct from 'true'::jsonb) \
          from messages where id = $1::uuid",
     )
     .bind(&landed.message_id)

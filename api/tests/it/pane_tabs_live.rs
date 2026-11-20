@@ -859,3 +859,140 @@ async fn a_session_names_only_the_agents_own_conversation() {
     );
     assert_eq!(hint(json!({})).await, None);
 }
+
+// ── Google reads ────────────────────────────────────────────────────────────
+
+/// A GOOGLE READ KEEPS ITS PILL AND OPENS NOTHING; a write or an open of the
+/// same file does, through the row's own SQL merge. A chip stored before the
+/// mark existed still lists.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_google_read_opens_no_tab_and_a_write_or_an_open_after_it_does() {
+    let state = live_app_state().await;
+    let (owner, cookie) = member(&state, "google").await;
+    let (model, key) = fleet_agent(&state, "google").await;
+    let conv = create_conversation(&state.pg, &owner, &model, "Session", "work", None)
+        .await
+        .unwrap();
+    insert_user_message(
+        &state.pg,
+        &conv,
+        0,
+        "earlier",
+        &json!([]),
+        Some(&owner),
+        &json!({}),
+    )
+    .await
+    .unwrap();
+    // An earlier turn's chip, stored before reads were marked.
+    sqlx::query(
+        "insert into messages (conversation_id, seq, role, content, status, chips, created_at) \
+         values ($1::uuid, 1, 'assistant', 'read it', 'complete', $2, now() - interval '1 hour')",
+    )
+    .bind(&conv)
+    .bind(
+        json!([{ "id": "source:legacy-read", "kind": "source", "label": "Old notes",
+                   "title": "Old notes",
+                   "href": "https://docs.google.com/document/d/1liveLegacy/edit" }]),
+    )
+    .execute(&state.pg)
+    .await
+    .unwrap();
+    insert_user_message(
+        &state.pg,
+        &conv,
+        2,
+        "now",
+        &json!([]),
+        Some(&owner),
+        &json!({}),
+    )
+    .await
+    .unwrap();
+    let row = insert_streaming_assistant(&state.pg, &conv, 3, &json!({}))
+        .await
+        .unwrap();
+    let session = attribute(&state.pg, &model, &conv).await;
+    let url = |id: &str| format!("https://docs.google.com/document/d/{id}/edit");
+    let read = |id: &str| {
+        frame(
+            "read_google_doc",
+            &json!({ "id": id }),
+            &json!({ "id": id, "title": "Brief", "url": url(id), "markdown": markdown(300) }),
+            &session,
+        )
+    };
+    let write = |id: &str| {
+        frame(
+            "update_google_doc",
+            &json!({ "id": id, "body": "more" }),
+            &json!({ "id": id, "url": url(id), "name": "Brief" }),
+            &session,
+        )
+    };
+    let listed = || async { keys(&files(&state, &cookie, &conv).await) };
+    let marked = |chips: &Value, id: &str| {
+        chips.as_array().and_then(|all| {
+            all.iter()
+                .find(|c| c["href"] == json!(url(id)))
+                .map(|c| c["read"] == json!(true))
+        })
+    };
+
+    // Read only: a pill on the row, nothing in the pane.
+    post_frame(&state, &key, read("1liveReadOnly")).await;
+    assert_eq!(
+        marked(&chips_of(&state.pg, &row).await, "1liveReadOnly"),
+        Some(true)
+    );
+    assert_eq!(listed().await, vec!["google:1liveLegacy".to_string()]);
+
+    // Read, then write: the write takes the read's place, and it lists.
+    post_frame(&state, &key, read("1liveReadWrite")).await;
+    post_frame(&state, &key, write("1liveReadWrite")).await;
+    let chips = chips_of(&state.pg, &row).await;
+    assert_eq!(marked(&chips, "1liveReadWrite"), Some(false), "{chips}");
+    assert_eq!(naming(&chips, &url("1liveReadWrite")), 1, "{chips}");
+
+    // Write, then read: still the write.
+    post_frame(&state, &key, write("1liveWriteRead")).await;
+    post_frame(&state, &key, read("1liveWriteRead")).await;
+    assert_eq!(
+        marked(&chips_of(&state.pg, &row).await, "1liveWriteRead"),
+        Some(false)
+    );
+    assert_eq!(
+        listed().await,
+        vec![
+            "google:1liveLegacy".to_string(),
+            "google:1liveReadWrite".to_string(),
+            "google:1liveWriteRead".to_string(),
+        ]
+    );
+
+    // Asked to open the one it only read: the open door lands the unmarked
+    // chip, says it opened it, and the tab is there — named from the read.
+    let (status, body) = agent_call(
+        &state,
+        &key,
+        "POST",
+        "/api/agent/open",
+        Some(json!({ "url": url("1liveReadOnly") })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["alreadyOpen"],
+        json!(false),
+        "a read is not an open: {body}"
+    );
+    assert_eq!(body["file"]["title"], json!("Brief"), "{body}");
+    let after = files(&state, &cookie, &conv).await;
+    let opened = after
+        .iter()
+        .find(|f| f["key"] == json!("google:1liveReadOnly"))
+        .expect("the tab opened");
+    assert_eq!(opened["title"], json!("Brief"), "{opened}");
+    assert_eq!(opened["touchedFor"], json!(owner), "{opened}");
+}
