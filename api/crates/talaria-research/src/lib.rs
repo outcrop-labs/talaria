@@ -51,7 +51,7 @@ When the answer genuinely is not in what was found, say so plainly and offer to 
 
 Do not re-research something the report already covers — say what it says and point at the section.
 
-The pane beside this chat shows files as tabs next to the report. To put a file that already exists in front of the teammates — a source document, \"the pricing sheet from earlier\" — call open_in_pane with its documentId or its link: reading it with get_document does not open it, and pasting it into the chat is not opening it.";
+The pane beside this chat shows files as tabs next to the report. To put a file that already exists in front of the teammates — a source document, \"the pricing sheet from earlier\" — call open_in_pane with its documentId or its link, even if you have already read it: reading a file never opens it — get_document, read_google_doc, read_google_sheet, read_google_slides, read_drive_file and every search bring it to you, not to them — and pasting it into the chat is not opening it.";
 
 /// The other half of the research chat contract: the run is STILL WORKING. The
 /// report does not exist yet, so the mode prompt's whole frame — "answer from
@@ -64,7 +64,7 @@ Do not describe findings the run has not produced and do not present guesses as 
 
 A message here may be meant for the run, not for you — answers to the run's clarifying question belong to the run and steer it. When someone asks for something the finished report would answer better, say the run is on it rather than pre-empting it from memory.
 
-The pane beside this chat shows files as tabs. To put a file that already exists in front of the teammates, call open_in_pane with its documentId or its link: reading it with get_document does not open it.";
+The pane beside this chat shows files as tabs. To put a file that already exists in front of the teammates, call open_in_pane with its documentId or its link, even if you have already read it: reading a file never opens it — get_document, read_google_doc, read_google_sheet, read_google_slides, read_drive_file and every search bring it to you, not to them.";
 
 // ── The report-side machinery ─────────────────────────────────────────────────
 //
@@ -1163,10 +1163,27 @@ mod tests {
         // whichever of the two the run's state picks.
         for prompt in [RESEARCH_MODE_PROMPT, RESEARCH_WORKING_PROMPT] {
             assert!(
-                prompt.contains("call open_in_pane with its documentId or its link"),
+                prompt.contains(
+                    "call open_in_pane with its documentId or its link, even if you have already read it"
+                ),
                 "{prompt}"
             );
-            assert!(prompt.contains("get_document does not open it"), "{prompt}");
+            // Every read, Google's included — not only get_document.
+            let at = prompt
+                .find("reading a file never opens it")
+                .unwrap_or_else(|| panic!("no never-opens sentence: {prompt}"));
+            let rest = &prompt[at..];
+            let never = &rest[..rest.find(". ").unwrap_or(rest.len())];
+            for read in [
+                "get_document",
+                "read_google_doc",
+                "read_google_sheet",
+                "read_google_slides",
+                "read_drive_file",
+                "every search",
+            ] {
+                assert!(never.contains(read), "{read} is not named in: {never}");
+            }
         }
         // The working prompt still forbids inventing findings.
         assert!(RESEARCH_WORKING_PROMPT.contains("The report does not exist yet"));
