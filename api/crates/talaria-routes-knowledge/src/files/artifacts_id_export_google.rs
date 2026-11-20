@@ -21,7 +21,8 @@ use talaria_api_facades::google::drive::{
 };
 use talaria_api_facades::google::errors::google_token_fail;
 use talaria_api_facades::google::org::get_org_targets;
-use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, can_read_agent, list_editors};
+use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, list_editors};
+use talaria_artifacts::agent_access::agent_reads_artifact;
 use talaria_artifacts::{get_artifact, guarded, record_google_export};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_error::{house_error, house_error_msg, internal};
@@ -109,28 +110,11 @@ pub async fn post(
         let name = agent.model.clone();
         // The read gate the GET uses, owner arm included — a personal
         // assistant exports its owner's private artifacts, same as it reads
-        // them.
-        let owner = match talaria_users::assistant_owner_for(
-            &state.pg,
-            &AgentSubject::Caller(agent.clone()),
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] owner resolve failed", e)),
-        };
-        let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
-            Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
-        };
-        if !can_read_agent(
-            &guarded(&artifact),
-            &name,
-            owner.as_deref(),
-            &editors,
-            &team_ids,
-        ) {
-            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
+        // them. talaria-artifacts' rule (`agent_reads_artifact`), not a copy.
+        match agent_reads_artifact(&state.pg, &agent, &guarded(&artifact), &editors).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+            Err(e) => return Ok(internal("[artifacts] agent read check failed", e)),
         }
         // Resolve the agent's Google identity (owner for personal assistants,
         // shared org account for general fleet agents). Pass the CALLER —
