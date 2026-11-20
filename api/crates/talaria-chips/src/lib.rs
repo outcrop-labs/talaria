@@ -813,6 +813,72 @@ pub fn bare_tool_name(tool: &str) -> &str {
         .unwrap_or(tool)
 }
 
+/// THE ANSWER AN MCP TOOL GAVE, out of the envelope Hermes puts it in.
+///
+/// Hermes' MCP handler returns `json.dumps({"result": text})` for a tool's
+/// text content, and that envelope is the `result` the talaria-events plugin
+/// posts — so a toolkit writer's `{"artifact": {"id": …}}` reached
+/// `chips_from_tool` as one JSON string under `result`, and no arm keyed on an
+/// id, a title or a URL found anything (seen on a live stack, Hermes v0.22.4).
+/// Unwrapped here: a whole envelope gives back its string; one the plugin's
+/// 4000-char clamp cut short gives back as much of the string as arrived,
+/// decoded, for `parse_loose` to repair like any other truncated payload.
+/// Anything else — a native tool's answer, an object with other keys — is
+/// returned as it came.
+pub fn mcp_result_text(raw: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let t = raw.trim_start();
+    if let Ok(v) = serde_json::from_str::<Value>(t) {
+        if let Some(obj) = v.as_object()
+            && obj.len() == 1
+            && let Some(Value::String(inner)) = obj.get("result")
+        {
+            return Cow::Owned(inner.clone());
+        }
+        return Cow::Borrowed(raw);
+    }
+    match t
+        .strip_prefix("{\"result\": \"")
+        .or_else(|| t.strip_prefix("{\"result\":\""))
+    {
+        Some(rest) => Cow::Owned(json_string_prefix(rest)),
+        None => Cow::Borrowed(raw),
+    }
+}
+
+/// The decoded text of a JSON string body that may have been cut off: up to
+/// its closing quote, or to wherever the text ends. An escape cut in half is
+/// dropped rather than guessed at.
+fn json_string_prefix(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('b') => out.push('\u{8}'),
+                Some('f') => out.push('\u{c}'),
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if hex.len() < 4 {
+                        break;
+                    }
+                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(ch);
+                    }
+                }
+                Some(other) => out.push(other),
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Chips implied by one completed tool call. Link-producing tools always
 /// emit a link chip, even when the result text never pasted the URL.
 /// Protected tools emit an approval chip instead of pretending the action
@@ -3529,5 +3595,31 @@ mod tests {
         );
         assert_eq!(bare_tool_name("mcp__talaria__"), "mcp__talaria__");
         assert_eq!(bare_tool_name("web_search"), "web_search");
+    }
+
+    #[test]
+    fn an_mcp_answer_is_read_out_of_its_envelope_whole_or_cut_short() {
+        let inner = "{\n  \"artifact\": {\n    \"id\": \"9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2\",\n    \"title\": \"Launch plan\"\n  }\n}";
+        let whole = serde_json::to_string(&json!({ "result": inner })).unwrap();
+        assert_eq!(mcp_result_text(&whole), inner);
+        // Hermes' own spelling (json.dumps puts a space after the colon), cut
+        // by the plugin's clamp in the middle of the string.
+        let spaced = whole.replacen("\"result\":", "\"result\": ", 1);
+        let cut: String = spaced.chars().take(40).collect();
+        let prefix = mcp_result_text(&cut);
+        assert!(inner.starts_with(prefix.as_ref()), "{prefix:?}");
+        assert!(prefix.starts_with("{\n  \"artifact\""), "{prefix:?}");
+        // An escape cut in half is dropped, not guessed.
+        assert_eq!(json_string_prefix("ab\\"), "ab");
+        assert_eq!(json_string_prefix("a\\u00e9b\\u00"), "aéb");
+        // Not an envelope: as it came.
+        for raw in [
+            r#"{"artifact":{"id":"x"}}"#,
+            r#"{"result":5}"#,
+            r#"{"result":"x","more":1}"#,
+            "plain words",
+        ] {
+            assert_eq!(mcp_result_text(raw), raw);
+        }
     }
 }

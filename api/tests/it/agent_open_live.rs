@@ -639,3 +639,54 @@ async fn a_chat_without_a_pane_gets_the_link_and_says_so() {
         &format!("/artifacts?a={doc}")
     ));
 }
+
+/// A DOCUMENT THE AGENT CREATES JOINS THE SESSION. The tool-events door reads
+/// the create's answer, which the agent's plugin cuts to 4000 chars — a body
+/// past that lost the id, and the file never reached the pane. The create
+/// route lands the chip itself now, as the edit route does.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_document_the_agent_creates_joins_the_session_whatever_its_length() {
+    use tower::ServiceExt;
+    let state = live_app_state().await;
+    let (owner, cookie) = member(&state, "create").await;
+    let (model, key) = fleet_agent(&state, "create").await;
+    let (conv, row) = live_turn(&state, &owner, &model, "work").await;
+
+    let body = json!({ "kind": "doc", "title": "Long brief", "body": "word ".repeat(2_000) });
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/artifacts")
+        .header("x-api-key", &key)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap();
+    let res = talaria_api::routes::router(state.clone())
+        .oneshot(req)
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let raw = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let created: Value = serde_json::from_slice(&raw).unwrap();
+    let id = created["artifact"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_string();
+
+    // The chip lands detached, a beat after the answer.
+    let href = format!("/artifacts?a={id}");
+    let mut landed = false;
+    for _ in 0..40 {
+        if names(&chips_of(&state.pg, &row).await, &href) {
+            landed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(landed, "the create's chip is on the live turn");
+    let listed = files(&state, &cookie, &conv).await;
+    let f = file(&listed, &format!("artifact:{id}")).expect("the pane lists it");
+    assert_eq!(f["touchedFor"], json!(owner), "{f}");
+}

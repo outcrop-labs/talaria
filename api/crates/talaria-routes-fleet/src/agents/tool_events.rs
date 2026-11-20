@@ -74,15 +74,17 @@ fn named_session(body: &serde_json::Value) -> Option<&str> {
 /// that PERSISTS, on the message row, and renders in the chat for everyone
 /// who can read the turn. Scrub first, then recognize.
 ///
-/// AND RECOGNIZE BY THE TOOLKIT'S OWN NAME. The plugin posts the name Hermes
-/// registered the tool under — `mcp__talaria__create_document` — and the
-/// chip reader keys on `create_document`; without the strip a document an
-/// agent created never reached the session's files (`bare_tool_name`).
+/// AND RECOGNIZE THE TOOLKIT'S OWN NAME AND ANSWER. The plugin posts the name
+/// Hermes registered the tool under — `mcp__talaria__create_document` — and
+/// the answer inside Hermes' `{"result": "…"}` envelope; the chip reader keys
+/// on `create_document` and reads the answer's own fields. Without both a
+/// document an agent created never reached the session's files
+/// (`bare_tool_name`, `mcp_result_text`).
 fn chips_for(tool: &str, args: &str, result: &str) -> Vec<serde_json::Value> {
     talaria_chips::chips_from_tool(
         talaria_chips::bare_tool_name(tool),
         &scrub(args),
-        &scrub(result),
+        &scrub(&talaria_chips::mcp_result_text(result)),
     )
 }
 
@@ -383,14 +385,22 @@ mod tests {
     #[test]
     fn a_prefixed_toolkit_writer_still_lands_its_document_chip() {
         let id = "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2";
-        let result = format!(r#"{{"id":"{id}","title":"Launch plan","kind":"doc"}}"#);
-        for name in ["create_document", "mcp__talaria__create_document"] {
-            let chips = chips_for(name, r#"{"title":"Launch plan"}"#, &result);
+        let answer =
+            format!(r#"{{"artifact":{{"id":"{id}","title":"Launch plan","kind":"doc"}}}}"#);
+        // What the plugin actually posts: Hermes' envelope around the answer.
+        let enveloped =
+            serde_json::to_string(&serde_json::json!({ "result": answer })).expect("plain data");
+        for (name, result) in [
+            ("create_document", &answer),
+            ("mcp__talaria__create_document", &answer),
+            ("mcp__talaria__create_document", &enveloped),
+        ] {
+            let chips = chips_for(name, r#"{"title":"Launch plan"}"#, result);
             assert!(
                 chips
                     .iter()
                     .any(|c| c["href"] == format!("/artifacts?a={id}")),
-                "{name}: {chips:?}"
+                "{name} {result}: {chips:?}"
             );
         }
     }
