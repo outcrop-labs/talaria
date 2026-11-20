@@ -1,10 +1,10 @@
 // POST /api/tasks/{id}/resync — "Re-sync from ClickUp": the ticket's ClickUp
-// task is read again and forced onto it (title, description, status through
-// the sync's column guards, priority, dates; ClickUp's labels and human
-// assignees replace the ticket's; agent assignees are never touched). Owner or
-// editor on the ticket's board, for a ticket synced by the board's live
-// connection. 409 while a sync is already running on the board, while the
-// sync waits for a new credential, and while it is paused. Answers {runId}.
+// task is read again and forced onto it. Owner or editor on the board, for a
+// ticket its live connection syncs; 409 while a sync runs on the board, while
+// the sync is paused or waits for a new credential. Answers {runId}. Forced:
+// title, description, status through the sync's column guards, priority,
+// dates; ClickUp's labels and human assignees replace the ticket's; agent
+// assignees are never touched.
 
 use axum::Json;
 use axum::extract::{Path, State};

@@ -1504,6 +1504,12 @@ async fn a_pause_freezes_the_sync_until_an_owner_resumes_it() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    // An edit that names no pause leaves it: the state, who pressed it and
+    // the empty next sync come from the row the write changes, not from a
+    // read made before someone pressed Pause.
+    assert_eq!(body["sync"]["state"], "paused", "{}", body["sync"]);
+    assert_eq!(body["sync"]["pausedBy"]["name"], "Olive Owner");
+    assert!(body["sync"]["nextSyncAt"].is_null(), "{}", body["sync"]);
     let end = Instant::now() + Duration::from_secs(60);
     while ticket(&pg, &board, &task_id).await["status"] != "blocked" && Instant::now() < end {
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1518,6 +1524,21 @@ async fn a_pause_freezes_the_sync_until_an_owner_resumes_it() {
         "ClickUp was read while the sync was paused"
     );
     assert_eq!(ticket(&pg, &board, &task_id).await["title"], original);
+
+    // A schedule edit keeps the pause too, and takes effect on Resume.
+    let (status, body) = call_json(
+        &state,
+        "PUT",
+        &format!("/api/boards/{board}/sync"),
+        Some(&own),
+        Some(json!({"intervalMinutes": 60})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sync"]["state"], "paused", "{}", body["sync"]);
+    assert_eq!(body["sync"]["intervalMinutes"], 60);
+    assert_eq!(body["sync"]["pausedBy"]["id"], owner.as_str());
+    assert!(body["sync"]["nextSyncAt"].is_null(), "{}", body["sync"]);
 
     // ── Resume: active, the record cleared, and Sync now reads again ───────
     let (status, body) = call_json(

@@ -338,56 +338,31 @@ pub async fn update(
             "the sync needs a new credential before it can resume",
         ));
     }
-    let state_next = match input.paused {
-        Some(true) if sync.state == "active" => "paused",
-        Some(false) if sync.state == "paused" => "active",
-        _ => sync.state.as_str(),
-    };
-    let interval = input.interval_minutes.unwrap_or(sync.interval_minutes);
-    sqlx::query(
-        "update board_syncs set \
-           status_map = coalesce($2, status_map), \
-           map_version = map_version + case when $3 then 1 else 0 end, \
-           remap_pending = remap_pending or $3, \
-           options = coalesce($4, options), \
-           interval_minutes = $5, \
-           next_sync_at = case when $5::int is null or $6 <> 'active' then null \
-                               when $7 then now() + ($5::int * interval '1 minute') \
-                               else next_sync_at end, \
-           paused_by = case when $6 = 'paused' and state <> 'paused' then $8::uuid \
-                            when $6 = 'active' then null else paused_by end, \
-           paused_at = case when $6 = 'paused' and state <> 'paused' then now() \
-                            when $6 = 'active' then null else paused_at end, \
-           state = $6, updated_at = now() \
-         where id = $1::uuid",
-    )
-    .bind(&sync.id)
-    .bind(
-        map.as_ref()
+    // The write works the state out from the row itself, not from the read
+    // above: a mapping or schedule edit that read the sync a moment before
+    // someone pressed Pause leaves the pause in place.
+    let edit = store::SyncEdit {
+        status_map: map
+            .as_ref()
             .map(|m| serde_json::to_value(m).unwrap_or_else(|_| json!({}))),
-    )
-    .bind(remap)
-    .bind(
-        input
+        remap,
+        options: input
             .options
             .as_ref()
             .map(|o| serde_json::to_value(o).unwrap_or_else(|_| json!({}))),
-    )
-    .bind(interval)
-    .bind(state_next)
-    .bind(
-        input.interval_minutes.is_some() || state_next != sync.state || sync.next_sync_ms.is_none(),
-    )
-    .bind(user_id)
-    .execute(&state.pg)
-    .await
-    .map_err(|e| OpError::internal("sync update", e))?;
+        interval_minutes: input.interval_minutes,
+        paused: input.paused,
+    };
+    let (state_now, interval) = store::write_edit(&state.pg, &sync.id, user_id, &edit)
+        .await
+        .map_err(|e| OpError::internal("sync update", e))?
+        .ok_or_else(|| OpError::new(404, "this board is not connected to ClickUp"))?;
     // The freeze takes hold now, not at the live run's next step: a run that
     // reads ClickUp is cancelled (its in-flight step stops at its next await).
     // A remap run is the owner's own mapping edit and reads nothing; it
     // finishes.
-    if state_next == "paused"
-        && sync.state != "paused"
+    if input.paused == Some(true)
+        && state_now == "paused"
         && let Err(e) = crate::cancel_live_reads(state, board_id, "the sync was paused").await
     {
         tracing::warn!("[board-sync] live run not cancelled on pause of {board_id}: {e}");
@@ -401,7 +376,7 @@ pub async fn update(
             "statusMap": map,
             "options": input.options,
             "intervalMinutes": interval,
-            "state": state_next,
+            "state": state_now,
         }),
     )
     .await;

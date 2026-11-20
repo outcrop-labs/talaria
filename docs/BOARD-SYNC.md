@@ -260,7 +260,9 @@ are a board owner's, the same people who configure the sync. The pause records w
 pressed it and when (`board_syncs.paused_by`, `paused_at`). The status answers them as
 `pausedBy` (`{id, name, email}`) and `pausedAt`, so the board shows "Paused by Dana Reyes ·
 5m ago" to every member. Resume clears both, turns the connection active, and sets the
-next sync one interval out.
+next sync one interval out. A `PUT` that names no `paused` never changes the state: the
+write works it out from the row it changes, not from an earlier read, so a mapping or
+schedule edit saved just as someone presses Pause leaves the pause in place.
 
 What still works while paused:
 

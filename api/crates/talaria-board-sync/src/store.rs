@@ -528,6 +528,71 @@ pub async fn connection_live(pg: &PgPool, sync_id: &str) -> Result<bool, sqlx::E
     Ok(live)
 }
 
+/// One owner edit of a live sync. A `None` leaves the field as the row holds
+/// it at the moment of the write.
+#[derive(Debug, Default)]
+pub struct SyncEdit {
+    pub status_map: Option<Value>,
+    /// The map differs from the one in force: bump map_version, flag a remap.
+    pub remap: bool,
+    pub options: Option<Value>,
+    /// `Some(None)` turns the schedule to manual.
+    pub interval_minutes: Option<Option<i32>>,
+    /// `Some(true)` pauses an active sync, `Some(false)` resumes a paused one.
+    pub paused: Option<bool>,
+}
+
+// The state an edit leaves, worked out from the row's own state at the
+// write — never from an earlier read. A pause takes only an active sync and
+// a resume only a paused one; every other state stays.
+const EDIT_STATE: &str = "(case when $7::boolean is true and state = 'active' then 'paused' \
+                                when $7::boolean is false and state = 'paused' then 'active' \
+                                else state end)";
+const EDIT_INTERVAL: &str = "(case when $6 then $5::int else interval_minutes end)";
+
+/// Writes an owner's edit in one statement that reads the row it changes, so
+/// an edit saved as someone presses Pause cannot undo the pause: a request
+/// that names no `paused` leaves the state, who paused and when, and the
+/// next sync as the row holds them. The next sync follows the state and the
+/// interval the write leaves. Answers the state and the interval written, or
+/// None when the sync was disconnected meanwhile.
+pub async fn write_edit(
+    pg: &PgPool,
+    sync_id: &str,
+    user_id: &str,
+    edit: &SyncEdit,
+) -> Result<Option<(String, Option<i32>)>, sqlx::Error> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "update board_syncs set \
+           status_map = coalesce($2, status_map), \
+           map_version = map_version + case when $3 then 1 else 0 end, \
+           remap_pending = remap_pending or $3, \
+           options = coalesce($4, options), \
+           interval_minutes = {EDIT_INTERVAL}, \
+           next_sync_at = case when {EDIT_INTERVAL} is null or {EDIT_STATE} <> 'active' then null \
+                               when $6 or {EDIT_STATE} <> state or next_sync_at is null \
+                                 then now() + ({EDIT_INTERVAL} * interval '1 minute') \
+                               else next_sync_at end, \
+           paused_by = case when {EDIT_STATE} = 'paused' and state <> 'paused' then $8::uuid \
+                            when {EDIT_STATE} = 'active' then null else paused_by end, \
+           paused_at = case when {EDIT_STATE} = 'paused' and state <> 'paused' then now() \
+                            when {EDIT_STATE} = 'active' then null else paused_at end, \
+           state = {EDIT_STATE}, updated_at = now() \
+         where id = $1::uuid and state <> 'disconnected' \
+         returning state, interval_minutes"
+    )))
+    .bind(sync_id)
+    .bind(edit.status_map.clone())
+    .bind(edit.remap)
+    .bind(edit.options.clone())
+    .bind(edit.interval_minutes.flatten())
+    .bind(edit.interval_minutes.is_some())
+    .bind(edit.paused)
+    .bind(user_id)
+    .fetch_optional(pg)
+    .await
+}
+
 /// The token was refused by the GET /user probe: the sync waits for a person.
 pub async fn set_needs_credential(
     pg: &PgPool,

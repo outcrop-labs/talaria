@@ -1,8 +1,9 @@
 // PUT /api/boards/{id}/sync/credential {token} — replace the sync's ClickUp
-// token: when the member who connected it left, or ClickUp refused it. The
-// new token must be able to read the connected list. The mapping, the links
-// and the history stay; a sync waiting for a credential resumes and runs at
-// once. Owner only. Answers {sync}.
+// token. Owner only; the new token must read the connected list. A sync that
+// waits for a credential turns active and runs at once — or returns to paused
+// when it was paused as the token died. Answers {sync}. For when the member
+// who connected it left, or ClickUp refused it; the mapping, the links and
+// the history stay.
 
 use axum::Json;
 use axum::extract::{Path, State};
