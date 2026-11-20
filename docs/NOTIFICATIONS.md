@@ -117,7 +117,7 @@ The center itself (the bell, the page, the settings, the status panel) is
   tickets can reach you by mail alone while another's pop up; the inbox keeps every
   notification either way. A setting changes
   only what you receive. Set it on the board — the bell beside Board settings sets the
-  presets in one click and shows the value (its tooltip names it: "Board notifications:
+  presets and the daily digest in one click and shows the value (its tooltip names it: "Board notifications:
   participating (your default)"), and its Notification settings opens Board settings →
   Notifications for Custom and the board's channels; a viewer has the bell and that tab
   too — or in Settings → Notifications → Boards, which holds your default for every board

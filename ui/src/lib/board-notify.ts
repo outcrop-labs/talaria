@@ -192,6 +192,10 @@ export type ChannelChoice = 'settings' | 'on' | 'off'
 export const channelChoice = (v: boolean | null | undefined): ChannelChoice => (v === true ? 'on' : v === false ? 'off' : 'settings')
 export const channelValue = (c: ChannelChoice): boolean | null => (c === 'on' ? true : c === 'off' ? false : null)
 
+/** The events that point at the person: they never wait for a daily digest
+ *  (talaria_notify::boards `resolve`, "what is addressed to you"). */
+const ADDRESSED = new Set(['assigned', 'mention'])
+
 /** One sentence: what reaches the person from this board, and how.
  *  "Assigned to me, Status change and Mention — on tickets you’re in, as it
  *  happens." Off says what still comes through. Only events that can arrive
@@ -209,10 +213,23 @@ export function summary(
   // Only what can arrive today: All covers Due too, which has no producer
   // until the registry marks it available.
   const offered = registry ? new Set(availableEvents(registry).map((ev) => ev.id)) : null
-  const names = e.events.filter((id) => !offered || offered.has(id)).map((id) => eventLabel(registry, id))
-  const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]
-  const when = e.cadence === 'digest' ? 'rolled up once a day' : 'as it happens'
-  let line = `${list} — on ${scopeWords(e.scope)}, ${when}.`
+  const shown = e.events.filter((id) => !offered || offered.has(id))
+  const list = (ids: string[]) => {
+    const names = ids.map((id) => eventLabel(registry, id))
+    return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? '')
+  }
+  let line: string
+  if (e.cadence === 'digest') {
+    // What points at you never waits for a digest (the resolver's rule): an
+    // assignment and an @mention still come as they happen.
+    const now = shown.filter((id) => ADDRESSED.has(id))
+    const later = shown.filter((id) => !ADDRESSED.has(id))
+    line = later.length
+      ? `${list(later)} — on ${scopeWords(e.scope)}, rolled up once a day${now.length ? `; ${list(now)} as it happens` : ''}.`
+      : `${list(now)} — as it happens; what points at you never waits for a digest.`
+  } else {
+    line = `${list(shown)} — on ${scopeWords(e.scope)}, as it happens.`
+  }
   if (channelsServed) {
     const words = (name: string, v: boolean | null) => (v === null ? null : `${name} ${v ? 'on' : 'off'}`)
     const set = [words('Alerts', e.channels.alerts), words('Email', e.channels.email)].filter(Boolean)

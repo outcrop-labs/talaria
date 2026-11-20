@@ -199,7 +199,11 @@
     </SettingsRow>
 
     {#if cadences.length > 1 && eff.preset !== 'off'}
-      <SettingsRow label="When" hint="As it happens, or rolled up once a day." saved={autosave.saved('cadence')}>
+      <SettingsRow
+        label="When"
+        hint="As it happens, or rolled up once a day at the daily digest’s hour. Assignments, @mentions and tickets you watch yourself still come at once."
+        saved={autosave.saved('cadence')}
+      >
         <Segmented
           options={cadences.map((c) => ({ id: c.id, label: c.label }))}
           value={eff.cadence}

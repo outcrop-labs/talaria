@@ -114,7 +114,16 @@ test('the summary says what reaches you, over which tickets, when — and Off wh
     summary(expand('participating'), REGISTRY, false),
     'Assigned to me, Status change, Comment or reply, Mention and Ticket completed — on tickets you’re in, as it happens.',
   )
-  assert.equal(summary(expand('mentions', 'digest'), REGISTRY, false), 'Assigned to me and Mention — on tickets you’re in, rolled up once a day.')
+  // A digest rolls up what it can; what points at you still comes at once.
+  assert.equal(
+    summary(expand('participating', 'digest'), REGISTRY, false),
+    'Status change, Comment or reply and Ticket completed — on tickets you’re in, rolled up once a day; Assigned to me and Mention as it happens.',
+  )
+  assert.equal(summary(expand('mentions', 'digest'), REGISTRY, false), 'Assigned to me and Mention — as it happens; what points at you never waits for a digest.')
+  assert.equal(
+    summary(expand('custom', 'digest', { events: ['comment'] }), REGISTRY, false),
+    'Comment or reply — on tickets you’re in, rolled up once a day.',
+  )
   assert.match(summary(expand('all'), REGISTRY, false), /— on every ticket on the board, as it happens\.$/)
   // Due has no producer yet: All covers it, the sentence does not promise it.
   assert.doesNotMatch(summary(expand('all'), REGISTRY, false), /Due soon/)
