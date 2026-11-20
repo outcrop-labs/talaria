@@ -775,6 +775,11 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     }));
     talaria_digest::register_digest_job(real_digest_deps(state, rt.clone()));
     talaria_digest::register_approval_escalation_job(real_digest_deps(state, rt.clone()));
+    // The daily board digest: one row per board a person hears as a digest,
+    // and their "Your boards" mail, in the daily digest's slot.
+    talaria_digest::boards::register_board_digest_job(
+        talaria_digest::boards::real_board_digest_deps(state, rt.clone()),
+    );
     talaria_notify::register_notification_mail_job(real_drain_deps(state.pg.clone(), sb.clone()));
     // The delivery engine's jobs (docs/notifications/delivery.md): the
     // presence-deferred push, the missed-activity mail batcher, and the two
@@ -906,6 +911,13 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     // hand that only starts the `clickup-sync` runs that are due, and prunes
     // old ones. Required: a sync that silently stops is a stale board.
     talaria_board_sync::job::register_board_sync_job(state.clone());
+    // Due-date reminders (talaria-tasks `due`): every 15 minutes, the tickets
+    // that came due within a day or went overdue, told to whoever opted in.
+    // Required: a reminder that silently never comes is a missed deadline.
+    talaria_tasks::due::register_task_due_job(talaria_notify::NotifyDeps {
+        pg: state.pg.clone(),
+        realtime: rt.clone(),
+    });
 }
 
 /// The census kinds this build cannot define. Empty is arming's

@@ -173,6 +173,11 @@ pub mod group_key {
     pub fn task_comments(task_id: &str) -> String {
         format!("task:{task_id}:comments")
     }
+    /// A ticket's due-date reminders: "due soon", then "overdue", re-alert
+    /// the one open row (talaria-tasks `due`).
+    pub fn task_due(task_id: &str) -> String {
+        format!("task:{task_id}:due")
+    }
     /// A channel's messages, at level `all`.
     pub fn channel_activity(channel_id: &str) -> String {
         format!("channel:{channel_id}:activity")
@@ -212,6 +217,13 @@ pub mod group_key {
     pub fn board_activity(board_id: &str) -> String {
         format!("board:{board_id}:activity")
     }
+    /// A board a person hears as a daily digest, on one local day
+    /// (`yyyy-mm-dd`): one row per board per day, so a day nobody opened keeps
+    /// its own counts, and a pass that files the same day again finds the row
+    /// already there (talaria-digest, I-25).
+    pub fn board_digest(board_id: &str, day: &str) -> String {
+        format!("board:{board_id}:digest:{day}")
+    }
     /// One board sync's health (a rejected credential, a failed run): a
     /// second failure refreshes the open row instead of filing another.
     pub fn board_sync(sync_id: &str) -> String {
@@ -250,6 +262,7 @@ mod tests {
         assert_eq!(group_key::thread("v1"), "thread:v1");
         assert_eq!(group_key::task_status("t1"), "task:t1:status");
         assert_eq!(group_key::task_comments("t1"), "task:t1:comments");
+        assert_eq!(group_key::task_due("t1"), "task:t1:due");
         assert_eq!(group_key::channel_activity("c1"), "channel:c1:activity");
         assert_eq!(group_key::channel_thread("m1"), "reply:m1");
         assert_eq!(group_key::mcp_down("s1"), "mcp:s1:down");
@@ -260,6 +273,10 @@ mod tests {
         );
         assert_eq!(group_key::agent_design("d1"), "agent-design:d1");
         assert_eq!(group_key::board_activity("b1"), "board:b1:activity");
+        assert_eq!(
+            group_key::board_digest("b1", "2026-11-20"),
+            "board:b1:digest:2026-11-20"
+        );
         assert_eq!(group_key::board_sync("s1"), "board-sync:s1");
         assert_eq!(entity::AGENT_DESIGN, "agent_design");
         assert_eq!(

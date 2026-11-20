@@ -457,6 +457,15 @@ CREATE TABLE public.board_agents (
     board_id uuid NOT NULL,
     agent_model text NOT NULL
 );
+CREATE TABLE public.board_digest_state (
+    user_id uuid NOT NULL,
+    filed_on text NOT NULL,
+    window_from timestamp with time zone NOT NULL,
+    window_to timestamp with time zone NOT NULL,
+    filing_claim bigint,
+    mailed_on text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.board_labels (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     board_id uuid NOT NULL,
@@ -1711,7 +1720,9 @@ CREATE TABLE public.tasks (
     start_date timestamp with time zone,
     color text,
     approved_at timestamp with time zone,
-    external_key text
+    external_key text,
+    due_soon_for timestamp with time zone,
+    overdue_for timestamp with time zone
 );
 CREATE TABLE public.team_agents (
     team_id uuid NOT NULL,
@@ -2072,6 +2083,8 @@ ALTER TABLE ONLY public.board_agent_requests
     ADD CONSTRAINT board_agent_requests_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.board_agents
     ADD CONSTRAINT board_agents_pkey PRIMARY KEY (board_id, agent_model);
+ALTER TABLE ONLY public.board_digest_state
+    ADD CONSTRAINT board_digest_state_pkey PRIMARY KEY (user_id);
 ALTER TABLE ONLY public.board_labels
     ADD CONSTRAINT board_labels_board_id_name_key UNIQUE (board_id, name);
 ALTER TABLE ONLY public.board_labels
@@ -2501,6 +2514,7 @@ CREATE INDEX task_workchain_edges_to ON public.task_workchain_edges USING btree 
 CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_steps USING btree (task_id);
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
+CREATE INDEX tasks_due_scan_idx ON public.tasks USING btree (due_date) WHERE ((due_date IS NOT NULL) AND (archived_at IS NULL));
 CREATE UNIQUE INDEX tasks_external_key_idx ON public.tasks USING btree (external_key) WHERE (external_key IS NOT NULL);
 CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_affinity_idx ON public.usage_events USING btree (agent_model, affinity_key) WHERE (affinity_key IS NOT NULL);
@@ -2609,6 +2623,8 @@ ALTER TABLE ONLY public.board_agent_requests
     ADD CONSTRAINT board_agent_requests_requested_by_user_id_fkey FOREIGN KEY (requested_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.board_agents
     ADD CONSTRAINT board_agents_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_digest_state
+    ADD CONSTRAINT board_digest_state_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_labels
     ADD CONSTRAINT board_labels_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_members

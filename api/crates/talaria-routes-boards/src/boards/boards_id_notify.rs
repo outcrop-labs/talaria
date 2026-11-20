@@ -13,13 +13,15 @@
 //   PUT    { preset, events?, scope?, cadence?, channels? } → the caller's
 //            own row for this board, replaced (an upsert on their row — never
 //            anyone else's); answers as GET. `events` and `scope` are
-//            Custom's alone; a cadence or an event with no producer yet is
-//            refused. `channels` is `{alerts?, email?}`, each a bool or null
-//            — how this board's rows reach the caller where it is not their
+//            Custom's alone; an event with no producer yet is refused. A
+//            `digest` cadence puts the board on the daily board digest.
+//            `channels` is `{alerts?, email?}`, each a bool or null — how
+//            this board's rows reach the caller where it is not their
 //            Settings → Notifications matrix: `alerts` is the banner and the
-//            push together, `email` the missed-activity mail (feature
-//            `board-channels`; in-app is not a choice). A PUT is the whole
-//            setting: a member it leaves out goes back to its default.
+//            push together, `email` the missed-activity mail — and, for a
+//            board on the digest, whether it is in the "Your boards" mail
+//            (feature `board-channels`; in-app is not a choice). A PUT is the
+//            whole setting: a member it leaves out goes back to its default.
 //   DELETE → the caller's row is gone and the board follows their default
 //            again; answers as GET.
 //

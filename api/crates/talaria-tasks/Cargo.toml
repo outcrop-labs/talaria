@@ -31,6 +31,8 @@ talaria-notify = { workspace = true }
 talaria-platform-events = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-retrieval = { workspace = true }
+# The due-date reminders' job (`due`): its spec, registered by talaria-jobs.
+talaria-scheduler = { workspace = true }
 talaria-statuses = { workspace = true }
 talaria-tasks-types = { workspace = true }
 talaria-ticket-chat = { workspace = true }

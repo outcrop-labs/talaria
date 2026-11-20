@@ -42,8 +42,9 @@ stand, with I-8 amended below.
 | I-24 | `NotifyMeta`, `group_key::*`, `entity::*`, `resolve_entity`/`clear_entity`, `add_notification_with` | phase 0 | W2-P, W2-E |
 
 **I-24, amended (I-25, per-board settings).** `entity::BOARD` (`"board"`, selectable by
-`PUT /api/notifications {entity}`) and `group_key::board_activity(board)` join the
-conventions, with their TS twins in `ui/src/lib/notify-wire.ts`. `NotifyMeta`, the write
+`PUT /api/notifications {entity}`), `group_key::board_activity(board)` and
+`group_key::board_digest(board, day)` (the daily board digest's row, one per local day) join the conventions, with
+their TS twins in `ui/src/lib/notify-wire.ts`. `NotifyMeta`, the write
 path's UPSERT and the `notifications` columns are unchanged: who gets a row is decided at
 fan-out by the producers (`talaria_notify::boards`, [producers.md](./producers.md#each-board)),
 and nothing at send time reads a board setting.
@@ -270,8 +271,9 @@ list.
 **`features`** in the contract: `seq`, `classes`, `channels`, `dnd-store`,
 `presence-store`, `ack`, `devices`, `read-ids`, `channel-levels-store`. Each stream adds
 its own in its own module's `FEATURES` (the per-board settings: `board-prefs`, which also
-means `GET`/`PATCH /api/notifications` carry `boards`; and `board-channels`, a board's own
-Alerts and Email, carried on its rows as I-26's override).
+means `GET`/`PATCH /api/notifications` carry `boards`; `board-channels`, a board's own
+Alerts and Email, carried on its rows as I-26's override; and `task-due`, the due-date
+reminders a setting may name).
 
 ## The live stream (I-16, I-19)
 

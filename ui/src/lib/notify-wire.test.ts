@@ -280,10 +280,12 @@ describe('notify-wire against the captured api', () => {
     expect(FOREVER).toBe('9999-12-31T23:59:59.999Z')
     expect(GROUP.dm('c1')).toBe('dm:c1')
     expect(GROUP.taskStatus('t1')).toBe('task:t1:status')
+    expect(GROUP.taskDue('t1')).toBe('task:t1:due')
     expect(GROUP.channelThread('m1')).toBe('reply:m1')
     expect(GROUP.outreach('margaret', '2026-10-31')).toBe('outreach:margaret:2026-10-31')
     expect(GROUP.agentDesign('d1')).toBe('agent-design:d1')
     expect(GROUP.boardActivity('b1')).toBe('board:b1:activity')
+    expect(GROUP.boardDigest('b1', '2026-11-20')).toBe('board:b1:digest:2026-11-20')
     expect(Object.values(ENTITY)).toEqual(['task', 'channel', 'conversation', 'approval', 'mcp_server', 'plan', 'research_run', 'kb_doc', 'agent_design', 'board'])
     const v2: ArrivalRecordV2 = { hw: SEQ_ROW.createdAt, seen: { [SEQ_ROW.id]: SEQ_ROW.createdAt }, at: 0, v: 2, seq: TOP.seq }
     expect(v2.seq).toBe(3)

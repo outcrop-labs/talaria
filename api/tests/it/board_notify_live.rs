@@ -859,14 +859,6 @@ async fn the_routes_write_only_the_callers_own_setting() {
             json!({ "preset": "custom", "events": ["created"] }),
             "new tickets reach you only with scope board — nobody is in a ticket before it exists",
         ),
-        (
-            json!({ "preset": "all", "cadence": "digest" }),
-            "a daily digest isn't available yet",
-        ),
-        (
-            json!({ "preset": "custom", "events": ["due"], "scope": "board" }),
-            "due-date reminders aren't available yet",
-        ),
     ] {
         let (status, out) = call_json(&state, "PUT", &path, Some(cy_c.as_str()), Some(body)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);

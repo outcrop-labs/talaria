@@ -101,6 +101,7 @@ const COUNT_NOUN: Record<string, (n: number) => string> = {
   'thread-reply': (n) => `${n} replies`,
   'task-comment': (n) => `${n} comments`,
   'task-status': (n) => `Moved ${n} times`,
+  'task-due': (n) => `${n} reminders`,
   mcp_server_down: (n) => `Down ${n} times`,
   approval_pending: (n) => `Asked ${n} times`,
 }
