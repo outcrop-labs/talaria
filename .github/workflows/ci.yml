@@ -18,6 +18,7 @@
 #     cd desktop && fmt + clippy + cargo test + svelte-check  (the desktop shell)
 #     cd desktop/src-tauri && clippy + cargo test on macOS and Windows  (their own code)
 #     the desktop connect smoke on Linux, macOS and Windows  (does it open an instance)
+#     the desktop drag icon smoke at GDK_SCALE=2 on Linux  (is a HiDPI drag ghost the web size)
 #     cd mobile && the Android tests + assemble, and the iOS compile + link
 #     the MCP end-to-end suite (Playwright against a booted app + api + stubs)
 #   Every job but the invariants runs only when its surface moved; the `what
@@ -1227,11 +1228,12 @@ jobs:
       # webkit2gtk/gtk packages at build-script time. ubuntu-latest (24.04)
       # ships libwebkit2gtk-4.1-dev; if a runner-image bump ever removes it,
       # this is the line to read. xvfb and dbus are the connect smoke's display
-      # and session bus.
+      # and session bus; xdotool and x11-utils (xwininfo, xprop) drive and
+      # measure the drag icon smoke.
       - name: Tauri system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev xvfb xauth dbus
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev librsvg2-dev xvfb xauth dbus xdotool x11-utils
 
       - name: Format
         working-directory: desktop/src-tauri
@@ -1261,6 +1263,15 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo build --features custom-protocol
 
+      # The drag-image shim (src/drag_icon.rs; docs/DESKTOP.md, "Drag images on
+      # a HiDPI Linux display") runs only while the shell exports
+      # gtk_drag_set_icon_surface and WebKitGTK binds its call to it. A linker
+      # or flag change could end either without a sound, and neither needs a
+      # display to check: readelf, and the loader's LD_DEBUG=bindings trace.
+      - name: Drag icon shim is exported and bound
+        if: ${{ !cancelled() }}
+        run: desktop/packaging/linux/check-drag-icon-shim.sh desktop/src-tauri/target/debug/talaria-desktop
+
       # A private X display and session bus (the shell's single-instance name
       # and GApplication live on the bus); software rendering.
       - name: Connect smoke
@@ -1269,6 +1280,20 @@ jobs:
           WEBKIT_DISABLE_DMABUF_RENDERER: '1'
           LIBGL_ALWAYS_SOFTWARE: '1'
         run: xvfb-run -a dbus-run-session -- node desktop/packaging/connect-smoke.mjs desktop/src-tauri/target/debug/talaria-desktop --wait 90
+
+      # The same open at GDK_SCALE=2 on a display big enough for the window at
+      # that scale, then a drag of a box in the fake instance page, driven with
+      # XTest: GDK's drag window must be the box's size × 2, under the point
+      # grabbed. WebKitGTK alone makes it 4× (its device-pixel image shown as
+      # logical px; the smoke's header). --force: the step above wrote the
+      # registry.
+      - name: Drag icon smoke (HiDPI)
+        if: ${{ !cancelled() }}
+        env:
+          GDK_SCALE: '2'
+          WEBKIT_DISABLE_DMABUF_RENDERER: '1'
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a -s '-screen 0 2880x1800x24' dbus-run-session -- node desktop/packaging/connect-smoke.mjs desktop/src-tauri/target/debug/talaria-desktop --wait 90 --force --drag-icon
 
   # The same crate on macOS. The shell's macOS code — the
   # UNUserNotificationCenter backend and its delegate (notify/macos.rs), the

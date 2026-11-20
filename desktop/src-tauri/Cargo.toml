@@ -67,6 +67,9 @@ futures-lite = { version = "2", default-features = false, features = ["std"] }
 # libappindicator-sys does, BEFORE any tray call, because that crate panics
 # when the library is missing. Its own loader, already in the lock.
 libloading = "0.7"
+# dlsym(RTLD_NEXT) for GTK's own gtk_drag_set_icon_surface behind the shell's
+# (drag_icon.rs). The libc everything here already links, at its lock version.
+libc = "0.2"
 
 # UNUserNotificationCenter, with a delegate of our own (notify/macos.rs):
 # banners while Talaria is frontmost, and every click routed by request id.
