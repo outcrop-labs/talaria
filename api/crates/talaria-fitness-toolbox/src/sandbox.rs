@@ -1126,6 +1126,17 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         // world has; a link must be a Talaria document link or a Google file;
         // a knowledge doc is refused with where it opens. What was opened is
         // recorded in `world.pane` for a fixture to read back.
+        //
+        // THE ANSWER IS THE DOOR'S SHAPE (`POST /api/agent/open`): `file`,
+        // `alreadyOpen`, `theyCanEdit`, `youCanEdit` and `message`, with the
+        // door's own sentences. A model reads that answer to decide what to
+        // tell the person — view-only, already open, Google's access page — so
+        // a sandbox that answered a tidier object would grade a reply to a
+        // result production never sends. Two things the sandbox cannot know
+        // are fixed: there is no conversation (so no `conversationId`), and
+        // the world has no per-person grants, so the person and the agent can
+        // both edit a Talaria file and a Google file's access is unknown
+        // (null), as the door answers it.
         "open_in_pane" => {
             let document_id = a["documentId"]
                 .as_str()
@@ -1190,18 +1201,86 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                     }
                 }
             };
-            if !w.pane.contains(&key) {
+            // A second open of a file this run already opened moves nothing —
+            // the door's "already linked on this turn" (a dry run is one turn).
+            let already = w.pane.contains(&key);
+            if !already {
                 w.pane.push(key.clone());
             }
-            let title = key
+            let doc = key
                 .strip_prefix("artifact:")
-                .and_then(|id| w.documents.iter().find(|d| d.id == id))
-                .map(|d| d.title.clone());
-            let message = match &title {
-                Some(t) => format!("Opened “{t}” in their pane."),
-                None => "Opened the file in their pane.".to_string(),
+                .and_then(|id| w.documents.iter().find(|d| d.id == id));
+            let title = doc.map(|d| d.title.clone());
+            let google = doc.is_none();
+            let name = title.as_ref().map(|t| format!("“{t}”"));
+            let mut message = if already {
+                format!(
+                    "{} is already linked on this turn, so it did not move — if they closed its tab, it is under All files in their pane.",
+                    name.as_deref().unwrap_or("That file")
+                )
+            } else {
+                format!(
+                    "Opened {} in their pane.",
+                    name.as_deref().unwrap_or("the file")
+                )
             };
-            Ok(json!({ "ok": true, "file": { "key": key, "title": title }, "message": message }))
+            let file = match doc {
+                Some(d) => json!({
+                    "key": key,
+                    "kind": "artifact",
+                    "id": d.id,
+                    "title": d.title,
+                    "type": match d.kind.as_str() {
+                        "sheet" => "sheet",
+                        "microsite" => "page",
+                        "file" => "file",
+                        _ => "document",
+                    },
+                }),
+                None => {
+                    let url = key.trim_start_matches("google:");
+                    // The id after `/d/`, and the editor segment before it —
+                    // what the door's URL reader takes the file's identity and
+                    // type from.
+                    let parts: Vec<&str> = url
+                        .split(['?', '#'])
+                        .next()
+                        .unwrap_or(url)
+                        .split('/')
+                        .collect();
+                    let d_at = parts.iter().position(|p| *p == "d");
+                    let id = d_at.and_then(|i| parts.get(i + 1)).copied();
+                    let kind = d_at.and_then(|i| {
+                        parts[..i].iter().find_map(|seg| match *seg {
+                            "document" => Some("document"),
+                            "spreadsheets" => Some("spreadsheet"),
+                            "presentation" => Some("presentation"),
+                            "file" => Some("drive"),
+                            _ => None,
+                        })
+                    });
+                    json!({
+                        "key": key,
+                        "kind": "google",
+                        "id": id,
+                        "type": kind.map(|k| format!("google {k}")),
+                        "url": url,
+                    })
+                }
+            };
+            if google {
+                message.push_str(
+                    " It opens with their own Google account; if the file is not shared with them, Google shows its request-access page.",
+                );
+            }
+            Ok(json!({
+                "ok": true,
+                "file": file,
+                "alreadyOpen": already,
+                "theyCanEdit": if google { Value::Null } else { json!(true) },
+                "youCanEdit": if google { Value::Null } else { json!(true) },
+                "message": message,
+            }))
         }
 
         "save_image_artifact" => {
@@ -2938,16 +3017,51 @@ mod tests {
         assert!(!opened.is_error, "{}", opened.text);
         assert!(opened.text.contains(&doc.title), "{}", opened.text);
         assert_eq!(s.world.pane, vec![format!("artifact:{}", doc.id)]);
+        // The door's shape, the keys a model reads to decide what to say.
+        let answer: Value = serde_json::from_str(&opened.text).unwrap();
+        for key in [
+            "file",
+            "alreadyOpen",
+            "theyCanEdit",
+            "youCanEdit",
+            "message",
+        ] {
+            assert!(answer.get(key).is_some(), "{key} missing: {answer}");
+        }
+        assert_eq!(answer["file"]["key"], json!(format!("artifact:{}", doc.id)));
+        assert_eq!(answer["file"]["kind"], json!("artifact"));
+        assert_eq!(answer["file"]["type"], json!("document"));
+        assert_eq!(answer["alreadyOpen"], json!(false));
+        assert_eq!(answer["theyCanEdit"], json!(true));
 
         // A Google link opens too; a second open of the same file is one tab.
         let sheet = "https://docs.google.com/spreadsheets/d/1sheet/edit";
+        let google = s.dispatch("open_in_pane", &json!({ "url": sheet }).to_string());
+        assert!(!google.is_error, "{}", google.text);
+        let answer: Value = serde_json::from_str(&google.text).unwrap();
+        assert_eq!(answer["file"]["kind"], json!("google"));
+        assert_eq!(answer["file"]["id"], json!("1sheet"));
+        assert_eq!(answer["file"]["type"], json!("google spreadsheet"));
+        // Google decides who may open it, so the door answers null for both.
+        assert_eq!(answer["theyCanEdit"], Value::Null);
+        assert_eq!(answer["youCanEdit"], Value::Null);
         assert!(
-            !s.dispatch("open_in_pane", &json!({ "url": sheet }).to_string())
-                .is_error
+            answer["message"]
+                .as_str()
+                .unwrap()
+                .contains("request-access page"),
+            "{answer}"
         );
+        let again = s.dispatch("open_in_pane", &json!({ "documentId": doc.id }).to_string());
+        assert!(!again.is_error);
+        let answer: Value = serde_json::from_str(&again.text).unwrap();
+        assert_eq!(answer["alreadyOpen"], json!(true), "{answer}");
         assert!(
-            !s.dispatch("open_in_pane", &json!({ "documentId": doc.id }).to_string())
-                .is_error
+            answer["message"]
+                .as_str()
+                .unwrap()
+                .contains("already linked on this turn"),
+            "{answer}"
         );
         assert_eq!(s.world.pane.len(), 2, "{:?}", s.world.pane);
         // The same sheet as a markdown link is the same file, not a third tab.

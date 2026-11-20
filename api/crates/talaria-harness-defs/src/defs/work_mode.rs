@@ -42,6 +42,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use talaria_fitness_world::SandboxWorld;
 use talaria_harness::define::{
     CheckCtx, CheckResult, DryRunDecl, EvalBand, EvalCase, GuardDecl, HarnessDefinition, Message,
     OnFailure, Output, RenderContext, RoleFloor, define_harness,
@@ -106,6 +107,81 @@ fn looks_like_a_pasted_document(reply: &str) -> bool {
     headings >= 2 || (headings >= 1 && bullets >= 3)
 }
 
+/// The standard world's one Talaria document — the ledger design notes every
+/// pane fixture asks about.
+const LEDGER_NOTES: &str = "doc-1";
+
+/// The standard world's Google Doc (`df-1`, the ledger migration plan), as the
+/// link a person pastes.
+const LEDGER_PLAN_LINK: &str = "https://docs.google.com/document/d/df-1/edit";
+
+/// The sandbox's world after the run, when there is one. A rendered Hermes
+/// persona runs its own tool loop, so the sweep sees its calls and not their
+/// effects; the pane fixtures then grade the calls alone rather than calling
+/// the absence a model failure.
+fn world(ctx: &CheckCtx) -> Option<SandboxWorld> {
+    ctx.world.as_ref().and_then(SandboxWorld::from_value)
+}
+
+/// Did the run leave the file `names_it` recognises in the pane? Read off
+/// `world.pane` (`artifact:<id>`, `google:<url>`) when the run left a world,
+/// else off the arguments of the `open_in_pane` calls that succeeded
+/// (`documentId`, or a `url` naming the file).
+fn opened(ctx: &CheckCtx, names_it: impl Fn(&str) -> bool) -> bool {
+    match world(ctx) {
+        Some(w) => w.pane.iter().any(|k| names_it(k.as_str())),
+        None => ctx.successful("open_in_pane").iter().any(|c| {
+            ["documentId", "url"]
+                .iter()
+                .any(|f| c.args[*f].as_str().is_some_and(&names_it))
+        }),
+    }
+}
+
+/// The ledger design notes, however a pane key or an argument spells them.
+fn is_ledger_notes(k: &str) -> bool {
+    k == LEDGER_NOTES
+        || k.strip_prefix("artifact:") == Some(LEDGER_NOTES)
+        || k.contains(&format!("/artifacts?a={LEDGER_NOTES}"))
+}
+
+/// The ledger migration plan, the Google Doc behind `LEDGER_PLAN_LINK`.
+fn is_ledger_plan(k: &str) -> bool {
+    k.contains("docs.google.com/document/d/df-1")
+}
+
+/// Nothing at all went into the pane — no call, and (when the run left a
+/// world) no file recorded there.
+fn pane_untouched(ctx: &CheckCtx) -> bool {
+    !ctx.any_call("open_in_pane") && world(ctx).is_none_or(|w| w.pane.is_empty())
+}
+
+/// THE OWNER'S OWN ASKS, each a request to SEE an existing file. "Open … here"
+/// was the first; "show me" and "pull up" are the phrasings people actually
+/// used, and the ones an agent most easily answers by reading the file and
+/// pasting it. One check for all of them, so they cannot drift apart.
+fn opens_the_ledger_notes(v: &str, ctx: &CheckCtx) -> CheckResult {
+    if !ctx.any_call("open_in_pane") {
+        return CheckResult::Fail(
+            "never put the document in the pane — open_in_pane is the tool the work-mode prompt names for an existing file; reading it with get_document does not open it"
+                .into(),
+        );
+    }
+    if !opened(ctx, is_ledger_notes) {
+        return CheckResult::Fail(
+            "called open_in_pane, but the ledger design notes are not what ended up in the pane"
+                .into(),
+        );
+    }
+    if looks_like_a_pasted_document(v) {
+        return CheckResult::Fail(
+            "opened the document AND pasted it into the chat — it is in the pane beside the conversation"
+                .into(),
+        );
+    }
+    CheckResult::Pass
+}
+
 // ── Eval fixtures ────────────────────────────────────────────────────────────
 
 fn input_json(prompt: &str) -> Value {
@@ -122,9 +198,13 @@ pub struct WorkModeFixture {
     pub check: fn(&str, &CheckCtx) -> CheckResult,
 }
 
-/// FIVE FIXTURES. Small on purpose: this def grades what WORK_MODE_PROMPT asks
+/// NINE FIXTURES. Small on purpose: this def grades what WORK_MODE_PROMPT asks
 /// that nothing else does, and every fixture that would have restated a
 /// `hermes_documents` or `hermes_google` case was left to those files instead.
+/// Four of them are the pane's one rule — a file opens when it is created,
+/// changed or opened with open_in_pane, and never on a read — asked the ways
+/// people ask: open, show me, pull up, a pasted Google link, and the question
+/// about a file that must NOT fill the pane.
 pub fn fixtures() -> Vec<WorkModeFixture> {
     vec![
         WorkModeFixture {
@@ -220,16 +300,74 @@ pub fn fixtures() -> Vec<WorkModeFixture> {
             input: input_json(
                 "Open the ledger design notes here so we can go through them together.",
             ),
-            check: |v, ctx| {
-                if !ctx.any_call("open_in_pane") {
+            check: opens_the_ledger_notes,
+        },
+        WorkModeFixture {
+            name: "shows the existing doc in the pane when asked to show it",
+            band: EvalBand::Standard,
+            // "Show me" is a request to see the file, and the read is the
+            // tempting wrong answer: get_document brings the notes to the
+            // agent, and the agent then pastes them, leaving the pane empty.
+            input: input_json("Show me the ledger design notes."),
+            check: opens_the_ledger_notes,
+        },
+        WorkModeFixture {
+            name: "pulls up the existing doc in the pane",
+            band: EvalBand::Standard,
+            input: input_json("Pull up the ledger design notes."),
+            check: opens_the_ledger_notes,
+        },
+        WorkModeFixture {
+            name: "answers a question about a doc without filling the pane",
+            band: EvalBand::Standard,
+            // THE OTHER SIDE OF THE RULE. A question about what a file says is
+            // a read for the agent's own answer. Opening it would move the
+            // person's pane off whatever they are looking at — and an agent
+            // that opens every file it reads moves it once per file.
+            input: input_json("What do the ledger design notes say about retries?"),
+            check: |_v, ctx| {
+                if !ctx.any_call("get_document") {
                     return CheckResult::Fail(
-                        "never put the document in the pane — open_in_pane is the tool the work-mode prompt names for an existing file; reading it with get_document does not open it"
+                        "answered a question about the ledger design notes without reading them with get_document"
+                            .into(),
+                    );
+                }
+                if !pane_untouched(ctx) {
+                    return CheckResult::Fail(
+                        "opened the notes in the person's pane when they only asked what the notes say — reading for an answer never opens a tab, and this one moved their pane"
+                            .into(),
+                    );
+                }
+                CheckResult::Pass
+            },
+        },
+        WorkModeFixture {
+            name: "opens a pasted Google Doc link in the pane",
+            band: EvalBand::Standard,
+            // A link the person pasted is a file they want beside the chat:
+            // open_in_pane takes it as `url`. read_google_doc would bring the
+            // doc to the agent and leave the pane as it was.
+            input: input_json(&format!("Open this Google Doc here: {LEDGER_PLAN_LINK}")),
+            check: |v, ctx| {
+                let by_url = ctx
+                    .successful("open_in_pane")
+                    .into_iter()
+                    .any(|c| c.args["url"].as_str().is_some_and(is_ledger_plan));
+                if !by_url {
+                    return CheckResult::Fail(
+                        "never opened the pasted Google Doc with open_in_pane's url — reading it with read_google_doc does not put it in the pane"
+                            .into(),
+                    );
+                }
+                if !opened(ctx, is_ledger_plan) {
+                    return CheckResult::Fail(
+                        "called open_in_pane with the link, but the Google Doc is not what ended up in the pane"
                             .into(),
                     );
                 }
                 if looks_like_a_pasted_document(v) {
                     return CheckResult::Fail(
-                        "opened the document AND pasted it into the chat — it is in the pane beside the conversation"
+                        "opened the doc AND pasted it into the chat — it is in the pane beside the conversation"
                             .into(),
                     );
                 }
@@ -410,7 +548,277 @@ mod tests {
     // Only the render assertion needs it, so it is imported here rather than at
     // file scope where it would be an unused import in a non-test build — and
     // clippy runs with -D warnings.
-    use talaria_harness::define::Role;
+    use serde_json::json;
+    use talaria_fitness_toolbox::sandbox::{Sandbox, SandboxOptions};
+    use talaria_harness::define::{CheckCall, Role};
+
+    // ── The pane fixtures, replayed through the real sandbox ────────────────
+    //
+    // A DRY RUN WITHOUT THE MODEL. Each run below is the calls a model would
+    // make, by the toolkit's real tool names, dispatched through the same
+    // sandbox the sweep builds for this def — its own dry-run tool list, the
+    // standard world (the def stages none) — and graded off the CheckCtx the
+    // sweep would hand the fixture: the recorded calls, and the world with
+    // `world.pane` as the agent left it. A call the def does not offer is
+    // refused by the sandbox, so a fixture cannot pass on a tool the model is
+    // never given.
+
+    fn replay(calls: &[(&str, Value)]) -> (CheckCtx, Vec<Value>) {
+        let def = work_mode_harness();
+        let dry = def.dry_run.as_ref().expect("the def is dry-run");
+        let mut sandbox = Sandbox::new(SandboxOptions {
+            tools: Some(dry.tools.iter().map(|t| t.to_string()).collect()),
+            world: Value::Null,
+        });
+        let mut answers = Vec::new();
+        for (tool, args) in calls {
+            let out = sandbox.dispatch(tool, &args.to_string());
+            assert!(!out.is_error, "{tool} refused in the replay: {}", out.text);
+            answers.push(serde_json::from_str(&out.text).expect("a JSON answer"));
+        }
+        let ctx = CheckCtx {
+            calls: sandbox
+                .calls
+                .iter()
+                .map(|c| CheckCall {
+                    tool: c.tool.clone(),
+                    errored: c.error.is_some(),
+                    args: c.args.clone(),
+                })
+                .collect(),
+            world: Some(sandbox.world.to_value()),
+            exhausted: false,
+        };
+        (ctx, answers)
+    }
+
+    fn fixture(name: &str) -> WorkModeFixture {
+        fixtures()
+            .into_iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("no fixture named {name:?}"))
+    }
+
+    fn prompt_of(f: &WorkModeFixture) -> String {
+        serde_json::from_value::<WorkModeInput>(f.input.clone())
+            .unwrap()
+            .prompt
+    }
+
+    /// The ledger notes pasted back into the chat — the shape the paste check
+    /// convicts.
+    fn pasted_notes() -> String {
+        format!(
+            "Here are the notes:\n\n# Ledger\n\n## Writes\n\n- Usage writes are idempotent on turnId\n- Retries reuse the turnId\n- Nothing double-counts\n\n{}",
+            "More of the document, reproduced line by line for the reader. ".repeat(12)
+        )
+    }
+
+    const SHOW: &str = "shows the existing doc in the pane when asked to show it";
+    const PULL: &str = "pulls up the existing doc in the pane";
+    const OPEN: &str = "opens the existing doc in the pane instead of pasting it";
+    const ASK: &str = "answers a question about a doc without filling the pane";
+    const LINK: &str = "opens a pasted Google Doc link in the pane";
+
+    #[test]
+    fn the_pane_fixtures_ask_in_the_owners_words() {
+        assert_eq!(
+            prompt_of(&fixture(SHOW)),
+            "Show me the ledger design notes."
+        );
+        assert_eq!(
+            prompt_of(&fixture(PULL)),
+            "Pull up the ledger design notes."
+        );
+        assert_eq!(
+            prompt_of(&fixture(ASK)),
+            "What do the ledger design notes say about retries?"
+        );
+        assert_eq!(
+            prompt_of(&fixture(LINK)),
+            format!("Open this Google Doc here: {LEDGER_PLAN_LINK}")
+        );
+    }
+
+    #[test]
+    fn every_tool_a_pane_fixture_grades_is_offered_by_the_dry_run() {
+        let def = work_mode_harness();
+        let tools = &def.dry_run.as_ref().unwrap().tools;
+        for tool in [
+            "list_documents",
+            "get_document",
+            "open_in_pane",
+            "read_google_doc",
+        ] {
+            assert!(tools.contains(&tool), "{tool} is graded but never offered");
+        }
+    }
+
+    #[test]
+    fn a_good_run_of_each_pane_fixture_passes_through_the_real_sandbox() {
+        let notes = json!({ "documentId": LEDGER_NOTES });
+        let runs: [(&str, Vec<(&str, Value)>, &str); 5] = [
+            (
+                OPEN,
+                vec![
+                    ("list_documents", json!({})),
+                    ("open_in_pane", notes.clone()),
+                ],
+                "Opened the ledger design notes in your pane.",
+            ),
+            // Read first, then opened: "even if you have already read it".
+            (
+                SHOW,
+                vec![
+                    ("get_document", notes.clone()),
+                    ("open_in_pane", notes.clone()),
+                ],
+                "They're open in your pane now.",
+            ),
+            // A Talaria document link opens the same file.
+            (
+                PULL,
+                vec![(
+                    "open_in_pane",
+                    json!({ "url": format!("/artifacts?a={LEDGER_NOTES}") }),
+                )],
+                "Pulled them up beside the chat.",
+            ),
+            (
+                ASK,
+                vec![
+                    ("list_documents", json!({})),
+                    ("get_document", notes.clone()),
+                ],
+                "They say usage writes are idempotent on turnId, which is what makes a retry safe to repeat.",
+            ),
+            (
+                LINK,
+                vec![("open_in_pane", json!({ "url": LEDGER_PLAN_LINK }))],
+                "Opened the ledger migration plan in your pane.",
+            ),
+        ];
+        for (name, calls, reply) in runs {
+            let (ctx, answers) = replay(&calls);
+            let f = fixture(name);
+            assert_eq!((f.check)(reply, &ctx), CheckResult::Pass, "{name}");
+            // What the agent read back from the door is the door's shape.
+            for (i, (tool, _)) in calls.iter().enumerate() {
+                if *tool == "open_in_pane" {
+                    for key in ["file", "theyCanEdit", "youCanEdit", "message"] {
+                        assert!(answers[i].get(key).is_some(), "{name}: {key} missing");
+                    }
+                }
+            }
+        }
+        // The read alone left the pane exactly as it was.
+        let (ctx, _) = replay(&[("get_document", notes)]);
+        assert!(world(&ctx).unwrap().pane.is_empty());
+    }
+
+    #[test]
+    fn the_pane_traps_fire_their_own_sentences() {
+        let notes = json!({ "documentId": LEDGER_NOTES });
+        // THE OWNER'S REPORT: read the doc, paste it, leave the pane empty.
+        for name in [OPEN, SHOW, PULL] {
+            let (ctx, _) = replay(&[("get_document", notes.clone())]);
+            assert_eq!(
+                (fixture(name).check)(&pasted_notes(), &ctx),
+                CheckResult::Fail(
+                    "never put the document in the pane — open_in_pane is the tool the work-mode prompt names for an existing file; reading it with get_document does not open it"
+                        .into()
+                ),
+                "{name}"
+            );
+        }
+        // Opened, and pasted anyway.
+        let (ctx, _) = replay(&[("open_in_pane", notes.clone())]);
+        assert_eq!(
+            (fixture(SHOW).check)(&pasted_notes(), &ctx),
+            CheckResult::Fail(
+                "opened the document AND pasted it into the chat — it is in the pane beside the conversation"
+                    .into()
+            )
+        );
+        // Opened something, but not the file that was asked for.
+        let (ctx, _) = replay(&[("open_in_pane", json!({ "url": LEDGER_PLAN_LINK }))]);
+        assert_eq!(
+            (fixture(PULL).check)("Here you go.", &ctx),
+            CheckResult::Fail(
+                "called open_in_pane, but the ledger design notes are not what ended up in the pane"
+                    .into()
+            )
+        );
+        // FILLING THE PANE: a question answered by opening the file.
+        let (ctx, _) = replay(&[
+            ("get_document", notes.clone()),
+            ("open_in_pane", notes.clone()),
+        ]);
+        assert_eq!(
+            (fixture(ASK).check)("They say writes are idempotent on turnId.", &ctx),
+            CheckResult::Fail(
+                "opened the notes in the person's pane when they only asked what the notes say — reading for an answer never opens a tab, and this one moved their pane"
+                    .into()
+            )
+        );
+        // …and a question answered without reading at all.
+        assert_eq!(
+            (fixture(ASK).check)("They cover retries with backoff.", &CheckCtx::default()),
+            CheckResult::Fail(
+                "answered a question about the ledger design notes without reading them with get_document"
+                    .into()
+            )
+        );
+        // A pasted Google link, read instead of opened.
+        let (ctx, _) = replay(&[("read_google_doc", json!({ "id": "df-1" }))]);
+        assert_eq!(
+            (fixture(LINK).check)("It's the migration plan.", &ctx),
+            CheckResult::Fail(
+                "never opened the pasted Google Doc with open_in_pane's url — reading it with read_google_doc does not put it in the pane"
+                    .into()
+            )
+        );
+    }
+
+    #[test]
+    fn without_a_world_the_pane_fixtures_grade_the_calls() {
+        // A rendered Hermes persona runs its own loop: the sweep sees the calls
+        // and no world. The calls then carry the verdict, never a gap read as
+        // a model failure.
+        let ctx = |calls: Vec<(&str, Value)>| CheckCtx {
+            calls: calls
+                .into_iter()
+                .map(|(tool, args)| CheckCall {
+                    tool: tool.into(),
+                    errored: false,
+                    args,
+                })
+                .collect(),
+            world: None,
+            exhausted: false,
+        };
+        let opened_notes = ctx(vec![(
+            "open_in_pane",
+            json!({ "documentId": LEDGER_NOTES }),
+        )]);
+        assert_eq!(
+            (fixture(SHOW).check)("Open now.", &opened_notes),
+            CheckResult::Pass
+        );
+        let opened_link = ctx(vec![("open_in_pane", json!({ "url": LEDGER_PLAN_LINK }))]);
+        assert_eq!(
+            (fixture(LINK).check)("Open now.", &opened_link),
+            CheckResult::Pass
+        );
+        let read = ctx(vec![(
+            "get_document",
+            json!({ "documentId": LEDGER_NOTES }),
+        )]);
+        assert_eq!(
+            (fixture(ASK).check)("Idempotent on turnId.", &read),
+            CheckResult::Pass
+        );
+    }
 
     #[test]
     fn a_two_sentence_reply_is_never_a_pasted_document() {
@@ -478,6 +886,6 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "two fixtures share a name");
-        assert_eq!(before, 5, "the header says FIVE FIXTURES");
+        assert_eq!(before, 9, "the header says NINE FIXTURES");
     }
 }
