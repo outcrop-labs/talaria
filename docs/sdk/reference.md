@@ -44,6 +44,8 @@ import { callAppTool } from '@talaria/sdk/testing'          // unit tests of mcp
 | `buttonClasses` | fn | Button styling for a non-button element that must read as one |
 | `ButtonProps` | type | Props of `Button` |
 | `IconButton` | comp | Icon-only button; sizes include the bordered tile |
+| `SettingsButton` | comp | The icon-only door into settings: the one gear, its required label ("Board settings", never a bare "Settings") the tooltip and the accessible name; sm (28px) or md (32px), never restyled |
+| `SettingsGlyph` / `cogMenuIcon` / `COG` | const | The same gear beside a visible label · the icon for a menu entry that opens settings · the glyph px per tile size (sm 14, md 16) |
 | `CloseButton` | comp | The × affordance |
 | `CopyButton` | comp | Copies text, flashes confirmation |
 | `CopyLinkButton` | comp | Copies a link, flashes confirmation |
