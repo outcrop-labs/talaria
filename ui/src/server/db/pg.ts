@@ -5285,6 +5285,24 @@ alter table tasks drop column if exists conversation_id`,
   `alter table board_syncs
      add column if not exists paused_by uuid references users(id) on delete set null,
      add column if not exists paused_at timestamptz`,
+  // THE DAILY BOARD DIGEST, WITHDRAWN before it reached a release (#771,
+  // reverted in favour of Home's Inbox; v0.14.0, the latest release, never
+  // had it). A board setting or a default for every board stored with
+  // cadence 'digest' meanwhile would leave its owner hearing nothing from
+  // that board: the resolver holds a digest's events and no job files them
+  // any more. So each is set back to 'instant' — the preset, events, scope
+  // and channels the person chose stay as they are — and the digest's ledger
+  // goes. Roll-safe in both directions: the previous testing build reads
+  // 'instant' like any setting, and its board digest asks who has a digest
+  // cadence first and stops at nobody, so it never reaches the dropped
+  // table. The digest key of notify_prefs (the approvals mail's on/off) is a
+  // different key and untouched.
+  `update board_notify_prefs set cadence = 'instant' where cadence = 'digest'`,
+  `update users set notify_prefs = jsonb_set(notify_prefs, '{boards,cadence}', '"instant"')
+     where notify_prefs -> 'boards' ->> 'cadence' = 'digest'`,
+  `-- contract: the board digest's ledger goes, unread since #771 was withdrawn —
+   -- no release ever shipped it (v0.14.0, the latest, predates it).
+   drop table if exists board_digest_state`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

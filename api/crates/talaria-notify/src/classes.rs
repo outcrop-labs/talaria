@@ -116,10 +116,6 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
         "board_activity",
         "Activity on a board you follow",
     ),
-    // A board a person set to a daily digest: one row per board a day, filed
-    // quiet — its email is the "Your boards" mail, sent when this class's
-    // Email is on (talaria-digest boards.rs).
-    ("board-digest", "board_activity", "Daily digest of a board"),
     // A capability agents lost: an MCP server the health pass saw go from ok
     // to down. In-app by default — an admin fixes it from the MCP page.
     ("gap_reported", "gap_reported", "Capability gap"),
@@ -353,7 +349,7 @@ pub const CLASSES: &[ClassDef] = &[
     ClassDef {
         id: "board_activity",
         label: "Board activity",
-        blurb: "New tickets, moves, comments and due dates on boards you set to hear every ticket, and the daily digest of boards you set to one.",
+        blurb: "New tickets, moves, comments and due dates on boards you set to hear every ticket.",
         category: Category::Following,
         defaults: ch(false, false, false),
         breaks_through: false,
@@ -558,7 +554,6 @@ mod tests {
             ("thread-reply", "participating"),
             ("channel-message", "channel_activity"),
             ("board-activity", "board_activity"),
-            ("board-digest", "board_activity"),
             // A due-date reminder for a ticket you are in: you take part.
             ("task-due", "participating"),
         ] {
@@ -700,7 +695,6 @@ mod tests {
             "task-status",
             "channel-message",
             "board-activity",
-            "board-digest",
             "mcp_server_down",
             "gap_reported",
         ] {

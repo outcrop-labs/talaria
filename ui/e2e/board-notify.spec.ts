@@ -3,8 +3,10 @@
 // gear — value-faced, named "Board notifications: <value>", at least 24×24,
 // readable in both Mercury themes — its one-click presets and its door to
 // Board settings → Notifications (`?settings=notifications`); the tab's
-// form (Custom events and scope, due dates, the daily digest, the board's own
-// Alerts and Email, Use my default); Settings → Notifications → Boards (the default for every board
+// form (Custom events and scope, due dates, the board's own Alerts and Email,
+// Use my default — and no daily digest: it was withdrawn before release, so
+// neither the bell nor a form offers one and the api refuses it);
+// Settings → Notifications → Boards (the default for every board
 // and each board's state, with a quick change and Use my default); a viewer,
 // whose modal holds only their own setting; and the ticket panel's "Added by
 // … / Watch it myself". Every write is read back through the api and across
@@ -121,6 +123,8 @@ for (const theme of THEMES) {
       for (const item of ['All activity', 'Participating', 'Mentions & assignments', 'Off', 'Custom…', 'Notification settings']) {
         await expect(menuItem(page, item)).toBeVisible()
       }
+      // The daily digest was withdrawn: the menu offers none.
+      await expect(menuItem(page, 'Daily digest')).toHaveCount(0)
       // The value is checked: the menu says which one applies.
       await expect(page.getByRole('menuitem', { name: '✓ Participating', exact: true })).toBeVisible()
       await expect(menuItem(page, 'Notification settings').locator('svg.lucide-settings')).toHaveCount(1)
@@ -163,15 +167,17 @@ for (const theme of THEMES) {
       await expectBell(page, 'Board notifications: participating (your default)', 'bell')
       expect((await notifyOf(api, boardId)).source).not.toBe('board')
 
-      // The daily digest (#771): one click on, a clock on the bell, one click off.
-      await pickFromBell(page, 'Daily digest')
-      await expectBell(page, 'Board notifications: participating, daily digest', 'bell')
-      await expect(bellOf(page).locator('svg.lucide-clock')).toHaveCount(1)
-      expect((await notifyOf(api, boardId)).effective).toMatchObject({ preset: 'participating', cadence: 'digest' })
-      await pickFromBell(page, 'Daily digest')
-      await expectBell(page, 'Board notifications: participating', 'bell')
+      // No daily digest behind the menu either: the api refuses one, and the
+      // board stays as it was, as it happens.
+      const refused = await request.fetch(`/api/boards/${boardId}/notify`, { method: 'PUT', data: { preset: 'participating', cadence: 'digest' } })
+      expect(refused.status()).toBe(400)
+      expect(((await refused.json()) as { error: string }).error).toBe("a daily digest isn't available yet")
+      expect(await notifyOf(api, boardId)).toMatchObject({ source: 'builtin', effective: { cadence: 'instant' } })
+      await page.reload()
+      await expectBell(page, 'Board notifications: participating (your default)', 'bell')
       await expect(bellOf(page).locator('svg.lucide-clock')).toHaveCount(0)
-      expect((await notifyOf(api, boardId)).effective.cadence).toBe('instant')
+      await bellOf(page).click()
+      await expect(menuItem(page, 'Daily digest')).toHaveCount(0)
     })
 
     test('the Notifications tab: Custom events and scope, the board’s own Alerts and Email, Use my default', async ({ page, request }) => {
@@ -207,12 +213,12 @@ for (const theme of THEMES) {
       // Due dates (#773) are a choice of their own.
       await custom.getByRole('checkbox', { name: 'Due soon or overdue' }).check()
       await expect.poll(async () => (await notifyOf(api, boardId)).effective.events).toContain('due')
-      // When: the daily digest, and back.
-      await form.getByRole('button', { name: 'Daily digest', exact: true }).click()
-      await expect.poll(async () => (await notifyOf(api, boardId)).effective.cadence).toBe('digest')
-      await expect(form.locator('[data-board-notify-summary]')).toContainText('rolled up once a day; Assigned to me and Mention as it happens.')
-      await form.getByRole('button', { name: 'Instant', exact: true }).click()
-      await expect.poll(async () => (await notifyOf(api, boardId)).effective.cadence).toBe('instant')
+      // No "When": there is no cadence to choose, and the summary says as it happens.
+      await expect(form.getByText('When', { exact: true })).toHaveCount(0)
+      await expect(form.getByRole('button', { name: 'Daily digest', exact: true })).toHaveCount(0)
+      await expect(form.getByRole('button', { name: 'Instant', exact: true })).toHaveCount(0)
+      await expect(form.locator('[data-board-notify-summary]')).toContainText('on every ticket on the board, as it happens.')
+      expect((await notifyOf(api, boardId)).effective.cadence).toBe('instant')
 
       // The board's own channels.
       await form.locator('[data-board-notify-channel="alerts"]').getByRole('button', { name: 'Off', exact: true }).click()
@@ -250,8 +256,13 @@ test('Settings → Notifications → Boards: the default for every board, and ea
     await expect(rows.first()).toHaveAttribute('data-notify-board', b.boardId)
     await expect(section.locator(`[data-notify-board="${b.boardId}"]`)).toContainText('Set for this board · all activity')
 
-    // The default: Off, and every board that follows it says so.
+    // The default: no daily digest to choose, and the api refuses one.
     const def = section.locator('[data-board-notify-form="default"]')
+    await expect(def.getByRole('button', { name: 'Daily digest', exact: true })).toHaveCount(0)
+    const refused = await request.fetch('/api/notifications', { method: 'PATCH', data: { boards: { preset: 'all', cadence: 'digest' } } })
+    expect(refused.status()).toBe(400)
+    expect(((await api.get<{ default: NotifyAnswer }>('/api/notifications/boards')).default).source).toBe('builtin')
+    // The default: Off, and every board that follows it says so.
     await def.getByRole('radio', { name: /^Off/ }).check()
     await expect(section.locator(`[data-notify-board="${a.boardId}"]`)).toHaveAttribute('data-preset', 'off')
     await expect(section.locator(`[data-notify-board="${b.boardId}"]`)).toHaveAttribute('data-preset', 'all')

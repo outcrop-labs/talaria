@@ -801,7 +801,7 @@ async fn a_dropped_mention_leaves_the_comment_to_the_setting() {
 async fn the_routes_write_only_the_callers_own_setting() {
     let state = live_app_state().await;
     let (_ada, _, ada_c, _) = mint(&state, "Ada", "admin").await;
-    let (_cy, cy_e, cy_c, _) = mint(&state, "Cy", "member").await;
+    let (cy, cy_e, cy_c, _) = mint(&state, "Cy", "member").await;
     let (_eve, _, eve_c, _) = mint(&state, "Eve", "member").await;
     let b = board(&state, &ada_c, "bn routes", &[(&cy_e, "viewer")]).await;
     let path = format!("/api/boards/{b}/notify");
@@ -817,6 +817,14 @@ async fn the_routes_write_only_the_callers_own_setting() {
     assert_eq!(got["effective"]["events"], json!(["created", "status"]));
     assert_eq!(got["effective"]["scope"], "board");
     assert_eq!(got["registry"]["events"].as_array().unwrap().len(), 7);
+    // The daily board digest was withdrawn: its cadence is listed, unavailable.
+    assert_eq!(
+        got["registry"]["cadences"],
+        json!([
+            { "id": "instant", "label": "Instant", "available": true },
+            { "id": "digest", "label": "Daily digest", "available": false },
+        ])
+    );
     // Ada's own setting is untouched by Cy's.
     let ada_view = ok(&state, "GET", &path, &ada_c, Value::Null).await;
     assert_eq!(ada_view["source"], "builtin");
@@ -859,11 +867,34 @@ async fn the_routes_write_only_the_callers_own_setting() {
             json!({ "preset": "custom", "events": ["created"] }),
             "new tickets reach you only with scope board — nobody is in a ticket before it exists",
         ),
+        (
+            json!({ "preset": "all", "cadence": "digest" }),
+            "a daily digest isn't available yet",
+        ),
     ] {
         let (status, out) = call_json(&state, "PUT", &path, Some(cy_c.as_str()), Some(body)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(out["error"], msg);
     }
+    // Nor is a digest the default for every board: PATCH refuses it in the
+    // same words, and stores nothing.
+    let (status, out) = call_json(
+        &state,
+        "PATCH",
+        "/api/notifications",
+        Some(cy_c.as_str()),
+        Some(json!({ "boards": { "preset": "all", "cadence": "digest" } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(out["error"], "a daily digest isn't available yet");
+    let kept: Option<Value> =
+        sqlx::query_scalar("select notify_prefs -> 'boards' from users where id = $1::uuid")
+            .bind(&cy)
+            .fetch_one(&state.pg)
+            .await
+            .unwrap();
+    assert_eq!(kept, None, "a refused default stores nothing");
     // The default for every board, then DELETE back to it.
     let patched = ok(
         &state,
@@ -906,6 +937,13 @@ async fn the_routes_write_only_the_callers_own_setting() {
             .unwrap()
             .contains(&json!("board-prefs"))
     );
+    assert!(
+        !fetched["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("board-digest")),
+        "the withdrawn board digest is not served"
+    );
     // Clearing the default: the built-in again.
     let cleared = ok(
         &state,
@@ -916,6 +954,169 @@ async fn the_routes_write_only_the_callers_own_setting() {
     )
     .await;
     assert_eq!(cleared["boards"]["source"], "builtin");
+}
+
+/// The statement of ui/src/server/db/pg.ts's MIGRATIONS array that holds
+/// `needle`, verbatim: the text every database runs at boot. A statement
+/// carries no backtick (check-invariants.mjs refuses one), so the backticks
+/// either side of the needle are its own.
+fn migration_holding(needle: &str) -> String {
+    const PG_TS: &str = include_str!("../../../ui/src/server/db/pg.ts");
+    let start = PG_TS
+        .find("const MIGRATIONS: string[] = [")
+        .expect("pg.ts has its MIGRATIONS array");
+    let at = start
+        + PG_TS[start..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("no migration holds {needle:?}"));
+    let open = PG_TS[..at].rfind('`').expect("its opening backtick") + 1;
+    let close = at + PG_TS[at..].find('`').expect("its closing backtick");
+    PG_TS[open..close].to_string()
+}
+
+// THE DAILY BOARD DIGEST WAS WITHDRAWN before it reached a release, and a
+// testing build that served it may have stored a digest cadence — on a
+// board's row, or on the default for every board. Held for a digest nothing
+// files, its owner would hear nothing from that board. Two layers make sure
+// they hear it as it happens: this binary reads a stored digest as instant
+// (shown through the router while the stored value still says digest), and
+// the migration sets each one back to instant, everything else kept (its own
+// statements, read out of pg.ts and run here over rows seeded the way that
+// build stored them). The digest's ledger is gone from the migrated schema.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_daily_digest_stored_before_the_withdrawal_is_heard_instantly() {
+    let state = live_app_state().await;
+    let (_ada, _, ada_c, _) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c, _) = mint(&state, "Bob", "member").await;
+    let (cy, cy_e, cy_c, _) = mint(&state, "Cy", "member").await;
+    let b = board(
+        &state,
+        &ada_c,
+        "bn digest withdrawn",
+        &[(&bob_e, "editor"), (&cy_e, "viewer")],
+    )
+    .await;
+    // Bob: Participating on this board, as a digest, with Email on. Cy: All
+    // on a digest as the default for every board. Neither route accepts that
+    // any more, so they are written the way the digest's build stored them.
+    sqlx::query(
+        "insert into board_notify_prefs (user_id, board_id, preset, cadence, email) \
+         values ($1::uuid, $2::uuid, 'participating', 'digest', true)",
+    )
+    .bind(&bob)
+    .bind(&b)
+    .execute(&state.pg)
+    .await
+    .unwrap();
+    sqlx::query(
+        "update users set notify_prefs = notify_prefs || \
+           '{\"boards\": {\"preset\": \"all\", \"cadence\": \"digest\"}}'::jsonb \
+         where id = $1::uuid",
+    )
+    .bind(&cy)
+    .execute(&state.pg)
+    .await
+    .unwrap();
+
+    // This binary hears both as instant, the rest of each setting kept.
+    let path = format!("/api/boards/{b}/notify");
+    let bob_view = ok(&state, "GET", &path, &bob_c, Value::Null).await;
+    assert_eq!(bob_view["source"], "board");
+    assert_eq!(bob_view["effective"]["preset"], "participating");
+    assert_eq!(bob_view["effective"]["cadence"], "instant");
+    assert_eq!(bob_view["effective"]["channels"]["email"], json!(true));
+    let cy_view = ok(&state, "GET", &path, &cy_c, Value::Null).await;
+    assert_eq!(cy_view["source"], "default");
+    assert_eq!(cy_view["effective"]["preset"], "all");
+    assert_eq!(cy_view["effective"]["cadence"], "instant");
+    // So a ticket's news reaches them as it happens: Bob his assignment and
+    // the move of a ticket he is in (a digest held the move), Cy the counting
+    // board row (a digest held both events).
+    let t = ticket(
+        &state,
+        &b,
+        &ada_c,
+        json!({ "title": "Withdrawn digest", "assignees": [format!("user:{bob}")] }),
+    )
+    .await;
+    // The creation fan-out is detached: let it land before the move's.
+    assert!(eventually!(
+        kinds(&on_board(&state, &bob, &b).await) == ["task-assigned"]
+    ));
+    ok(
+        &state,
+        "PUT",
+        &format!("/api/tasks/{t}"),
+        &ada_c,
+        json!({ "status": "in_progress" }),
+    )
+    .await;
+    assert!(eventually!(
+        kinds(&on_board(&state, &bob, &b).await) == ["task-assigned", "task-status"]
+    ));
+    assert!(eventually!(
+        on_board(&state, &cy, &b)
+            .await
+            .first()
+            .is_some_and(|r| r.kind == "board-activity" && r.count == 2)
+    ));
+    // The stored values still say digest: the read above was this binary's.
+    let raw_row: String = sqlx::query_scalar(
+        "select cadence from board_notify_prefs where user_id = $1::uuid and board_id = $2::uuid",
+    )
+    .bind(&bob)
+    .bind(&b)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    assert_eq!(raw_row, "digest");
+
+    // The migration's own statements, over those rows.
+    for needle in [
+        "update board_notify_prefs set cadence = 'instant'",
+        "jsonb_set(notify_prefs, '{boards,cadence}'",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(migration_holding(needle)))
+            .execute(&state.pg)
+            .await
+            .unwrap();
+    }
+    let (preset, cadence, email): (String, String, Option<bool>) = sqlx::query_as(
+        "select preset, cadence, email from board_notify_prefs \
+         where user_id = $1::uuid and board_id = $2::uuid",
+    )
+    .bind(&bob)
+    .bind(&b)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    assert_eq!(
+        (preset.as_str(), cadence.as_str(), email),
+        ("participating", "instant", Some(true))
+    );
+    let prefs: Value = sqlx::query_scalar("select notify_prefs from users where id = $1::uuid")
+        .bind(&cy)
+        .fetch_one(&state.pg)
+        .await
+        .unwrap();
+    assert_eq!(
+        prefs["boards"],
+        json!({ "preset": "all", "cadence": "instant" })
+    );
+    // The approvals mail's own switch is a different key, and untouched.
+    assert_eq!(prefs["digest"], "off");
+    // And the routes answer as before.
+    let bob_after = ok(&state, "GET", &path, &bob_c, Value::Null).await;
+    assert_eq!(bob_after["effective"], bob_view["effective"]);
+
+    // The digest's ledger is not in the migrated schema.
+    let ledger: Option<String> =
+        sqlx::query_scalar("select to_regclass('public.board_digest_state')::text")
+            .fetch_one(&state.pg)
+            .await
+            .unwrap();
+    assert_eq!(ledger, None);
 }
 
 // Leaving a board keeps the setting (dormant: nothing reaches someone who

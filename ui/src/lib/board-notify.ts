@@ -9,13 +9,15 @@
 //   GET /api/notifications/boards            their default + every board's state
 //   PATCH /api/notifications {boards}        their default (null clears it)
 // A setting is a preset (All activity, Participating, Mentions & assignments,
-// Off) or Custom events over a scope, a cadence, and — feature
-// `board-channels` — the board's own Alerts and Email, each on, off, or null
-// (Settings → Notifications decides). The effective setting is the board's
-// row, else the person's default, else the built-in (Participating): exactly
-// what everyone heard before boards had a setting.
+// Off) or Custom events over a scope, and — feature `board-channels` — the
+// board's own Alerts and Email, each on, off, or null (Settings →
+// Notifications decides). It always comes as it happens: the daily board
+// digest was withdrawn before release (Home's Inbox is the once-a-day view),
+// so the client offers no cadence and writes `instant`. The effective
+// setting is the board's row, else the person's default, else the built-in
+// (Participating): exactly what everyone heard before boards had a setting.
 //
-// Every word the forms show for an event, a preset or a cadence comes from the
+// Every word the forms show for an event or a preset comes from the
 // server's registry — never a client-side list. What is here is the glue: the
 // control's name and glyph, the summary line, and the whole-setting write a
 // change becomes (a PUT replaces the setting, so a client sends back what it
@@ -29,6 +31,9 @@ import { HttpError, delJson, errorMessage, getJson, patchJson, putJson } from '.
 
 export type BoardPreset = 'all' | 'participating' | 'mentions' | 'off' | 'custom'
 export type BoardScope = 'mine' | 'board'
+/** A cadence as the wire names it. The server's registry still lists the
+ *  withdrawn daily digest — unavailable, refused on write, and a stored one
+ *  read back as instant — so the type keeps its id; nothing here offers it. */
 export type BoardCadence = 'instant' | 'digest'
 export type BoardSource = 'board' | 'default' | 'builtin'
 
@@ -93,12 +98,13 @@ export interface NotifyBoardsList {
   registry?: BoardRegistry
 }
 
-/** A whole setting, as written: the PUT and the default's PATCH take it. */
+/** A whole setting, as written: the PUT and the default's PATCH take it.
+ *  The cadence is the one the server serves. */
 export interface BoardNotifyWrite {
   preset: BoardPreset
   events?: string[]
   scope?: BoardScope
-  cadence?: BoardCadence
+  cadence?: 'instant'
   channels?: Partial<Record<keyof BoardChannels, boolean>>
 }
 
@@ -125,12 +131,6 @@ export function presetLabel(registry: BoardRegistry | null | undefined, id: Boar
 /** The registry's word for an event. */
 export function eventLabel(registry: BoardRegistry | null | undefined, id: string): string {
   return registry?.events.find((e) => e.id === id)?.label ?? id
-}
-
-/** The cadences a person may choose now (a cadence with no producer yet is
- *  listed by the server and refused, so it is not offered). */
-export function availableCadences(registry: BoardRegistry | null | undefined): BoardRegistry['cadences'] {
-  return (registry?.cadences ?? []).filter((c) => c.available)
 }
 
 /** The events Custom offers now, in registry order. */
@@ -168,14 +168,9 @@ export function glyphOf(e: Pick<BoardEffective, 'preset'>): BoardGlyph {
   }
 }
 
-/** The value in a few words: "participating", "all activity, daily digest". */
-export function levelWords(e: Pick<BoardEffective, 'preset' | 'cadence'>, registry?: BoardRegistry | null): string {
-  const level = lower(presetLabel(registry, e.preset))
-  return e.preset !== 'off' && e.cadence === 'digest' ? `${level}, ${lower(cadenceLabel(registry, 'digest'))}` : level
-}
-
-function cadenceLabel(registry: BoardRegistry | null | undefined, id: BoardCadence): string {
-  return registry?.cadences.find((c) => c.id === id)?.label ?? (id === 'digest' ? 'Daily digest' : 'Instant')
+/** The value in a few words: "participating", "all activity". */
+export function levelWords(e: Pick<BoardEffective, 'preset'>, registry?: BoardRegistry | null): string {
+  return lower(presetLabel(registry, e.preset))
 }
 
 /** The bell's accessible name, and its tooltip word for word: "Board
@@ -191,10 +186,6 @@ export function controlName(s: Pick<BoardNotifyState, 'effective' | 'source'> | 
 export type ChannelChoice = 'settings' | 'on' | 'off'
 export const channelChoice = (v: boolean | null | undefined): ChannelChoice => (v === true ? 'on' : v === false ? 'off' : 'settings')
 export const channelValue = (c: ChannelChoice): boolean | null => (c === 'on' ? true : c === 'off' ? false : null)
-
-/** The events that point at the person: they never wait for a daily digest
- *  (talaria_notify::boards `resolve`, "what is addressed to you"). */
-const ADDRESSED = new Set(['assigned', 'mention'])
 
 /** One sentence: what reaches the person from this board, and how.
  *  "Assigned to me, Status change and Mention — on tickets you’re in, as it
@@ -218,18 +209,7 @@ export function summary(
     const names = ids.map((id) => eventLabel(registry, id))
     return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? '')
   }
-  let line: string
-  if (e.cadence === 'digest') {
-    // What points at you never waits for a digest (the resolver's rule): an
-    // assignment and an @mention still come as they happen.
-    const now = shown.filter((id) => ADDRESSED.has(id))
-    const later = shown.filter((id) => !ADDRESSED.has(id))
-    line = later.length
-      ? `${list(later)} — on ${scopeWords(e.scope)}, rolled up once a day${now.length ? `; ${list(now)} as it happens` : ''}.`
-      : `${list(now)} — as it happens; what points at you never waits for a digest.`
-  } else {
-    line = `${list(shown)} — on ${scopeWords(e.scope)}, as it happens.`
-  }
+  let line = `${list(shown)} — on ${scopeWords(e.scope)}, as it happens.`
   if (channelsServed) {
     const words = (name: string, v: boolean | null) => (v === null ? null : `${name} ${v ? 'on' : 'off'}`)
     const set = [words('Alerts', e.channels.alerts), words('Email', e.channels.email)].filter(Boolean)
@@ -254,20 +234,20 @@ function startingEvents(registry: BoardRegistry | null | undefined): string[] {
 
 /** A change, as the whole setting a PUT (or the default's PATCH) takes: the
  *  change on top of what applies now, so nothing the person did not touch
- *  moves — the cadence and the board's channels ride along, and a board
- *  that follows a default keeps that default's choices as its own.
+ *  moves — the board's channels ride along, and a board that follows a
+ *  default keeps that default's choices as its own. The cadence is always
+ *  `instant`, whatever a server reported: it is the only one served.
  *  Custom keeps the events it covers now (the built-in's, leaving Off), in
  *  registry order, and drops an event that needs the whole board when the
  *  scope is the tickets you're in. */
 export function writeFrom(
   current: BoardEffective,
-  change: Partial<Omit<BoardNotifyWrite, 'channels'>> & { channels?: Partial<BoardChannels> },
+  change: Partial<Omit<BoardNotifyWrite, 'channels' | 'cadence'>> & { channels?: Partial<BoardChannels> },
   registry?: BoardRegistry | null,
 ): BoardNotifyWrite {
   const preset = change.preset ?? current.preset
-  const cadence = change.cadence ?? current.cadence
   const channels = chosenChannels({ ...current.channels, ...(change.channels ?? {}) })
-  const out: BoardNotifyWrite = { preset, cadence }
+  const out: BoardNotifyWrite = { preset, cadence: 'instant' }
   if (preset === 'custom') {
     const scope = change.scope ?? current.scope
     let events = change.events ?? (current.events.length ? current.events : startingEvents(registry))
@@ -302,7 +282,7 @@ export function expandWrite(w: BoardNotifyWrite, registry?: BoardRegistry | null
     preset: w.preset,
     events: custom ? (w.events ?? []) : (named?.events ?? []),
     scope: custom ? (w.scope ?? 'mine') : (named?.scope ?? 'mine'),
-    cadence: w.cadence ?? 'instant',
+    cadence: 'instant',
     channels: { alerts: w.channels?.alerts ?? null, email: w.channels?.email ?? null },
   }
 }

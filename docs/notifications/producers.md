@@ -25,7 +25,6 @@ timed mute. Every producer files through `add_notification_with` and the convent
 | `board-prefs` | The ticket producers obey each person's setting for a board (below, "Each board"), and `GET`/`PUT`/`DELETE /api/boards/{id}/notify`, `GET /api/notifications/boards` and the `boards` default in `GET`/`PATCH /api/notifications` are served. |
 | `board-channels` | A board setting and the `boards` default accept and serve `channels: {alerts, email}` (below, "A board's own channels"), and the rows a board's fan-outs file carry that person's choice as their channel override (I-26). |
 | `task-due` | The due-date reminders run (below, "Due dates"), so a setting may name the `due` event. |
-| `board-digest` | The `digest` cadence is accepted: a board heard as a daily digest files one quiet row a day and is listed in one "Your boards" mail (below, "The daily digest"). |
 
 ## The producers
 
@@ -145,8 +144,7 @@ board move, creation with its assignment, the comment fan-out, and the four tick
 @mention doors (the create and edit of a description, the comment route, a post in the
 ticket's room) through `MentionOpts.ticket`. Nothing at send time reads it: a board's own
 channels (below) ride on each row, and the deferred push and the mail batcher re-check the
-class matrix through what the row carries. The one other reader is the daily board digest
-(below), once a day, for one person's own boards.
+class matrix through what the row carries.
 
 **The setting** is a preset — `all`, `participating`, `mentions`, `off` — or `custom`:
 chosen events over a scope. The events are `created` (a ticket appeared on the board,
@@ -158,8 +156,11 @@ ticket). Presets are stored by name and expanded when read: `all` is every event
 board; `participating` is assigned, status, comment, mention and completed over mine;
 `mentions` is assigned and mention; `off` is nothing. `created` needs scope `board`
 (nobody is in a ticket before it exists). `due` is opt-in: no preset but `all` names it
-(below, "Due dates"). The cadence is `instant` (as it happens) or `digest` (the daily board
-digest, below).
+(below, "Due dates"). The cadence is `instant`: the `digest` cadence is listed unavailable
+and refused on write, because the daily board digest was withdrawn before it reached a
+release (Home's Inbox is the once-a-day view of what happened). A digest a testing build
+stored reads as instant, the rest of the setting kept, and a migration set every stored
+one back to instant — held for a digest that nothing files, its owner would hear nothing.
 
 **A board's own channels** (feature `board-channels`). A setting may also say how this
 board's rows reach the person: `channels: {alerts, email}`, each on, off, or null — null,
@@ -181,10 +182,7 @@ Decided once, at fan-out like the rest: the producer files the row with them
 and the mail batcher re-check the matrix through the stored override — a board turned to
 mail keeps mailing what it filed, and a board setting is never re-read at send time. They
 travel with their layer: a board's row carries its own (null there means the matrix, not
-the default's), and the default for every board can carry some too. A board on the daily
-digest files nothing at fan-out, so its channels shape the digest instead: its Email
-decides whether the board is listed in the "Your boards" mail, and its digest row stays
-quiet whatever Alerts says — a digest never rings.
+the default's), and the default for every board can carry some too.
 
 **Where it is stored.** One row per person per board in `board_notify_prefs` — a table,
 not a `board_members` column, because a team's members see its boards with no member row
@@ -238,62 +236,6 @@ members — and the same question). A Custom set that keeps comments but drops @
 comment as a comment; a set that keeps status but drops assignments hears a patch that
 assigns and moves them as one status row.
 
-**The daily digest.** A board heard at cadence `digest` files nothing as things happen: the
-resolver answers `Digest` and the producers drop it — except what points at the person
-(an assignment, an @mention) and the news of a ticket they watch themselves, which still
-come at once. Once a day the `board-digest` job (`talaria-digest` `boards.rs`) reads the
-board's own records and files one row per board. It runs in the daily digest's slot: the
-`digest_config` hour in the person's own zone, a 15-minute tick, a two-hour window that never
-wraps. The row counts, over the stretch since the person's last digest (the first covers a
-day, none more than two): **new** tickets (created on the board or moved onto it — only for a
-setting over the whole board; for the person's own tickets an arrival counts as a move, as the
-board move's producer tells them), tickets **moved** (not into a done column), tickets
-**completed**, **comments**, and tickets **due soon** or **overdue**. Due dates count as
-thresholds crossed inside the window, the way the reminders fire them: due soon is a ticket that came within a day of its due date and is not
-due yet, overdue is one whose due date passed; neither counts a ticket that was already past
-it when the window opened, so a standing overdue backlog is never news by itself, and the
-first digest replays nothing older than its day. Each only when the setting wants that
-event, over the tickets it covers (`mine`: watching, assigned, created, and for a comment
-having commented before; or the whole board). A ticket that arrived on the board inside the
-window counts from its arrival: its moves and comments on the board it came from are not this
-board's, and the column line a board move writes beside its `moved` line is the arrival, not
-a second move or a completion. Never counted: the person's own actions, a tracker sync's
-writes (`talaria_tasks_types::MIRROR_ACTORS`), archived tickets, and the arrivals, moves,
-completions and comments of a ticket they watch themselves. Only the boards the person's
-board list shows today — a board they lost is dormant — and only counts and the board's
-name. Read at the slot, not queued: a change of setting applies to the next digest, and the
-counts are a rollup that can differ slightly from what instant rows would have said (a
-ticket counts once per line however often it moved; a ticket that left the board inside the
-window is no longer counted on it). The counts query reads `task_watchers` directly for the
-person's own watch rows, on boards they already passed `list_boards` for.
-
-The row: kind `board-digest`, class `board_activity`, `group_key::board_digest(board, day)` —
-one row per board per local day, so a day the person never opened keeps its own counts (the
-next window starts where this one ended; a row that a newer day overwrote would lose them for
-good) — entity `board`, href `/boards/<id>`, body like `3 new · 8 moved · 2 completed · 11
-comments`. It is filed **quiet** — a digest never rings, whatever the board's Alerts say,
-and its email is not the missed-activity batcher's but one **"Your boards"** mail listing
-every board with something to report whose Email is on: the board's own Email where the
-person's setting chose one (part 2, "A board's own channels"), else Board activity's in the
-matrix — `channels_with`, the rule every board row's mail follows. It is sent when the
-person has an address and their email frequency is not Never, through `send_gated_mail`
-(the instance switch holds it). A person with no address still gets the rows. Nothing to
-report, nothing sent.
-
-The ledger, `board_digest_state` (one row per person), is written as the pass goes, each
-deciding write a compare-and-set. The day is claimed before its rows are filed, and the
-claim marks it **filing** (`filing_claim`, the claiming pass's clock); nothing mails a day
-while it is filing. When every row has landed, the claiming pass clears the mark — only if the
-claim is still its own — and then claims the mail before sending it (a mail that failed or
-was held gives the claim back, and the next tick inside the window offers it again without
-filing the rows twice). A pass that dies or fails mid-filing leaves its claim: a pass inside
-ten minutes (the job's `max_run_ms`) leaves it to its owner, and the next tick takes it over
-— compare-and-set on the claim it read — and files only the rows still missing for the
-claimed window (a row already filed for that day is found by its key). A day still filing
-when the window closes keeps what landed, and the next digest starts after it. A tick inside
-the same window, or a pass that overlaps another, files and mails nothing twice. It is a
-separate mail from the approvals digest, at the same hour. Feature `board-digest`.
-
 **A board move** tells the destination's audience by their setting for the destination,
 the people who hear the destination in full that a ticket arrived (`created`), the people
 losing sight of it by their setting for the source, and the people who hear the source in
@@ -344,18 +286,18 @@ default; `null` clears it). The registry (event, preset and cadence labels) is s
 never a client-side list.
 
 **The controls** (feature `board-prefs`; the channel switches only with `board-channels`,
-a cadence or an event only once the registry marks it available):
+an event only once the registry marks it available; no cadence is offered):
 - The board's bell (`BoardNotifyMenu`), beside the Board settings gear, for every role:
-  value-faced — bell-ring, bell, @, bell-off, bell-dot for Custom, a clock mark for the
-  daily digest — named "Board notifications: <value>" (plus "(your default)" when the
-  board has no setting of its own), its tooltip the same words, a 32px target. Its menu
-  is the four presets, Custom… (the tab), the daily digest once served, Use my default
-  (only over a setting of the board's own) and the gear's Notification settings
-  (`?settings=notifications`). A preset keeps the cadence and the channels that applied.
+  value-faced — bell-ring, bell, @, bell-off, bell-dot for Custom — named "Board
+  notifications: <value>" (plus "(your default)" when the board has no setting of its
+  own), its tooltip the same words, a 32px target. Its menu
+  is the four presets, Custom… (the tab), Use my default (only over a setting of the
+  board's own) and the gear's Notification settings (`?settings=notifications`). A
+  preset keeps the channels that applied.
 - Board settings → Notifications (`NotificationsTab`, `BoardNotifyForm`): the summary of
   what reaches you and from which layer, the presets with what each covers, Custom's
-  events and scope (New ticket only over Every ticket), the cadence once a second is
-  served, Alerts and Email (From settings / On / Off), Use my default. Owners and editors
+  events and scope (New ticket only over Every ticket), Alerts and Email (From settings /
+  On / Off), Use my default. Owners and editors
   see it as the last of the seven tabs; a viewer's modal holds only it, is named
   Notification settings, and opens on no other tab (`board-settings.ts` `tabsFor`) — the
   Board settings gear stays the owners' and editors' (UI-CONVENTIONS "Who sees the door").
@@ -400,9 +342,6 @@ two thresholds of a ticket's due date: **due soon** (less than a day ahead) and
   marked, so one reopened while its due date is still in the band is still reminded.
 - **The clock's, not a write's.** A ticket a tracker sync keeps reminds like any other:
   the sync's writes are quiet, but a reminder is not news about a write.
-- **A board heard as a daily digest** holds them like every other event: no row is filed
-  for that person, and the daily board digest counts the threshold if it was crossed inside
-  its window (above, "The daily digest") — the same two thresholds, the same day's band.
 - **The row:** title `<ref>: due soon` or `<ref>: overdue` (the ticket's title when it
   has no ref), body the ticket's title, href the ticket, actor the system ("Due dates").
 
@@ -436,9 +375,9 @@ count.
 ## Contract notes
 
 - No new kind was needed for the 2026-10 producers: every kind filed here was already in
-  `classes.rs`'s `KIND_CLASS`. The per-board settings added `board-activity` and the daily
-  board digest's `board-digest`, both in a new Following class `board_activity` (not in
-  `ORIGINAL_CLASSES`, so the C27 digest freeze holds).
+  `classes.rs`'s `KIND_CLASS`. The per-board settings added one, `board-activity`, in a new
+  Following class `board_activity` (not in `ORIGINAL_CLASSES`, so the C27 digest freeze
+  holds).
 - The @mention token rules moved from `talaria-mentions` into `talaria-notify`'s
   `threads.rs` (`mention_tokens`, `user_mention_tokens`, `answers_to_tokens`), so a ticket's
   comment participants can leave out the people a comment names without a new crate edge

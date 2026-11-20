@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { AtSign, Bell, BellDot, BellOff, BellRing, Clock } from '@lucide/svelte'
+  import { AtSign, Bell, BellDot, BellOff, BellRing } from '@lucide/svelte'
   import { useQueryClient } from '@tanstack/svelte-query'
   import DropdownMenu from '@/components/ui/DropdownMenu.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
@@ -12,7 +12,6 @@
     BOARD_PREFS,
     NOTIFY_BOARDS_KEY,
     QUICK_PRESETS,
-    availableCadences,
     boardNotifyKey,
     clearBoardNotify,
     controlName,
@@ -24,7 +23,6 @@
     sourceWords,
     summary,
     useBoardNotify,
-    writeFrom,
     type BoardNotifyAnswer,
     type BoardNotifyWrite,
   } from '@/lib/board-notify'
@@ -34,17 +32,17 @@
   // The board's notification control, beside its Board settings gear: what
   // this person hears about this board's tickets — All activity,
   // Participating, Mentions & assignments, Off — in one click, and the door
-  // to the rest (Custom events, the daily digest, the board's own Alerts and
-  // Email) on Board settings → Notifications. Every board role has it: a
-  // viewer chooses what they hear about a board they can read.
+  // to the rest (Custom events, the board's own Alerts and Email) on Board
+  // settings → Notifications. Every board role has it: a viewer chooses what
+  // they hear about a board they can read.
   //
   // A value-faced quick setter, not a settings door (UI-CONVENTIONS
   // "Settings cog"): its glyph IS the level (bell-ring, bell, @, bell-off,
-  // bell-dot for Custom; a clock mark for the daily digest), its name says
-  // whose setting and what the value means ("Board notifications:
-  // participating (your default)"), and its menu ends in the gear's
-  // "Notification settings". The server holds the setting; a write puts its
-  // answer into the query, so the bell, the tab and Settings never disagree.
+  // bell-dot for Custom), its name says whose setting and what the value
+  // means ("Board notifications: participating (your default)"), and its
+  // menu ends in the gear's "Notification settings". The server holds the
+  // setting; a write puts its answer into the query, so the bell, the tab and
+  // Settings never disagree.
   // Hidden on an api that does not serve `board-prefs` (lib/board-notify.ts).
   let { boardId, onSettings }: { boardId: string; onSettings: () => void } = $props()
 
@@ -89,14 +87,6 @@
     }))
     // Custom is chosen event by event, on the tab.
     entries.push({ label: e.preset === 'custom' ? presetLabel(registry, 'custom') : `${presetLabel(registry, 'custom')}…`, checked: e.preset === 'custom', onSelect: onSettings })
-    const digest = availableCadences(registry).find((c) => c.id === 'digest')
-    if (digest && e.preset !== 'off') {
-      entries.push('sep', {
-        label: digest.label,
-        checked: e.cadence === 'digest',
-        onSelect: () => put(writeFrom(e, { cadence: e.cadence === 'digest' ? 'instant' : 'digest' }, registry)),
-      })
-    }
     if (data.source === 'board') {
       entries.push('sep', {
         label: 'Use my default',
@@ -110,7 +100,6 @@
 
   const title = $derived(controlName(data ?? null, data?.registry))
   const glyph = $derived(data ? glyphOf(data.effective) : 'bell')
-  const digest = $derived(data?.effective.cadence === 'digest' && data.effective.preset !== 'off')
 </script>
 
 {#if served && data}
@@ -126,25 +115,19 @@
           disabled={saving}
           data-preset={data.effective.preset}
           data-source={data.source}
-          data-cadence={data.effective.cadence}
           class={cn('focus:text-fg', data.effective.preset === 'off' && 'text-muted')}
         >
-          <span class="relative inline-flex">
-            {#if glyph === 'bell-ring'}
-              <BellRing size={16} />
-            {:else if glyph === 'at-sign'}
-              <AtSign size={16} />
-            {:else if glyph === 'bell-off'}
-              <BellOff size={16} />
-            {:else if glyph === 'bell-dot'}
-              <BellDot size={16} />
-            {:else}
-              <Bell size={16} />
-            {/if}
-            {#if digest}
-              <Clock size={9} strokeWidth={2.5} class="absolute -bottom-1 -right-1.5 rounded-full bg-[var(--theme-panel)]" aria-hidden="true" />
-            {/if}
-          </span>
+          {#if glyph === 'bell-ring'}
+            <BellRing size={16} />
+          {:else if glyph === 'at-sign'}
+            <AtSign size={16} />
+          {:else if glyph === 'bell-off'}
+            <BellOff size={16} />
+          {:else if glyph === 'bell-dot'}
+            <BellDot size={16} />
+          {:else}
+            <Bell size={16} />
+          {/if}
         </IconButton>
       {/snippet}
       {#snippet footer()}

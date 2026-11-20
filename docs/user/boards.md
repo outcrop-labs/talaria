@@ -99,17 +99,12 @@ hovering it says so ("Board notifications: participating (your default)"). Click
 change it in one go. **Off** silences the board's assignments and @mentions too;
 approvals still reach you, and so does a ticket you watch yourself.
 
-The same menu turns on the **Daily digest** for the board: nothing as it happens, and once
-a day, at the daily digest's hour, one quiet notification counting what the board did —
-assignments, @mentions and tickets you watch yourself still come at once (a small clock on
-the bell says the board is on a digest).
-
 **Notification settings** in that menu opens **Board settings → Notifications**, for the
 rest: **Custom** (pick the events — new ticket, assigned to me, status change, comment or
 reply, mention, due soon or overdue, ticket completed — and whether they cover the tickets
-you're in or every ticket on the board), **When** (instant or the daily digest), and the
-board's own **Alerts** (the pop-up banner and the push) and **Email** (the missed-activity
-email), each *From settings*, *On* or *Off*. Due-date reminders are off until you choose
+you're in or every ticket on the board), and the board's own **Alerts** (the pop-up
+banner and the push) and **Email** (the missed-activity email), each *From settings*,
+*On* or *Off*. Due-date reminders are off until you choose
 them: All activity or a Custom set with "Due soon or overdue". Your inbox
 keeps every notification whatever you choose. **Use my default** puts the board back on
 your default. Anyone on the board has the bell and this tab, viewers included, and it only
