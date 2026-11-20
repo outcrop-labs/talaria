@@ -123,6 +123,7 @@ export const ENTITY_LABEL: Record<string, string> = {
   plan: 'Plan',
   research_run: 'Research',
   kb_doc: 'Doc',
+  board: 'Board',
 }
 
 export function entityKey(row: Pick<CenterRow, 'entity'>): string | null {

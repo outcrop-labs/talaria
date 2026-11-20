@@ -1593,6 +1593,7 @@ mod live_db {
                     tags: &[],
                     created_by: &self.email,
                     status,
+                    mention_text: None,
                     external_key: None,
                     quiet: false,
                 },

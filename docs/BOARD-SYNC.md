@@ -268,8 +268,9 @@ The sync's writes go through the task engine as `clickup-sync`, so board members
 activity lines, realtime, search indexing and the agent rules all apply. Its writes are
 quiet:
 
-- Nobody is notified about imported tickets, assignments or moves. ClickUp already told
-  its own people.
+- Nobody is notified about imported tickets, assignments or moves, including people who
+  set the board to hear every ticket: a sync write raises no board-activity row. ClickUp
+  already told its own people.
 - The board gets one live event per batch, not one per ticket.
 - Workchains still advance when a ticket lands in a done column, and the next step's
   agents start (see [What the sync will not move](#what-the-sync-will-not-move)).

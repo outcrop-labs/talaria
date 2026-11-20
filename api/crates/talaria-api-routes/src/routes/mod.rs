@@ -164,6 +164,15 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_boards::boards::boards_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
         )
+        // The caller's own notification setting for one board — their row
+        // only, any board role (talaria_notify::boards).
+        .route(
+            "/api/boards/{id}/notify",
+            get(talaria_routes_boards::boards::boards_id_notify::get)
+                .put(talaria_routes_boards::boards::boards_id_notify::put)
+                .delete(talaria_routes_boards::boards::boards_id_notify::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
         .route(
             "/api/boards/{id}/labels",
             get(talaria_routes_boards::boards::boards_id_labels::get)
@@ -403,6 +412,13 @@ pub fn router(state: AppState) -> Router {
         // The notification contract's doors (docs/notifications/contract.md):
         // a client's ack that it surfaced rows (I-18), and the per-device test
         // push (a stub that answers 501 until W2-E, rate-limited already).
+        // The caller's setting for every board they can see, with their
+        // default (talaria_notify::boards).
+        .route(
+            "/api/notifications/boards",
+            get(talaria_routes_comms::activity::notifications_boards::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
         .route(
             "/api/notifications/ack",
             post(talaria_routes_comms::activity::notifications_ack::post)

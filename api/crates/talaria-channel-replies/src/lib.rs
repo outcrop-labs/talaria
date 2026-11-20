@@ -39,7 +39,7 @@ use talaria_gateway::usage::TurnAttribution;
 /// Who wrote a post (`ChannelPost::sender`), re-exported so a route that
 /// files posts needs no edge of its own to talaria-mentions.
 pub use talaria_mentions::MentionSender;
-use talaria_mentions::{MentionOpts, Mentionee, mentioned_ids, notify_mentions_with};
+use talaria_mentions::{MentionOpts, Mentionee, TicketScope, mentioned_ids, notify_mentions_with};
 use talaria_notify::{
     ActorKind, ChannelLevel, ChannelListener, Coalesce, NotificationInput, NotifyActor, NotifyDeps,
     NotifyEntity, NotifyMeta, add_notification_with, channel_listeners, entity, group_key,
@@ -120,8 +120,13 @@ pub async fn notify_channel_post(deps: &NotifyDeps, post: &ChannelPost<'_>) {
     // A task room has no member rows — its roster is the board's, and the
     // notification lands on the ticket, never on the rail the room isn't in.
     if let Some(room) = room_notify_shape(&deps.pg, post.channel_id, post.channel_name).await {
+        // A ticket's mentions obey each person's setting for its board.
         let opts = MentionOpts {
             entity: Some(NotifyEntity::new(entity::TASK, room.task_id.as_str())),
+            ticket: Some(TicketScope::new(
+                room.board_id.as_str(),
+                room.task_id.as_str(),
+            )),
             ..Default::default()
         };
         notify_mentions_with(
@@ -170,6 +175,7 @@ pub async fn notify_channel_post(deps: &NotifyDeps, post: &ChannelPost<'_>) {
             let opts = MentionOpts {
                 entity: Some(NotifyEntity::new(entity::CHANNEL, post.channel_id)),
                 quiet: muted_ids(&listeners),
+                ..Default::default()
             };
             notify_mentions_with(
                 deps,
@@ -197,6 +203,7 @@ pub async fn notify_channel_post(deps: &NotifyDeps, post: &ChannelPost<'_>) {
     let opts = MentionOpts {
         entity: Some(channel_entity.clone()),
         quiet: muted_ids(&listeners),
+        ..Default::default()
     };
     let mut told = notify_mentions_with(
         deps,
@@ -545,6 +552,7 @@ struct RoomNotify {
     where_: String,
     href: String,
     task_id: String,
+    board_id: String,
 }
 
 async fn room_notify_shape(
@@ -574,6 +582,7 @@ async fn room_notify_shape(
             .unwrap_or_else(|| channel_name.to_string()),
         href: format!("/boards/{}/{}", meta.board_id, meta.task_id),
         task_id: meta.task_id.clone(),
+        board_id: meta.board_id.clone(),
     })
 }
 

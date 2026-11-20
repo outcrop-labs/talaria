@@ -20,7 +20,7 @@ use talaria_body::{
     optional_uuid_member, parse,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_mentions::{MentionOpts, MentionSender, Mentionee, notify_added_mentions};
+use talaria_mentions::{MentionOpts, MentionSender, Mentionee, TicketScope, notify_added_mentions};
 use talaria_notify::{NotifyDeps, NotifyEntity, entity};
 use talaria_refs::{MessageRef, RefChip, RefUser, resolve_refs};
 use talaria_session::{SessionUser, require_user};
@@ -581,8 +581,13 @@ impl AddedMentions {
                 &self.after,
                 &where_,
                 &href,
+                // Each mentioned person's setting for the board decides.
                 &MentionOpts {
                     entity: Some(NotifyEntity::new(entity::TASK, self.task_id.as_str())),
+                    ticket: Some(TicketScope::new(
+                        self.board_id.as_str(),
+                        self.task_id.as_str(),
+                    )),
                     ..Default::default()
                 },
             )

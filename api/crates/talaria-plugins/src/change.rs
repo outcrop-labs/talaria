@@ -90,6 +90,7 @@ pub async fn request_change(
             tags: &[],
             created_by: requester,
             status: pickup.as_deref(),
+            mention_text: None,
             external_key: None,
             quiet: false,
         },

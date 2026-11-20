@@ -425,6 +425,8 @@ impl Local for Real {
             tags: &t.tags,
             created_by: SYNC_ACTOR,
             status: Some(&t.status),
+            // A mirrored create files no @mentions (and, quiet, no rows).
+            mention_text: None,
             external_key: Some(&t.external_key),
             quiet: true,
         };

@@ -105,6 +105,13 @@ pub const KIND_CLASS: &[(&str, &str, &str)] = &[
     ("workchain_paused", "workchain_paused", "Workchain paused"),
     // A channel at level `all` (W2-P files these).
     ("channel-message", "channel_activity", "New message"),
+    // A board a person set to hear in full: one row per board for the
+    // tickets they are not in (talaria_notify::boards).
+    (
+        "board-activity",
+        "board_activity",
+        "Activity on a board you follow",
+    ),
     // A capability agents lost: an MCP server the health pass saw go from ok
     // to down. In-app by default — an admin fixes it from the MCP page.
     ("gap_reported", "gap_reported", "Capability gap"),
@@ -328,6 +335,23 @@ pub const CLASSES: &[ClassDef] = &[
         admin_only: false,
         email_delay_min: 0,
     },
+    // A board a person set to All (or to a custom set over the whole board):
+    // every event on its tickets they are not in, one counting row per board.
+    // Unlike a channel set to All it stays QUIET by default — feed only, like
+    // `work_complete` — because the rows for the tickets a person IS in (a
+    // status move is `work_complete`) are quiet too, and news about tickets
+    // you are not in must never ring louder than news about your own. A
+    // person who wants the banner turns this row of the matrix on.
+    ClassDef {
+        id: "board_activity",
+        label: "Board activity",
+        blurb: "New tickets, moves and comments on boards you set to hear every ticket.",
+        category: Category::Following,
+        defaults: ch(false, false, false),
+        breaks_through: false,
+        admin_only: false,
+        email_delay_min: 0,
+    },
     ClassDef {
         id: "gap_reported",
         label: "Capability gaps",
@@ -525,6 +549,7 @@ mod tests {
             ("task-comment", "participating"),
             ("thread-reply", "participating"),
             ("channel-message", "channel_activity"),
+            ("board-activity", "board_activity"),
         ] {
             assert_eq!(notify_class_of(kind), class, "kind {kind}");
         }
@@ -592,6 +617,13 @@ mod tests {
         assert_eq!(channel.category, Category::Following);
         assert!(!channel.breaks_through && !channel.admin_only);
         assert!(!ORIGINAL_CLASSES.contains(&"channel_activity"), "C27");
+        // A board set to All is never louder than the tickets a person is in:
+        // board activity defaults to what a status move gets (work_complete).
+        let board = class_def("board_activity").unwrap();
+        assert_eq!(board.defaults, class_def("work_complete").unwrap().defaults);
+        assert_eq!(board.category, Category::Following);
+        assert!(!board.breaks_through && !board.admin_only);
+        assert!(!ORIGINAL_CLASSES.contains(&"board_activity"), "C27");
         let account = class_def("account").unwrap();
         assert_eq!(account.category, Category::Direct);
         assert!(account.defaults.desktop && account.defaults.push && account.defaults.email);
@@ -655,6 +687,7 @@ mod tests {
             "research",
             "task-status",
             "channel-message",
+            "board-activity",
             "mcp_server_down",
             "gap_reported",
         ] {

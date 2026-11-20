@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-24 routes.
+25 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -30,6 +30,9 @@
 | [`/api/boards/{id}/members`](#apiboardsidmembers) | GET | `dual` |
 | [`/api/boards/{id}/members`](#apiboardsidmembers) | POST | `dual` |
 | [`/api/boards/{id}/members`](#apiboardsidmembers) | DELETE | `dual` |
+| [`/api/boards/{id}/notify`](#apiboardsidnotify) | GET | `session` |
+| [`/api/boards/{id}/notify`](#apiboardsidnotify) | PUT | `session` |
+| [`/api/boards/{id}/notify`](#apiboardsidnotify) | DELETE | `session` |
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | GET | `session` |
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | POST | `session` |
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | PUT | `session` |
@@ -258,6 +261,34 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_members.rs`](../
 | :--- | :--- | :--- |
 | `userId` | `uuid?` | Both members optional; the 'userId or email required' refine runs AFTER the field checks. |
 | `email` | `email` |  |
+
+## `/api/boards/{id}/notify`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_notify.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_notify.rs)
+
+> /api/boards/{id}/notify — the caller's own notification setting for one
+> board (talaria_notify::boards; docs/notifications/producers.md "Each
+> board"). Sessions only: a setting is a person's, and humans are the only
+> recipients of ticket rows in v1.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `…` | 200, 403 | — |
+| PUT | `session` | [body](#put-apiboardsidnotify-body) | `…` | 200, 400, 403 | — |
+| DELETE | `session` | — | `…` | 200, 403 | — |
+
+**GET** — The caller's own setting for this board: `{effective, source, stored, default, registry}`. Any board role.
+
+**PUT** — `{preset, events?, scope?, cadence?}` → replaces the caller's own setting for this board; answers as GET. `events` and `scope` only with `custom`.
+
+### PUT `/api/boards/{id}/notify` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
+
+**DELETE** — The caller's own setting for this board is removed — it follows their default again; answers as GET.
 
 ## `/api/boards/{id}/statuses`
 

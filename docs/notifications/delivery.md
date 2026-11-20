@@ -87,6 +87,15 @@ The registry (`classes.rs`) defaults are wave 1's effective answer, with these c
   in the All tab, off the For-you badge, and push at Following's urgency (`low`, 1 h). The
   matrix row "Channel activity" turns any of the three off for every channel at All; a
   channel set back to Mentions files no such rows.
+- **A board set to hear every ticket stays quiet.** `board_activity` (Following) defaults
+  to the feed only, the `work_complete` channels, unlike a channel at All: the rows for the
+  tickets a person IS in are quiet by default (a status move is `work_complete`), and news
+  about tickets they are not in must never ring louder than news about their own. Its rows
+  (`board-activity`) are filed only for a person whose own setting for that board covers
+  the whole board ([producers.md](./producers.md#each-board)); the matrix row "Board
+  activity" turns the banner, push or mail on. Nothing in this engine reads a board
+  setting: who gets a row is decided at fan-out, and the deferred push and the mail batcher
+  re-read the class matrix, as for any row.
 - **The `account` class** (Direct; banner, push and mail on) carries
   `agent_google_principal`, the notice that an agent now acts as you on Google. It used to
   fall through into the quiet `work_complete` bucket (SE-14).
