@@ -10,9 +10,16 @@
 // WHERE IT RUNS. Who gets a row is decided once, at fan-out, by the producers
 // (talaria-tasks' ticket fan-out and the four ticket @mention doors through
 // talaria-mentions) — the place channel levels are decided today. Nothing at
-// send time re-reads it: the deferred push and the mail batcher keep reading
-// the class matrix, as they do for a channel level. The row, once filed, is
-// the record.
+// send time re-reads it. The row, once filed, is the record.
+//
+// A BOARD'S OWN CHANNELS. A setting may also say how this board's rows reach
+// the person — Alerts (the banner and the push, together) and Email, each on,
+// off, or (None) as the class matrix in Settings → Notifications says. That
+// too is decided at fan-out: the producer files the row with the override
+// (`NotifyMeta::channels`), the writer stores it on the row, and the deferred
+// push and the mail batcher re-check the matrix through the stored override
+// (`prefs::channels_with`) — never by reading this module. In-app is not a
+// choice: every row lands in the inbox.
 //
 // The precedence, in order (`resolve`):
 //   1. Needs-you rows never come here: approvals (ticket review included),
@@ -38,15 +45,21 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value, json};
 use sqlx::PgPool;
-use talaria_body::{enum_member, enum_msg, object_msg, zod_type_name};
+use talaria_body::{
+    boolean_msg, enum_member, enum_msg, nullable_boolean_member, object_msg, zod_type_name,
+};
+
+pub use crate::meta::ChannelOverride;
 
 /// The reserved key of `users.notify_prefs` that holds a person's default
 /// for every board (`prefs::merge_prefs` writes it, `default_of` reads it).
 pub const BOARDS_KEY: &str = "boards";
 
-/// The features this module serves in `GET /api/notifications` (I-23).
-/// `task-due` and `board-digest` join when their producers ship.
-pub const FEATURES: &[&str] = &["board-prefs"];
+/// The features this module serves in `GET /api/notifications` (I-23):
+/// the setting (`board-prefs`) and a board's own channels
+/// (`board-channels`). `task-due` and `board-digest` join when their
+/// producers ship.
+pub const FEATURES: &[&str] = &["board-prefs", "board-channels"];
 
 /// Due-date reminders have a producer (`task-due`). Until then the event is
 /// listed but refused, so nobody can choose something that never arrives.
@@ -282,7 +295,47 @@ pub struct BoardPref {
     /// Custom only: the chosen scope.
     custom_scope: Scope,
     pub cadence: Cadence,
+    /// How this board's rows reach them, where it is not the class matrix's
+    /// answer (None everywhere: the matrix).
+    pub channels: BoardChannels,
 }
+
+/// How one board's rows reach a person, where it is not the class matrix's
+/// answer — two choices, each `Some(on)` or `None` (the matrix decides):
+/// - `alerts`: the banner and the push, together. On pops the row up and
+///   pushes it; off keeps it in the inbox alone. The inbox keeps every row
+///   either way, so in-app is not a choice (I-13).
+/// - `email`: the missed-activity mail.
+///
+/// Push is deliberately not a board choice of its own (mobile push
+/// configuration is out of scope); the matrix keeps its per-class Push.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BoardChannels {
+    pub alerts: Option<bool>,
+    pub email: Option<bool>,
+}
+
+impl BoardChannels {
+    /// Nothing chosen: the matrix decides both.
+    pub fn is_none(&self) -> bool {
+        self.alerts.is_none() && self.email.is_none()
+    }
+
+    /// The override this board's rows are filed with
+    /// (`NotifyMeta::channels`): Alerts sets Desktop and Push together, so a
+    /// row the board turns quiet neither pops up nor pushes, and one it turns
+    /// loud does both.
+    pub fn overrides(&self) -> ChannelOverride {
+        ChannelOverride {
+            desktop: self.alerts,
+            push: self.alerts,
+            email: self.email,
+        }
+    }
+}
+
+/// The channels a person may choose for a board, in wire order.
+const CHANNEL_KEYS: [&str; 2] = ["alerts", "email"];
 
 /// Where a person's effective setting for a board came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,7 +371,13 @@ impl BoardPref {
             custom_events: Vec::new(),
             custom_scope: Scope::Mine,
             cadence,
+            channels: BoardChannels::default(),
         }
+    }
+
+    /// The same setting, reaching the person on these channels.
+    pub fn with_channels(self, channels: BoardChannels) -> Self {
+        Self { channels, ..self }
     }
 
     /// A custom setting: these events (registry order, no repeats) over this
@@ -332,6 +391,7 @@ impl BoardPref {
                 .collect(),
             custom_scope: scope,
             cadence,
+            channels: BoardChannels::default(),
         }
     }
 
@@ -355,8 +415,9 @@ impl BoardPref {
     }
 
     /// The stored shape (the `boards` default; a table row holds the same
-    /// fields): the preset, the cadence, and — Custom only — the events and
-    /// the scope.
+    /// fields): the preset, the cadence, — Custom only — the events and the
+    /// scope, and — only when one is chosen — the channels, each chosen one
+    /// by name (`{"alerts": false}`).
     pub fn to_stored(&self) -> Value {
         let mut m = Map::new();
         m.insert("preset".into(), json!(self.preset.id()));
@@ -373,16 +434,31 @@ impl BoardPref {
             m.insert("scope".into(), json!(self.custom_scope.id()));
         }
         m.insert("cadence".into(), json!(self.cadence.id()));
+        if !self.channels.is_none() {
+            let mut c = Map::new();
+            for (k, v) in channel_values(&self.channels) {
+                if let Some(on) = v {
+                    c.insert(k.into(), json!(on));
+                }
+            }
+            m.insert("channels".into(), Value::Object(c));
+        }
         Value::Object(m)
     }
 
-    /// The effective shape the wire serves: always expanded.
+    /// The effective shape the wire serves: always expanded, and every
+    /// channel named — `null` where the class matrix decides.
     pub fn to_wire(&self) -> Value {
+        let mut channels = Map::new();
+        for (k, v) in channel_values(&self.channels) {
+            channels.insert(k.into(), json!(v));
+        }
         json!({
             "preset": self.preset.id(),
             "events": self.events().iter().map(|e| e.id()).collect::<Vec<_>>(),
             "scope": self.scope().id(),
             "cadence": self.cadence.id(),
+            "channels": channels,
         })
     }
 
@@ -395,6 +471,7 @@ impl BoardPref {
         events: Option<&[String]>,
         scope: Option<&str>,
         cadence: Option<&str>,
+        channels: BoardChannels,
     ) -> Option<Self> {
         let preset = Preset::parse(preset)?;
         let cadence = match cadence {
@@ -402,14 +479,14 @@ impl BoardPref {
             Some(c) => Cadence::parse(c)?,
         };
         if preset != Preset::Custom {
-            return Some(Self::preset(preset, cadence));
+            return Some(Self::preset(preset, cadence).with_channels(channels));
         }
         let mut chosen = Vec::new();
         for e in events? {
             chosen.push(BoardEvent::parse(e)?);
         }
         let scope = Scope::parse(scope.unwrap_or("mine"))?;
-        Some(Self::custom(&chosen, scope, cadence))
+        Some(Self::custom(&chosen, scope, cadence).with_channels(channels))
     }
 
     /// The stored JSON shape back (`to_stored`'s inverse).
@@ -422,13 +499,26 @@ impl BoardPref {
                 .collect::<Option<Vec<_>>>(),
             _ => None,
         };
+        // A channel that is not a bool (a hand edit) follows the matrix:
+        // never silence, and never louder than the person chose.
+        let c = o.get("channels").and_then(Value::as_object);
+        let pick = |k: &str| c.and_then(|c| c.get(k)).and_then(Value::as_bool);
         Self::from_parts(
             o.get("preset")?.as_str()?,
             events.as_deref(),
             o.get("scope").and_then(Value::as_str),
             o.get("cadence").and_then(Value::as_str),
+            BoardChannels {
+                alerts: pick(CHANNEL_KEYS[0]),
+                email: pick(CHANNEL_KEYS[1]),
+            },
         )
     }
+}
+
+/// The channels by wire name, in wire order.
+fn channel_values(c: &BoardChannels) -> [(&'static str, Option<bool>); 2] {
+    [(CHANNEL_KEYS[0], c.alerts), (CHANNEL_KEYS[1], c.email)]
 }
 
 /// A person's default for every board, from their prefs blob.
@@ -572,16 +662,18 @@ fn fold(candidates: &[Candidate]) -> Vec<Candidate> {
     out
 }
 
-/// Each candidate's delivery for one event on one board, from ONE read of
-/// their settings for it and their defaults. A read that fails is logged
-/// and answers the built-in for everyone — the audiences the producers had
-/// before boards had a setting — never silence.
+/// Each candidate's delivery for one event on one board, and the channels
+/// their setting gives this board's rows (file the row with them as
+/// `NotifyMeta::channels`), from ONE read of their settings for it and their
+/// defaults. A read that fails is logged and answers the built-in for
+/// everyone — the audiences the producers had before boards had a setting,
+/// on the matrix's channels — never silence.
 pub async fn listeners(
     pg: &PgPool,
     board_id: &str,
     ev: BoardEvent,
     candidates: &[Candidate],
-) -> Vec<(Candidate, Delivery)> {
+) -> Vec<(Candidate, Delivery, ChannelOverride)> {
     let folded = fold(candidates);
     if folded.is_empty() {
         return Vec::new();
@@ -600,7 +692,7 @@ pub async fn listeners(
             let (row, default) = prefs.get(&c.user_id).cloned().unwrap_or_default();
             let (p, _) = effective(row.as_ref(), default.as_ref());
             let d = resolve(&p, ev, &c);
-            (c, d)
+            (c, d, p.channels.overrides())
         })
         .collect()
 }
@@ -611,6 +703,8 @@ type PrefRow = (
     Option<Vec<String>>,
     Option<String>,
     Option<String>,
+    Option<bool>,
+    Option<bool>,
     Option<Value>,
 );
 
@@ -621,7 +715,8 @@ async fn read_prefs(
     user_ids: &[String],
 ) -> Result<HashMap<String, (Option<BoardPref>, Option<BoardPref>)>, sqlx::Error> {
     let rows: Vec<PrefRow> = sqlx::query_as(
-        "select u.id::text, p.preset, p.events, p.scope, p.cadence, u.notify_prefs -> 'boards' \
+        "select u.id::text, p.preset, p.events, p.scope, p.cadence, p.alerts, p.email, \
+                u.notify_prefs -> 'boards' \
          from users u \
          left join board_notify_prefs p on p.user_id = u.id and p.board_id = $1::uuid \
          where u.id = any($2::uuid[])",
@@ -632,13 +727,21 @@ async fn read_prefs(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, preset, events, scope, cadence, default)| {
-            let row = preset.and_then(|p| {
-                BoardPref::from_parts(&p, events.as_deref(), scope.as_deref(), cadence.as_deref())
-            });
-            let default = default.as_ref().and_then(BoardPref::from_stored);
-            (id, (row, default))
-        })
+        .map(
+            |(id, preset, events, scope, cadence, alerts, email, default)| {
+                let row = preset.and_then(|p| {
+                    BoardPref::from_parts(
+                        &p,
+                        events.as_deref(),
+                        scope.as_deref(),
+                        cadence.as_deref(),
+                        BoardChannels { alerts, email },
+                    )
+                });
+                let default = default.as_ref().and_then(BoardPref::from_stored);
+                (id, (row, default))
+            },
+        )
         .collect())
 }
 
@@ -684,18 +787,20 @@ fn hears_board(stored: &Value) -> bool {
 }
 
 /// Who among `user_ids` — the people a ticket's text @mentions — gets their
-/// mention row, by their setting for the ticket's board. The deliberate-watch
-/// flag is read for exactly these people: a watch can only keep a mention a
-/// board would drop, never add a recipient the caller did not already name.
-/// A read that fails keeps everyone (the built-in files every mention).
+/// mention row, by their setting for the ticket's board, and the channels it
+/// reaches them on (file it with them as `NotifyMeta::channels`). The
+/// deliberate-watch flag is read for exactly these people: a watch can only
+/// keep a mention a board would drop, never add a recipient the caller did
+/// not already name. A read that fails keeps everyone (the built-in files
+/// every mention, on the matrix's channels).
 pub async fn mention_listeners(
     pg: &PgPool,
     board_id: &str,
     task_id: &str,
     user_ids: &[String],
-) -> HashSet<String> {
+) -> HashMap<String, ChannelOverride> {
     if user_ids.is_empty() {
-        return HashSet::new();
+        return HashMap::new();
     }
     let watching: HashSet<String> = match sqlx::query_scalar::<_, String>(
         "select u.id::text from task_watchers w \
@@ -724,8 +829,8 @@ pub async fn mention_listeners(
     listeners(pg, board_id, BoardEvent::Mention, &candidates)
         .await
         .into_iter()
-        .filter(|(_, d)| *d == Delivery::Ticket)
-        .map(|(c, _)| c.user_id)
+        .filter(|(_, d, _)| *d == Delivery::Ticket)
+        .map(|(c, _, channels)| (c.user_id, channels))
         .collect()
 }
 
@@ -762,8 +867,18 @@ pub async fn stored_for_boards(
     if board_ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let rows: Vec<(String, String, Option<Vec<String>>, Option<String>, String)> = sqlx::query_as(
-        "select board_id::text, preset, events, scope, cadence from board_notify_prefs \
+    type StoredRow = (
+        String,
+        String,
+        Option<Vec<String>>,
+        Option<String>,
+        String,
+        Option<bool>,
+        Option<bool>,
+    );
+    let rows: Vec<StoredRow> = sqlx::query_as(
+        "select board_id::text, preset, events, scope, cadence, alerts, email \
+             from board_notify_prefs \
              where user_id = $1::uuid and board_id = any($2::uuid[])",
     )
     .bind(user_id)
@@ -772,12 +887,13 @@ pub async fn stored_for_boards(
     .await?;
     Ok(rows
         .into_iter()
-        .filter_map(|(board, preset, events, scope, cadence)| {
+        .filter_map(|(board, preset, events, scope, cadence, alerts, email)| {
             BoardPref::from_parts(
                 &preset,
                 events.as_deref(),
                 scope.as_deref(),
                 Some(cadence.as_str()),
+                BoardChannels { alerts, email },
             )
             .map(|p| (board, p))
         })
@@ -796,11 +912,13 @@ pub async fn store(
     let events: Option<Vec<&str>> =
         custom.then(|| p.custom_events.iter().map(|e| e.id()).collect());
     sqlx::query(
-        "insert into board_notify_prefs (user_id, board_id, preset, events, scope, cadence) \
-         values ($1::uuid, $2::uuid, $3, $4, $5, $6) \
+        "insert into board_notify_prefs \
+           (user_id, board_id, preset, events, scope, cadence, alerts, email) \
+         values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8) \
          on conflict (user_id, board_id) do update set \
            preset = excluded.preset, events = excluded.events, scope = excluded.scope, \
-           cadence = excluded.cadence, updated_at = now()",
+           cadence = excluded.cadence, alerts = excluded.alerts, email = excluded.email, \
+           updated_at = now()",
     )
     .bind(user_id)
     .bind(board_id)
@@ -808,6 +926,8 @@ pub async fn store(
     .bind(events)
     .bind(custom.then(|| p.custom_scope.id()))
     .bind(p.cadence.id())
+    .bind(p.channels.alerts)
+    .bind(p.channels.email)
     .execute(pg)
     .await?;
     Ok(())
@@ -872,11 +992,14 @@ pub fn default_wire(blob: &Value) -> Value {
     state_wire(&p, source, default.as_ref())
 }
 
-/// A written setting, checked: `{preset, events?, scope?, cadence?}`.
-/// `events` and `scope` belong to Custom alone; Custom needs at least one
-/// event; New ticket needs scope board; an event or a cadence with no
-/// producer yet is refused. Unknown members are dropped. Every message is
-/// pinned in the tests below.
+/// A written setting, checked: `{preset, events?, scope?, cadence?,
+/// channels?}`. `events` and `scope` belong to Custom alone; Custom needs at
+/// least one event; New ticket needs scope board; an event or a cadence with
+/// no producer yet is refused. `channels` is `{alerts?, email?}`, each a
+/// bool or null (null or absent: the class matrix decides); in-app is always
+/// on, so `inApp: false` is refused as it is in the matrix. Unknown members
+/// are dropped. A write is the whole setting: what it leaves out goes back to
+/// its default. Every message is pinned in the tests below.
 pub fn parse_write(v: &Value) -> Result<BoardPref, String> {
     let o = v.as_object().ok_or_else(|| object_msg(zod_type_name(v)))?;
     let preset = Preset::parse(&enum_member(o, "preset", PRESET_IDS)?).expect("checked");
@@ -888,11 +1011,12 @@ pub fn parse_write(v: &Value) -> Result<BoardPref, String> {
     if !cadence.available() {
         return Err("a daily digest isn't available yet".into());
     }
+    let channels = parse_channels(o.get("channels"))?;
     if preset != Preset::Custom {
         if present("events") || present("scope") {
             return Err("events and scope are set only with the custom preset".into());
         }
-        return Ok(BoardPref::preset(preset, cadence));
+        return Ok(BoardPref::preset(preset, cadence).with_channels(channels));
     }
     let events_v = o.get("events").filter(|v| !v.is_null());
     let Some(events_v) = events_v else {
@@ -929,7 +1053,28 @@ pub fn parse_write(v: &Value) -> Result<BoardPref, String> {
                 .into(),
         );
     }
-    Ok(BoardPref::custom(&events, scope, cadence))
+    Ok(BoardPref::custom(&events, scope, cadence).with_channels(channels))
+}
+
+/// The `channels` member of a written setting: absent or null is the
+/// matrix for both; an object names `alerts` (the banner and the push,
+/// together) and `email`, each a bool or null. In-app is always on — the row
+/// is the record — so `inApp: false` is refused and `inApp: true` passes, as
+/// in the matrix's own `PATCH /api/notifications {channels}`.
+fn parse_channels(v: Option<&Value>) -> Result<BoardChannels, String> {
+    let Some(v) = v.filter(|v| !v.is_null()) else {
+        return Ok(BoardChannels::default());
+    };
+    let c = v.as_object().ok_or_else(|| object_msg(zod_type_name(v)))?;
+    match c.get("inApp") {
+        None | Some(Value::Bool(true)) => {}
+        Some(Value::Bool(false)) => return Err("In-app is always on".into()),
+        Some(other) => return Err(boolean_msg(zod_type_name(other))),
+    }
+    Ok(BoardChannels {
+        alerts: nullable_boolean_member(c, CHANNEL_KEYS[0])?,
+        email: nullable_boolean_member(c, CHANNEL_KEYS[1])?,
+    })
 }
 
 #[cfg(test)]
@@ -967,6 +1112,22 @@ mod tests {
             out.push(BoardPref::custom(&[Comment], Scope::Mine, cadence));
             out.push(BoardPref::custom(&[Created, Status], Scope::Board, cadence));
             out.push(BoardPref::custom(&[Status, Comment], Scope::Mine, cadence));
+            // A board's own channels change no delivery decision, only how
+            // the rows reach the person.
+            out.push(
+                BoardPref::preset(Preset::Participating, cadence).with_channels(BoardChannels {
+                    email: Some(true),
+                    ..Default::default()
+                }),
+            );
+            out.push(
+                BoardPref::custom(&[Created, Comment], Scope::Board, cadence).with_channels(
+                    BoardChannels {
+                        alerts: Some(false),
+                        email: Some(false),
+                    },
+                ),
+            );
         }
         out
     }
@@ -1213,7 +1374,8 @@ mod tests {
             BoardPref::custom(&[Created, Comment], Scope::Board, Cadence::Instant).to_stored(),
             json!({ "preset": "custom", "events": ["created", "comment"], "scope": "board", "cadence": "instant" })
         );
-        // The effective wire is always expanded, in this key order.
+        // The effective wire is always expanded, in this key order, and
+        // names every channel — null where the matrix decides.
         let w = BoardPref::builtin().to_wire();
         assert_eq!(
             w,
@@ -1222,12 +1384,122 @@ mod tests {
                 "events": ["assigned", "status", "comment", "mention", "completed"],
                 "scope": "mine",
                 "cadence": "instant",
+                "channels": { "alerts": null, "email": null },
             })
         );
         assert_eq!(
             w.as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
-            ["preset", "events", "scope", "cadence"]
+            ["preset", "events", "scope", "cadence", "channels"]
         );
+        assert_eq!(
+            w["channels"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            ["alerts", "email"]
+        );
+    }
+
+    // A board's own channels: stored by name only when chosen, served with
+    // both named, and a stored value this binary cannot read follows the
+    // matrix — never silence, never louder than chosen.
+    #[test]
+    fn a_boards_own_channels_round_trip() {
+        let email_only =
+            BoardPref::preset(Preset::Mentions, Cadence::Instant).with_channels(BoardChannels {
+                alerts: Some(false),
+                email: Some(true),
+            });
+        assert_eq!(
+            email_only.to_stored(),
+            json!({ "preset": "mentions", "cadence": "instant",
+                    "channels": { "alerts": false, "email": true } })
+        );
+        assert_eq!(
+            email_only.to_wire()["channels"],
+            json!({ "alerts": false, "email": true })
+        );
+        let quiet = BoardPref::builtin().with_channels(BoardChannels {
+            alerts: Some(false),
+            ..Default::default()
+        });
+        assert_eq!(
+            quiet.to_stored(),
+            json!({ "preset": "participating", "cadence": "instant",
+                    "channels": { "alerts": false } })
+        );
+        assert_eq!(
+            quiet.to_wire()["channels"],
+            json!({ "alerts": false, "email": null })
+        );
+        for p in [&email_only, &quiet] {
+            assert_eq!(BoardPref::from_stored(&p.to_stored()).as_ref(), Some(p));
+        }
+        // What a row is filed with: Alerts is the banner and the push
+        // together, in both directions; Email is the mail; nothing chosen is
+        // the matrix.
+        assert_eq!(
+            email_only.channels.overrides(),
+            ChannelOverride {
+                desktop: Some(false),
+                push: Some(false),
+                email: Some(true),
+            }
+        );
+        assert_eq!(
+            BoardChannels {
+                alerts: Some(true),
+                email: None,
+            }
+            .overrides(),
+            ChannelOverride {
+                desktop: Some(true),
+                push: Some(true),
+                email: None,
+            }
+        );
+        assert!(BoardChannels::default().overrides().is_none());
+        // Nothing chosen: no channels member at all.
+        assert!(BoardPref::builtin().to_stored().get("channels").is_none());
+        // Hand edits: a channel that is not a bool follows the matrix, a
+        // member that is not a board channel is ignored, and a channels
+        // member that is not an object is no choice at all.
+        let odd = json!({ "preset": "all", "cadence": "instant",
+                          "channels": { "email": "yes", "alerts": false, "push": true,
+                                        "inApp": false } });
+        assert_eq!(
+            BoardPref::from_stored(&odd),
+            Some(
+                BoardPref::preset(Preset::All, Cadence::Instant).with_channels(BoardChannels {
+                    alerts: Some(false),
+                    ..Default::default()
+                })
+            )
+        );
+        let junk = json!({ "preset": "all", "channels": "loud" });
+        assert_eq!(
+            BoardPref::from_stored(&junk),
+            Some(BoardPref::preset(Preset::All, Cadence::Instant))
+        );
+        // The default for every board carries them the same way.
+        let blob = json!({ "boards": email_only.to_stored() });
+        assert_eq!(default_of(&blob), Some(email_only.clone()));
+        // The resolver never reads them: who gets a row is the same.
+        for ev in BoardEvent::ALL {
+            for (_, c) in shapes() {
+                assert_eq!(
+                    resolve(&email_only, ev, &c),
+                    resolve(
+                        &BoardPref::preset(Preset::Mentions, Cadence::Instant),
+                        ev,
+                        &c
+                    ),
+                    "{ev:?} {c:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1241,6 +1513,49 @@ mod tests {
             w(json!({ "preset": "all", "cadence": "instant", "inApp": false })).unwrap(),
             BoardPref::preset(Preset::All, Cadence::Instant)
         );
+        // A board's own channels: each a bool or null, the rest dropped —
+        // Desktop and Push are not board choices of their own.
+        assert_eq!(
+            w(json!({ "preset": "all",
+                      "channels": { "email": true, "alerts": null, "push": false, "sms": true } }))
+            .unwrap(),
+            BoardPref::preset(Preset::All, Cadence::Instant).with_channels(BoardChannels {
+                email: Some(true),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            w(json!({ "preset": "custom", "events": ["comment"],
+                      "channels": { "alerts": false, "email": true } }))
+            .unwrap(),
+            BoardPref::custom(&[Comment], Scope::Mine, Cadence::Instant).with_channels(
+                BoardChannels {
+                    alerts: Some(false),
+                    email: Some(true),
+                }
+            )
+        );
+        // Off keeps its channels: they shape the rows a self-made watch
+        // still carries.
+        assert_eq!(
+            w(json!({ "preset": "off", "channels": { "alerts": false } })).unwrap(),
+            BoardPref::preset(Preset::Off, Cadence::Instant).with_channels(BoardChannels {
+                alerts: Some(false),
+                ..Default::default()
+            })
+        );
+        // Null, an empty object and inApp: true are no choice.
+        for none in [
+            json!({ "preset": "all", "channels": null }),
+            json!({ "preset": "all", "channels": {} }),
+            json!({ "preset": "all", "channels": { "inApp": true } }),
+        ] {
+            assert_eq!(
+                w(none.clone()).unwrap(),
+                BoardPref::preset(Preset::All, Cadence::Instant),
+                "{none}"
+            );
+        }
         assert_eq!(
             w(json!({ "preset": "custom", "events": ["comment", "status"] })).unwrap(),
             BoardPref::custom(&[Status, Comment], Scope::Mine, Cadence::Instant)
@@ -1299,6 +1614,26 @@ mod tests {
         assert_eq!(
             err(json!({ "preset": "all", "cadence": "hourly" })),
             "Invalid option: expected one of \"instant\"|\"digest\""
+        );
+        assert_eq!(
+            err(json!({ "preset": "all", "channels": [] })),
+            "Invalid input: expected object, received array"
+        );
+        assert_eq!(
+            err(json!({ "preset": "all", "channels": { "email": "yes" } })),
+            "Invalid input: expected boolean, received string"
+        );
+        assert_eq!(
+            err(json!({ "preset": "all", "channels": { "alerts": "loud" } })),
+            "Invalid input: expected boolean, received string"
+        );
+        assert_eq!(
+            err(json!({ "preset": "all", "channels": { "inApp": false } })),
+            "In-app is always on"
+        );
+        assert_eq!(
+            err(json!({ "preset": "all", "channels": { "inApp": "no" } })),
+            "Invalid input: expected boolean, received string"
         );
         // What has no producer yet cannot be chosen.
         assert_eq!(

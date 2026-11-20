@@ -18,6 +18,7 @@ zone that the seq bump returned, and its answer lands on the row:
 | Input | Where it comes from |
 |---|---|
 | The class's Desktop, Push and Email channels | `prefs::channels_of` (prefs v2, I-13) |
+| A channel the producer overrode for this person | `NotifyMeta::channels` (I-26): their setting for a board, decided at fan-out; `prefs::channels_with` puts it over the class's channels |
 | DND and working hours | `prefs::dnd_state` in the person's zone (I-14): `users.timezone`, else the workspace's (below) |
 | What the producer said | `NotifyMeta` (`quiet`, `skip_push`, `force_alert`) |
 | The instance switches | `app_settings.notify_delivery`: `emailEnabled` (off unless exactly `true`), `pushEnabled` (on unless exactly `false`), read through a 10 s cache |
@@ -68,6 +69,18 @@ email  = Email && emailEnabled && !quiet && frequency != off
 
   A `Quiet` coalesce changes none of the delivery columns. `refresh_notification` (a DM's
   newer message on its unread row) behaves like a `Realert` coalesce, mail included.
+- **A producer's channel override** (`NotifyMeta::channels`, I-26) replaces the class's
+  Desktop, Push or Email for this one row and this one person, each channel on its own; a
+  channel it leaves `None` is the matrix's. Today two producers set it: the ticket
+  fan-outs and the ticket @mention door (talaria-mentions), each from the recipient's
+  setting for the board — Alerts for Desktop and Push together, Email for Email
+  ([producers.md](./producers.md#each-board)). Everything after the channels is
+  unchanged — DND, working hours, the instance switches,
+  the email frequency, `quiet` and `skip_push` still win — and the legacy route reads the
+  channels that applied. The override is stored on the row (`desktop_override`,
+  `push_override`, `email_override`, null where the matrix decided), beside the delivery
+  columns it shaped: a `Realert` coalesce takes this write's, a `Quiet` one keeps the open
+  row's, and a refresh (which files with none) clears it.
 
 ### Defaults
 
@@ -93,9 +106,10 @@ The registry (`classes.rs`) defaults are wave 1's effective answer, with these c
   about tickets they are not in must never ring louder than news about their own. Its rows
   (`board-activity`) are filed only for a person whose own setting for that board covers
   the whole board ([producers.md](./producers.md#each-board)); the matrix row "Board
-  activity" turns the banner, push or mail on. Nothing in this engine reads a board
-  setting: who gets a row is decided at fan-out, and the deferred push and the mail batcher
-  re-read the class matrix, as for any row.
+  activity" turns the banner, push or mail on, and so does that board's own channel
+  choice. Nothing in this engine reads a board setting: who gets a row, and any channel the
+  board overrides, is decided at fan-out; the deferred push and the mail batcher re-read
+  the class matrix through the override the row was filed with, as for any row.
 - **The `account` class** (Direct; banner, push and mail on) carries
   `agent_google_principal`, the notice that an agent now acts as you on Google. It used to
   fall through into the quiet `work_complete` bucket (SE-14).
@@ -127,7 +141,9 @@ moves anyone's digest.
 - **The deferred-push job** (`notify-deferred-push`, leased, every 5 s) claims rows whose
   deferral is due and that nobody has acked or read, with `for update skip locked`. It stamps
   `pushed_at` in the same statement and then pushes. Before pushing it reads the person's
-  prefs again, so a pause or a Push switch turned off within the minute is obeyed. Claiming
+  prefs again, so a pause or a Push switch turned off within the minute is obeyed — the
+  matrix read through the row's `push_override` (`prefs::channels_with`): a push a board
+  turned on stays on, and a board setting is never re-read here. Claiming
   before sending means two processes never push one row, and no row lock is held while a
   push service answers. A process killed between the claim and the POST loses that one
   push; it never sends twice. A deferral that came due while the api was down fires once,
@@ -149,9 +165,11 @@ so that a queue accepted by the previous binary still drains (PLAN3 §13 retires
    `for update skip locked`. Each claimed row's due time moves 10 minutes on. That move is a
    lease: if the process dies mid-send, the rows come due again.
 3. **Re-check per person, right up to the send.** Rows read meanwhile are skipped and never
-   mailed. A row whose class's Email channel is now off, or whose frequency is now `off`,
-   leaves the mail plane. A row held by a pause that began after it was filed waits for the
-   pause to end.
+   mailed. A row whose Email channel is now off, or whose frequency is now `off`, leaves the
+   mail plane. Its Email channel is the class matrix as it reads now, through the override
+   the row was filed with (`email_override` — a board that turned mail on for its rows keeps
+   it; a board setting is never re-read). A row held by a pause that began after it was
+   filed waits for the pause to end.
 4. **One mail.** The subject is "N unread in Talaria". The items are grouped by category
    (Needs you, Direct, Following, Workspace), each with its title, why it showed, the first
    line of its body and its link. It carries `List-Unsubscribe` to the settings page, and
@@ -160,8 +178,9 @@ so that a queue accepted by the previous binary still drains (PLAN3 §13 retires
    links and no unsubscribe header; it names the path instead.
 5. **The outcomes:**
    - **Accepted:** `emailed_at` is set. Rows of the legacy email-only route (Desktop and
-     Push off, Email on) are filed read, which keeps wave 1's "read after an accepted mail",
-     and the read-sync event goes out.
+     Push off, Email on — read through the row's override too, so a board set to email
+     only counts) are filed read, which keeps wave 1's "read after an accepted mail", and
+     the read-sync event goes out.
    - **No address:** the rows stay in-app only.
    - **Refused by the switch mid-pass:** this person's rows and every claimed row behind
      them are dropped.

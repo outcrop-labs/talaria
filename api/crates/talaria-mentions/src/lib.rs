@@ -3,11 +3,11 @@
 // mentions are surfaced separately by each surface (channels trigger replies;
 // comments pull the agent's attention).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use talaria_notify::{
-    ActorKind, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity, NotifyMeta,
-    add_notification_with,
+    ActorKind, ChannelOverride, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity,
+    NotifyMeta, add_notification_with,
 };
 // The token rules live beside the other audience questions in
 // talaria-notify, so a producer that cannot depend on this crate (a ticket's
@@ -98,24 +98,31 @@ impl TicketScope {
     }
 }
 
+/// Each kept recipient's channels for their mention row, where their setting
+/// for the ticket's board chose some (absent: the class matrix).
+type ChannelsByPerson = HashMap<String, ChannelOverride>;
+
 /// The recipients a ticket's board settings keep: everyone, off a ticket;
 /// on one, the people whose setting for its board files the mention (a board
 /// set to Off silences @mentions from it, as a channel at Nothing does — but
-/// a ticket a person watches themselves still reaches them).
+/// a ticket a person watches themselves still reaches them), with the
+/// channels that setting gives the board's rows.
 async fn by_board<'a>(
     notify: &NotifyDeps,
     to: Vec<&'a Mentionee>,
     opts: &MentionOpts,
-) -> Vec<&'a Mentionee> {
+) -> (Vec<&'a Mentionee>, ChannelsByPerson) {
     let Some(t) = &opts.ticket else {
-        return to;
+        return (to, HashMap::new());
     };
     let ids: Vec<String> = to.iter().map(|m| m.user_id.clone()).collect();
     let keep =
         talaria_notify::boards::mention_listeners(&notify.pg, &t.board_id, &t.task_id, &ids).await;
-    to.into_iter()
-        .filter(|m| keep.contains(&m.user_id))
-        .collect()
+    let to = to
+        .into_iter()
+        .filter(|m| keep.contains_key(&m.user_id))
+        .collect();
+    (to, keep)
 }
 
 /// The members a body @mentions, never the sender — exactly who
@@ -185,8 +192,8 @@ pub async fn notify_mentions_with(
         .iter()
         .filter(|m| m.user_id != sender.user_id && answers_to(m, &mentions))
         .collect();
-    let to = by_board(notify, to, opts).await;
-    notify_these(notify, &to, sender, content, where_, href, opts).await
+    let (to, channels) = by_board(notify, to, opts).await;
+    notify_these(notify, &to, sender, content, where_, href, opts, &channels).await
 }
 
 /// Does this member answer to any of these @tokens?
@@ -235,18 +242,35 @@ pub async fn notify_added_mentions(
     opts: &MentionOpts,
 ) -> Vec<String> {
     let to = newly_mentioned(members, sender.user_id, old_content, new_content);
-    let to = by_board(notify, to, opts).await;
-    notify_these(notify, &to, sender, new_content, where_, href, opts).await
+    let (to, channels) = by_board(notify, to, opts).await;
+    notify_these(
+        notify,
+        &to,
+        sender,
+        new_content,
+        where_,
+        href,
+        opts,
+        &channels,
+    )
+    .await
 }
 
 /// How one mention row files: no group key (each mention is its own row —
 /// somebody pointed at you on purpose), about the surface's entity, from the
-/// sender, quiet when the person's mute is running. Pure.
-fn mention_meta(sender: &MentionSender<'_>, opts: &MentionOpts, user_id: &str) -> NotifyMeta {
+/// sender, quiet when the person's mute is running, and — on a ticket — on
+/// the channels the person's setting for its board chose. Pure.
+fn mention_meta(
+    sender: &MentionSender<'_>,
+    opts: &MentionOpts,
+    user_id: &str,
+    channels: &ChannelsByPerson,
+) -> NotifyMeta {
     NotifyMeta {
         quiet: opts.quiet.contains(user_id),
         entity: opts.entity.clone(),
         actor: Some(sender.actor()),
+        channels: channels.get(user_id).copied().unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -273,6 +297,7 @@ async fn under_agent_cap(notify: &NotifyDeps, user_id: &str) -> Result<bool, sql
     Ok(true)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn notify_these(
     notify: &NotifyDeps,
     to: &[&Mentionee],
@@ -281,6 +306,7 @@ async fn notify_these(
     where_: &str,
     href: &str,
     opts: &MentionOpts,
+    channels: &ChannelsByPerson,
 ) -> Vec<String> {
     let mut told = Vec::new();
     for m in to {
@@ -303,7 +329,7 @@ async fn notify_these(
                     notify,
                     &m.user_id,
                     &input,
-                    &mention_meta(sender, opts, &m.user_id),
+                    &mention_meta(sender, opts, &m.user_id, channels),
                 )
                 .await
                 .map(|_| true),
@@ -314,7 +340,7 @@ async fn notify_these(
                 notify,
                 &m.user_id,
                 &input,
-                &mention_meta(sender, opts, &m.user_id),
+                &mention_meta(sender, opts, &m.user_id, channels),
             )
             .await
             .map(|_| true)
@@ -428,18 +454,20 @@ mod tests {
             ..Default::default()
         };
         let person = MentionSender::of("u-1", "Ada");
-        let m = mention_meta(&person, &opts, "muted");
+        let none = ChannelsByPerson::new();
+        let m = mention_meta(&person, &opts, "muted", &none);
         assert!(m.quiet && m.group_key.is_none());
+        assert!(m.channels.is_none(), "off a board: the matrix");
         assert_eq!(m.entity, Some(NotifyEntity::new("task", "t-1")));
         let a = m.actor.unwrap();
         assert_eq!((a.kind, a.id.as_str()), (ActorKind::User, "u-1"));
-        assert!(!mention_meta(&person, &opts, "other").quiet);
+        assert!(!mention_meta(&person, &opts, "other", &none).quiet);
         let agent = MentionSender {
             user_id: "",
             label: "Margaret",
             agent_model: Some("margaret-marketing"),
         };
-        let a = mention_meta(&agent, &opts, "x").actor.unwrap();
+        let a = mention_meta(&agent, &opts, "x", &none).actor.unwrap();
         assert_eq!(
             (a.kind, a.id.as_str(), a.label.as_str()),
             (ActorKind::Agent, "margaret-marketing", "Margaret")
@@ -447,6 +475,19 @@ mod tests {
         // An agent known only by its label still names someone.
         let a = MentionSender::of("", "Dex").actor();
         assert_eq!((a.kind, a.id.as_str()), (ActorKind::Agent, "Dex"));
+        // On a ticket, each person's row carries THEIR board channels and
+        // nobody else's; someone with none chosen gets the matrix.
+        let email = ChannelOverride {
+            email: Some(true),
+            ..Default::default()
+        };
+        let chosen: ChannelsByPerson = [("ada".to_string(), email)].into_iter().collect();
+        assert_eq!(mention_meta(&person, &opts, "ada", &chosen).channels, email);
+        assert!(
+            mention_meta(&person, &opts, "cy", &chosen)
+                .channels
+                .is_none()
+        );
     }
 
     #[test]
