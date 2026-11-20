@@ -3,11 +3,26 @@
   import Modal from '@/components/ui/Modal.svelte'
   import Tabs from '@/components/ui/Tabs.svelte'
   import { Square } from '@lucide/svelte'
+  import { untrack } from 'svelte'
   import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import type { TabItem } from '@/components/ui/tabs'
-  import { fromLedger, refreshNotice, runIsLive, type LedgerRow } from '@/lib/agent-checkpoints'
+  import {
+    fromLineage,
+    lineageRewinding,
+    refreshNotice,
+    rewindConfirm,
+    runIsLive,
+    type RewindRow,
+  } from '@/lib/agent-checkpoints'
   import { getJson } from '@/lib/fetch-json'
-  import { useStopWorkSession, useWorkSession, useWorkSessionHistory } from '@/lib/work-session.svelte'
+  import {
+    readRunLineage,
+    startRewind,
+    useStopWorkSession,
+    useWorkSession,
+    type RunLineage,
+  } from '@/lib/work-session.svelte'
+  import { alert, confirm } from '@/components/ui/confirm.svelte'
   import QueryError from '@/components/ui/QueryError.svelte'
   import QueryState from '@/components/ui/QueryState.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -22,8 +37,6 @@
   // harness output, and the prose the agent wrote back. Both read the
   // retained transcript through the run's own door, plus the live watch.
   // RESOURCES is the agent container's cpu/mem/pids over the run's window.
-  // The header's Stop ends the ticket's live session. Everything else in
-  // here still only reads.
   let {
     open,
     onClose,
@@ -48,10 +61,12 @@
   // svelte-ignore state_referenced_locally -- reason: seeded from the opener; the effect below re-seeds when the run changes
   let tab = $state<Tab>(focus)
   // A new run opens where the caller asked. Tab switches stay until the run
-  // changes — focus alone would not reset a reused modal.
+  // changes — focus alone would not reset a reused modal. Checkpoints stays:
+  // it shows the whole lineage, and a rewind's attempt becomes the run a modal
+  // following the live session is on.
   $effect(() => {
     void runId
-    tab = focus
+    if (untrack(() => tab) !== 'checkpoints') tab = focus
   })
 
   const session = useWorkSession(() => taskId)
@@ -130,13 +145,19 @@
   })
 
   const qc = useQueryClient()
-  const history = useWorkSessionHistory(() => taskId)
-  const runState = $derived(history.data?.sessions.find((s) => s.runId === runId)?.state)
   const ledger = createQuery(() => ({
     queryKey: ['run-checkpoints', runId],
     enabled: open && tab === 'checkpoints',
-    refetchInterval: 5_000,
-    queryFn: () => getJson<{ checkpoints: LedgerRow[] }>(`/api/runs/${runId}/checkpoints`),
+    refetchInterval: (query: { state: { data?: RunLineage } }) => {
+      const data = query.state.data
+      return data && lineageRewinding(data.attempts, data.rewinds) ? 1_000 : 5_000
+    },
+    // The rows stay up while the modal moves to a rewind's attempt, which is
+    // in the same lineage. A run from another lineage starts from the
+    // skeleton: the modal must never show, or rewind from, rows not its own.
+    placeholderData: (previous?: RunLineage) =>
+      previous?.attempts.some((a) => a.runId === runId) ? previous : undefined,
+    queryFn: () => readRunLineage(qc, taskId, runId),
   }))
   // A refetch of a query with no data resets it to pending and clears its
   // error, so the poll would swap the failure for the skeleton every 5 seconds.
@@ -159,6 +180,62 @@
   const refreshLedger = () => {
     void qc.invalidateQueries({ queryKey: ['run-checkpoints', runId] })
     void qc.invalidateQueries({ queryKey: ['work-sessions-history', taskId] })
+  }
+
+  let asking = $state<RewindRow | null>(null)
+  let startedHere = $state<string | null>(null)
+  const rewindsOf = (data: RunLineage) => (asking ? [asking, ...data.rewinds] : data.rewinds)
+  const landedAttempt = $derived(
+    ledger.data?.rewinds.find((r) => r.id === startedHere && r.state === 'done')?.attemptRunId ?? null,
+  )
+  let opening = false
+  const rewindTo = async (polled: RunLineage, target: { runId: string; seq: number }) => {
+    if (opening) return
+    // The confirm says whether the ticket moves, and the rewind decides that
+    // from the ticket as it stands when it starts. Read the lineage again as
+    // the confirm opens rather than trust the last poll, which a reviewer's
+    // move a few seconds ago would make wrong. A failed read keeps the poll's.
+    opening = true
+    let data: RunLineage
+    try {
+      data = (await ledger.refetch()).data ?? polled
+    } finally {
+      opening = false
+    }
+    const source = data.attempts.find((a) => a.runId === target.runId)
+    const working = data.attempts.find((a) => a.runId !== target.runId && runIsLive(a.state))
+    if (working) {
+      await alert({
+        title: `Attempt ${working.attemptNo} is working`,
+        message: `Stop attempt ${working.attemptNo} first. A ticket works one attempt at a time, so this rewind would fail.`,
+      })
+      return
+    }
+    const go = await confirm(
+      rewindConfirm({
+        running: runIsLive(source?.state),
+        outside: source?.outside,
+        ticketMove: data.ticketMove,
+      }),
+    )
+    if (!go) return
+    asking = {
+      id: 'asking',
+      state: 'queued',
+      stage: null,
+      sourceRunId: target.runId,
+      seq: target.seq,
+      attemptRunId: null,
+      error: null,
+    }
+    try {
+      startedHere = (await startRewind(target.runId, target.seq)).rewindRunId
+      await ledger.refetch()
+    } catch (e) {
+      await alert({ title: 'Could not rewind', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      asking = null
+    }
   }
 
   // ── Resources: the sampler's series for this agent. ─────────────────────
@@ -309,13 +386,15 @@
               <SkeletonRows rows={3} />
             {/snippet}
             {#snippet children(data)}
+              {@const rewinds = rewindsOf(data)}
               {#if ledgerStale}<p role="status" class="mb-2 font-sans text-[11px] leading-4 text-muted">{ledgerStale}</p>{/if}
-              <!-- Live only until the work log first answers. A failed read leaves the
-                   run's state unknown, not live, and isFetched stays true through the
-                   refetch that resets a query with no data to pending. -->
               <AgentCheckpoints
-                checkpoints={fromLedger(data.checkpoints, runState)}
-                live={!history.isFetched || runIsLive(runState)}
+                checkpoints={fromLineage(data.attempts, rewinds)}
+                live={data.attempts.some((a) => runIsLive(a.state))}
+                rewinding={lineageRewinding(data.attempts, rewinds)}
+                onRewind={(target) => rewindTo(data, target)}
+                focusAttempt={landedAttempt}
+                onFocused={() => (startedHere = null)}
               />
             {/snippet}
           </QueryState>
