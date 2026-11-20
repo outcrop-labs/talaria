@@ -9,7 +9,8 @@
 //
 // WHAT IT FLAGS, per file, by the lucide name the import resolves to (an
 // `as` alias renames nothing):
-//   · a named import OR re-export from '@lucide/svelte' whose name contains
+//   · a named import OR re-export from '@lucide/svelte' (or its
+//     '@lucide/svelte/icons' subpath, the same index) whose name contains
 //     Settings, Cog or Sliders — Settings, Settings2, Cog, SlidersHorizontal,
 //     Sliders (the alias of sliders-vertical), ColumnsSettings and Columns3Cog
 //     (a column gear), UserCog and the rest of the *Cog family, and the
@@ -60,7 +61,9 @@ export const SETTINGS_GLYPH_ALLOW = {
 const GEAR_NAME = /Settings|Cog|Sliders/
 const GEAR_SLUG = /settings|cog|sliders/
 const GEAR_PATHS = ['M9.671 4.136', 'M12.22 2h-.44']
-const LUCIDE = `['"]@lucide\\/svelte['"]`
+// The package root, and its `./icons` subpath: lucide's exports map points
+// both at the same index, so `from '@lucide/svelte/icons'` is the root again.
+const LUCIDE = `['"]@lucide\\/svelte(?:\\/icons)?['"]`
 
 const lineOf = (src, index) => src.slice(0, index).split('\n').length
 
@@ -164,6 +167,7 @@ export function selfTest() {
   expect('a deep re-export', names("export { default as Gear } from '@lucide/svelte/icons/settings'"), ['settings'])
   expect('a star re-export', names("export * from '@lucide/svelte'\nexport * as L from \"@lucide/svelte\""), ['export *', 'export *'])
   expect('a re-export that is not a gear', names("export { Check, Plus } from '@lucide/svelte'"), [])
+  expect('the icons subpath, the same index as the root', names("import { Settings } from '@lucide/svelte/icons'\nimport * as I from '@lucide/svelte/icons'\nconst G = I.Cog"), ['Settings', 'Cog'])
   expect('a namespace import', names("import * as L from '@lucide/svelte'\n<L.Settings size={14} />\n<L.Check />"), ['Settings'])
   expect("lucide's icons map", names("import { icons } from '@lucide/svelte'\nconst G = icons.Cog\nconst H = icons['Settings2']"), ['Cog', 'Settings2'])
   expect('pasted path data', names('<svg><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0" /></svg>'), ['path data'])
