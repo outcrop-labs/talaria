@@ -441,6 +441,54 @@ pub async fn secret_health(
         }
     }
 
+    // A board's ClickUp sync token: one row per live connection. Owned by the
+    // board, so the owner shown is the board; clearing it stops the sync until
+    // a board owner pastes a new token (the connection waits in
+    // needs_credential with its mapping and links intact).
+    type BoardSyncRow = (
+        String,
+        String,
+        Option<String>,
+        Option<i64>,
+        String,
+        Option<String>,
+    );
+    let board_syncs: Result<Vec<BoardSyncRow>, _> = sqlx::query_as(
+        "select s.id::text, s.board_id::text, s.credential_sealed, \
+             (trunc(extract(epoch from s.updated_at) * 1000))::bigint, b.name, s.list_path \
+             from board_syncs s join boards b on b.id = s.board_id \
+             where s.state <> 'disconnected' order by b.name asc",
+    )
+    .fetch_all(pg)
+    .await;
+    if let Ok(syncs) = board_syncs {
+        for (id, board_id, cipher, updated, board, list_path) in syncs {
+            let mut f = serde_json::Map::new();
+            f.insert("id".into(), format!("board-sync:{id}").into());
+            f.insert("group".into(), "integrations".into());
+            f.insert("label".into(), format!("ClickUp sync — {board}").into());
+            f.insert(
+                "unlocks".into(),
+                match list_path {
+                    Some(p) => format!("The board's sync from the ClickUp list {p}"),
+                    None => "The board's sync from its ClickUp list".to_string(),
+                }
+                .into(),
+            );
+            f.insert("surface".into(), "Board settings → Sync".into());
+            f.insert("href".into(), format!("/boards/{board_id}").into());
+            f.insert("state".into(), state_of(sb, cipher.as_deref(), None).into());
+            f.insert("scope".into(), "instance".into());
+            f.insert("owner".into(), board.into());
+            f.insert("setAt".into(), opt_iso(updated));
+            f.insert(
+                "clearable".into(),
+                cipher.as_deref().is_some_and(|c| !c.is_empty()).into(),
+            );
+            rows.push(row(f));
+        }
+    }
+
     // ── Platform (app_settings) ─────────────────────────────────────────────
     // Read raw: the typed getters for these keys call open() on read — one of
     // them swallows the failure into an empty string, which is precisely the
@@ -907,6 +955,17 @@ pub async fn clear_secret(pg: &PgPool, secret_id: &str) -> Result<bool, ClearErr
             Err(ClearError::Unknown)
         }
         "setting" => clear_setting_leaf(pg, n(0), &rest[1..].join(":")).await,
+        // A board's ClickUp sync token: cleared, the connection waits for a
+        // board owner's new token — mapping, links and history kept.
+        "board-sync" => run_clear(
+            pg,
+            "update board_syncs set credential_sealed = null, state = 'needs_credential', \
+             next_sync_at = null, updated_at = now() \
+             where id = $1::uuid and credential_sealed is not null",
+            &[n(0)],
+        )
+        .await
+        .map_err(ClearError::from),
         // A GitHub host's sealed leaf (`git-host:<id>:app.privateKeyEnc` or
         // `…:pat.tokenEnc`) — the only two this store inventories.
         "git-host" => {

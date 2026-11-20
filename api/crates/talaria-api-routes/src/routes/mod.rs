@@ -181,6 +181,34 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
         )
         .route(
+            "/api/boards/{id}/sync",
+            get(talaria_routes_boards::boards::boards_id_sync::get)
+                .post(talaria_routes_boards::boards::boards_id_sync::post)
+                .put(talaria_routes_boards::boards::boards_id_sync::put)
+                .delete(talaria_routes_boards::boards::boards_id_sync::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/boards/{id}/sync/browse",
+            post(talaria_routes_boards::boards::boards_id_sync_browse::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/boards/{id}/sync/preview",
+            post(talaria_routes_boards::boards::boards_id_sync_preview::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/boards/{id}/sync/credential",
+            axum::routing::put(talaria_routes_boards::boards::boards_id_sync_credential::put)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        .route(
+            "/api/boards/{id}/sync/runs",
+            post(talaria_routes_boards::boards::boards_id_sync_runs::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
             "/api/boards/{id}/tasks",
             get(talaria_routes_boards::boards::boards_id_tasks::get)
                 .post(talaria_routes_boards::boards::boards_id_tasks::post)
@@ -263,6 +291,11 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(talaria_routes_boards::tasks::tasks_id_dependencies::post)
                 .delete(talaria_routes_boards::tasks::tasks_id_dependencies::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/tasks/{id}/resync",
+            axum::routing::post(talaria_routes_boards::tasks::tasks_id_resync::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/tasks/{id}/move",
