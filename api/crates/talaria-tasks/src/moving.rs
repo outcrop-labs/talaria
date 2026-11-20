@@ -1051,13 +1051,13 @@ fn spawn_move_notices(
             status_burst: None,
         };
         let line = arrived.title.clone();
-        notify_ticket_event(
+        let arrived_told = notify_ticket_event(
             &deps.notify,
             &m.to_board_id,
             board_prefs::BoardEvent::Status,
             &audience,
             &actor,
-            &arrived,
+            Some(&arrived),
             &line,
         )
         .await;
@@ -1068,7 +1068,7 @@ fn spawn_move_notices(
             board_prefs::BoardEvent::Created,
             &fresh,
             &actor,
-            &arrived,
+            None,
             &format!("{to_subject} moved here — {title}"),
         )
         .await;
@@ -1081,21 +1081,22 @@ fn spawn_move_notices(
             status_burst: None,
         };
         let line = gone.title.clone();
-        notify_ticket_event(
+        let gone_told = notify_ticket_event(
             &deps.notify,
             &m.from_board_id,
             board_prefs::BoardEvent::Status,
             &losing,
             &actor,
-            &gone,
+            Some(&gone),
             &line,
         )
         .await;
-        let told: HashSet<String> = audience
-            .iter()
-            .chain(losing.iter())
-            .map(|c| c.user_id.clone())
-            .collect();
+        // ONE ACTION, ONE ROW, as the status move keeps it: whoever a
+        // per-ticket row above reached is not told again by the source's
+        // activity row — only those whose row landed. Someone whose setting
+        // dropped that row (Off on the destination, say) still hears the
+        // source board in full if that is what they chose for it.
+        let told: HashSet<String> = arrived_told.union(&gone_told).cloned().collect();
         let left = bystanders(pg, &m.from_board_id, &[], &told).await;
         notify_ticket_event(
             &deps.notify,
@@ -1103,7 +1104,7 @@ fn spawn_move_notices(
             board_prefs::BoardEvent::Status,
             &left,
             &actor,
-            &gone,
+            None,
             &format!("{from_subject} moved to another board"),
         )
         .await;

@@ -644,10 +644,16 @@ async fn read_prefs(
 
 /// Could anybody hear this whole board? True when a setting for it, or
 /// anybody's default for every board, covers scope `board` — All, or Custom
-/// over the board (`hears_board`'s SQL twin; the test below pins the two
-/// together). A producer asks before it reads a board's whole membership, so
-/// a workspace where nobody chose one pays this one query and no more. A read
-/// that fails answers true: the full read is the safe side.
+/// over the board. A producer asks before it reads a board's whole
+/// membership, so a workspace where nobody chose one pays this one query and
+/// no more. A read that fails answers true: the full read is the safe side.
+///
+/// Two proofs, because no one test can run both: `hears_board` below is the
+/// same predicate over a stored setting, and its unit test pins it to
+/// `BoardPref::scope` for every setting; the SQL itself is exercised leg by
+/// leg live (`board_notify_live::the_board_wide_probe_hears_each_leg` — a
+/// custom row over the board, then a default of All on a board where nobody
+/// has a row).
 pub async fn board_wide_possible(pg: &PgPool, board_id: &str) -> bool {
     match sqlx::query_scalar::<_, bool>(
         "select exists (select 1 from board_notify_prefs \

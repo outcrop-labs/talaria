@@ -263,6 +263,8 @@ pub async fn post(
         tags: &tags,
         created_by: &actor,
         status: status.as_deref(),
+        // The door below files @mentions from the raw description.
+        mention_text: raw_description.as_deref(),
     };
     let deps = talaria_tasks::TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let task = match create_task(&deps, &input).await {

@@ -5,7 +5,10 @@
 // what THAT person receives and nobody else: Off silences a board (a watch the
 // person made themselves still reaches them; one an editor added does not),
 // All files one counting board-activity row, a custom set without @mentions
-// keeps the comment, and the setting survives leaving and rejoining a board.
+// keeps the comment, one action is one row (a patch that assigns and moves; a
+// new ticket that @mentions a whole-board listener), the board-wide probe
+// hears both a row and a default, and the setting survives leaving and
+// rejoining a board.
 // Driven through the REAL router with minted sessions, so the route, its
 // detached fan-out and the writer's upsert are what is proven. House rule:
 // #[ignore]d; ci.yml's api job runs them with --ignored (its live-DB steps).
@@ -553,15 +556,179 @@ async fn all_files_one_counting_activity_row_per_board() {
             .count()
             == 2
     ));
-    let activity = on_board(&state, &bob, &b)
+    // The unread board row is still at 1: had the new ticket he is assigned
+    // (or its move) leaked into it, it would count, not add a row.
+    settle().await;
+    let activity: Vec<Row> = on_board(&state, &bob, &b)
         .await
         .into_iter()
         .filter(|r| r.kind == "board-activity")
-        .count();
+        .collect();
+    assert_eq!(activity.len(), 2, "{activity:?}");
     assert_eq!(
-        activity, 2,
-        "the ticket he is in never lands in the board row"
+        activity[1].count, 1,
+        "the ticket he is in never lands in the board row: {:?}",
+        activity[1]
     );
+}
+
+// ONE ACTION, ONE ROW when a single patch assigns a person and moves the
+// ticket: a setting that drops assignments but keeps status hears the move —
+// once, as a status row — and no assignment row.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn assigned_and_moved_at_once_is_one_row_by_the_setting() {
+    let state = live_app_state().await;
+    let (_ada, _, ada_c, _) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c, _) = mint(&state, "Bob", "member").await;
+    let b = board(&state, &ada_c, "bn assign move", &[(&bob_e, "editor")]).await;
+    set(
+        &state,
+        &b,
+        &bob_c,
+        json!({ "preset": "custom", "events": ["status"] }),
+    )
+    .await;
+    let t = ticket(&state, &b, &ada_c, json!({ "title": "Both at once" })).await;
+    ok(
+        &state,
+        "PUT",
+        &format!("/api/tasks/{t}"),
+        &ada_c,
+        json!({ "status": "in_progress", "assignees": [format!("user:{bob}")] }),
+    )
+    .await;
+    assert!(eventually!(
+        kinds(&on_board(&state, &bob, &b).await) == ["task-status"]
+    ));
+    settle().await;
+    let rows = on_board(&state, &bob, &b).await;
+    assert_eq!(kinds(&rows), ["task-status"], "no assignment row on top");
+    assert_eq!(rows[0].count, 1);
+}
+
+// A NEW TICKET whose description @mentions someone who hears the whole
+// board: the mention row, never a "New ticket" board row on top of it.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn a_mention_on_a_new_ticket_is_one_row_for_a_whole_board_listener() {
+    let state = live_app_state().await;
+    let (_ada, _, ada_c, _) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c, bob_tok) = mint(&state, "Bob", "member").await;
+    let (cy, cy_e, cy_c, _) = mint(&state, "Cy", "member").await;
+    let b = board(
+        &state,
+        &ada_c,
+        "bn create mention",
+        &[(&bob_e, "viewer"), (&cy_e, "viewer")],
+    )
+    .await;
+    set(&state, &b, &bob_c, json!({ "preset": "all" })).await;
+    set(&state, &b, &cy_c, json!({ "preset": "all" })).await;
+    ticket(
+        &state,
+        &b,
+        &ada_c,
+        json!({ "title": "Named", "description": format!("@{bob_tok} over to you") }),
+    )
+    .await;
+    // Cy, named by nobody, hears the new ticket on the board row.
+    assert!(eventually!(
+        kinds(&on_board(&state, &cy, &b).await) == ["board-activity"]
+    ));
+    assert!(eventually!(
+        kinds(&on_board(&state, &bob, &b).await) == ["mention"]
+    ));
+    settle().await;
+    assert_eq!(
+        kinds(&on_board(&state, &bob, &b).await),
+        ["mention"],
+        "the mention is the louder row; no board row on top"
+    );
+}
+
+// The probe that lets a producer skip reading a whole board, leg by leg, end
+// to end: a custom row over the board, then a default of All on a board
+// where nobody has a row (talaria_notify::boards::board_wide_possible). The
+// board leg runs first: a default of All anywhere answers yes for every
+// board, so it would hide a broken board leg — no other test sets one, and
+// this one clears its own.
+#[tokio::test]
+#[ignore = "needs a live dev database and redis (ui/.env)"]
+async fn the_board_wide_probe_hears_each_leg() {
+    let state = live_app_state().await;
+    let (_ada, _, ada_c, _) = mint(&state, "Ada", "admin").await;
+    let (bob, bob_e, bob_c, _) = mint(&state, "Bob", "member").await;
+    let (cy, cy_e, cy_c, _) = mint(&state, "Cy", "member").await;
+
+    // The board leg: Cy's custom row hears new tickets over the board.
+    let b1 = board(&state, &ada_c, "bn probe row", &[(&cy_e, "viewer")]).await;
+    set(
+        &state,
+        &b1,
+        &cy_c,
+        json!({ "preset": "custom", "events": ["created"], "scope": "board" }),
+    )
+    .await;
+    ticket(&state, &b1, &ada_c, json!({ "title": "Row leg" })).await;
+    assert!(eventually!(
+        on_board(&state, &cy, &b1)
+            .await
+            .first()
+            .is_some_and(|r| r.kind == "board-activity" && r.body.contains("Row leg"))
+    ));
+
+    // The default leg: Bob's default for every board is All, and nobody has a
+    // row for this board.
+    let b2 = board(&state, &ada_c, "bn probe default", &[(&bob_e, "viewer")]).await;
+    ok(
+        &state,
+        "PATCH",
+        "/api/notifications",
+        &bob_c,
+        json!({ "boards": { "preset": "all" } }),
+    )
+    .await;
+    let rows: i64 =
+        sqlx::query_scalar("select count(*) from board_notify_prefs where board_id = $1::uuid")
+            .bind(&b2)
+            .fetch_one(&state.pg)
+            .await
+            .unwrap();
+    assert_eq!(
+        rows, 0,
+        "no row for the board: only the default can hear it"
+    );
+    let got = ok(
+        &state,
+        "GET",
+        &format!("/api/boards/{b2}/notify"),
+        &bob_c,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        (got["source"].as_str(), got["effective"]["preset"].as_str()),
+        (Some("default"), Some("all"))
+    );
+    ticket(&state, &b2, &ada_c, json!({ "title": "Default leg" })).await;
+    let heard = eventually!(
+        on_board(&state, &bob, &b2)
+            .await
+            .first()
+            .is_some_and(|r| r.kind == "board-activity" && r.body.contains("Default leg"))
+    );
+    // Clear the default before asserting, so a failure here never leaves an
+    // All default behind to hide the board leg on the next run.
+    ok(
+        &state,
+        "PATCH",
+        "/api/notifications",
+        &bob_c,
+        json!({ "boards": null }),
+    )
+    .await;
+    assert!(heard, "{:?}", on_board(&state, &bob, &b2).await);
 }
 
 // A custom set without @mentions: the comment that @mentions the person is
