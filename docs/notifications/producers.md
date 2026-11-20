@@ -24,6 +24,7 @@ timed mute. Every producer files through `add_notification_with` and the convent
 |---|---|
 | `board-prefs` | The ticket producers obey each person's setting for a board (below, "Each board"), and `GET`/`PUT`/`DELETE /api/boards/{id}/notify`, `GET /api/notifications/boards` and the `boards` default in `GET`/`PATCH /api/notifications` are served. |
 | `board-channels` | A board setting and the `boards` default accept and serve `channels: {alerts, email}` (below, "A board's own channels"), and the rows a board's fan-outs file carry that person's choice as their channel override (I-26). |
+| `task-due` | The due-date reminders run (below, "Due dates"), so a setting may name the `due` event. |
 | `board-digest` | The `digest` cadence is accepted: a board heard as a daily digest files one quiet row a day and is listed in one "Your boards" mail (below, "The daily digest"). |
 
 ## The producers
@@ -40,6 +41,7 @@ timed mute. Every producer files through `add_notification_with` and the convent
 | A ticket's status move (`talaria-tasks`) | `task-status` | `task_status(task)`, 10-minute window | Quiet | `task` | the mover | watchers, assigned humans and the **creator**, access re-checked, each by their setting for the board |
 | A ticket comment | `task-comment` | `task_comments(task)` | Realert | `task` | the commenter | assigned humans, the creator, watchers and earlier commenters, minus the author and anyone the comment @mentions whose mention row lands, access re-checked, each by their setting for the board |
 | Assignment, workchain turn and pause | `task-assigned`, `workchain_*` | none | — | `task` | the assigner, or the chain | as in wave 1; a ticket's assignment: each by their setting for the board (Off drops it; a deliberate watch keeps it); a workchain turn or pause never reads it |
+| A ticket due within a day, or overdue (`talaria-tasks` `due`, the `task-due` job) | `task-due` | `task_due(task)` | Realert | `task` | the system ("Due dates") | watchers, assigned humans and the creator, access re-checked, whose setting for the board names `due` (opt-in: All, or a Custom set); the people who hear the whole board get it on its `board-activity` row |
 | An MCP server going down (`talaria-mcp`) | `mcp_server_down` | `mcp_down(server)` | Realert | `mcp_server` | the health pass | every admin |
 | A Hermes agent image that failed its rollout, a release held for review (a Hermes internal Talaria relies on changed), an agent unhealthy on a known-good image or failing a catch-up, a newly good image withholding stored secrets (`talaria-hermes-channel`) | `hermes_update_failed` | `hermes("<digest>:failed")`; the rest `hermes("<topic>")`, once a day per topic | Realert | `hermes_image` | the stable channel | every admin |
 | The agent image channel stuck: checks failing 3 days, a rollout open 7 days, the host failing a rollout three times in a row or short of disk for a download, an agent left behind three windows, its state unreadable | `hermes_channel_stuck` | `hermes("<topic>")`, once a day per topic | Realert | `hermes_image` | the stable channel | every admin |
@@ -155,9 +157,9 @@ audience — watchers, assigned people, the creator, earlier commenters) or `boa
 ticket). Presets are stored by name and expanded when read: `all` is every event over the
 board; `participating` is assigned, status, comment, mention and completed over mine;
 `mentions` is assigned and mention; `off` is nothing. `created` needs scope `board`
-(nobody is in a ticket before it exists). `due` is listed but refused until its producer
-ships. The cadence is `instant` (as it happens) or `digest` (the daily board digest,
-below).
+(nobody is in a ticket before it exists). `due` is opt-in: no preset but `all` names it
+(below, "Due dates"). The cadence is `instant` (as it happens) or `digest` (the daily board
+digest, below).
 
 **A board's own channels** (feature `board-channels`). A setting may also say how this
 board's rows reach the person: `channels: {alerts, email}`, each on, off, or null — null,
@@ -243,9 +245,8 @@ wraps. The row counts, over the stretch since the person's last digest (the firs
 day, none more than two): **new** tickets (created on the board or moved onto it — only for a
 setting over the whole board; for the person's own tickets an arrival counts as a move, as the
 board move's producer tells them), tickets **moved** (not into a done column), tickets
-**completed**, **comments**, and — once due-date reminders have a producer — tickets **due
-soon** or **overdue**. Due dates count as thresholds crossed inside the window, the way the
-reminders fire them: due soon is a ticket that came within a day of its due date and is not
+**completed**, **comments**, and tickets **due soon** or **overdue**. Due dates count as
+thresholds crossed inside the window, the way the reminders fire them: due soon is a ticket that came within a day of its due date and is not
 due yet, overdue is one whose due date passed; neither counts a ticket that was already past
 it when the window opened, so a standing overdue backlog is never news by itself, and the
 first digest replays nothing older than its day. Each only when the setting wants that
@@ -337,6 +338,48 @@ to the default. `GET
 the boards the caller can see. `GET`/`PATCH /api/notifications` carry `boards` (the
 default; `null` clears it). The registry (event, preset and cadence labels) is served,
 never a client-side list.
+
+### Due dates
+
+The `task-due` job (`talaria_tasks::due`) runs every 15 minutes, leased, and reminds at
+two thresholds of a ticket's due date: **due soon** (less than a day ahead) and
+**overdue** (passed, less than a day ago).
+
+- **Once per due date.** `tasks.due_soon_for` and `tasks.overdue_for` hold the due date
+  each threshold last fired for. A pass marks a ticket after its fan-out, compare-and-set
+  on the due date it read. So moving the due date re-arms both, and a ticket already past
+  due at its first pass gets "overdue" alone. The row is one per ticket per person
+  (`group_key::task_due`, Realert): "overdue" takes over an unread "due soon" and alerts
+  again. A crash between the fan-out and the mark files into that same row on the next
+  pass, so it re-alerts rather than doubling.
+- **No flood.** "Overdue" fires only in the day after the due date. A ticket that was
+  already long overdue when someone opted in, or when this shipped, is on the board for
+  everyone to see and is not news. A pass takes at most 200 tickets, soonest due first.
+- **Opt-in, decided at the moment.** The event is `due`. No preset but `all` names it, so
+  with nobody's setting stored nobody is told and existing users see no change. A watch
+  turns on nothing new. The ticket's own audience (watchers, assigned humans, the creator,
+  access re-checked) gets a `task-due` row, class `participating` (banner and push by
+  default, like a comment on a ticket you take part in). The people who hear the whole
+  board get it on the board's `board-activity` row. A ticket that crosses a threshold
+  while nobody on its board could hear one is marked all the same, with no audience read
+  (`boards::due_possible`, one query per board per pass). A setting changed later applies
+  to the next threshold, never to one already passed.
+- **A read that fails is retried, never silence.** Elsewhere a settings or membership
+  read that fails falls back to the built-in, which keeps the audiences producers had
+  before boards had a setting. The built-in names no due date, so for a reminder that
+  fallback would tell nobody and then mark the ticket. The scan's reads (the ticket's
+  audience, the board's membership, the settings) answer their error instead, and the
+  ticket stays unmarked for the next pass.
+- **Skipped:** archived tickets, tickets on archived boards, and closed ones (a done
+  column on the ticket's own board, or failed or cancelled). A closed ticket is not
+  marked, so one reopened while its due date is still in the band is still reminded.
+- **The clock's, not a write's.** A ticket a tracker sync keeps reminds like any other:
+  the sync's writes are quiet, but a reminder is not news about a write.
+- **A board heard as a daily digest** holds them like every other event: no row is filed
+  for that person, and the daily board digest counts the threshold if it was crossed inside
+  its window (above, "The daily digest") — the same two thresholds, the same day's band.
+- **The row:** title `<ref>: due soon` or `<ref>: overdue` (the ticket's title when it
+  has no ref), body the ticket's title, href the ticket, actor the system ("Due dates").
 
 ## Cancel safety (C30, C34)
 

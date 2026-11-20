@@ -7827,6 +7827,7 @@ dependencies = [
  "talaria-platform-events",
  "talaria-realtime",
  "talaria-retrieval",
+ "talaria-scheduler",
  "talaria-statuses",
  "talaria-tasks-types",
  "talaria-ticket-chat",

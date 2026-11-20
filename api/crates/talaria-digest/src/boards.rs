@@ -28,9 +28,10 @@
 //              due date and is not due yet, or whose due date passed — never
 //              a standing backlog, so a ticket overdue for a month is not
 //              news every morning, and the first digest replays nothing older
-//              than its own day. Not done, not off the board. Only once
-//              due-date reminders have a producer (`BoardEvent::available`),
-//              so a digest never carries news nobody could choose.
+//              than its own day. Not done, not off the board. Counted while
+//              the event has a producer (`BoardEvent::available` — every
+//              event, since the reminders shipped), so a digest never carries
+//              news nobody could choose.
 // A ticket that arrived on the board inside the window counts only from its
 // arrival: what happened to it on the board it came from is that board's,
 // and the column line a board move writes beside its `moved` line is part of
@@ -229,7 +230,7 @@ pub fn pick(p: &BoardPref, raw: &Raw) -> Counts {
 }
 
 /// `pick`, with "does this event have a producer" as a parameter, so the
-/// tests reach the due-date half before its producer ships.
+/// tests can hold an event back as if it had none.
 fn pick_with(p: &BoardPref, raw: &Raw, available: impl Fn(BoardEvent) -> bool) -> Counts {
     let scope = p.scope();
     let heard = |ev: BoardEvent| p.wants(ev) && available(ev);

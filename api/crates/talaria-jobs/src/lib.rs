@@ -911,6 +911,13 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
     // hand that only starts the `clickup-sync` runs that are due, and prunes
     // old ones. Required: a sync that silently stops is a stale board.
     talaria_board_sync::job::register_board_sync_job(state.clone());
+    // Due-date reminders (talaria-tasks `due`): every 15 minutes, the tickets
+    // that came due within a day or went overdue, told to whoever opted in.
+    // Required: a reminder that silently never comes is a missed deadline.
+    talaria_tasks::due::register_task_due_job(talaria_notify::NotifyDeps {
+        pg: state.pg.clone(),
+        realtime: rt.clone(),
+    });
 }
 
 /// The census kinds this build cannot define. Empty is arming's
