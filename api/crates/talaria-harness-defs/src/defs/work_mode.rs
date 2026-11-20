@@ -478,6 +478,6 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(before, names.len(), "two fixtures share a name");
-        assert_eq!(before, 4, "the header says FOUR FIXTURES");
+        assert_eq!(before, 5, "the header says FIVE FIXTURES");
     }
 }
