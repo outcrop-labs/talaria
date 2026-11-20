@@ -63,6 +63,7 @@ destructive action is quiet (`DangerLink`, `confirm()`), never a big red button.
 | The person | `useMe()`, `useIsAdmin(user)`, `useHasPerm('boards.create')` |
 | Live updates | `useUserEvents` (ids only, then read) |
 | Components | `Button`, `IconButton`, `Input`, `Textarea`, `Select`, `Combobox`, `Checkbox`, `Toggle`, `AddRow`, `RenameField`, `Panel`, `ViewHeader`, `SectionHeader`, `Tabs`, `Segmented`, `Modal`, `Disclosure`, `StatCard`, `LibraryPane`, `RecordTitle`, `SortHeader`, `Chip`, `StatusDot`, `EmptyState`, `Avatar`, `Markdown`, `Popover`, `SkeletonRows`, `DropdownMenu`, `DangerLink`, `confirm` / `alert` / `prompt` |
+| A door into settings | `SettingsButton` — the one gear; its `label` says whose settings ("Board settings", never a bare "Settings") and is the tooltip and the accessible name. `SettingsGlyph` is the gear beside a visible label; `cogMenuIcon` the icon for a menu entry that opens settings |
 | Motion | `fade`, `fly`, `scale`, `slide`, `flip`, with `QUICK`, `POP`, `PANEL`, `LIST` — from the SDK |
 | Icons | `@lucide/svelte` |
 

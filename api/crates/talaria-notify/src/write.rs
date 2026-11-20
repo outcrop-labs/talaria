@@ -166,13 +166,22 @@ pub async fn add_notification(
 /// while it stays unread, as Slack's and Teams' missed-activity mail does,
 /// instead of once and then never; a row the batcher gave up on stays given
 /// up. A Quiet coalesce changes none of them.
+///
+/// THE OVERRIDE (I-26). `$18`–`$20` are the producer's channel override for
+/// this person (`NotifyMeta::channels`: desktop, push, email; null where the
+/// matrix decides). They ride with the delivery columns because they shaped
+/// them: the deferred push and the batcher re-check the matrix at send time
+/// through the same override (`prefs::channels_with`), never a board setting
+/// re-read. A Realert coalesce takes this write's, like its push and mail; a
+/// Quiet one keeps the open row's.
 const UPSERT: &str = "insert into notifications \
        (user_id, kind, title, body, href, seq, group_key, count, created_at, updated_at, \
         alert, actor_kind, actor_id, actor_label, entity_type, entity_id, pushed_at, \
-        push_due_at, email_due_at) \
+        push_due_at, email_due_at, desktop_override, push_override, email_override) \
      values ($1::uuid, $2, $3, $4, $5, $6, $7, 1, clock_timestamp(), clock_timestamp(), \
              $8, $9, $10, $11, $12, $13, case when $14::boolean then now() end, \
-             to_timestamp($16::bigint / 1000.0), to_timestamp($17::bigint / 1000.0)) \
+             to_timestamp($16::bigint / 1000.0), to_timestamp($17::bigint / 1000.0), \
+             $18::boolean, $19::boolean, $20::boolean) \
      on conflict (user_id, group_key) \
        where group_key is not null and read_at is null and archived_at is null \
      do update set title = excluded.title, body = excluded.body, href = excluded.href, \
@@ -204,7 +213,13 @@ const UPSERT: &str = "insert into notifications \
                          else notifications.emailed_at end, \
        email_attempts = case when $15::boolean and $17::bigint is not null \
                                   and notifications.emailed_at is not null then 0 \
-                             else notifications.email_attempts end \
+                             else notifications.email_attempts end, \
+       desktop_override = case when $15::boolean then excluded.desktop_override \
+                               else notifications.desktop_override end, \
+       push_override = case when $15::boolean then excluded.push_override \
+                            else notifications.push_override end, \
+       email_override = case when $15::boolean then excluded.email_override \
+                             else notifications.email_override end \
      where notifications.read_at is null and notifications.archived_at is null \
      returning id::text, count, (xmax = 0), \
        (trunc(extract(epoch from created_at) * 1000))::bigint";
@@ -323,6 +338,9 @@ pub async fn add_notification_with(
             .bind(realert)
             .bind(decision.push_due_ms)
             .bind(decision.email_due_ms)
+            .bind(meta.channels.desktop)
+            .bind(meta.channels.push)
+            .bind(meta.channels.email)
             .fetch_optional(&mut *tx)
             .await?;
         if landed.is_some() {
@@ -390,7 +408,9 @@ fn announce(deps: &NotifyDeps, user_id: &str, notification_id: &str, seq: i64) {
 /// is armed again at the person's frequency, so it is mailed again while they
 /// stay away rather than once and never again. Push: now, deferred (the old
 /// version's ack is forgotten), or not at all (a pending deferral is
-/// cancelled), and `alert` is this write's.
+/// cancelled), and `alert` is this write's. A refresh carries no channel
+/// override (it files with `NotifyMeta::default()`), so the row's is cleared:
+/// the send-time re-checks read the matrix, as this write's decision did.
 /// Answers false when the row is gone or was read meanwhile — the caller
 /// files a fresh row then, the ordinary way — and then no seq is spent (the
 /// transaction rolls back).
@@ -435,7 +455,8 @@ pub async fn refresh_notification(
                                     else email_due_at end, \
                 emailed_at = case when $10::bigint is not null then null else emailed_at end, \
                 email_attempts = case when $10::bigint is not null and emailed_at is not null \
-                                      then 0 else email_attempts end \
+                                      then 0 else email_attempts end, \
+                desktop_override = null, push_override = null, email_override = null \
          where id = $1::uuid and user_id = $2::uuid and read_at is null \
          returning id::text, (trunc(extract(epoch from created_at) * 1000))::bigint",
     )

@@ -33,6 +33,32 @@ pub struct NotifyMeta {
     pub force_alert: bool,
     /// Never web-push this row.
     pub skip_push: bool,
+    /// The recipient's own channels for this row where they differ from the
+    /// class matrix: their setting for the board a ticket row is about
+    /// (talaria_notify::boards, decided at fan-out — I-26). Stored on the row,
+    /// so the send-time re-checks (the deferred push, the mail batcher) apply
+    /// the same override the write did. All `None` (the default): the matrix.
+    pub channels: ChannelOverride,
+}
+
+/// Per channel, what a producer decided for one recipient's row in place of
+/// the class matrix: `Some(on)` wins over `channels.<class>.<channel>`,
+/// `None` follows it. In-app is not a channel here: every row lands in the
+/// inbox, whatever anyone chose (I-13). DND, working hours, the instance
+/// switches, the email frequency, `quiet` and `skip_push` still apply after
+/// it, exactly as they do to the matrix's answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChannelOverride {
+    pub desktop: Option<bool>,
+    pub push: Option<bool>,
+    pub email: Option<bool>,
+}
+
+impl ChannelOverride {
+    /// Nothing overridden: the matrix decides every channel.
+    pub fn is_none(&self) -> bool {
+        self.desktop.is_none() && self.push.is_none() && self.email.is_none()
+    }
 }
 
 /// What a coalesce does to an open row.
@@ -271,5 +297,15 @@ mod tests {
         assert_eq!(ActorKind::Agent.as_str(), "agent");
         let m = NotifyMeta::default();
         assert!(!m.quiet && m.group_key.is_none() && m.coalesce == Coalesce::Realert);
+        // A producer that says nothing about channels leaves them all to the
+        // matrix.
+        assert!(m.channels.is_none());
+        assert!(
+            !ChannelOverride {
+                email: Some(false),
+                ..Default::default()
+            }
+            .is_none()
+        );
     }
 }

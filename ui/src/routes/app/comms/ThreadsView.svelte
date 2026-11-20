@@ -10,6 +10,7 @@
   import type { AgentModel } from '@/lib/agents'
   import type { Channel } from '@/lib/channels.svelte'
   import type { DirectoryUser } from '@/lib/users'
+  import { importedAuthor } from '@/components/chat/channel-view'
 
   // /comms/threads (R16): the threads you started or replied in, newest
   // activity first. Each opens its channel.
@@ -37,6 +38,7 @@
   const author = (t: MyThread): { name: string; picture: string | null } => {
     const m = t.root
     if (m.authorType === 'agent') return { name: fleet.find((a) => a.id === m.author)?.label ?? m.author, picture: null }
+    if (m.authorType === 'imported') return { name: importedAuthor(m.author).name, picture: null }
     const u = users.find((x) => x.email === m.author)
     return { name: u?.name ?? u?.email ?? 'Someone', picture: u?.picture ?? null }
   }

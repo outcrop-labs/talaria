@@ -64,7 +64,11 @@ export interface ChannelDetail {
 export interface ChannelMessage {
   id: string;
   seq: number;
-  authorType: "user" | "agent";
+  /** `imported`: a comment a tracker sync carried over (the ClickUp sync,
+   *  docs/BOARD-SYNC.md). Its `author` is a label such as "Dana Reyes
+   *  (ClickUp)" — never an email, never matched against Talaria accounts, never
+   *  anyone's own message. */
+  authorType: "user" | "agent" | "imported";
   author: string;
   content: string;
   status: "streaming" | "complete" | "error";

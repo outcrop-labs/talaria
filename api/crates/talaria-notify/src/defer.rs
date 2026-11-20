@@ -19,7 +19,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::classes::{class_def, notify_class_of};
-use crate::prefs::{allow_needs_you, channels_of, dnd_state};
+use crate::meta::ChannelOverride;
+use crate::prefs::{allow_needs_you, channels_with, dnd_state};
 
 /// Record that the caller's client surfaced these rows. Only the caller's own
 /// rows are touched (another person's id acks nothing), and the first ack
@@ -56,12 +57,38 @@ type DueRow = (
     i64,
     Option<serde_json::Value>,
     Option<String>,
+    Option<bool>,
 );
+
+/// Whether a deferred push still goes, at send time: the instance's Push
+/// switch, the row's Push channel — the class matrix as it reads NOW, through
+/// the override the row was filed with (`push_override`, a person's setting
+/// for a board as decided at fan-out; never re-read here) — and DND, unless
+/// the class breaks through. Pure.
+fn still_pushes(
+    blob: &serde_json::Value,
+    kind: &str,
+    push_override: Option<bool>,
+    switch_on: bool,
+    zone: &str,
+    now: i64,
+) -> bool {
+    let class = notify_class_of(kind);
+    let o = ChannelOverride {
+        push: push_override,
+        ..Default::default()
+    };
+    let breaks = class_def(class).is_some_and(|d| d.breaks_through) && allow_needs_you(blob);
+    let held = dnd_state(blob, zone, now).active && !breaks;
+    switch_on && channels_with(blob, class, &o).push && !held
+}
 
 /// One pass: push every row whose deferral is due and that no client
 /// surfaced and nobody read. The person's prefs are read again at send time,
 /// so a pause begun, or a Push switch turned off, inside the minute is
-/// obeyed; such rows leave the push plane (`push_due_at` null).
+/// obeyed; such rows leave the push plane (`push_due_at` null). A row filed
+/// with a push override (a person's setting for a board) keeps it: the
+/// override was decided once, at fan-out, and is not re-read.
 pub async fn run_deferred_push(pg: &PgPool) -> Result<Option<String>, String> {
     if !talaria_push::push_plane_installed() {
         return Ok(None);
@@ -78,7 +105,7 @@ pub async fn run_deferred_push(pg: &PgPool) -> Result<Option<String>, String> {
           where n.id = due.id and u.id = n.user_id \
          returning n.id::text, n.user_id::text, n.kind, n.title, n.body, n.href, n.count, \
                    (trunc(extract(epoch from n.created_at) * 1000))::bigint, \
-                   u.notify_prefs, u.timezone",
+                   u.notify_prefs, u.timezone, n.push_override",
     )
     .bind(DEFERRED_PUSH_BATCH)
     .fetch_all(pg)
@@ -92,13 +119,11 @@ pub async fn run_deferred_push(pg: &PgPool) -> Result<Option<String>, String> {
     let now = talaria_agent_auth::now_ms();
     let mut pushed = 0usize;
     let mut dropped: Vec<String> = Vec::new();
-    for (id, user_id, kind, title, body, href, count, created_ms, blob, zone) in rows {
+    for (id, user_id, kind, title, body, href, count, created_ms, blob, zone, push_override) in rows
+    {
         let blob = blob.unwrap_or(serde_json::Value::Null);
         let zone = crate::prefs::person_zone(zone.as_deref(), &workspace_zone);
-        let class = notify_class_of(&kind);
-        let breaks = class_def(class).is_some_and(|d| d.breaks_through) && allow_needs_you(&blob);
-        let held = dnd_state(&blob, &zone, now).active && !breaks;
-        if !switches.push || !channels_of(&blob, class).push || held {
+        if !still_pushes(&blob, &kind, push_override, switches.push, &zone, now) {
             dropped.push(id);
             continue;
         }
@@ -156,4 +181,75 @@ pub fn deferred_push_job_spec(pg: PgPool) -> talaria_scheduler::JobSpec {
 
 pub fn register_deferred_push_job(pg: PgPool) {
     talaria_scheduler::register_job(deferred_push_job_spec(pg));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const NOW: i64 = 1_767_268_800_000; // 2026-01-01T12:00:00Z
+
+    // The send-time re-check reads the matrix as it is now, through the
+    // override the row was filed with — so a deliberate watch on a board set
+    // to Off, filed with that board's push override, is pushed when its
+    // minute is up, and a matrix Push turned off since is obeyed only where
+    // nothing overrode it.
+    #[test]
+    fn the_deferred_push_rechecks_the_matrix_through_the_rows_override() {
+        let none = json!({});
+        // Following (task-status) does not push by default…
+        assert!(!still_pushes(&none, "task-status", None, true, "UTC", NOW));
+        // …unless the row was filed with a push override.
+        assert!(still_pushes(
+            &none,
+            "task-status",
+            Some(true),
+            true,
+            "UTC",
+            NOW
+        ));
+        // A mention pushes by default; a row filed with push off does not.
+        assert!(still_pushes(&none, "mention", None, true, "UTC", NOW));
+        assert!(!still_pushes(
+            &none,
+            "mention",
+            Some(false),
+            true,
+            "UTC",
+            NOW
+        ));
+        // The matrix turned off inside the minute: obeyed without an
+        // override, not over one (the board's choice was made at fan-out).
+        let off = json!({ "channels": { "mention": { "push": false } } });
+        assert!(!still_pushes(&off, "mention", None, true, "UTC", NOW));
+        assert!(still_pushes(&off, "mention", Some(true), true, "UTC", NOW));
+        // The instance switch and a pause still win over an override.
+        assert!(!still_pushes(
+            &none,
+            "mention",
+            Some(true),
+            false,
+            "UTC",
+            NOW
+        ));
+        let paused = json!({ "dnd": { "pausedUntil": crate::prefs::FOREVER } });
+        assert!(!still_pushes(
+            &paused,
+            "task-status",
+            Some(true),
+            true,
+            "UTC",
+            NOW
+        ));
+        // A breaks-through class still breaks through.
+        assert!(still_pushes(
+            &paused,
+            "approval_pending",
+            None,
+            true,
+            "UTC",
+            NOW
+        ));
+    }
 }

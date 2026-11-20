@@ -23,8 +23,9 @@ use talaria_realtime::RealtimeDeps;
 use crate::NotificationInput;
 use crate::NotifyDeps;
 use crate::classes::{Category, class_def, kind_reason, notify_class_of};
+use crate::meta::ChannelOverride;
 use crate::prefs::{
-    DELIVERY_KEY, DeliverySwitches, allow_needs_you, channels_of, dnd_state, email_frequency,
+    DELIVERY_KEY, DeliverySwitches, allow_needs_you, channels_with, dnd_state, email_frequency,
     prefs_and_zone, switches_of,
 };
 
@@ -1129,6 +1130,26 @@ struct Claimed {
     body: String,
     href: String,
     attempts: i32,
+    /// The channel override the row was filed with (a person's setting for
+    /// a board, decided at fan-out): the re-checks below read the matrix
+    /// through it, never a board setting.
+    channels: ChannelOverride,
+}
+
+/// Whether a claimed row is still wanted in the mail, by the person's prefs
+/// as they read NOW: the row's Email channel (the class matrix through the
+/// override it was filed with) and a frequency that is not off. Pure.
+fn mail_wanted(blob: &serde_json::Value, kind: &str, o: &ChannelOverride) -> bool {
+    channels_with(blob, notify_class_of(kind), o).email && email_frequency(blob) != "off"
+}
+
+/// The legacy email-only route, for one row: the mail IS its delivery
+/// (email on, no screen channel — through the row's override too, so a board
+/// set to email only reads the same way), so an accepted mail files its
+/// in-app copy read. Pure.
+fn email_only(blob: &serde_json::Value, kind: &str, o: &ChannelOverride) -> bool {
+    let c = channels_with(blob, notify_class_of(kind), o);
+    c.email && !c.desktop && !c.push
 }
 
 /// What one pass did, for the job's log line.
@@ -1173,8 +1194,21 @@ impl MissedMailPass {
     }
 }
 
+type ClaimedRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i32,
+    Option<bool>,
+    Option<bool>,
+    Option<bool>,
+);
+
 async fn claim_due(pg: &PgPool) -> Result<Vec<Claimed>, sqlx::Error> {
-    let rows: Vec<(String, String, String, String, String, String, i32)> = sqlx::query_as(
+    let rows: Vec<ClaimedRow> = sqlx::query_as(
         "with due as ( \
            select distinct user_id from notifications \
             where email_due_at <= now() and emailed_at is null \
@@ -1195,7 +1229,7 @@ async fn claim_due(pg: &PgPool) -> Result<Vec<Claimed>, sqlx::Error> {
          update notifications n set email_due_at = now() + $3::int * interval '1 second' \
            from picked where n.id = picked.id \
          returning n.id::text, n.user_id::text, n.kind, n.title, n.body, n.href, \
-                   n.email_attempts",
+                   n.email_attempts, n.desktop_override, n.push_override, n.email_override",
     )
     .bind(MISSED_MAIL_PER_PASS)
     .bind(MISSED_MAIL_PER_USER)
@@ -1204,15 +1238,22 @@ async fn claim_due(pg: &PgPool) -> Result<Vec<Claimed>, sqlx::Error> {
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, user_id, kind, title, body, href, attempts)| Claimed {
-            id,
-            user_id,
-            kind,
-            title,
-            body,
-            href,
-            attempts,
-        })
+        .map(
+            |(id, user_id, kind, title, body, href, attempts, desktop, push, email)| Claimed {
+                id,
+                user_id,
+                kind,
+                title,
+                body,
+                href,
+                attempts,
+                channels: ChannelOverride {
+                    desktop,
+                    push,
+                    email,
+                },
+            },
+        )
         .collect())
 }
 
@@ -1401,7 +1442,7 @@ pub async fn run_missed_mail(deps: &MissedMailDeps) -> Result<MissedMailPass, St
                 continue; // read meanwhile: never mailed, and no longer due
             }
             let class = notify_class_of(&r.kind);
-            if !channels_of(&blob, class).email || email_frequency(&blob) == "off" {
+            if !mail_wanted(&blob, &r.kind, &r.channels) {
                 unwanted.push(r.id.clone());
                 continue;
             }
@@ -1499,10 +1540,7 @@ pub async fn run_missed_mail(deps: &MissedMailDeps) -> Result<MissedMailPass, St
             // in-app copy is filed read — only now, after a provider took it.
             let email_only: Vec<String> = send
                 .iter()
-                .filter(|r| {
-                    let c = channels_of(&blob, notify_class_of(&r.kind));
-                    c.email && !c.desktop && !c.push
-                })
+                .filter(|r| email_only(&blob, &r.kind, &r.channels))
                 .map(|r| r.id.clone())
                 .collect();
             if !email_only.is_empty() {
@@ -2036,6 +2074,70 @@ mod tests {
         assert_eq!(s.dropped, 1); // the 501st — the newest — is refused
         assert_eq!(s.capacity, MAX_QUEUED);
         assert!(s.oldest_queued_ms.is_some()); // a stuck-outbox reader needs this
+    }
+
+    // ── the batcher's re-check, through the row's override ──────────────────
+
+    // The batcher re-reads the matrix at send time through the override the
+    // row was filed with (a person's setting for a board, decided once at
+    // fan-out): a row a board widened to email is mailed although the matrix
+    // mails nothing for its class, a row a board kept out of the mail never
+    // came due (no email_due_at), and the frequency still has the last word.
+    #[test]
+    fn the_batcher_rechecks_the_matrix_through_the_rows_override() {
+        let none = ChannelOverride::default();
+        let email_on = ChannelOverride {
+            email: Some(true),
+            ..Default::default()
+        };
+        let email_off = ChannelOverride {
+            email: Some(false),
+            ..Default::default()
+        };
+        let blob = serde_json::json!({});
+        // task-comment is Participating: mailed only when the matrix says.
+        let participating = crate::classes::notify_class_of("task-comment");
+        let matrix_mails = crate::prefs::channels_of(&blob, participating).email;
+        assert_eq!(mail_wanted(&blob, "task-comment", &none), matrix_mails);
+        assert!(mail_wanted(&blob, "task-comment", &email_on));
+        assert!(!mail_wanted(&blob, "task-comment", &email_off));
+        // A matrix that mails nothing for the class, widened by the board.
+        let quiet = serde_json::json!({ "channels": { participating: { "email": false } } });
+        assert!(!mail_wanted(&quiet, "task-comment", &none));
+        assert!(mail_wanted(&quiet, "task-comment", &email_on));
+        // The frequency is the person's, over every override.
+        let freq_off = serde_json::json!({ "email": { "frequency": "off" } });
+        assert!(!mail_wanted(&freq_off, "task-comment", &email_on));
+        // Email only, through the override: the mail is the delivery, so an
+        // accepted mail files the in-app copy read.
+        let email_only_board = ChannelOverride {
+            desktop: Some(false),
+            push: Some(false),
+            email: Some(true),
+        };
+        assert!(email_only(&blob, "task-status", &email_only_board));
+        // task-status is quiet by default (no banner, no push), so email
+        // widened alone is email only as well; a mention banners and pushes
+        // by default, so its in-app copy stays unread.
+        assert!(email_only(&blob, "task-status", &email_on));
+        assert!(!email_only(&blob, "mention", &email_on));
+        // A screen channel on keeps the in-app copy unread.
+        let with_banner = ChannelOverride {
+            desktop: Some(true),
+            ..email_only_board
+        };
+        assert!(!email_only(&blob, "task-status", &with_banner));
+        // The legacy route still reads as it did with no override.
+        assert!(email_only(
+            &serde_json::json!({ "dm": "email" }),
+            "dm",
+            &none
+        ));
+        assert!(!email_only(
+            &serde_json::json!({ "dm": "both" }),
+            "dm",
+            &none
+        ));
     }
 
     // ── the sentences ────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@
   import { EFFORT_LABEL, PRIORITY_COLOR, pgNum, type Task } from '@/lib/task-const'
   import type { LiveWorkSession, WorkWait } from '@/lib/work-session.svelte'
   import WorkPulse from './WorkPulse.svelte'
+  import RemoteStateChip from './RemoteStateChip.svelte'
   import { behindLine } from '@/lib/work-pulse'
 
   let {
@@ -32,8 +33,11 @@
     session = null,
     wait = null,
     receivedAt = 0,
+    remoteState = null,
   }: {
     task: Task
+    /** A synced ticket's ClickUp task state, when it is not active there. */
+    remoteState?: string | null
     session?: LiveWorkSession | null
     wait?: WorkWait | null
     /** When the board's work read arrived, for the pulse's clocks. */
@@ -179,6 +183,7 @@
           {#if task.archivedAt}
             <span class="rounded border border-line-subtle px-1 font-mono text-[9px] uppercase tracking-[0.05em] text-muted">archived</span>
           {/if}
+          <RemoteStateChip state={remoteState} />
         </div>
         <div class="font-sans text-[15px] font-medium leading-snug text-fg">{task.title}</div>
         {#if task.description}

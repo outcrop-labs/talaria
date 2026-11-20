@@ -195,8 +195,10 @@
       isChannelOwner: detail?.role === 'owner',
       labelFor,
       userLabel: (author: string) => userRow(author)?.name ?? (author.split('@')[0] || author),
+      // Only a person has a photo: an agent keeps its initials, and an
+      // imported author's label is never matched against the directory.
       pictureFor: (author: string, authorType: string) =>
-        authorType === 'agent' ? null : (userRow(author)?.picture ?? null),
+        authorType === 'user' ? (userRow(author)?.picture ?? null) : null,
       selfMentions: [sessionQuery.data?.name, sessionQuery.data?.email?.split('@')[0]].filter((n): n is string => !!n),
       timeZone: prefsQuery.data?.timezone ?? null,
       onOpenProfile: onOpenProfile

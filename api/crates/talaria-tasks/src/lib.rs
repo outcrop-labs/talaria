@@ -18,7 +18,7 @@ use talaria_boards::{board_allows_agent, board_info, board_role};
 use talaria_gateway::usage::task_usage;
 use talaria_judge::list_judge_reviews;
 use talaria_labels::ensure_labels;
-use talaria_notify::boards::{self as board_prefs, Candidate, Delivery};
+use talaria_notify::boards::{self as board_prefs, Candidate, ChannelOverride, Delivery};
 use talaria_notify::{
     ActorKind, Coalesce, Filed, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity,
     NotifyMeta, add_notification_with, entity, group_key,
@@ -478,10 +478,12 @@ async fn actor_user_id(pg: &PgPool, actor: &str) -> Option<String> {
 
 /// One ticket event, told to each candidate as their setting for `board_id`
 /// says (talaria_notify::boards): the producer's own per-ticket row (`n`),
-/// one counting `board-activity` row worded `line`, or nothing. The actor is
-/// never told. With nobody's setting stored, every candidate in the event's
-/// own audience gets `n` and nobody else gets anything — the fan-out as it
-/// was before boards had a setting. Answers who got the per-ticket row.
+/// one counting `board-activity` row worded `line`, or nothing — each filed
+/// on the channels that setting gives the board's rows. The actor is never
+/// told. With nobody's setting stored, every candidate in the event's own
+/// audience gets `n` on the matrix's channels and nobody else gets anything
+/// — the fan-out as it was before boards had a setting. Answers who got the
+/// per-ticket row.
 ///
 /// `n` is None for a fan-out over bystanders only (a new ticket, one that
 /// arrived or left, the rest of a board): the resolver never gives a
@@ -511,7 +513,7 @@ async fn file_decided(
     notify: &NotifyDeps,
     board_id: &str,
     ev: board_prefs::BoardEvent,
-    decided: Vec<(Candidate, Delivery)>,
+    decided: Vec<(Candidate, Delivery, ChannelOverride)>,
     actor: &str,
     n: Option<&TaskNotification>,
     line: &str,
@@ -539,18 +541,24 @@ async fn file_decided(
     file_board_activity(notify, board_id, &activity, self_id.as_deref(), &who, line).await;
     ticket
         .into_iter()
+        .map(|(u, _)| u)
         .filter(|u| Some(u.as_str()) != self_id.as_deref())
         .collect()
 }
 
-/// The decisions, as (per-ticket rows, board-activity rows). Skipped people
-/// and people held for a digest (no producer yet) are in neither.
-fn split(decided: Vec<(Candidate, Delivery)>) -> (Vec<String>, Vec<String>) {
+/// One person a board event files a row for, and the channels their setting
+/// for the board gives it (`NotifyMeta::channels`; all None: the matrix).
+type Recipient = (String, ChannelOverride);
+
+/// The decisions, as (per-ticket rows, board-activity rows), each person with
+/// their board's channels. Skipped people and people held for a digest (no
+/// producer yet) are in neither.
+fn split(decided: Vec<(Candidate, Delivery, ChannelOverride)>) -> (Vec<Recipient>, Vec<Recipient>) {
     let (mut ticket, mut activity) = (Vec::new(), Vec::new());
-    for (c, d) in decided {
+    for (c, d, channels) in decided {
         match d {
-            Delivery::Ticket => ticket.push(c.user_id),
-            Delivery::BoardActivity => activity.push(c.user_id),
+            Delivery::Ticket => ticket.push((c.user_id, channels)),
+            Delivery::BoardActivity => activity.push((c.user_id, channels)),
             Delivery::Skip | Delivery::Digest => {}
         }
     }
@@ -601,11 +609,12 @@ async fn try_bystanders(
 /// lands, the rest update the count and the newest line without ringing
 /// again, until they read it — a channel at level All, for a board. Its class
 /// (`board_activity`) is quiet by default, like the status rows of the
-/// tickets a person is in.
+/// tickets a person is in, and a board's own channels apply to it as to
+/// them.
 async fn file_board_activity(
     notify: &NotifyDeps,
     board_id: &str,
-    user_ids: &[String],
+    user_ids: &[Recipient],
     self_id: Option<&str>,
     who: &NotifyActor,
     line: &str,
@@ -641,20 +650,25 @@ async fn file_board_activity(
         ..Default::default()
     };
     let mut seen: HashSet<&str> = HashSet::new();
-    for user_id in user_ids {
+    for (user_id, channels) in user_ids {
         if !seen.insert(user_id.as_str()) || Some(user_id.as_str()) == self_id {
             continue;
         }
+        let meta = NotifyMeta {
+            channels: *channels,
+            ..meta.clone()
+        };
         if let Err(e) = add_notification_with(notify, user_id, &input, &meta).await {
             tracing::error!("tasks: board-activity row for {user_id} failed: {e}");
         }
     }
 }
 
-/// The per-ticket rows: `n` to each of `user_ids` but the actor.
+/// The per-ticket rows: `n` to each of `user_ids` but the actor, each on
+/// the channels their setting for the board gives it.
 async fn file_ticket_rows(
     notify: &NotifyDeps,
-    user_ids: &[String],
+    user_ids: &[Recipient],
     self_id: Option<&str>,
     who: &NotifyActor,
     n: &TaskNotification,
@@ -664,7 +678,7 @@ async fn file_ticket_rows(
     }
     let window = status_window_secs();
     let mut seen: HashSet<String> = HashSet::new();
-    for user_id in user_ids {
+    for (user_id, channels) in user_ids {
         if !seen.insert(user_id.clone()) {
             continue;
         }
@@ -675,6 +689,7 @@ async fn file_ticket_rows(
             entity: Some(NotifyEntity::new(entity::TASK, n.task_id.as_str())),
             actor: Some(who.clone()),
             group_key: n.group_key.clone(),
+            channels: *channels,
             ..Default::default()
         };
         let mut body = n.body.clone();
@@ -1006,7 +1021,10 @@ async fn ticket_mentions_land(
         .await
         .into_iter()
         .collect();
-    board_prefs::mention_listeners(pg, board_id, task_id, &named).await
+    board_prefs::mention_listeners(pg, board_id, task_id, &named)
+        .await
+        .into_keys()
+        .collect()
 }
 
 /// What a comment row calls its author: a person's name, else the author
@@ -1135,7 +1153,7 @@ pub async fn notify_comment_participants(
         actor: Some(task_actor(author, author_id.as_deref())),
         ..Default::default()
     };
-    for user in ticket {
+    for (user, channels) in ticket {
         if !seen.insert(user.clone()) || Some(user.as_str()) == author_id.as_deref() {
             continue;
         }
@@ -1147,6 +1165,10 @@ pub async fn notify_comment_participants(
                 continue;
             }
         }
+        let row_meta = NotifyMeta {
+            channels,
+            ..row_meta.clone()
+        };
         if let Err(e) = add_notification_with(notify, &user, &input, &row_meta).await {
             tracing::error!("tasks: task-comment row for {user} failed: {e}");
         }
@@ -3758,9 +3780,13 @@ mod tests {
         );
     }
 
+    fn ids(rs: &[Recipient]) -> Vec<&str> {
+        rs.iter().map(|(u, _)| u.as_str()).collect()
+    }
+
     #[test]
     fn split_files_ticket_and_activity_rows_and_nothing_for_skip_or_digest() {
-        let d = |u: &str, how: Delivery| (Candidate::involved(u), how);
+        let d = |u: &str, how: Delivery| (Candidate::involved(u), how, ChannelOverride::default());
         let (ticket, activity) = split(vec![
             d("t", Delivery::Ticket),
             d("b", Delivery::BoardActivity),
@@ -3768,8 +3794,40 @@ mod tests {
             d("g", Delivery::Digest),
             d("t2", Delivery::Ticket),
         ]);
-        assert_eq!(ticket, ["t", "t2"]);
-        assert_eq!(activity, ["b"]);
+        assert_eq!(ids(&ticket), ["t", "t2"]);
+        assert_eq!(ids(&activity), ["b"]);
+    }
+
+    // Each row is filed on the channels its own recipient's setting gives
+    // the board: two people, two overrides, never one person's for another.
+    #[test]
+    fn split_keeps_each_persons_board_channels() {
+        let email = ChannelOverride {
+            email: Some(true),
+            ..Default::default()
+        };
+        let quiet = ChannelOverride {
+            desktop: Some(false),
+            push: Some(false),
+            email: Some(false),
+        };
+        let (ticket, activity) = split(vec![
+            (Candidate::involved("a"), Delivery::Ticket, email),
+            (
+                Candidate::involved("m"),
+                Delivery::Ticket,
+                ChannelOverride::default(),
+            ),
+            (Candidate::bystander("b"), Delivery::BoardActivity, quiet),
+        ]);
+        assert_eq!(
+            ticket,
+            [
+                ("a".to_string(), email),
+                ("m".to_string(), ChannelOverride::default())
+            ]
+        );
+        assert_eq!(activity, [("b".to_string(), quiet)]);
     }
 
     // A board's membership that cannot be read: `bystanders` answers nobody
@@ -3797,7 +3855,13 @@ mod tests {
         let decide = |ev: Ev, cs: &[Candidate]| {
             split(
                 cs.iter()
-                    .map(|c| (c.clone(), board_prefs::resolve(p, ev, c)))
+                    .map(|c| {
+                        (
+                            c.clone(),
+                            board_prefs::resolve(p, ev, c),
+                            p.channels.overrides(),
+                        )
+                    })
                     .collect(),
             )
         };
@@ -3805,7 +3869,7 @@ mod tests {
             Ev::Assigned,
             &assigned_candidates(&["bob".into()], &audience),
         );
-        let told: HashSet<String> = told.into_iter().collect();
+        let told: HashSet<String> = told.into_iter().map(|(u, _)| u).collect();
         let mut rest = audience.to_vec();
         rest.retain(|c| !told.contains(&c.user_id));
         let (ticket, activity) = decide(Ev::Status, &rest);
