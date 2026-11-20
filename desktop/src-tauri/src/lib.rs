@@ -64,6 +64,10 @@ macro_rules! eprintln {
 mod background;
 mod beacon;
 mod commands;
+// Public only for main.rs's exported gtk_drag_set_icon_surface (Linux).
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub mod drag_icon;
 mod layout;
 mod links;
 mod loading;

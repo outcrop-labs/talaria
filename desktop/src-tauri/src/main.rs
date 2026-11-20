@@ -16,3 +16,23 @@ fn main() {
     }
     talaria_desktop::run()
 }
+
+/// WebKitGTK's call to GTK's `gtk_drag_set_icon_surface` lands here first:
+/// the executable exports this definition (build.rs), and the loader looks in
+/// the executable before libgtk-3. WebKitGTK hands over a device-pixel image
+/// that GTK would show at the display scale times the web size;
+/// drag_icon.rs fits it, then calls GTK's own function with the same
+/// arguments (docs/DESKTOP.md, "Drag images on a HiDPI Linux display").
+///
+/// # Safety
+/// GTK's contract for the function it stands in for: called on the GTK main
+/// thread with the source side's live drag context and a live cairo surface.
+// webview-threading: callback
+#[cfg(target_os = "linux")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gtk_drag_set_icon_surface(
+    context: *mut talaria_desktop::drag_icon::Context,
+    surface: *mut talaria_desktop::drag_icon::Surface,
+) {
+    unsafe { talaria_desktop::drag_icon::set_icon_surface(context, surface) }
+}
