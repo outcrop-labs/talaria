@@ -1,6 +1,7 @@
 // The settings door's structure, server-rendered: the light CI ui job runs
 // this on every pull request, while the browser proof (names, hit areas and
 // contrast in both themes, ui/e2e/settings-cog.spec.ts) runs in full mode only.
+import type { ComponentProps } from 'svelte'
 import { render } from 'svelte/server'
 import { describe, expect, it } from 'vitest'
 import SettingsButton from './SettingsButton.svelte'
@@ -16,8 +17,9 @@ describe('settings-cog', () => {
     // No lucide import here: scripts/settings-glyph.mjs allows the gear in
     // settings-cog.ts alone, tests included.
     expect(render(SettingsGlyph, { props: {} }).body).toMatch(/class="[^"]*\blucide-settings\b(?!-)/)
-    expect(cogMenuIcon[0]).toBe(SettingsGlyph)
-    expect(cogMenuIcon[1]).toEqual({ size: COG.sm })
+    // `MenuIcon` is a snippet OR a [component, props] pair: compared whole,
+    // not indexed, so the snippet branch never needs narrowing.
+    expect(cogMenuIcon).toEqual([SettingsGlyph, { size: COG.sm }])
   })
 
   it('keeps the glyph at half the tile', () => {
@@ -57,6 +59,24 @@ describe('SettingsButton', () => {
     const open = buttonTag(html({ label: 'View settings', active: true, 'aria-expanded': true }))
     expect(open).toContain('bg-raised text-fg')
     expect(open).toContain('aria-expanded="true"')
+  })
+
+  it('refuses, by type, a bare "Settings", a class and a second name', () => {
+    // These lines are for svelte-check (CI's ui typecheck), which reads this
+    // file: each `@ts-expect-error` fails the job if its line ever compiles,
+    // so widening `label` to `string` or letting `class` or `aria-label`
+    // back into the props turns the job red. Vitest only sees the objects.
+    type DoorProps = ComponentProps<typeof SettingsButton>
+    // @ts-expect-error a bare "Settings" names no scope
+    void ({ label: 'Settings' } satisfies DoorProps)
+    // @ts-expect-error no class: the tile and the glyph come from one scale
+    void ({ label: 'Board settings', class: 'h-4' } satisfies DoorProps)
+    // @ts-expect-error the label is the accessible name: nothing renames it
+    void ({ label: 'Board settings', 'aria-label': 'Configure columns' } satisfies DoorProps)
+    // @ts-expect-error nor points the name at other words
+    void ({ label: 'Board settings', 'aria-labelledby': 'columns-heading' } satisfies DoorProps)
+    // A scoped label is all a door needs.
+    expect(({ label: 'Board settings' } satisfies DoorProps).label).toBe('Board settings')
   })
 
   it('passes the dialog and test hooks through, and wears the door marker', () => {
