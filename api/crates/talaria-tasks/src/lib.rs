@@ -1668,7 +1668,7 @@ pub async fn update_task(
          outcome=$15, resolution=$16, error_message=$17, completed_at=$18::timestamptz, \
          archived_at=$19::timestamptz, approved_at=$21::timestamptz, \
          time_spent_seconds=time_spent_seconds + $20, updated_at=now() \
-         where id=$1::uuid",
+         where id=$1::uuid and ($22::text is null or status = $22)",
     )
     .bind(id)
     .bind(&next_title)
@@ -1691,13 +1691,26 @@ pub async fn update_task(
     .bind(&archived_at)
     .bind(add_seconds)
     .bind(&approved_at)
+    // An asked exit lands only on the column its proof was checked against:
+    // a person who moved the ticket meanwhile (a reviewer signing it off,
+    // say) is never overwritten by the agent. Every other write binds null.
+    .bind(asker.as_ref().map(|_| cur.status.as_str()))
     .execute(pg)
     .await;
-    if let Err(e) = written {
-        if let Some(asked_by) = &asker {
-            asked::release_exit(pg, id, asked_by).await;
+    let written = match written {
+        Ok(done) => done,
+        Err(e) => {
+            if let Some(asked_by) = &asker {
+                asked::release_exit(pg, id, asked_by).await;
+            }
+            return Err(e.into());
         }
-        return Err(e.into());
+    };
+    if written.rows_affected() == 0
+        && let Some(asked_by) = &asker
+    {
+        asked::release_exit(pg, id, asked_by).await;
+        return Err(TaskError::Refusal(asked::MOVED_MEANWHILE.into()));
     }
 
     // ── THE NOTIFY WORK GOES OUT NOW (C30) ──────────────────────────────────

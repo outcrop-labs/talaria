@@ -40,6 +40,11 @@ use talaria_tasks_types::{AskClaim, Task};
 /// The refusal when an agent tries to leave review with no ask at all.
 pub const NO_ASK: &str = "agents cannot take a ticket out of review on their own — a person signs it off. If the person you are answering asked for this move, call again with conversationId set to your thread's id (your prompt's thread line carries it); otherwise a person who can edit the board approves it from the card this refusal leaves in your thread";
 
+/// An asked exit whose ticket a person moved while the ask was being proven.
+/// A 400, not a 403: there is nothing for a card to approve, the person
+/// already moved it.
+pub const MOVED_MEANWHILE: &str = "the ticket moved while the ask was being checked, so this move did not land — get_ticket to see where it is now, and ask the person again if it still needs to go back";
+
 /// The refusal for a closed destination when the agent cited an ask.
 pub const NEVER_CLOSES: &str = "agents cannot close a ticket, even when a person asks — done, failed and cancelled are that person's own move";
 
