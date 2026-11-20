@@ -261,8 +261,10 @@ pressed it and when (`board_syncs.paused_by`, `paused_at`). The status answers t
 `pausedBy` (`{id, name, email}`) and `pausedAt`, so the board shows "Paused by Dana Reyes ·
 5m ago" to every member. Resume clears both, turns the connection active, and sets the
 next sync one interval out. A `PUT` that names no `paused` never changes the state: the
-write works it out from the row it changes, not from an earlier read, so a mapping or
-schedule edit saved just as someone presses Pause leaves the pause in place.
+write works it out from the row it locks, not from an earlier read, so a mapping or
+schedule edit saved just as someone presses Pause leaves the pause in place. Whether the
+map changed (a new map version and a remap) is read from that row too, so a map saved
+over another owner's edit still remaps.
 
 What still works while paused:
 

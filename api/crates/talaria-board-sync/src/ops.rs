@@ -331,21 +331,20 @@ pub async fn update(
         }
         None => None,
     };
-    let remap = map.as_ref().is_some_and(|m| *m != sync.status_map);
     if input.paused == Some(false) && sync.state == "needs_credential" {
         return Err(OpError::new(
             409,
             "the sync needs a new credential before it can resume",
         ));
     }
-    // The write works the state out from the row itself, not from the read
-    // above: a mapping or schedule edit that read the sync a moment before
-    // someone pressed Pause leaves the pause in place.
+    // The write works the state, and whether the map changed, out from the
+    // row it locks, not from the read above: a mapping or schedule edit that
+    // read the sync a moment before someone pressed Pause leaves the pause in
+    // place, and a map saved over another owner's edit still remaps.
     let edit = store::SyncEdit {
         status_map: map
             .as_ref()
             .map(|m| serde_json::to_value(m).unwrap_or_else(|_| json!({}))),
-        remap,
         options: input
             .options
             .as_ref()
@@ -353,7 +352,7 @@ pub async fn update(
         interval_minutes: input.interval_minutes,
         paused: input.paused,
     };
-    let (state_now, interval) = store::write_edit(&state.pg, &sync.id, user_id, &edit)
+    let (state_now, interval, remap) = store::write_edit(&state.pg, &sync.id, user_id, &edit)
         .await
         .map_err(|e| OpError::internal("sync update", e))?
         .ok_or_else(|| OpError::new(404, "this board is not connected to ClickUp"))?;

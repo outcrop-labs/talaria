@@ -533,8 +533,6 @@ pub async fn connection_live(pg: &PgPool, sync_id: &str) -> Result<bool, sqlx::E
 #[derive(Debug, Default)]
 pub struct SyncEdit {
     pub status_map: Option<Value>,
-    /// The map differs from the one in force: bump map_version, flag a remap.
-    pub remap: bool,
     pub options: Option<Value>,
     /// `Some(None)` turns the schedule to manual.
     pub interval_minutes: Option<Option<i32>>,
@@ -545,45 +543,51 @@ pub struct SyncEdit {
 // The state an edit leaves, worked out from the row's own state at the
 // write — never from an earlier read. A pause takes only an active sync and
 // a resume only a paused one; every other state stays.
-const EDIT_STATE: &str = "(case when $7::boolean is true and state = 'active' then 'paused' \
-                                when $7::boolean is false and state = 'paused' then 'active' \
+const EDIT_STATE: &str = "(case when $6::boolean is true and state = 'active' then 'paused' \
+                                when $6::boolean is false and state = 'paused' then 'active' \
                                 else state end)";
-const EDIT_INTERVAL: &str = "(case when $6 then $5::int else interval_minutes end)";
+const EDIT_INTERVAL: &str = "(case when $5 then $4::int else interval_minutes end)";
+// A new map that differs from the one the row holds: map_version moves on
+// and a remap is due. Read from the locked row, like the state.
+const EDIT_REMAP: &str = "coalesce($2 <> prev.status_map, false)";
 
-/// Writes an owner's edit in one statement that reads the row it changes, so
-/// an edit saved as someone presses Pause cannot undo the pause: a request
-/// that names no `paused` leaves the state, who paused and when, and the
-/// next sync as the row holds them. The next sync follows the state and the
-/// interval the write leaves. Answers the state and the interval written, or
-/// None when the sync was disconnected meanwhile.
+/// Writes an owner's edit in one statement that locks and reads the row it
+/// changes, so an edit saved as someone presses Pause cannot undo the pause:
+/// a request that names no `paused` leaves the state, who paused and when,
+/// and the next sync as the row holds them. The next sync follows the state
+/// and the interval the write leaves. Answers the state and the interval
+/// written and whether the map changed (a remap is due), or None when the
+/// sync was disconnected meanwhile.
 pub async fn write_edit(
     pg: &PgPool,
     sync_id: &str,
     user_id: &str,
     edit: &SyncEdit,
-) -> Result<Option<(String, Option<i32>)>, sqlx::Error> {
+) -> Result<Option<(String, Option<i32>, bool)>, sqlx::Error> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "update board_syncs set \
-           status_map = coalesce($2, status_map), \
-           map_version = map_version + case when $3 then 1 else 0 end, \
-           remap_pending = remap_pending or $3, \
-           options = coalesce($4, options), \
+        "with prev as ( \
+           select id, status_map from board_syncs \
+           where id = $1::uuid and state <> 'disconnected' for update) \
+         update board_syncs set \
+           status_map = coalesce($2, prev.status_map), \
+           map_version = map_version + case when {EDIT_REMAP} then 1 else 0 end, \
+           remap_pending = remap_pending or {EDIT_REMAP}, \
+           options = coalesce($3, options), \
            interval_minutes = {EDIT_INTERVAL}, \
            next_sync_at = case when {EDIT_INTERVAL} is null or {EDIT_STATE} <> 'active' then null \
-                               when $6 or {EDIT_STATE} <> state or next_sync_at is null \
+                               when $5 or {EDIT_STATE} <> state or next_sync_at is null \
                                  then now() + ({EDIT_INTERVAL} * interval '1 minute') \
                                else next_sync_at end, \
-           paused_by = case when {EDIT_STATE} = 'paused' and state <> 'paused' then $8::uuid \
+           paused_by = case when {EDIT_STATE} = 'paused' and state <> 'paused' then $7::uuid \
                             when {EDIT_STATE} = 'active' then null else paused_by end, \
            paused_at = case when {EDIT_STATE} = 'paused' and state <> 'paused' then now() \
                             when {EDIT_STATE} = 'active' then null else paused_at end, \
            state = {EDIT_STATE}, updated_at = now() \
-         where id = $1::uuid and state <> 'disconnected' \
-         returning state, interval_minutes"
+         from prev where board_syncs.id = prev.id \
+         returning board_syncs.state, board_syncs.interval_minutes, {EDIT_REMAP}"
     )))
     .bind(sync_id)
     .bind(edit.status_map.clone())
-    .bind(edit.remap)
     .bind(edit.options.clone())
     .bind(edit.interval_minutes.flatten())
     .bind(edit.interval_minutes.is_some())
