@@ -82,7 +82,9 @@ print(json.dumps({"ok": True, "was": len(rows), "now": len(now), "last": (now[-1
 /// and only that: `gone` when the id is free after, `foreign` when the session
 /// is not a fork of that parent. Hermes fences a deleted id for good, which
 /// would spend the slot, and no turn ever ran on this one for the fence to
-/// guard, so it is lifted.
+/// guard, so it is lifted. It is lifted with no row too: a discard that died
+/// between the two writes left the fence alone, and the next fork into the id
+/// would fail on it every time.
 const DISCARD_PY: &str = r#"
 import sys
 sys.path.insert(0, "/opt/hermes")
@@ -96,7 +98,7 @@ if row is not None and row.get("parent_session_id") != parent:
     sys.exit(0)
 if row is not None:
     db.delete_session(sid, exclude_active_write_guards=True)
-    db._execute_write(lambda conn: conn.execute("DELETE FROM state_meta WHERE key = ?", (RETIRED_PREFIX + sid,)))
+db._execute_write(lambda conn: conn.execute("DELETE FROM state_meta WHERE key = ?", (RETIRED_PREFIX + sid,)))
 print("gone")
 "#;
 
