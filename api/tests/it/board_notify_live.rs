@@ -1040,6 +1040,10 @@ async fn a_daily_digest_stored_before_the_withdrawal_is_heard_instantly() {
         json!({ "title": "Withdrawn digest", "assignees": [format!("user:{bob}")] }),
     )
     .await;
+    // The creation fan-out is detached: let it land before the move's.
+    assert!(eventually!(
+        kinds(&on_board(&state, &bob, &b).await) == ["task-assigned"]
+    ));
     ok(
         &state,
         "PUT",
@@ -1073,7 +1077,7 @@ async fn a_daily_digest_stored_before_the_withdrawal_is_heard_instantly() {
         "update board_notify_prefs set cadence = 'instant'",
         "jsonb_set(notify_prefs, '{boards,cadence}'",
     ] {
-        sqlx::query(&migration_holding(needle))
+        sqlx::query(sqlx::AssertSqlSafe(migration_holding(needle)))
             .execute(&state.pg)
             .await
             .unwrap();
