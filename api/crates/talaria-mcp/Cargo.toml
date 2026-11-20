@@ -19,6 +19,10 @@ talaria-agent-auth = { workspace = true }
 talaria-fleet-docker = { workspace = true }
 talaria-fleet-layout = { workspace = true }
 talaria-gateway = { workspace = true }
+talaria-google-agent = { workspace = true }
+talaria-google-connections = { workspace = true }
+talaria-google-errors = { workspace = true }
+talaria-google-mcp = { workspace = true }
 talaria-mcp-jsonrpc = { workspace = true }
 talaria-mcp-oauth = { workspace = true }
 talaria-mcp-service = { workspace = true }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import Button from './Button.svelte'
   import Input from './Input.svelte'
   import Modal from './Modal.svelte'
@@ -10,6 +11,7 @@
   let inputRef = $state<HTMLInputElement | null>(null)
 
   const spec = $derived(dialog.active?.spec)
+  const voice = $derived(dialog.active?.voice)
   const isAlert = $derived(spec?.kind === 'alert')
   // The typed challenge: both prompts and danger confirms with `requireText`
   // gate the accept button on this matching exactly.
@@ -24,6 +26,18 @@
     }
   })
 
+  let answerRef = $state<HTMLButtonElement | null>(null)
+  let cancelRef = $state<HTMLButtonElement | null>(null)
+  $effect(() => {
+    if (!spec) return
+    const before = document.activeElement
+    // A typed challenge takes focus through its input (the select above).
+    if (!needsText) void tick().then(() => (spec.danger && cancelRef ? cancelRef : answerRef)?.focus())
+    return () => {
+      if (before instanceof HTMLElement) before.focus()
+    }
+  })
+
   function settle(result: boolean | string | null) {
     dialog.active?.resolve(result)
     dialog.active = null
@@ -33,7 +47,17 @@
   const accept = () => settle(spec?.kind === 'confirm' ? true : spec?.kind === 'prompt' ? value : null)
 </script>
 
-<Modal open={!!spec} onClose={cancel} title={spec?.title}>
+<!-- Every open Modal listens for Escape on the document, so a confirm over a
+     dialog would close the dialog under it too. -->
+<svelte:window
+  onkeydowncapture={(e) => {
+    if (!spec || e.key !== 'Escape') return
+    e.stopPropagation()
+    cancel()
+  }}
+/>
+
+<Modal open={!!spec} onClose={cancel} title={spec?.title} {voice}>
   {#if spec?.message}
     <div class="whitespace-pre-line text-sm text-muted">{spec.message}</div>
   {/if}
@@ -57,13 +81,15 @@
   {#snippet footer()}
     <div class="flex justify-end gap-2">
       {#if !isAlert}
-        <Button variant="ghost" size="sm" onclick={cancel}>
+        <Button bind:ref={cancelRef} variant="ghost" size="sm" {voice} onclick={cancel}>
           {spec?.cancelLabel ?? 'Cancel'}
         </Button>
       {/if}
       <Button
+        bind:ref={answerRef}
         variant={spec?.danger ? 'danger-outline' : 'primary'}
         size="sm"
+        {voice}
         onclick={accept}
         disabled={spec?.kind === 'confirm' ? !unlocked : false}
       >

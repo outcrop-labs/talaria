@@ -4990,8 +4990,95 @@ alter table tasks drop column if exists conversation_id`,
   `create unique index if not exists workbench_permission_requests_one_open
      on workbench_permission_requests (agent_id, host_id, permission)
      where status in ('pending', 'awaiting_github')`,
+  // GOOGLE'S WORKSPACE MCP SERVERS' LAST WORD ON A GRANT (docs/
+  // GOOGLE-WORKSPACE.md "Google's Workspace MCP servers"). The MCP gateway
+  // relays an agent's call to Google's Workspace MCP servers with the token
+  // of its principal's own grant; when Google answers 401 or 403, Google's
+  // words land on that grant as `last_mcp_refusal` {status, text, tool, at},
+  // and the admin pack panel lists them. (A 401 that a fresh token does not
+  // cure also sets the grant's `reconnect_reason`; a 403 never does.)
+  // Nullable, so roll-safe: the previous release neither reads nor writes it.
+  `alter table google_connections add column if not exists last_mcp_refusal jsonb`,
+  `alter table google_org_connection add column if not exists last_mcp_refusal jsonb`,
+  `alter table agent_google_connections add column if not exists last_mcp_refusal jsonb`,
+  // AN ADMIN'S WORD ON ONE GOOGLE WORKSPACE MCP TOOL (docs/GOOGLE-WORKSPACE.md
+  // "Holds"). The pack's default per tool is allow (a pinned read Google marks
+  // read-only), deny (the owner's trash/spam/sensitive-label list) or hold (every
+  // other tool: a person approves each call). A row here overrides that default
+  // for one tool on one pack server, by name — so a tool Google adds later never
+  // inherits a row — and the deny list is a floor no row lifts (the admin route
+  // refuses to write one; the gateway ignores one). The row goes with its server.
+  `create table if not exists mcp_tool_policies (
+     server_id uuid not null references mcp_servers(id) on delete cascade,
+     tool text not null,
+     policy text not null check (policy in ('allow', 'hold', 'deny')),
+     set_by uuid references users(id) on delete set null,
+     updated_at timestamptz not null default now(),
+     primary key (server_id, tool)
+   )`,
   //
   // AT THE END: MIGRATIONS is append-only and keyed by INDEX.
+  `alter table runs add column if not exists checkpoint_seq bigint not null default 0`,
+  `create table if not exists run_checkpoints (
+     run_id uuid not null references runs(id) on delete cascade,
+     seq bigint not null,
+     kind text not null check (kind in ('turn', 'step')),
+     turn bigint,
+     agent_turn_id text,
+     step_no bigint,
+     tool_call_id text,
+     tool text,
+     title text,
+     status text,
+     job_id uuid,
+     workspace_commit text,
+     workspace_tree text,
+     restorable boolean not null default false,
+     unrestorable_reason text,
+     created_at timestamptz not null default now(),
+     primary key (run_id, seq),
+     unique (run_id, tool_call_id)
+   )`,
+  `alter table runs add column if not exists lineage_id uuid`,
+  `alter table runs add column if not exists attempt_no integer not null default 1`,
+  `alter table runs add column if not exists rewound_from_run_id uuid references runs(id) on delete cascade`,
+  `alter table runs add column if not exists rewound_from_seq bigint`,
+  `alter table runs add constraint runs_attempt_shape check (
+     (lineage_id is null and rewound_from_run_id is null and rewound_from_seq is null and attempt_no = 1)
+     or (lineage_id is not null and rewound_from_run_id is not null and rewound_from_seq is not null and attempt_no > 1)
+   )`,
+  `create unique index if not exists runs_lineage_attempt_idx
+     on runs (lineage_id, attempt_no) where lineage_id is not null`,
+  `alter table workbench_jobs add column if not exists run_id uuid references runs(id) on delete set null`,
+  `alter table workbench_jobs add column if not exists superseded_by uuid references workbench_jobs(id) on delete set null`,
+  `create index if not exists workbench_jobs_run_idx on workbench_jobs (run_id) where run_id is not null`,
+  `create index if not exists run_checkpoints_job_idx on run_checkpoints (job_id) where job_id is not null`,
+  // A push the pre-push gate let through, on a branch a run's job owns. The gate
+  // runs before any bytes leave, so a row says the run pushed, not that the
+  // remote took it, and a push made with --no-verify leaves none.
+  `create table if not exists run_pushes (
+     id uuid primary key default gen_random_uuid(),
+     run_id uuid not null references runs(id) on delete cascade,
+     job_id uuid not null references workbench_jobs(id) on delete cascade,
+     branch text not null,
+     created_at timestamptz not null default now()
+   )`,
+  `create index if not exists run_pushes_run_idx on run_pushes (run_id, created_at)`,
+  `create index if not exists usage_events_ref_idx on usage_events (ref_id) where ref_id is not null`,
+  // One counter per turn, bumped in the statement that takes a step's seq, so
+  // two frames landing at once never share a step number.
+  `alter table runs add column if not exists step_counts jsonb not null default '{}'::jsonb`,
+  // A rewind in flight on a (ticket, agent) pair. The dispatcher refuses the
+  // pair while the row names a live run-rewind: the ticket move a rewind makes
+  // would otherwise open a fresh session before the attempt is inserted. A
+  // stop block cannot carry this, because a person's move deletes a block.
+  `create table if not exists work_dispatch_holds (
+     task_id uuid not null references tasks(id) on delete cascade,
+     agent_model text not null,
+     rewind_run_id uuid not null references runs(id) on delete cascade,
+     created_at timestamptz not null default now(),
+     primary key (task_id, agent_model)
+   )`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

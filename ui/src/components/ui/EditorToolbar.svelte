@@ -21,14 +21,18 @@
     SendHorizontal,
     type LucideIcon as IconType,
     Paperclip,
+    ChevronDown,
   } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
+  import { useUiVoice } from '@/lib/ui-voice'
   import { focusGold } from '@/components/chat/chat-chrome'
   import Modal from './Modal.svelte'
   import Input from './Input.svelte'
   import Button from './Button.svelte'
   import IconButton from './IconButton.svelte'
   import DocLinkPopover from './DocLinkPopover.svelte'
+  import DropdownMenu from './DropdownMenu.svelte'
+  import type { ContextMenuEntry, MenuIcon } from './context-menu.svelte'
   import type { DocSearchFn } from './rich-editor'
 
   // RichEditor's formatting toolbar (internal — RichEditor.svelte renders it).
@@ -109,6 +113,11 @@
   }
 
   const c = () => $editor.chain().focus()
+  const toggleTable = () => (s.table ? c().deleteTable().run() : c().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())
+  const openImageModal = () => {
+    imgUrl = ''
+    imgOpen = true
+  }
 
   let attachRef = $state<HTMLInputElement | null>(null)
 
@@ -118,6 +127,35 @@
     // AttachButton.svelte's hidden-input pattern.
     if (attachRef) attachRef.value = ''
   }
+
+  // The link and image dialogs follow the voice of the page the editor sits on.
+  const sans = useUiVoice() === 'sans'
+  const fieldLabel = sans
+    ? 'mb-1.5 block font-sans text-[13px] font-medium leading-5 text-fg'
+    : 'mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim' // voice-ok: the mono branch, as it was
+
+  // The settings voice shows the five formats people reach for and keeps the
+  // rest in two menus. A format that is on tints its icon, as on the strip.
+  const mark = (icon: IconType, on = false): MenuIcon => [icon, { size: 16, class: on ? 'text-accent' : undefined }]
+  const heading = $derived(s.h1 || s.h2 || s.h3)
+  const styleItems = (): ContextMenuEntry[] => [
+    { label: 'Paragraph', checked: !heading, onSelect: () => c().setParagraph().run() },
+    { label: 'Big heading', checked: s.h1, onSelect: () => c().setHeading({ level: 1 }).run() },
+    { label: 'Medium heading', checked: s.h2, onSelect: () => c().setHeading({ level: 2 }).run() },
+    { label: 'Small heading', checked: s.h3, onSelect: () => c().setHeading({ level: 3 }).run() },
+  ]
+  const moreItems = (): ContextMenuEntry[] => [
+    { label: 'Strikethrough', icon: mark(Strikethrough, s.strike), onSelect: () => c().toggleStrike().run() },
+    { label: 'Task list', icon: mark(ListChecks, s.task), onSelect: () => c().toggleTaskList().run() },
+    { label: 'Quote', icon: mark(Quote, s.quote), onSelect: () => c().toggleBlockquote().run() },
+    { label: 'Inline code', icon: mark(Code, s.code), onSelect: () => c().toggleCode().run() },
+    { label: 'Code block', icon: mark(SquareCode, s.codeBlock), onSelect: () => c().toggleCodeBlock().run() },
+    'sep',
+    { label: s.table ? 'Delete table' : 'Insert table', icon: mark(TableIcon), onSelect: toggleTable },
+    { label: 'Insert image', icon: mark(ImageIcon), onSelect: openImageModal },
+    ...(onAttachFiles ? [{ label: 'Attach file', icon: mark(Paperclip), onSelect: () => attachRef?.click() }] : []),
+    ...(docSearch ? [{ label: 'Link to a document', icon: mark(FileText), onSelect: () => (docLinkOpen = true) }] : []),
+  ]
 </script>
 
 {#snippet btn(icon: IconType, title: string, active: boolean, action: () => void)}
@@ -138,7 +176,7 @@
 
 <!-- Compact labeled buttons for the table segment — text beats cryptic icons
      for structural ops. -->
-{#snippet tableBtn(label: string, title: string, action: () => void)}
+{#snippet tableBtn(label: string, sansLabel: string, title: string, action: () => void)}
   <button
     type="button"
     {title}
@@ -147,11 +185,43 @@
       action()
     }}
     class={cn(
-      'rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors dither-fill hover:text-fg',
+      sans
+        ? 'flex h-7 items-center rounded-md px-2 font-sans text-xs font-medium text-muted transition-colors hover:bg-hover hover:text-fg'
+        : 'rounded px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors dither-fill hover:text-fg', // voice-ok: the mono branch, as it was
       focusGold,
     )}
   >
-    {label}
+    {sans ? sansLabel : label}
+  </button>
+{/snippet}
+
+{#snippet tableOps()}
+  {@render tableBtn('+ row', 'Add row', 'Add row below', () => c().addRowAfter().run())}
+  {@render tableBtn('+ col', 'Add column', 'Add column right', () => c().addColumnAfter().run())}
+  {@render tableBtn('− row', 'Delete row', 'Delete this row', () => c().deleteRow().run())}
+  {@render tableBtn('− col', 'Delete column', 'Delete this column', () => c().deleteColumn().run())}
+  {@render tableBtn('header', 'Header row', 'Toggle header row', () => c().toggleHeaderRow().run())}
+{/snippet}
+
+<!-- A menu on the settings strip: a word and a chevron. With a format inside it on, the word takes the primary ink:
+     gold is for the toggles, and a gold word reads as a link. -->
+{#snippet menuBtn(label: string, title: string, open: boolean, active: boolean)}
+  <button
+    type="button"
+    {title}
+    aria-label={title}
+    aria-haspopup="menu"
+    aria-expanded={open}
+    onmousedown={(e) => e.preventDefault()}
+    class={cn(
+      // relative: the menu wraps its trigger in an inline span, and a button that is not positioned sits under that
+      // span in the hit order a test's click checks.
+      'relative flex h-7 items-center gap-1 rounded-md px-2 font-sans text-xs font-medium transition-colors hover:bg-hover hover:text-fg',
+      open ? 'bg-hover text-fg' : active ? 'text-fg' : 'text-muted',
+      focusGold,
+    )}
+  >
+    {label}<ChevronDown size={14} aria-hidden="true" />
   </button>
 {/snippet}
 
@@ -167,14 +237,14 @@
           applyLink()
         }}
       >
-        <label for="et-link-url" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">URL</label>
+        <label for="et-link-url" class={fieldLabel}>URL</label>
         <!-- svelte-ignore a11y_autofocus -->
         <Input id="et-link-url" autofocus bind:value={linkUrl} placeholder="https://example.com" class="w-full" />
-        <p class="mt-2 text-xs text-muted">Leave empty and apply to remove the link.</p>
+        <p class={sans ? 'mt-1.5 font-sans text-[13px] leading-5 text-muted' : 'mt-2 text-xs text-muted'}>Leave empty and apply to remove the link.</p>
       </form>
       {#snippet footer()}
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" onclick={() => (linkOpen = false)}>Cancel</Button>
+          <Button variant={sans ? 'ghost' : 'outline'} size="sm" onclick={() => (linkOpen = false)}>Cancel</Button>
           <Button size="sm" onclick={applyLink}>{linkUrl.trim() ? 'Apply' : 'Remove'}</Button>
         </div>
       {/snippet}
@@ -186,17 +256,42 @@
           applyImage()
         }}
       >
-        <label for="et-img-url" class="mb-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">Image URL</label>
+        <label for="et-img-url" class={fieldLabel}>Image URL</label>
         <!-- svelte-ignore a11y_autofocus -->
         <Input id="et-img-url" autofocus bind:value={imgUrl} placeholder="https:///image.png" class="w-full" />
       </form>
       {#snippet footer()}
         <div class="flex justify-end gap-2">
-          <Button variant="outline" size="sm" onclick={() => (imgOpen = false)}>Cancel</Button>
+          <Button variant={sans ? 'ghost' : 'outline'} size="sm" onclick={() => (imgOpen = false)}>Cancel</Button>
           <Button size="sm" onclick={applyImage} disabled={!imgUrl.trim()}>Insert</Button>
         </div>
       {/snippet}
     </Modal>
+    {#if sans}
+      {@render btn(Bold, 'Bold', s.bold, () => c().toggleBold().run())}
+      {@render btn(Italic, 'Italic', s.italic, () => c().toggleItalic().run())}
+      <span class="mx-1 h-4 w-px bg-line-subtle"></span>
+      {@render btn(List, 'Bulleted list', s.bullet, () => c().toggleBulletList().run())}
+      {@render btn(ListOrdered, 'Numbered list', s.ordered, () => c().toggleOrderedList().run())}
+      {@render btn(LinkIcon, 'Link', s.link, openLinkModal)}
+      <span class="mx-1 h-4 w-px bg-line-subtle"></span>
+      <DropdownMenu items={styleItems} align="left">
+        {#snippet trigger(open)}{@render menuBtn('Text style', 'Text style', open, heading)}{/snippet}
+      </DropdownMenu>
+      <!-- The span is the document-link popover's anchor, as in the mono strip. -->
+      <span bind:this={docLinkAnchor} class="relative">
+        <DropdownMenu items={moreItems} align="left">
+          {#snippet trigger(open)}{@render menuBtn('More', 'More formatting', open, s.strike || s.task || s.quote || s.code || s.codeBlock)}{/snippet}
+        </DropdownMenu>
+        {#if docLinkOpen && docSearch}
+          <DocLinkPopover anchor={docLinkAnchor} search={docSearch} onPick={insertDocLink} onClose={() => (docLinkOpen = false)} />
+        {/if}
+      </span>
+      {#if s.table}
+        <span class="mx-1 h-4 w-px bg-line-subtle"></span>
+        {@render tableOps()}
+      {/if}
+    {:else}
     {@render btn(Bold, 'Bold', s.bold, () => c().toggleBold().run())}
     {@render btn(Italic, 'Italic', s.italic, () => c().toggleItalic().run())}
     {@render btn(Strikethrough, 'Strikethrough', s.strike, () => c().toggleStrike().run())}
@@ -211,21 +306,12 @@
     {@render btn(Code, 'Inline code', s.code, () => c().toggleCode().run())}
     {@render btn(SquareCode, 'Code block', s.codeBlock, () => c().toggleCodeBlock().run())}
     <span class="mx-1 h-4 w-px bg-line-subtle"></span>
-    {@render btn(TableIcon, s.table ? 'Delete table' : 'Insert table', s.table, () =>
-      s.table ? c().deleteTable().run() : c().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run(),
-    )}
+    {@render btn(TableIcon, s.table ? 'Delete table' : 'Insert table', s.table, toggleTable)}
     {#if s.table}
       <span class="mx-1 h-4 w-px bg-line-subtle"></span>
-      {@render tableBtn('+ row', 'Add row below', () => c().addRowAfter().run())}
-      {@render tableBtn('+ col', 'Add column right', () => c().addColumnAfter().run())}
-      {@render tableBtn('− row', 'Delete this row', () => c().deleteRow().run())}
-      {@render tableBtn('− col', 'Delete this column', () => c().deleteColumn().run())}
-      {@render tableBtn('header', 'Toggle header row', () => c().toggleHeaderRow().run())}
+      {@render tableOps()}
     {/if}
-    {@render btn(ImageIcon, 'Insert image', false, () => {
-      imgUrl = ''
-      imgOpen = true
-    })}
+    {@render btn(ImageIcon, 'Insert image', false, openImageModal)}
     {#if onAttachFiles}
       {@render btn(Paperclip, 'Attach file', false, () => attachRef?.click())}
     {/if}
@@ -240,7 +326,13 @@
         {/if}
       </span>
     {/if}
-    {#if onSubmit}
+    {/if}
+    {#if onSubmit && sans}
+      <Button size="xs" class="ml-auto gap-1.5" title="Send (Ctrl+Enter)" onmousedown={(e) => e.preventDefault()} onclick={onSubmit}>
+        <SendHorizontal size={14} strokeWidth={2} />
+        Send
+      </Button>
+    {:else if onSubmit}
       <button
         type="button"
         title="Send (Ctrl+Enter)"
@@ -249,7 +341,7 @@
         class={cn(
           // Primary button (spec §8): gold fill, dark ground glyph/label, mono
           // uppercase, radius 6.
-          'ml-auto flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-surface transition-all hover:brightness-110',
+          'ml-auto flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.05em] text-surface transition-all hover:brightness-110', // voice-ok: the mono branch, as it was
           focusGold,
         )}
       >

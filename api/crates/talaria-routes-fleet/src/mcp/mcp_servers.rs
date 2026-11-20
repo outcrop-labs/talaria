@@ -518,6 +518,15 @@ pub async fn post(
             Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
+    // Google's Workspace MCP servers come in through the pack, never by URL:
+    // registered here they would take no Google grant, and every call would
+    // come back as Google's raw refusal.
+    if talaria_api_facades::google::mcp::pack::is_google_workspace_mcp_url(&url) {
+        return Ok(house_error(
+            StatusCode::BAD_REQUEST,
+            talaria_api_facades::google::mcp::pack::CUSTOM_URL_REFUSAL,
+        ));
+    }
     // The library's liveness job found this endpoint dead: say so rather
     // than register a server no agent will ever reach. `force` is the
     // operator's "I know".

@@ -6,9 +6,11 @@
 
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { ChevronDown } from '@lucide/svelte'
   import { cn } from '@/lib/cn'
   import { fade, pop, POPOVER, QUICK } from '@/lib/motion'
   import { portal } from '@/lib/portal'
+  import { useUiVoice, voiceScope } from '@/lib/ui-voice'
   import { popRow, popRowSelected } from '@/components/chat/chat-chrome'
   import { controlSizes, disabledControl, type ControlSize } from './control'
   import { fuzzy, type ComboOption } from './combobox'
@@ -50,6 +52,9 @@
     /** Override the trigger content (e.g. a constant "Add label" for tag inputs). */
     triggerLabel?: string | Snippet
   } = $props()
+
+  const voice = useUiVoice()
+  const sans = voice === 'sans'
 
   let open = $state(false)
   let q = $state('')
@@ -233,12 +238,17 @@
         </span>
       {/if}
     </span>
-    <span class="text-muted">▾</span>
+    {#if sans}
+      <ChevronDown size={16} strokeWidth={1.5} class="shrink-0 text-muted" />
+    {:else}
+      <span class="text-muted">▾</span>
+    {/if}
   </button>
 
   {#if open && pos}
     <div
       use:portal
+      data-voice={voiceScope(voice)}
       bind:this={panelRef}
       in:pop={POPOVER}
       out:fade={QUICK}
@@ -252,9 +262,15 @@
       style:width={`${pos.width}px`}
     >
       <!-- Spec §7 popover pattern: panel bg, hairline, radius 10,
-           search field on top, hover card2, selected = dashed gold. -->
+           search field on top, hover card2, selected = dashed gold.
+           Sans marks the selected option with its check alone: a dashed
+           outline reads there as a focus ring. -->
       {#if searchable || allowCreate}
-        <div class="mb-1 flex items-center gap-1.5 rounded-md border border-line px-2">
+        <!-- Sans: the field's border carries the focus. The app's own ring is
+             square and pokes out of this rounded wrapper. -->
+        <div class={sans
+          ? 'mb-1 flex items-center gap-1.5 rounded-md border border-line px-2 focus-within:border-accent'
+          : 'mb-1 flex items-center gap-1.5 rounded-md border border-line px-2'}>
           <!-- svelte-ignore a11y_autofocus -->
           <input
             autofocus
@@ -263,13 +279,15 @@
             placeholder={allowCreate ? 'Search or create' : 'Search'}
             aria-controls={listId}
             aria-activedescendant={filtered[hl] ? `${listId}-${hl}` : undefined}
-            class="h-7 w-full min-w-0 bg-transparent font-mono text-[11px] tracking-[0.05em] text-fg outline-none placeholder:text-muted"
+            class={sans
+              ? 'h-7 w-full min-w-0 bg-transparent font-sans text-[13px] text-fg outline-none! placeholder:text-muted'
+              : 'h-7 w-full min-w-0 bg-transparent font-mono text-[11px] tracking-[0.05em] text-fg outline-none placeholder:text-muted'}
           />
         </div>
       {/if}
       <ul id={listId} role="listbox" class="max-h-56 overflow-y-auto">
         {#if filtered.length === 0 && !canCreate}
-          <li role="presentation" class="px-2 py-2 font-mono text-[11px] text-muted">No matches</li>
+          <li role="presentation" class={sans ? 'px-2 py-2 font-sans text-xs text-muted' : 'px-2 py-2 font-mono text-[11px] text-muted'}>No matches</li>
         {/if}
         {#if canCreate}
           <li role="presentation">
@@ -287,13 +305,13 @@
               id={`${listId}-${i}`}
               data-hl={hl === i || undefined}
               onclick={() => toggle(o.value)}
-              class={cn(popRow, hl === i && 'bg-hover', selectedSet.has(o.value) && popRowSelected)}
+              class={cn(popRow, hl === i && 'bg-hover', selectedSet.has(o.value) && (sans ? 'font-medium' : popRowSelected))}
             >
               {@render o.icon?.()}
               <span class="min-w-0 flex-1">
                 <span class="block truncate text-fg">{o.label}</span>
                 {#if o.sub}
-                  <span class="block truncate font-mono text-[10px] tracking-[0.05em] text-muted">{o.sub}</span>
+                  <span class={sans ? 'block truncate font-sans text-xs leading-4 text-muted' : 'block truncate font-mono text-[10px] tracking-[0.05em] text-muted'}>{o.sub}</span>
                 {/if}
               </span>
               {#if selectedSet.has(o.value)}<span class="text-accent">✓</span>{/if}

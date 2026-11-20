@@ -1032,6 +1032,27 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("PUT") }),
         )
         .route(
+            "/api/admin/google-client/check",
+            post(talaria_routes_admin::admin::admin_google_client::post_check)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/admin/google/mcp",
+            get(talaria_routes_admin::admin::admin_google_mcp::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/admin/google/mcp/{product}",
+            post(talaria_routes_admin::admin::admin_google_mcp::post)
+                .delete(talaria_routes_admin::admin::admin_google_mcp::delete)
+                .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/admin/google/mcp/{product}/tools/{tool}",
+            put(talaria_routes_admin::admin::admin_google_mcp::put_tool)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        .route(
             "/api/admin/instance",
             get(talaria_routes_admin::admin::admin_instance::get)
                 .put(talaria_routes_admin::admin::admin_instance::put)
@@ -1838,6 +1859,16 @@ pub fn router(state: AppState) -> Router {
             "/api/runs/{id}/transcript",
             get(talaria_routes_fleet::agents::runs_transcript::get)
                 .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/runs/{id}/checkpoints",
+            get(talaria_routes_fleet::agents::runs_checkpoints::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
+            "/api/runs/{id}/rewind",
+            post(talaria_routes_fleet::agents::runs_rewind::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/agents/tool-events",

@@ -19,6 +19,7 @@
     history = [],
     resetKey = 0,
     onFrame,
+    onRunEvent,
   }: {
     runId: string
     taskId: string
@@ -28,6 +29,9 @@
     history?: WatchFrame[]
     resetKey?: number
     onFrame?: (ev: WatchFrame) => void
+    /** The run moved. One stream serves the whole modal: a second would spend
+     *  a socket of the six a dev stack's browser allows per host. */
+    onRunEvent?: () => void
   } = $props()
 
   const qc = useQueryClient()
@@ -54,6 +58,7 @@
    *  state, so a run that finished while it was closed (a hidden tab's pause,
    *  a deploy's 502) would otherwise read "working" forever (C31). */
   const readRun = async () => {
+    onRunEvent?.()
     void qc.invalidateQueries({ queryKey: ['work-session', taskId] })
     void qc.invalidateQueries({ queryKey: ['task', taskId] })
     try {
@@ -82,6 +87,7 @@
           return
         }
         if (ev.phase !== undefined) phase = ev.phase
+        onRunEvent?.()
         void qc.invalidateQueries({ queryKey: ['work-session', taskId] })
         void qc.invalidateQueries({ queryKey: ['task', taskId] })
         if (ev.state && TERMINAL.includes(ev.state)) end()

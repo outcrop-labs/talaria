@@ -213,11 +213,344 @@ checkbox, so each card asks what Google Cloud shows: *Ticked*, *Unticked* or
 in `app_settings`), so a client moved between roles keeps it. Headless
 installs pin it in env: `AUTH_GOOGLE_CLIENT_AGENTIC` and
 `AUTH_GOOGLE_SIGNIN_CLIENT_AGENTIC` (`1` ticked, `0` not), each describing
-only the client its own `*_CLIENT_ID` names. A declaration refuses nothing.
-The panel warns when the sign-in client is declared agentic, and when login
+only the client its own `*_CLIENT_ID` names. A declaration refuses no REST
+call. The panel warns when the sign-in client is declared agentic, and when login
 is on, runs on the connections client, and that client is declared agentic.
 It also warns when a sign-in client is set but there is no connections client
 and no domain for login to take.
+
+**Checking the mark with Google.** The only provider-side evidence of the mark
+is Google's MCP servers accepting a call: Google's notice says they "will
+reject requests from any app or integration whose OAuth client is not marked
+as agentic". **Check with Google**
+(`POST /api/admin/google-client/check?role=connections|signin`, admin only,
+audited as `google.client_check`) makes one `tools/call list_labels` to
+`https://gmailmcp.googleapis.com/mcp/v1`, one unit of the Gmail MCP server's
+query-cost quota, with **your own** Google connection. That connection must
+have been made with the client being checked, so the button sits on that
+client's card alone (`GET /api/admin/google-client` carries the client as
+`personalClientId`), and the other card says why. If you have no connection,
+or yours is recorded as made with another client, the route refuses with a
+409 that names the client and sends nothing to Google, not even a token
+refresh. A connection that has not recorded its client yet is refreshed
+first, because the refresh is what records it. A sign-in client that has
+only ever run login made no stored connection, so it cannot be checked this
+way, and it needs no check: signing in is not an agent. A client that was the connections client
+before it moved to the sign-in slot (the "not marked by November 12" shape
+above) can be checked through a connection it made then, because a connection
+keeps the client that made it. Google's answer is stored under the client's id as
+`lastCheck` (`{ok, status, text, at}`) beside the declaration, and the card
+shows it:
+
+- `ok` is true only for an HTTP 2xx carrying a JSON-RPC result without
+  `isError`. That is Google confirming the mark, and it outranks a
+  declaration of *Unticked*. The result itself, your mail labels, is not
+  stored.
+- Anything else is shown as Google sent it: the HTTP status and Google's
+  words, folded and capped, never reworded. A refusal is **not** read as "not
+  marked". Google's body for an unmarked client has not been captured, and
+  the same call also fails, in Google's words, when the project is not in the
+  Workspace Developer Preview, has not enabled `gmailmcp.googleapis.com`, or
+  the token lacks a Gmail scope. It is still the last answer: only the last
+  check is kept, so a refusal after an acceptance ends the confirmation, and
+  the client's standing falls back to its declaration. For example, a token
+  Google does not accept answers HTTP 401 `Request had invalid
+  authentication credentials. Expected OAuth 2 access token, login cookie or
+  other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.`
+  (captured 2026-11-17).
+- A call that never got Google's answer (a timeout, no network) is a 502
+  `google_unreachable`, and nothing is recorded.
+
+### One door for agent tokens
+
+Every agent Google token comes through one function,
+`talaria_google_agent::vend_principal_token`. The agent routes
+(`resolve_agent_google`), the approval executor, the queue-time write
+refusal and the agent record all read through it:
+
+1. **The principal names one stored grant.** `owner` reads that person's own
+   connection, `org` reads the org account, and `agent` reads the agent's own
+   identity. An owner with no connection gets nothing, never the org
+   account's. A caller that is not proven (the legacy shared key) gets
+   nothing, and so does a registry read that fails.
+2. **The grant refreshes with the client that minted it** (see *Which client
+   a connection refreshes with* above). A token that cannot be had is an
+   error in Google's words, never "not connected".
+3. **The purpose decides whether that client qualifies.** A REST call takes
+   any grant, which is today's behaviour for every agent tool. A call bound
+   for Google's Workspace MCP servers takes a grant unless its minting client
+   is declared *Unticked* and Google's last answer to a check did not accept
+   it. Then the token is not handed out for those servers, and the answer
+   says that nothing was sent to them and names the client and the fix (the
+   refresh in step 2 may already have reached Google's token endpoint): a
+   reconnect when the connections slot now holds a client that is not
+   declared unticked, else an admin's. A client nobody has declared, or a grant that
+   has not recorded its client yet, goes to Google, and Google's answer is
+   relayed. Eligibility follows the **minting client**, never the table the
+   grant sits in. So when the connections client was flipped to agentic,
+   every stored grant already qualifies, with no reconnect.
+
+The Workspace MCP pack (below) is the door's first `HostedMcp` caller. A
+separate agent client (full separation) is a later change. The agent record
+shows what such a call would do: `GET
+/api/fleet/defs/{id}/google` carries `agentic` (`verified`,
+`declared_agentic`, `declared_not_agentic`, `unknown`, or null with no
+recorded client) and `mcpRefusal`: why such a call would be refused and the
+fix, or null. Its `connected`, `email` and `clientId` now describe the org
+account's grant for an `org` agent too, as they already did for the other
+two kinds. The org account's address and its `reconnectReason` stay
+admin-only, as on the org connection's own routes: an agent manager who is
+not an admin reads them as null.
+
+### Google's Workspace MCP servers (Developer Preview)
+
+Google runs its own MCP servers for Gmail, Drive, Calendar, Docs, Sheets,
+Slides, Chat, People and Universal Search. Talaria can put them behind its MCP
+gateway, **off by default and per instance**: reads run, and every write
+waits for a person to approve it. They are in Google's **Developer Preview**, whose terms say: "features in Developer
+Preview may not be included in public applications prior to the General
+Availability announcement." (<https://developers.google.com/workspace/preview>).
+Talaria's own Google tools (the `talaria` toolkit's `read_email`,
+`draft_email`, `read_calendar` and the rest) are unchanged and stay the
+primary surface; nothing is superseded before Google announces GA.
+
+**Turning one on.** Admin → Org → **Google Workspace MCP**. Each product has a
+switch; enabling it asks the admin to acknowledge the preview terms
+(`POST /api/admin/google/mcp/{product}` with `acknowledgePreview: true`,
+audited as `google.mcp_enable`). It creates one registry row,
+`google-<product>` with `auth_mode = 'google'`, **assigned to no agent**, and
+asks Google for its catalog. Assign it to agents on the MCP page like any
+other server; the owner-access and team rules apply unchanged. Disabling
+(`DELETE …/{product}`, `google.mcp_disable`) removes the row, its
+assignments and its tool overrides; a held call still waiting fails when
+approved (its server is gone). The row's address, credentials and auth mode belong to the pack:
+the MCP page refuses to change them, and the custom-URL form refuses Google's
+Workspace MCP hosts with a sentence naming the pack. Google serves each of
+those servers under several names, and every one is refused: any host under
+`googleapis.com` or `google.com` with a label ending in `mcp`
+(`gmailmcp.googleapis.com`, `gmailmcp.mtls.googleapis.com`,
+`gmailmcp.clients6.google.com`, `content-gmailmcp.googleapis.com`, …), and
+People's `/mcp` path on any of its names (`people.googleapis.com`,
+`people.mtls.googleapis.com`, `content-people.googleapis.com`). Probed with
+no credential on 2026-11-17, 49 such names answered `tools/list` with their
+server's catalog byte for byte
+(`api/crates/talaria-google-mcp/fixtures/alias-hosts.json`), and the guard's
+test refuses every one of them. Registered by URL they would take no Google grant, or an
+attached one with none of the pack's policy. A row that already names one (it
+was registered before this guard) is relayed nothing by the gateway, and
+`call_mcp_tool` refuses it too.
+
+**Whose account a call uses.** Each call speaks as the calling agent's own
+Google principal, through the one door with `Purpose::HostedMcp`:
+
+- `owner` → that person's own connection; an owner with none is told to
+  connect Google in Settings → Connections, and the org account is **never**
+  used instead.
+- `org` → the org account (Admin → Org).
+- `agent` → the agent's own identity (its page).
+
+A legacy shared-key caller is refused outright. A grant minted by a client
+declared *Unticked* for "Use this client for an AI-powered agent", with no
+acceptance from Google on record, never reaches Google: the agent reads the
+door's sentence (the JSON-RPC `-32001` answer the gateway gives a server that
+is not connected). A token that cannot be had reads in Google's words. The
+bearer is injected by the gateway; refresh and access tokens never enter an
+agent's container, a tool result or a log. Calls go to the product's endpoint
+as the code names it, never to the row's stored URL.
+
+**Which methods reach Google.** A pack row relays `initialize`, `ping`,
+`tools/list`, `tools/call` and `notifications/*` only. Any other method
+(resources, prompts, completion, logging, one Google adds later) is answered
+by the gateway with `-32601`, and a batch or a JSON-RPC response gets HTTP 400.
+None of them is sent to Google. Google receives the JSON the gateway's gate
+read, re-serialized, never the agent's raw bytes.
+
+**What runs.** Each tool has a policy: **allow** relays it, **hold** waits for
+a person, **deny** never runs. The default, per tool:
+
+| Default | Tools | What happens |
+|---|---|---|
+| **allow** | the pinned reads, e.g. Gmail `search_threads`, `get_thread`, `list_labels`; Calendar `list_events`, `suggest_time`; Drive `search_files`, `read_file_content`; Docs `read_doc` | relayed to Google |
+| **hold** | every write (Gmail `create_draft` and the label tools, Calendar `create_event`/`update_event`/`delete_event`/`respond_to_event`, Drive `create_file`/`copy_file`, Docs/Sheets/Slides updates, Chat `send_message`), and **any tool Google adds later** | queued for a person (below); Google hears nothing until they approve |
+| **deny** | trash and untrash, mark and unmark spam, `apply_sensitive_*` | refused, always |
+
+**The same floor, by argument.** Gmail's label tools reach the trash and spam
+without those words in their names: Google's own catalog says `unlabel_thread`
+and `unlabel_message` take "a system label ID (e.g., `INBOX`, `TRASH`, …)",
+and `label_*` and `update_message_labels` take system label IDs too. So a call
+of **any** tool that names `TRASH`, `SPAM` or `BIN` (any case) in a label
+argument (`labelIds`, `addLabelIds`, `removeLabelIds`, …) is refused at the
+gateway, before a hold, an admin's allow or an unlock is read, and again when
+an approved call is replayed: nothing is queued and nothing reaches Google.
+No override, unlock or approval lifts it. The set is Talaria's REST organize
+path's own (`FORBIDDEN_LABELS`). No read tool Google lists takes a label
+argument.
+
+A tool is **allowed** only when it is on the pinned read list
+(`talaria-google-mcp`'s `policy::READ_LIST`: every tool Google's live catalogs
+marked `readOnlyHint: true` on 2026-11-17) **and** the server's cached catalog
+marks it `readOnlyHint: true`. Google calls tool annotations untrusted hints,
+so neither fact is enough alone. A tool Google's catalog (as last listed) does
+not have is refused, not held. A call whose arguments name a workspace secret
+(`«secret:…»`) is refused too, held or not: secrets are never sent to Google's
+Workspace MCP servers, and never sit in the approval queue. Every refusal says
+nothing was sent (the token is vended first, so its refresh may already have
+reached Google's token endpoint).
+
+**Per-tool overrides.** Admin → Org → Google Workspace MCP lists every tool
+with its default and a selector (`PUT
+/api/admin/google/mcp/{product}/tools/{tool}` with `{policy: "allow" | "hold"
+| "deny" | null}`, audited as `google.mcp_tool_policy` with before and after;
+stored in `mcp_tool_policies`). An admin can let a write run without a person,
+hold a read, or deny anything. **An allow never reaches a personal
+assistant:** a call into one member's own Google account stays held for that
+member, because the approval model gives the owner alone — never an admin —
+the say over an owner's row, and an allow would be an admin's standing
+approval of every such call. An allow applies to the org account and to
+agents' own identities, whose calls an admin approves anyway; hold and deny
+apply to every caller. The panel shows both (`effective`, and
+`effectivePersonal` where an allow does not reach). **The deny list is a
+floor:** the route refuses
+any override on a trash, spam or sensitive-label tool but deny, and the
+gateway ignores one that got there anyway. An override names one tool on one
+server, so a tool Google adds later never inherits one: it starts held. A
+change tells the agents holding the server to list its tools again.
+
+**Holds: the `mcp_call` approval.** When an agent calls a held tool, the gateway does not relay it. It queues the
+exact call — server, tool, the arguments as sent, and what Google's catalog
+said of the tool — in the same confirm-sends queue Talaria's own Google drafts
+use (`google_pending_actions`, kind `mcp_call`), and answers the agent with an
+ordinary tool result: `Queued for approval as <id>. Not done yet: …`. The
+call's record in `mcp_tool_calls` reads `held`. A held tool is listed to the
+agent with that said ahead of Google's description, and without Google's
+`outputSchema` (its call answers with an approval id, not that shape). The
+hold runs after the pack's own refusals and the agent's tool subset, and
+before the credential spend boundary; a retried identical call converges on
+the row still waiting, or on one whose approval is running it, so one write
+never runs twice. A retry of a call whose approval was claimed more than five
+minutes ago and never settled (a process stopped mid-replay) is told its
+outcome is unknown and to check in Google; nothing new is queued.
+
+Who approves is the principal's, as for every Google action:
+
+| Principal | Approves | Runs as |
+|---|---|---|
+| `owner` (a personal assistant) | its owner, alone | the owner's own grant |
+| `org` | any admin | the org account's grant |
+| `agent` (its own identity) | any admin | the agent's own grant |
+
+The row reaches the approver everywhere a drafted email does: a **Google tool
+call** card in the conversation the agent is speaking in, the Inbox focus and
+the brief (`APPROVAL · GOOGLE TOOL`, with the server, the tool and the
+arguments as evidence), the approvals census and its nudges, and the agent's
+own `list_pending_sends` / `read_pending_send`.
+
+**Approving replays the call once**, through `decide_action`'s `mcp_call`
+arm, after re-checking: the arguments still name no secret; the registry row
+still exists, is still the pack's and is turned on; Google's catalog still
+lists the tool; the policy (an override, else the default) is not deny now,
+and the arguments name no `TRASH` or `SPAM` label; and the agent may still use
+the server and the tool — its assignment or team grant, and for a personal
+assistant its owner's user and team access, read as the gateway reads them
+(`talaria-mcp`'s `mcp_allowance`). Access an admin revoked after the call was
+queued fails it, with nothing sent.
+Only then does it vend a token for `Purpose::HostedMcp` through the one door
+— a grant minted by a client declared unticked never reaches Google — and send
+one stateless `tools/call` to the product's endpoint as the code names it.
+
+| What Google answers | The row |
+|---|---|
+| a completed tool result | `executed`; the result is kept (capped at 32 KiB) |
+| a refusal, a JSON-RPC error, or a tool result with `isError` | `failed`, with Google's words quoted |
+| HTTP 401 | back to `pending` (nothing ran), Google's words as `lastError`; the cached token is dropped so the next approval refreshes |
+| an elicitation (`elicitation/create` or any request from the server) or a multi-round-trip request | `failed`, quoting what Google asked. Talaria answers none until one has been captured live (owner decision D6) |
+| no answer, or an answer that is not a completed tool result | `failed`, saying it may or may not have run: approving again could run a write twice |
+| no token, or a grant whose client is declared unticked | back to `pending`, with the reconnect or the door's sentence; nothing sent |
+
+A 401 or 403 is also recorded on the grant as `last_mcp_refusal`, as the
+gateway records one; an accepted replay forgets a flag.
+
+**One more call without a new card (personal assistants only).** Approving a
+held call in a conversation leaves a grant there keyed `<server>/<tool>`
+(`google-calendar/create_event`), bound to whoever the approved call addressed
+— its Calendar attendees (`attendees`, `addedAttendees`, `attendeeEmails`,
+`addedAttendeeEmails`, `removedAttendeeEmails`), its Gmail `to`/`cc`/`bcc`, or
+its Chat space (`conversationId`, and the space a `threadId` names) — as
+`draft_email`'s grant is bound to its recipients. For thirty minutes, the
+agent's next call of that same tool on that same server, addressing no one
+the approved call did not, runs at once in the owner's name, and the agent
+reads Google's result. A call adding an attendee, a recipient or another
+space is held as usual and does not spend the grant; a call naming nobody is
+covered. One use, then it is spent; another tool, or the same tool on another
+server, is held as usual. An org-account or agent-identity call never rides an
+unlock: an admin approves each one.
+
+**What a held call keeps.** The arguments sit in the queue as sent, readable
+only through the approver's routes and the agent's own queue reads, as a
+drafted email's body does today. They never enter a log or the call record.
+
+**Scopes come from Google.** Each tool's protected-resource document
+(`https://<server>/.well-known/oauth-protected-resource/<tool>`, RFC 9728)
+lists the scopes Google accepts for it. The catalog refresh stores that list
+per tool (`requiredScopesAnyOf`), and a call whose grant holds none of them is
+answered before Google is asked: which scopes the tool takes, and whether a
+reconnect would grant one. Talaria's personal connect (`drive`,
+`calendar.events`, `gmail.modify`, `gmail.send`) covers every pinned read but
+Calendar's `list_calendars` (it takes `calendar`, `calendar.readonly` or the
+calendar-list scopes; the org connect's `calendar` covers it) and the Chat and
+People tools, whose scopes no Talaria connect asks for.
+
+**When Google refuses.** The agent reads Google's words, quoted, as a tool
+result with `isError` (an HTTP 401 handed to the agent's own MCP client would
+send it looking for an OAuth flow Talaria owns). A 401 or 403 is also stored
+on the grant as `last_mcp_refusal` (`{status, text, tool, at, flagged}`), and
+the admin panel lists the latest. A 401 drops the cached token and retries
+once on a fresh one. A 401 that persists is stored with `flagged: true`:
+Settings → Connections asks the person to reconnect, and the admin panel says
+a fresh token was refused too. It is not written to `reconnect_reason`, which
+is the token endpoint's refusal of the OAuth client: the refresh that minted
+the fresh token succeeded, and the cards and the census read
+`reconnect_reason` as the client's. The flag stands until Google accepts a
+call made with that grant, a later refusal does not repeat it, or a reconnect
+brings a new grant. A 403 never flags: it may be one file or one quota. A 429 or 5xx is only quoted. No refusal is matched
+for a class: Google's answer to a client not marked for AI agents has not been
+captured.
+
+**What the operator does in Google Cloud.**
+1. Enrol the Workspace account and the Google Cloud project in the [Google
+   Workspace Developer Preview Program](https://developers.google.com/workspace/preview).
+2. Enable each product's REST API **and** its MCP service — the panel prints
+   the command, e.g. `gcloud services enable gmailmcp.googleapis.com
+   gmail.googleapis.com calendarmcp.googleapis.com calendar-json.googleapis.com`.
+   People has no MCP service of its own; Universal Search is
+   `workspacemcp.googleapis.com`. Chat also needs a Chat app with interactive
+   features turned off.
+3. Mark the connections client "Use this client for an AI-powered agent", say
+   so on its card, and press **Check with Google**.
+
+**What is not proven live.** Nobody here is enrolled in the Developer Preview,
+so no authenticated call to Google's Workspace MCP servers has been made. The
+catalogs, the per-tool protected-resource documents, the `initialize` answer
+and the 401 bodies were captured from Google without a credential on
+2026-11-17 (`api/crates/talaria-google-mcp/fixtures/`). An accepted
+`tools/call`, a 403, an authenticated `tools/list` (it may differ from the
+unauthenticated one), elicitation or MRTR on a read or on an approved replay,
+and Google's refusal of an unmarked client are all still unobserved. The
+replay's accepted, elicitation and MRTR shapes are the MCP specification's,
+and its tests say so.
+
+**Testing against a stand-in.**
+`TALARIA_TEST_GOOGLE_MCP_ORIGINS=gmail=http://127.0.0.1:7811,calendar=…` sends
+those products' calls to a loopback stub instead of Google. Only a loopback
+`http://` origin is taken; anything else in the variable is ignored. The code
+is compiled into debug-profile builds only: `talaria dev`'s `cargo run`, CI's
+`--api-from-ci` artifact, and also the nightly and rc channel images, which
+`release.yml` builds with the dev profile. It is read only outside a
+deployment: a process carrying the published image's `TALARIA_INSTALL=image`,
+or a production checkout's `TALARIA_RUNTIME=prod-server`, ignores the
+variable. A release-profile build (main's feed and every stable tag) has no
+such code. The gateway's address guard still applies, so the stack also needs
+`TALARIA_FETCH_ALLOW_HOSTS=127.0.0.1`.
 
 ### Which client a connection refreshes with
 

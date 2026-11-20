@@ -7,6 +7,17 @@
 //   org action (a general agent, on the shared org account)     → an ADMIN approves
 //   agent action (the agent's own Google account)               → an ADMIN approves,
 //     and the agent's token executes — never the org account's
+//
+// One kind is not a REST call: `mcp_call`, a call to one of Google's
+// Workspace MCP servers that the MCP gateway held for a person (`mcp_call`).
+// Approving it replays that exact call once, as the same principal, after
+// re-checking the registry row and the pack's policy.
+
+pub mod mcp_call;
+
+pub use mcp_call::{
+    HeldCall, MCP_CALL, McpReplay, executed_result, held_payload, held_summary, read_held,
+};
 
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -14,18 +25,18 @@ use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
 use std::sync::OnceLock;
-use talaria_google_agent::get_agent_access_token;
+use talaria_google_agent::{AgentPrincipal, PrincipalKind, Purpose, Vend, vend_principal_token};
 use talaria_google_calendar::{
     CreateEventInput, cancel_event_with_token, create_event_with_token, update_event_with_token,
 };
-use talaria_google_connections::{TokenError, get_access_token};
+use talaria_google_connections::TokenError;
 use talaria_google_docs::{create_doc_with_token, update_doc_with_token};
 use talaria_google_drive::{
     create_drive_folder_with_token, move_drive_file_with_token, rename_drive_file_with_token,
 };
 use talaria_google_errors::{quote_raw, upstream_reason};
 use talaria_google_gmail::{SendInput, send_message_with_token};
-use talaria_google_org::{get_org_access_token, get_org_email, get_org_targets};
+use talaria_google_org::{get_org_email, get_org_targets};
 use talaria_google_sheets::update_sheet_with_token;
 use talaria_google_slides::{TextReplacement, replace_text_with_token};
 use talaria_realtime::RealtimeDeps;
@@ -156,29 +167,43 @@ pub async fn queue_action(
     realtime: RealtimeDeps,
     input: &QueueAction<'_>,
 ) -> Result<QueuedAction, String> {
-    if let Some(action) = find_same_pending_draft(pg, input).await? {
-        return Ok(QueuedAction {
-            action,
-            already_pending: true,
-        });
-    }
-    let row: PendingRow = sqlx::query_as(concat!(
-        "insert into google_pending_actions \
-             (kind, summary, payload, agent_model, owner_user_id, is_org, principal_kind) \
-         values ($1, $2, $3, $4, $5::uuid, $6, $7) \
-         returning ",
-        pending_columns!()
-    ))
-    .bind(input.kind)
-    .bind(input.summary)
-    .bind(input.payload)
-    .bind(input.agent_model)
-    .bind(input.owner_user_id)
-    .bind(input.is_org)
-    .bind(input.principal_kind)
-    .fetch_one(pg)
-    .await
-    .map_err(|e| format!("google pending action insert: {e}"))?;
+    // A held Google Workspace MCP call is looked up and inserted under one
+    // lock on the call itself, so two identical calls arriving together
+    // cannot both find nothing and both insert — two cards whose approvals
+    // would run the same write twice.
+    let row = if input.kind == MCP_CALL {
+        let mut tx = pg
+            .begin()
+            .await
+            .map_err(|e| format!("google pending action begin: {e}"))?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(mcp_call_lock_key(input))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("google pending action lock: {e}"))?;
+        if let Some(row) = find_same_mcp_call(&mut *tx, input).await? {
+            tx.commit()
+                .await
+                .map_err(|e| format!("google pending action commit: {e}"))?;
+            return Ok(QueuedAction {
+                action: PendingAction::from(row),
+                already_pending: true,
+            });
+        }
+        let row = insert_pending(&mut *tx, input).await?;
+        tx.commit()
+            .await
+            .map_err(|e| format!("google pending action commit: {e}"))?;
+        row
+    } else {
+        if let Some(action) = find_same_pending_draft(pg, input).await? {
+            return Ok(QueuedAction {
+                action,
+                already_pending: true,
+            });
+        }
+        insert_pending(pg, input).await?
+    };
     let action = PendingAction::from(row);
     let id = action.id.clone();
 
@@ -204,6 +229,103 @@ pub async fn queue_action(
         action,
         already_pending: false,
     })
+}
+
+/// One pending row, inserted as `input` asks.
+async fn insert_pending<'e, E: sqlx::PgExecutor<'e>>(
+    exec: E,
+    input: &QueueAction<'_>,
+) -> Result<PendingRow, String> {
+    sqlx::query_as(concat!(
+        "insert into google_pending_actions \
+             (kind, summary, payload, agent_model, owner_user_id, is_org, principal_kind) \
+         values ($1, $2, $3, $4, $5::uuid, $6, $7) \
+         returning ",
+        pending_columns!()
+    ))
+    .bind(input.kind)
+    .bind(input.summary)
+    .bind(input.payload)
+    .bind(input.agent_model)
+    .bind(input.owner_user_id)
+    .bind(input.is_org)
+    .bind(input.principal_kind)
+    .fetch_one(exec)
+    .await
+    .map_err(|e| format!("google pending action insert: {e}"))
+}
+
+/// What the advisory lock around a held call's lookup and insert is keyed
+/// on: the same fields the lookup matches. Two calls that differ only in the
+/// order of their argument keys take different locks — the lookup's jsonb
+/// equality still merges them when they do not arrive together.
+fn mcp_call_lock_key(input: &QueueAction<'_>) -> String {
+    let field = |k: &str| {
+        input
+            .payload
+            .get(k)
+            .map(Value::to_string)
+            .unwrap_or_default()
+    };
+    format!(
+        "mcp_call\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        input.agent_model,
+        input.owner_user_id.unwrap_or(""),
+        input.is_org,
+        field("serverId"),
+        field("tool"),
+        field("arguments"),
+    )
+}
+
+/// A held Google Workspace MCP call is the same ask when the same agent
+/// called the same tool on the same server with the same arguments, for the
+/// same approver: a retried call converges on the row still waiting — or on
+/// the one an approval is running right now (`executing`, up to the replay's
+/// two minutes), so a retry never becomes a second card whose approval would
+/// run the write twice.
+/// Is the `executing` row `action_id` still inside an approved replay's time
+/// — the replay's two-minute answer budget, the token vend before it, and a
+/// margin: five minutes since it was claimed? False for an older claim (a
+/// process that stopped mid-replay, whose outcome nobody knows) and for a
+/// row that is not `executing`. The gateway reads it to tell a retry
+/// "running right now" from "outcome unknown"; the dedupe matches both, so
+/// neither queues a second run.
+pub async fn replay_still_running(pg: &PgPool, action_id: &str) -> Result<bool, String> {
+    let live: Option<Option<bool>> = sqlx::query_scalar(
+        "select decided_at > now() - interval '5 minutes' from google_pending_actions \
+         where id = $1::uuid and status = 'executing'",
+    )
+    .bind(action_id)
+    .fetch_optional(pg)
+    .await
+    .map_err(|e| format!("google pending action running read: {e}"))?;
+    Ok(live.flatten().unwrap_or(false))
+}
+
+async fn find_same_mcp_call<'e, E: sqlx::PgExecutor<'e>>(
+    exec: E,
+    input: &QueueAction<'_>,
+) -> Result<Option<PendingRow>, String> {
+    sqlx::query_as(concat!(
+        "select ",
+        pending_columns!(),
+        " from google_pending_actions \
+          where kind = 'mcp_call' and status in ('pending', 'executing') \
+            and is_org = $1 and owner_user_id is not distinct from $2::uuid \
+            and agent_model = $3 \
+            and payload->'serverId' = $4->'serverId' \
+            and payload->'tool' = $4->'tool' \
+            and payload->'arguments' = $4->'arguments' \
+          order by created_at desc limit 1"
+    ))
+    .bind(input.is_org)
+    .bind(input.owner_user_id)
+    .bind(input.agent_model)
+    .bind(input.payload)
+    .fetch_optional(exec)
+    .await
+    .map_err(|e| format!("google pending action dedupe read: {e}"))
 }
 
 async fn find_same_pending_draft(
@@ -461,6 +583,32 @@ pub async fn decide_action(
     decision: &str,
     now_ms: i64,
 ) -> Result<Option<DecideOutcome>, String> {
+    decide_action_with(
+        pg,
+        sb,
+        action_id,
+        actor_id,
+        actor_is_admin,
+        decision,
+        now_ms,
+        &McpReplay::google(),
+    )
+    .await
+}
+
+/// `decide_action`, with where an approved `mcp_call` replays to (`replay`):
+/// Google's own endpoints in production, a stand-in in a test.
+#[allow(clippy::too_many_arguments)]
+pub async fn decide_action_with(
+    pg: &PgPool,
+    sb: &SecretBox,
+    action_id: &str,
+    actor_id: &str,
+    actor_is_admin: bool,
+    decision: &str,
+    now_ms: i64,
+    replay: &McpReplay,
+) -> Result<Option<DecideOutcome>, String> {
     #[allow(clippy::type_complexity)] // the decided row's own columns, one each
     let action: Option<(
         String,
@@ -566,34 +714,53 @@ pub async fn decide_action(
         }));
     }
 
+    // A held Google Workspace MCP call replays through its own arm: it
+    // re-checks the registry row and the pack's policy, vends for Google's
+    // MCP servers, and settles in Google's words (`mcp_call`).
+    if kind == MCP_CALL {
+        let outcome = mcp_call::decide(
+            pg,
+            sb,
+            action_id,
+            actor_id,
+            &payload,
+            agent_model.as_deref(),
+            owner_user_id.clone(),
+            &principal_kind,
+            now_ms,
+            replay,
+        )
+        .await?;
+        if !outcome.released() {
+            nudge_brief(stale_ids);
+        }
+        return Ok(Some(outcome));
+    }
+
     // Approve → the token of the identity that was queued, not whichever
     // account is_org happens to imply. Agent rows are admin-approved
-    // (is_org) and still execute as the agent's own Google account.
-    let vended = match principal_kind.as_str() {
-        "agent" => {
-            get_agent_access_token(
-                pg,
-                sb,
-                agent_model
-                    .as_deref()
-                    .expect("agent-identity actions carry an agent model"),
-                now_ms,
-            )
-            .await
-        }
-        "owner" => {
-            get_access_token(
-                pg,
-                sb,
-                owner_user_id
-                    .as_deref()
-                    .expect("personal actions carry an owner"),
-                now_ms,
-            )
-            .await
-        }
-        _ => get_org_access_token(pg, sb, now_ms).await,
-    };
+    // (is_org) and still execute as the agent's own Google account. The
+    // agent-token door picks the grant from the stored principal (an owner
+    // row with no owner names none, never the org account's); an unknown
+    // stored kind runs as the org account, as it always has.
+    let principal = AgentPrincipal::from_kind(
+        PrincipalKind::parse(&principal_kind).unwrap_or(PrincipalKind::Org),
+        owner_user_id.clone(),
+    );
+    let vended = vend_principal_token(
+        pg,
+        sb,
+        &principal,
+        agent_model.as_deref().unwrap_or_default(),
+        Purpose::Rest,
+        now_ms,
+    )
+    .await
+    .map(|vend| match vend {
+        Vend::Token(google) => Some(google.token),
+        // `NotAgentic` is HostedMcp's alone; these actions call REST.
+        Vend::NotConnected | Vend::NotAgentic(_) => None,
+    });
     let reconnect = match principal_kind.as_str() {
         "agent" => "Reconnect this agent's Google account on its record to run this.",
         "org" => "Reconnect the org Google account to run this.",

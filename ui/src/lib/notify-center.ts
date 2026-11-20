@@ -119,7 +119,7 @@ export const ENTITY_LABEL: Record<string, string> = {
   channel: 'Channel',
   conversation: 'Conversation',
   approval: 'Approval',
-  mcp_server: 'MCP server',
+  mcp_server: 'Tool server',
   plan: 'Plan',
   research_run: 'Research',
   kb_doc: 'Doc',

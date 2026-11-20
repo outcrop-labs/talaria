@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-33 routes.
+37 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -43,7 +43,12 @@
 | [`/api/admin/google-client`](#apiadmingoogle-client) | PUT | `admin` |
 | [`/api/admin/google-client`](#apiadmingoogle-client) | DELETE | `admin` |
 | [`/api/admin/google-client/agentic`](#apiadmingoogle-clientagentic) | PUT | `admin` |
+| [`/api/admin/google-client/check`](#apiadmingoogle-clientcheck) | POST | `admin` |
 | [`/api/admin/google-client/login`](#apiadmingoogle-clientlogin) | PUT | `admin` |
+| [`/api/admin/google/mcp`](#apiadmingooglemcp) | GET | `admin` |
+| [`/api/admin/google/mcp/{product}`](#apiadmingooglemcpproduct) | POST | `admin` |
+| [`/api/admin/google/mcp/{product}`](#apiadmingooglemcpproduct) | DELETE | `admin` |
+| [`/api/admin/google/mcp/{product}/tools/{tool}`](#apiadmingooglemcpproducttoolstool) | PUT | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | GET | `admin` |
 | [`/api/admin/guardrails`](#apiadminguardrails) | PUT | `admin` |
 | [`/api/admin/instance`](#apiadmininstance) | GET | `admin` |
@@ -426,7 +431,7 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings, personalConnected, redirectUris, census}` | 200 | — |
+| GET | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings, personalConnected, personalClientId, redirectUris, census}` | 200 | — |
 | PUT | `admin` | [body](#put-apiadmingoogle-client-body) | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings}` | 200, 400 | audit |
 | DELETE | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings}` | 200, 400 | audit |
 
@@ -459,6 +464,20 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../
 | `clientId` | `string(1, 200)` |  |
 | `agentic` | `bool? nullable` |  |
 
+## `/api/admin/google-client/check`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_client.rs)
+
+> /api/admin/google-client. The Google OAuth clients, by role — the
+> CONNECTIONS client every Google connection (personal, org, per-agent) runs
+> on, and the optional SIGN-IN client Google login runs on (login uses the
+> connections client while that slot is empty). Admins register them here
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | — | `{status, signin, loginRole, loginEnabled, loginPinnedByEnv, warnings, check}` | 200, 400, 409, 502 | audit |
+
 ## `/api/admin/google-client/login`
 
 Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_client.rs)
@@ -478,6 +497,55 @@ Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_client.rs`](../
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `enabled` | `bool` |  |
+
+## `/api/admin/google/mcp`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs)
+
+> /api/admin/google/mcp. The Google Workspace MCP pack (Developer Preview):
+> Google's own MCP servers for Gmail, Drive, Calendar, Docs, Sheets, Slides,
+> Chat, People and Universal Search, behind the MCP gateway. Off by default
+> and per instance: no product reaches any agent until an admin enables it
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{previewTerms, previewTermsUrl, products, refusals}` | 200 | — |
+
+## `/api/admin/google/mcp/{product}`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs)
+
+> /api/admin/google/mcp. The Google Workspace MCP pack (Developer Preview):
+> Google's own MCP servers for Gmail, Drive, Calendar, Docs, Sheets, Slides,
+> Chat, People and Universal Search, behind the MCP gateway. Off by default
+> and per instance: no product reaches any agent until an admin enables it
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | [body](#post-apiadmingooglemcpproduct-body) | `{ok, product}` | 200, 400, 404, 409 | audit |
+| DELETE | `admin` | — | `{ok}` | 200, 404 | audit |
+
+### POST `/api/admin/google/mcp/{product}` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
+
+## `/api/admin/google/mcp/{product}/tools/{tool}`
+
+Source: [`api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs`](../../api/crates/talaria-routes-admin/src/admin/admin_google_mcp.rs)
+
+> /api/admin/google/mcp. The Google Workspace MCP pack (Developer Preview):
+> Google's own MCP servers for Gmail, Drive, Calendar, Docs, Sheets, Slides,
+> Chat, People and Universal Search, behind the MCP gateway. Off by default
+> and per instance: no product reaches any agent until an admin enables it
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `admin` | — | `{ok, tool}` | 200, 400, 404 | audit |
 
 ## `/api/admin/guardrails`
 

@@ -5,9 +5,13 @@
 // instead of editing env; secrets are SEALED and never read back.
 // Deliberately requireAdmin: these are org credentials, not a grantable
 // surface.
-//   GET → both clients' redacted status, which client login runs on, the
+//   GET → both clients' redacted status (each with its agentic declaration
+//   and Google's answer to the last check, `lastCheck`), which client login
+//   runs on, the
 //   panel's warnings, the redirect URIs each client needs in Google Cloud
-//   Console, and the census: every stored grant counted per OAuth client
+//   Console, the client that made the admin's own connection
+//   (`personalClientId`: Check with Google runs on that client alone), and
+//   the census: every stored grant counted per OAuth client
 //   that minted it (personal, org, agent; how many carry a refusal), with
 //   the slot that client sits in now — `shadowed` when it is only the env
 //   pair behind that slot's Admin record (it refreshes what it minted and
@@ -27,20 +31,24 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use talaria_agent_auth::{epoch_ms_to_iso, now_ms};
 use talaria_api_facades::google::client::{
-    ClientConfigPatch, ClientRole, GoogleClient, GoogleClientStatus, agentic_declaration,
-    clear_google_client_config, client_evidence, client_warnings, configured_google_clients,
-    declare_agentic, google_client_status, google_login_enabled, google_login_pinned_by_env,
-    resolve_google_signin_client, set_google_client_config,
+    ClientCheck, ClientConfigPatch, ClientRole, GoogleClient, GoogleClientStatus,
+    agentic_declaration, clear_google_client_config, client_evidence, client_warnings,
+    configured_google_clients, declare_agentic, google_client_status, google_login_enabled,
+    google_login_pinned_by_env, record_check, resolve_google_signin_client,
+    set_google_client_config,
 };
 use talaria_api_facades::google::connections::{
-    ClientCensus, clear_client_flags, get_connection_status, grant_census,
+    ClientCensus, GrantRow, clear_client_flags, get_connection_status, grant_census, vend_grant,
 };
+use talaria_api_facades::google::errors::google_token_fail;
+use talaria_api_facades::google::mcp::{CHECK_TOOL, GMAIL, check_agentic};
 use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{
     nullable_boolean_member, nullable_optional_string_member, parse, string_member,
 };
-use talaria_error::{house_error, internal, object_or_400};
+use talaria_error::{house_error, house_error_msg, internal, object_or_400};
 use talaria_secretbox::SecretBox;
 use talaria_session::{actor_of, require_admin, secretbox_or_500};
 use talaria_state::AppState;
@@ -80,6 +88,9 @@ fn login_role(clients: &Clients) -> Option<&'static str> {
 }
 
 /// Every write's answer: the clients as they now stand.
+/// Every write's answer. Check with Google answers the same keys plus its
+/// `check`, spelled out there: the generated reference reads a route's
+/// shape from its `Json(json!({…}))` literal.
 fn answer(clients: &Clients) -> Response {
     Json(json!({
         "status": clients.connections,
@@ -222,6 +233,9 @@ pub async fn get(
         "loginPinnedByEnv": google_login_pinned_by_env(),
         "warnings": client_warnings(&clients.connections, &clients.signin, clients.login_enabled),
         "personalConnected": conn.connected,
+        // The client that made the admin's own connection: the one card
+        // whose "Check with Google" can run (it calls with this connection).
+        "personalClientId": conn.client_id,
         "redirectUris": redirect_uris(&origin, clients.signin.configured),
         "census": census,
     }))
@@ -358,7 +372,10 @@ pub async fn delete(
 // between roles keeps its fact. Only a client configured here, in either
 // role, takes a declaration; one pinned by AUTH_GOOGLE_CLIENT_AGENTIC /
 // AUTH_GOOGLE_SIGNIN_CLIENT_AGENTIC is changed in env, not here. A
-// declaration refuses nothing: the panel warns on it.
+// declaration refuses no REST call: the panel warns on it. A client declared
+// unticked keeps its grants off Google's Workspace MCP servers (the
+// agent-token door) unless Google's last answer to Check with Google
+// accepted a call.
 
 pub async fn put_agentic(
     State(state): State<AppState>,
@@ -426,6 +443,174 @@ pub async fn put_agentic(
     )
     .await;
     Ok(answer(&read_clients(&state, &sb).await))
+}
+
+// /api/admin/google-client/check. "Check with Google": the one
+// provider-side evidence of a client's agentic mark. Google's Workspace MCP
+// servers reject a client not marked "Use this client for an AI-powered
+// agent", so this makes one `tools/call list_labels` to Gmail's MCP server
+// (one unit of its query-cost quota) with the calling admin's OWN Google
+// connection — which must have been made with the client being checked — and
+// stores Google's answer under that client's id (`lastCheck`): the HTTP
+// status and Google's words verbatim, never a class read from them. An
+// accepted call verifies the mark. A refusal is not read as "not marked"
+// (the same call fails, in Google's words, for a project not enrolled in the
+// Developer Preview or without the Gmail MCP service enabled), but it is the
+// last answer: it replaces an earlier acceptance, and the client's standing
+// falls back to its declaration. The connection's recorded client is read
+// before its token: no connection, or one recorded as made with another
+// client, answers 409 with nothing sent to Google, not even a refresh. One
+// that has not recorded its client is vended, since its refresh records it.
+// `?role=`
+// names the slot whose own client is checked. A sign-in client that has only
+// ever run login made no stored connection and cannot be checked this way —
+// nor needs to be: login is not an agent. One that was the connections client
+// before it moved to the sign-in slot can, through a connection it made then
+// (the grant keeps its minting client). A token that cannot be had
+// answers as the agent routes do (`google_token_fail`); a call that never
+// got Google's answer records nothing.
+
+pub async fn post_check(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Response, Response> {
+    let user = require_admin(&state, &headers).await?;
+    let role = match role_of(&q) {
+        Ok(r) => r,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+    };
+    let sb = secretbox_or_500(&state, "[admin/google-client/check] secretbox unavailable").await?;
+    let clients = read_clients(&state, &sb).await;
+    let slot = match role {
+        ClientRole::Connections => &clients.connections,
+        ClientRole::SignIn => &clients.signin,
+    };
+    if !slot.configured {
+        return Ok(house_error_msg(
+            StatusCode::CONFLICT,
+            "no_client",
+            &match role {
+                ClientRole::Connections => {
+                    "There is no connections client to check. Save one first.".to_string()
+                }
+                ClientRole::SignIn => "There is no sign-in client to check: login uses the connections client, so check that one.".to_string(),
+            },
+        ));
+    }
+    let client_id = slot.client_id.clone();
+    let not_connected = || {
+        house_error_msg(
+            StatusCode::CONFLICT,
+            "not_connected",
+            &format!(
+                "Check with Google calls Gmail's MCP server with your own Google connection, made with client {client_id}, and you have no Google connection. Connect your account in Settings \u{2192} Connections, then check again."
+            ),
+        )
+    };
+    // The stored connection first: none, or one recorded as made with
+    // another client, is refused before its token is vended, so nothing
+    // reaches Google. One that has not recorded its client is vended: the
+    // refresh is what records it.
+    let stored = match get_connection_status(&state.pg, &user.id).await {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(internal(
+                "[admin/google-client/check] connection read failed",
+                e,
+            ));
+        }
+    };
+    if !stored.connected {
+        return Ok(not_connected());
+    }
+    if stored.client_id.as_deref().is_some_and(|s| !s.is_empty())
+        && let Some(refusal) = speaks_for(stored.client_id.as_deref(), &client_id)
+    {
+        return Ok(refusal);
+    }
+    let vended = match vend_grant(&state.pg, &sb, &GrantRow::User(user.id.clone()), now_ms()).await
+    {
+        Ok(Some(v)) => v,
+        Ok(None) => return Ok(not_connected()),
+        Err(e) => return Ok(google_token_fail(e, "Gmail")),
+    };
+    // The vend's client: the one a refresh just recorded, or a reconnect's
+    // between the two reads.
+    if let Some(refusal) = speaks_for(vended.client_id.as_deref(), &client_id) {
+        return Ok(refusal);
+    }
+    let answer = match check_agentic(&vended.token).await {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("[admin/google-client/check] {client_id}: {e}");
+            return Ok(house_error_msg(
+                StatusCode::BAD_GATEWAY,
+                "google_unreachable",
+                &format!("Google's answer did not arrive: {e}. Nothing was recorded; check again."),
+            ));
+        }
+    };
+    let check = ClientCheck {
+        ok: answer.ok,
+        status: answer.status,
+        text: answer.text,
+        at: epoch_ms_to_iso(now_ms()),
+    };
+    if let Err(e) = record_check(&state.pg, &client_id, &check).await {
+        return Ok(internal("[admin/google-client/check] record failed", e));
+    }
+    log_audit(
+        &state.pg,
+        AuditEntry {
+            actor: &actor_of(&user),
+            action: "google.client_check",
+            target_type: "google",
+            target_id: Some(&client_id),
+            target_label: Some(role.as_str()),
+            before: None,
+            after: Some(json!({
+                "ok": check.ok,
+                "status": check.status,
+                "server": GMAIL.endpoint,
+                "tool": CHECK_TOOL,
+            })),
+        },
+    )
+    .await;
+    // `answer`'s keys plus the check (see `answer` for why it is a literal).
+    let clients = read_clients(&state, &sb).await;
+    Ok(Json(json!({
+        "status": clients.connections,
+        "signin": clients.signin,
+        "loginRole": login_role(&clients),
+        "loginEnabled": clients.login_enabled,
+        "loginPinnedByEnv": google_login_pinned_by_env(),
+        "warnings": client_warnings(&clients.connections, &clients.signin, clients.login_enabled),
+        "check": check,
+    }))
+    .into_response())
+}
+
+/// None when a connection minted by `minted_by` can speak for `client_id`;
+/// else the 409 that says why — another client made it, or it has not
+/// recorded its client yet.
+fn speaks_for(minted_by: Option<&str>, client_id: &str) -> Option<Response> {
+    match minted_by.filter(|s| !s.is_empty()) {
+        Some(id) if id == client_id => None,
+        Some(other) => Some(house_error_msg(
+            StatusCode::CONFLICT,
+            "other_client",
+            &format!(
+                "Your own Google connection was made with client {other}, not {client_id}, so it cannot speak for {client_id}. Check with Google uses a connection made with the client being checked: check {other} instead, or reconnect your account while {client_id} is the connections client."
+            ),
+        )),
+        None => Some(house_error_msg(
+            StatusCode::CONFLICT,
+            "client_unrecorded",
+            "Your own Google connection has not recorded which client made it yet. It does on its next refresh, within the hour; check again then.",
+        )),
+    }
 }
 
 // /api/admin/google-client/login. The Google LOGIN switch — the policy half

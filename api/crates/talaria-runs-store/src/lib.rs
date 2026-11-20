@@ -41,6 +41,37 @@ pub enum WriteFailure {
 
 pub type WriteOutcome = Result<(), WriteFailure>;
 
+const TURN_UNRESTORABLE: &str = "a turn boundary has no snapshot to restore";
+
+/// `run_checkpoints.kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CheckpointKind {
+    Turn,
+    Step,
+}
+
+/// One ledger row, as `GET /api/runs/{id}/checkpoints` answers it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunCheckpoint {
+    pub seq: i64,
+    pub kind: CheckpointKind,
+    pub turn: Option<i64>,
+    pub agent_turn_id: Option<String>,
+    pub step_no: Option<i64>,
+    pub tool_call_id: Option<String>,
+    pub tool: Option<String>,
+    pub title: Option<String>,
+    pub status: Option<String>,
+    pub job_id: Option<String>,
+    pub workspace_commit: Option<String>,
+    pub workspace_tree: Option<String>,
+    pub restorable: bool,
+    pub unrestorable_reason: Option<String>,
+    pub created_at: String,
+}
+
 /// `claim`'s four answers. `Taken` is not an error at either call site: held
 /// by a live lease, or deferred by a `retry` whose wait has not elapsed — the
 /// sweep will find it again.
@@ -492,21 +523,39 @@ impl RunStore for PgRunStore {
         clear_decision: bool,
     ) -> BoxFuture<'a, Result<WriteOutcome, sqlx::Error>> {
         async move {
+            let turn = checkpoint.get("turn").and_then(Value::as_i64);
+            let stage = checkpoint
+                .get("stage")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             cas_write!(
                 &self.pg,
                 id,
                 token,
-                "update runs set \
-                   checkpoint = $3, phase = $4, \
-                   decision = case when $5 then null else decision end, \
-                   approval_key = case when $5 then null else approval_key end, \
-                   updated_at = now() \
-                 where id = $1::uuid and lease_owner = $2 and state = 'running' returning id",
+                "with bumped as ( \
+                   update runs set \
+                     checkpoint = $3::jsonb, phase = $4::text, \
+                     decision = case when $5 then null else decision end, \
+                     approval_key = case when $5 then null else approval_key end, \
+                     checkpoint_seq = checkpoint_seq + 1, \
+                     updated_at = now() \
+                   where id = $1::uuid and lease_owner = $2 and state = 'running' \
+                   returning id, checkpoint_seq \
+                 ), ledger as ( \
+                   insert into run_checkpoints \
+                     (run_id, seq, kind, turn, title, status, unrestorable_reason) \
+                   select id, checkpoint_seq, 'turn', $6::bigint, $4::text, $7::text, $8::text \
+                   from bumped \
+                 ) \
+                 select id from bumped",
                 id,
                 token,
                 checkpoint,
                 phase,
                 clear_decision,
+                turn,
+                stage,
+                TURN_UNRESTORABLE,
             )
         }
         .boxed()
@@ -895,6 +944,301 @@ pub async fn latest_run_of_kind(
     .transpose()
 }
 
+fn decode_kind(s: &str) -> Result<CheckpointKind, sqlx::Error> {
+    match s {
+        "turn" => Ok(CheckpointKind::Turn),
+        "step" => Ok(CheckpointKind::Step),
+        other => Err(sqlx::Error::ColumnDecode {
+            index: "kind".into(),
+            source: format!("unknown checkpoint kind {other:?} (row from a newer deploy?)").into(),
+        }),
+    }
+}
+
+/// A run's ledger in the order the work happened. A turn opens with its
+/// `send` row, holds its steps in step order, and closes with its `record`
+/// or `failed` row; a step's frame can land after the turn that held it was
+/// recorded, so `seq` is identity, not order. An unknown run reads as an empty
+/// ledger, and so does a run older than the ledger: both have nothing to go
+/// back to.
+pub async fn run_checkpoints(pg: &PgPool, id: &str) -> Result<Vec<RunCheckpoint>, sqlx::Error> {
+    let rows = sqlx::query(
+        "select seq, kind, turn, agent_turn_id, step_no, tool_call_id, tool, title, status, \
+                job_id::text, workspace_commit, workspace_tree, restorable, unrestorable_reason, \
+                (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms \
+         from run_checkpoints where run_id = $1::uuid \
+         order by turn nulls last, \
+                  case when kind = 'step' then 1 when status = 'send' then 0 else 2 end, \
+                  step_no nulls last, created_at, seq",
+    )
+    .bind(id)
+    .fetch_all(pg)
+    .await?;
+    rows.iter()
+        .map(|r| {
+            Ok(RunCheckpoint {
+                seq: r.try_get("seq")?,
+                kind: decode_kind(&r.try_get::<String, _>("kind")?)?,
+                turn: r.try_get("turn")?,
+                agent_turn_id: r.try_get("agent_turn_id")?,
+                step_no: r.try_get("step_no")?,
+                tool_call_id: r.try_get("tool_call_id")?,
+                tool: r.try_get("tool")?,
+                title: r.try_get("title")?,
+                status: r.try_get("status")?,
+                job_id: r.try_get("job_id")?,
+                workspace_commit: r.try_get("workspace_commit")?,
+                workspace_tree: r.try_get("workspace_tree")?,
+                restorable: r.try_get("restorable")?,
+                unrestorable_reason: r.try_get("unrestorable_reason")?,
+                created_at: epoch_ms_to_iso(r.try_get("created_ms")?),
+            })
+        })
+        .collect()
+}
+
+/// One model step of a work session, as the agent's plugin reported it and
+/// the door checked it: the boundary after the batch of tool calls the model
+/// made, and the git snapshot of the job's checkout taken there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepSnapshot {
+    pub agent_turn_id: Option<String>,
+    /// The last tool call of the batch. A rewind cuts the conversation after
+    /// its result row, and the row is unique per run on it.
+    pub tool_call_id: String,
+    pub tool: String,
+    pub title: Option<String>,
+    pub status: String,
+    /// The job whose checkout was snapshotted, once the door has confirmed it
+    /// is this agent's.
+    pub job_id: Option<String>,
+    pub workspace_commit: Option<String>,
+    pub workspace_tree: Option<String>,
+    /// Why the step cannot be restored. None when it can.
+    pub unrestorable_reason: Option<String>,
+    /// The hook's clock, epoch milliseconds: the row's `created_at`, so late
+    /// frames still sort where the step happened.
+    pub at_ms: i64,
+}
+
+impl StepSnapshot {
+    /// Why the row cannot be restored: the plugin's own reason first, then
+    /// what the door could not confirm. None is a restorable step, and only
+    /// such a step may wait on a transcript read: a promoted row must still
+    /// have a job and a commit to restore from.
+    pub fn reason(&self) -> Option<&str> {
+        if let Some(reason) = &self.unrestorable_reason {
+            return Some(reason);
+        }
+        match (&self.job_id, &self.workspace_commit) {
+            (None, _) => Some("the step named no job of this agent"),
+            (_, None) => Some("the step carried no snapshot commit"),
+            _ => None,
+        }
+    }
+}
+
+/// Append a step row, taking the next `seq` from the run's one allocator.
+/// `Ok(None)` is a frame the ledger already holds: the row's identity is its
+/// tool call id, and the plugin remembers its last boundary only in process
+/// memory, so a restarted container can send one twice. The allocator is not
+/// bumped for a duplicate, so `seq` stays gapless.
+///
+/// The row's turn is the turn its batch's earlier rows took, by the Hermes
+/// turn id they share; the first row of a turn takes the turn the run is
+/// on, or the last closed turn once the run has finished, because the step
+/// after a turn's last tool call lands after the run ends. Its step number
+/// is the next one in that turn, taken from the run row this statement
+/// locks for `seq`, so two frames landing at once never share one: frames
+/// leave one plugin queue in the order the calls ran, so the number is the
+/// transcript's order, and it survives a compaction that takes the
+/// transcript's rows away. The hook's clock is the row's, clamped to the
+/// server's range and its present, so a clock that is wrong cannot drop the
+/// frame.
+pub async fn record_step(
+    pg: &PgPool,
+    run_id: &str,
+    step: &StepSnapshot,
+) -> Result<Option<i64>, sqlx::Error> {
+    let written: Result<Option<i64>, sqlx::Error> = sqlx::query_scalar(
+        "with run as ( \
+           select checkpoint, state in ('done', 'error', 'cancelled') as finished \
+           from runs where id = $1::uuid \
+             and not exists (select 1 from run_checkpoints \
+                             where run_id = $1::uuid and tool_call_id = $2) \
+         ), place as ( \
+           select coalesce( \
+                    (select c.turn from run_checkpoints c \
+                     where c.run_id = $1::uuid and c.kind = 'step' \
+                       and $3::text is not null and c.agent_turn_id = $3 \
+                     order by c.seq desc limit 1), \
+                    case when finished then coalesce( \
+                           (select max(turn) from run_checkpoints c \
+                            where c.run_id = $1::uuid and c.kind = 'turn' \
+                              and c.status in ('record', 'failed')), \
+                           greatest(coalesce((checkpoint->>'turn')::bigint, 1) - 1, 1)) \
+                         else coalesce((checkpoint->>'turn')::bigint, 1) end) as turn \
+           from run \
+         ), bumped as ( \
+           update runs r set \
+             checkpoint_seq = r.checkpoint_seq + 1, \
+             step_counts = jsonb_set(r.step_counts, array[p.turn::text], to_jsonb( \
+               coalesce((r.step_counts->>p.turn::text)::bigint, \
+                        (select max(c.step_no) from run_checkpoints c \
+                         where c.run_id = $1::uuid and c.kind = 'step' and c.turn = p.turn), \
+                        0) + 1)) \
+           from place p where r.id = $1::uuid \
+           returning r.checkpoint_seq, (r.step_counts->>p.turn::text)::bigint as step_no, p.turn \
+         ), ledger as ( \
+           insert into run_checkpoints \
+             (run_id, seq, kind, turn, agent_turn_id, tool_call_id, tool, title, status, \
+              job_id, workspace_commit, workspace_tree, restorable, unrestorable_reason, \
+              step_no, created_at) \
+           select $1::uuid, b.checkpoint_seq, 'step', b.turn, $3, $2, $4, $5, $6, \
+                  $7::uuid, $8, $9, $10, $11, b.step_no, \
+                  case when $12::bigint between 0 \
+                                            and (extract(epoch from now()) * 1000)::bigint \
+                       then to_timestamp(least(greatest($12::bigint, 0), \
+                                               (extract(epoch from now()) * 1000)::bigint) \
+                                         ::double precision / 1000.0) \
+                       else now() end \
+           from bumped b \
+           returning seq \
+         ) \
+         select seq from ledger",
+    )
+    .bind(run_id)
+    .bind(&step.tool_call_id)
+    .bind(&step.agent_turn_id)
+    .bind(&step.tool)
+    .bind(&step.title)
+    .bind(&step.status)
+    .bind(&step.job_id)
+    .bind(&step.workspace_commit)
+    .bind(&step.workspace_tree)
+    .bind(step.reason().is_none())
+    .bind(step.reason())
+    .bind(step.at_ms)
+    .fetch_optional(pg)
+    .await;
+    match written {
+        // Two copies of one frame raced past the not-exists check; the
+        // unique key kept the second out, which is the answer wanted.
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Ok(None),
+        other => other,
+    }
+}
+
+const COMPACTED_REASON: &str = "compacted: the session no longer holds this step's conversation row \
+live; Hermes keeps it archived";
+const FOREIGN_REASON: &str = "not in this run's transcript: the session holds no row for this step's \
+tool call, live or archived, so it was not a turn of the session's own";
+/// A step that landed after its run ended, at a moment the session's
+/// transcript could not be read: not a verdict. The next read that succeeds
+/// settles it either way.
+pub const UNVERIFIED_REASON: &str = "landed after the run ended and the session's transcript could \
+not be read; the next read settles it";
+
+/// Promote the waiting rows the live transcript turns out to hold. The rows
+/// it does not hold are `verify_steps`'s to judge.
+pub async fn settle_unverified(
+    pg: &PgPool,
+    run_id: &str,
+    live: &[String],
+) -> Result<u64, sqlx::Error> {
+    let done = sqlx::query(
+        "update run_checkpoints set restorable = true, unrestorable_reason = null \
+         where run_id = $1::uuid and kind = 'step' and unrestorable_reason = $3 \
+           and tool_call_id = any($2::text[])",
+    )
+    .bind(run_id)
+    .bind(live)
+    .bind(UNVERIFIED_REASON)
+    .execute(pg)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// Judge the step rows up to `through_seq` by the run's own transcript. A
+/// step whose boundary call the live transcript still holds keeps its
+/// standing; one the session holds only archived was compacted away; one it
+/// holds nowhere was never this session's own step. A row still waiting on
+/// a read is judged like a restorable one. The bound keeps a frame that
+/// landed after the transcript was read from being judged by it, and rows
+/// already unrestorable keep their own reason. Answers how many rows moved.
+pub async fn verify_steps(
+    pg: &PgPool,
+    run_id: &str,
+    through_seq: i64,
+    live: &[String],
+    archived: &[String],
+) -> Result<u64, sqlx::Error> {
+    let done = sqlx::query(
+        "update run_checkpoints set restorable = false, \
+           unrestorable_reason = case when tool_call_id = any($4::text[]) then $5 else $6 end \
+         where run_id = $1::uuid and kind = 'step' and seq <= $2 \
+           and (restorable or unrestorable_reason = $7) \
+           and tool_call_id <> all($3::text[])",
+    )
+    .bind(run_id)
+    .bind(through_seq)
+    .bind(live)
+    .bind(archived)
+    .bind(COMPACTED_REASON)
+    .bind(FOREIGN_REASON)
+    .bind(UNVERIFIED_REASON)
+    .execute(pg)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// The run's `seq` so far: what a transcript read after this call may be
+/// judged against.
+pub async fn checkpoint_seq(pg: &PgPool, run_id: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("select checkpoint_seq from runs where id = $1::uuid")
+        .bind(run_id)
+        .fetch_one(pg)
+        .await
+}
+
+/// A job's checkout is gone, so every step that pointed into it can no
+/// longer be restored. Rows already unrestorable keep their own reason,
+/// except a row still waiting on a transcript read: the next read would
+/// promote it into a checkout that no longer exists. Runs on any executor
+/// so the caller can put it in the transaction that marks the job's
+/// workspace cleared.
+pub async fn retire_job_steps<'e>(
+    ex: impl sqlx::PgExecutor<'e>,
+    job_id: &str,
+    reason: &str,
+) -> Result<u64, sqlx::Error> {
+    let done = sqlx::query(
+        "update run_checkpoints set restorable = false, unrestorable_reason = $2 \
+         where job_id = $1::uuid and (restorable or unrestorable_reason = $3)",
+    )
+    .bind(job_id)
+    .bind(reason)
+    .bind(UNVERIFIED_REASON)
+    .execute(ex)
+    .await?;
+    Ok(done.rows_affected())
+}
+
+/// A run's place among the attempts of one piece of work. A run nobody rewound
+/// is attempt 1 of the lineage its own id names.
+#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
+#[serde(rename_all = "camelCase")]
+pub struct RunLineage {
+    pub lineage_id: String,
+    pub attempt_no: i32,
+    pub rewound_from_run_id: Option<String>,
+    pub rewound_from_seq: Option<i64>,
+}
+
+/// The `runs` columns [`RunLineage`] decodes from, for a select of its own.
+pub const LINEAGE_COLS: &str = "coalesce(lineage_id, id)::text as lineage_id, attempt_no, \
+                                rewound_from_run_id::text as rewound_from_run_id, rewound_from_seq";
+
 /// The run this kind is currently doing, or None. `awaiting` counts as active —
 /// a run parked on a question is not finished, however long it sits.
 pub async fn active_run_of_kind(
@@ -969,6 +1313,65 @@ pub async fn agent_turn_of(
     .await
 }
 
+/// A rewind's attempt, as the rewind inserts it: a queued work session whose
+/// first step is the checkpoint's turn, not the brief. `insert` writes no
+/// checkpoint and a null one restarts at the brief, so this is its own write.
+#[derive(Debug, Clone)]
+pub struct AttemptSeed {
+    pub id: String,
+    pub subject_id: String,
+    pub input: Value,
+    pub phase: String,
+    pub checkpoint: Value,
+    pub lineage_id: String,
+    pub attempt_no: i32,
+    pub rewound_from_run_id: String,
+    pub rewound_from_seq: i64,
+}
+
+/// Insert the attempt, queued and unleased, with its seeded checkpoint and the
+/// ledger's opening turn row. On the caller's connection so the row lands in
+/// the same transaction as the job it works and the hold it lifts; nothing
+/// drives it until that commits.
+pub async fn insert_attempt(
+    conn: &mut sqlx::PgConnection,
+    seed: &AttemptSeed,
+) -> Result<(), sqlx::Error> {
+    let turn = seed.checkpoint.get("turn").and_then(Value::as_i64);
+    let stage = seed
+        .checkpoint
+        .get("stage")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    sqlx::query(
+        "with attempt as ( \
+           insert into runs \
+             (id, kind, subject_type, subject_id, state, phase, input, checkpoint, \
+              checkpoint_seq, lineage_id, attempt_no, rewound_from_run_id, rewound_from_seq) \
+           values ($1::uuid, 'work-session', 'task', $2, 'queued', $3, $4, $5, 1, \
+                   $6::uuid, $7, $8::uuid, $9) \
+           returning id \
+         ) \
+         insert into run_checkpoints (run_id, seq, kind, turn, title, status, unrestorable_reason) \
+         select id, 1, 'turn', $10::bigint, $3::text, $11::text, $12::text from attempt",
+    )
+    .bind(&seed.id)
+    .bind(&seed.subject_id)
+    .bind(&seed.phase)
+    .bind(&seed.input)
+    .bind(&seed.checkpoint)
+    .bind(&seed.lineage_id)
+    .bind(seed.attempt_no)
+    .bind(&seed.rewound_from_run_id)
+    .bind(seed.rewound_from_seq)
+    .bind(turn)
+    .bind(stage)
+    .bind(TURN_UNRESTORABLE)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 // ── Pure unit tests ──────────────────────────────────────────────────────────
 //
 // The Postgres surface is proven by the `#[ignore]`d live-DB tests in
@@ -996,6 +1399,12 @@ mod tests {
         let straddling = format!("{}{}x", "y".repeat(3998), "😀");
         let clamped = clamp_error(&straddling);
         assert_eq!(clamped, "y".repeat(3998));
+    }
+
+    #[test]
+    fn an_unknown_checkpoint_kind_decodes_loudly() {
+        assert_eq!(decode_kind("step").unwrap(), CheckpointKind::Step);
+        assert!(decode_kind("boundary").is_err());
     }
 
     #[test]
