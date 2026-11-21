@@ -7,6 +7,15 @@
 // client asks first — a JSON-RPC `initialize` POST — and records the answer
 // on the row, so search sinks the dead and the default view hides them.
 //
+// WHAT A RUN WRITES. The verdict and its detail live on the entry row and
+// change there only when the probe says something new: an entry whose
+// endpoint answered the same way as last time is not rewritten. When it was
+// last asked lives in `mcp_library_liveness`, one narrow row per entry
+// whose only index is its primary key, so the stamp every probe leaves is a
+// HOT update in place. Stamping the entry row itself rewrote a ~1.2 kB row on
+// a random heap page and all six of its indexes for every probe, changed or
+// not: ~22 kB of WAL a verdict, the bulk of a production instance's WAL.
+//
 // ONE PROBE, NO CREDENTIALS. A server that wants a key answers 401/403: that
 // is ALIVE (`auth`), not dead — most first-party servers are exactly this. A
 // 404/405/410, a 5xx, a host that does not resolve, refuses the connection,
@@ -372,7 +381,7 @@ struct Tally {
 
 /// One batch: up to `LIVENESS_BATCH` hosted rows — never-checked first
 /// (stand-ins ahead of registry rows among those, so an operator's new entry
-/// is answered in seconds), then the oldest verdict. Verdicts are written as
+/// is answered in seconds), then the oldest stamp. Verdicts are written as
 /// they land, `VERDICT_CHUNK` at a time, and each only if the row still names
 /// the URL that was probed.
 pub async fn liveness_once(pg: &PgPool) -> Result<String, String> {
@@ -395,10 +404,10 @@ impl Drop for InFlight {
     }
 }
 
-/// Verdicts per write. A chunk is one UPDATE in one transaction, so a full
-/// batch commits ceil(300 / 50) = 6 times where it used to commit once a row
-/// — 300 commits every five minutes, each a WAL flush that every other
-/// writer on the instance queued behind (a person's click included).
+/// Verdicts per write. A chunk is one transaction, so a full batch commits
+/// ceil(300 / 50) = 6 times where it used to commit once a row — 300 commits
+/// every five minutes, each a WAL flush that every other writer on the
+/// instance queued behind (a person's click included).
 pub const VERDICT_CHUNK: usize = 50;
 
 /// One probe's answer, waiting for its chunk's write.
@@ -429,12 +438,42 @@ impl Chunker {
     }
 }
 
-/// A chunk's rows, matched by name AND the probed URL — an entry the sync
-/// re-pointed while it was being probed keeps its row untouched.
+/// A chunk's verdicts onto the entries, matched by name AND the probed URL —
+/// an entry the sync re-pointed while it was being probed keeps its row
+/// untouched — and only where the verdict or its detail changed. An UPDATE
+/// whose WHERE fails takes no lock and writes nothing, so a run in which no
+/// endpoint changed its answer rewrites no entry row.
 const WRITE_VERDICTS: &str = "update mcp_library_entries e \
-     set live_state = v.state, live_checked_at = now(), live_detail = v.detail \
+     set live_state = v.state, live_detail = v.detail \
      from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as v(name, state, detail, url) \
-     where e.registry_name = v.name and e.entry->>'url' = v.url";
+     where e.registry_name = v.name and e.entry->>'url' = v.url \
+       and (e.live_state, e.live_detail) is distinct from (v.state, v.detail)";
+
+/// The probe's stamp, for every verdict whose entry still names the probed
+/// URL: a plain UPDATE of the stamps already on file (`checked_at` is no
+/// index's column, so each is a HOT update on its own page). Not an INSERT …
+/// ON CONFLICT DO UPDATE, which writes a row-lock record before every update.
+const RESTAMP: &str = "update mcp_library_liveness l set checked_at = now() \
+     from unnest($1::text[], $2::text[]) as v(name, url) \
+     join mcp_library_entries e on e.registry_name = v.name and e.entry->>'url' = v.url \
+     where l.registry_name = v.name";
+
+/// Then the first stamp of an entry never asked before (or asked again since
+/// the sync changed it, which drops its stamp).
+const FIRST_STAMPS: &str = "insert into mcp_library_liveness (registry_name, checked_at) \
+     select v.name, now() \
+     from unnest($1::text[], $2::text[]) as v(name, url) \
+     join mcp_library_entries e on e.registry_name = v.name and e.entry->>'url' = v.url \
+     where not exists (select 1 from mcp_library_liveness l where l.registry_name = v.name) \
+     order by v.name \
+     on conflict do nothing";
+
+/// Stamps whose entry is gone (the sync deletes entries without a foreign
+/// key's lock on them). Every run sweeps; on a run after no deletion it
+/// matches nothing and takes no transaction id.
+const SWEEP_ORPHANS: &str = "delete from mcp_library_liveness l \
+     where not exists (select 1 from mcp_library_entries e \
+                       where e.registry_name = l.registry_name)";
 
 /// A chunk's four columns, bound in `registry_name` order. The UPDATE walks
 /// the arrays in order (a nested loop over the unnest into the primary key),
@@ -456,15 +495,20 @@ fn chunk_columns(chunk: &[Verdict]) -> [Vec<&str>; 4] {
 }
 
 /// What each chunk's own transaction read back for `synchronous_commit`, in
-/// order: the live test's proof that a chunk never waits on its WAL flush.
+/// order, beside the `search_path` it ran under: the live tests' proof that a
+/// chunk never waits on its WAL flush, each test reading only its own
+/// schema's chunks while the others run beside it.
 #[cfg(test)]
-static CHUNK_SYNCHRONOUS_COMMIT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static CHUNK_SYNCHRONOUS_COMMIT: std::sync::Mutex<Vec<(String, String)>> =
+    std::sync::Mutex::new(Vec::new());
 
-/// One chunk: one UPDATE in one transaction that does not wait for its WAL
-/// flush (`synchronous_commit = off`, for this transaction only). A crash
+/// One chunk, in one transaction that does not wait for its WAL flush
+/// (`synchronous_commit = off`, for this transaction only): the changed
+/// verdicts onto their entries, then the stamps, each in name order. A crash
 /// can lose the last fraction of a second of verdicts, and that costs
 /// nothing: every verdict is derived again on the row's next pass, and an
-/// unwritten one leaves the row first in line for it. Rows written.
+/// unwritten stamp leaves the row first in line for it. Verdicts landed (the
+/// entry still named the probed URL), changed or not.
 async fn write_chunk(pg: &PgPool, chunk: &[Verdict]) -> Result<u64, sqlx::Error> {
     let [names, states, details, urls] = chunk_columns(chunk);
     let mut tx = pg.begin().await?;
@@ -473,24 +517,55 @@ async fn write_chunk(pg: &PgPool, chunk: &[Verdict]) -> Result<u64, sqlx::Error>
         .await?;
     #[cfg(test)]
     {
-        let seen: String = sqlx::query_scalar("show synchronous_commit")
-            .fetch_one(&mut *tx)
-            .await?;
+        let seen: (String, String) = sqlx::query_as(
+            "select current_setting('search_path'), current_setting('synchronous_commit')",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
         CHUNK_SYNCHRONOUS_COMMIT
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(seen);
     }
-    let written = sqlx::query(WRITE_VERDICTS)
+    // Entries before stamps, each in name order. The catalog sync writes an
+    // entry and resets its stamp in one statement; should the two meet in a
+    // deadlock, Postgres aborts one side and `save_chunk` tries a chunk again.
+    sqlx::query(WRITE_VERDICTS)
         .bind(&names)
         .bind(&states)
         .bind(&details)
         .bind(&urls)
         .execute(&mut *tx)
+        .await?;
+    let restamped = sqlx::query(RESTAMP)
+        .bind(&names)
+        .bind(&urls)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    let first = sqlx::query(FIRST_STAMPS)
+        .bind(&names)
+        .bind(&urls)
+        .execute(&mut *tx)
         .await?
         .rows_affected();
     tx.commit().await?;
-    Ok(written)
+    Ok(restamped + first)
+}
+
+/// The orphan sweep, in a transaction of its own that does not wait for its
+/// flush either: a stamp is telemetry, and one a crash loses is swept again.
+async fn sweep_orphans(pg: &PgPool) -> Result<u64, sqlx::Error> {
+    let mut tx = pg.begin().await?;
+    sqlx::query("set local synchronous_commit = off")
+        .execute(&mut *tx)
+        .await?;
+    let swept = sqlx::query(SWEEP_ORPHANS)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(swept)
 }
 
 /// Postgres broke a lock cycle by aborting this transaction.
@@ -524,8 +599,8 @@ async fn save_chunk(pg: &PgPool, chunk: &[Verdict]) -> u64 {
 /// Every verdict of a run, written as it lands: each full chunk on a task of
 /// its own beside the stream, the short last one after it, `seen` called on
 /// each verdict first (the run's tally). The job's only writer, and the one
-/// the live test drives. Rows written.
-async fn write_as_they_land(
+/// the live tests drive. Verdicts landed.
+pub(crate) async fn write_as_they_land(
     pg: &PgPool,
     verdicts: impl Stream<Item = Verdict>,
     mut seen: impl FnMut(&Verdict),
@@ -558,10 +633,13 @@ async fn write_as_they_land(
 }
 
 /// A run's rows: never-checked first (stand-ins ahead of registry rows among
-/// those), then the oldest verdict, hosted https endpoints only.
-pub(crate) const SELECT_BATCH: &str = "select registry_name, entry->>'url' from mcp_library_entries \
-     where kind = 'hosted' and entry->>'url' like 'https://%' \
-     order by live_checked_at asc nulls first, (source <> 'registry') desc, registry_name \
+/// those), then the oldest stamp, hosted https endpoints only. An entry with
+/// no stamp is one never asked, or one the sync changed since.
+pub(crate) const SELECT_BATCH: &str = "select e.registry_name, e.entry->>'url' \
+     from mcp_library_entries e \
+     left join mcp_library_liveness l on l.registry_name = e.registry_name \
+     where e.kind = 'hosted' and e.entry->>'url' like 'https://%' \
+     order by l.checked_at asc nulls first, (e.source <> 'registry') desc, e.registry_name \
      limit $1";
 
 async fn run_batch(pg: &PgPool) -> Result<String, String> {
@@ -611,6 +689,9 @@ where
         LiveState::Unknown => t.unknown += 1,
     })
     .await;
+    if let Err(e) = sweep_orphans(pg).await {
+        tracing::warn!("[mcp/liveness] orphan stamps not swept: {e}");
+    }
     Ok(format!(
         "checked {n}: {} ok, {} auth, {} dead, {} unknown",
         t.ok, t.auth, t.dead, t.unknown
@@ -1022,6 +1103,17 @@ mod tests {
         assert!(
             WRITE_VERDICTS.contains("where e.registry_name = v.name and e.entry->>'url' = v.url")
         );
+        // Only a changed verdict rewrites its entry, and no write stamps it.
+        assert!(
+            WRITE_VERDICTS
+                .contains("(e.live_state, e.live_detail) is distinct from (v.state, v.detail)")
+        );
+        assert!(!WRITE_VERDICTS.contains("checked_at"));
+        // The stamps follow the same URL guard, and never by an upsert.
+        for sql in [RESTAMP, FIRST_STAMPS] {
+            assert!(sql.contains("e.registry_name = v.name and e.entry->>'url' = v.url"));
+            assert!(!sql.contains("do update"));
+        }
     }
 
     #[tokio::test]
@@ -1038,21 +1130,47 @@ mod tests {
     }
 }
 
-// Live-DB proof that a run's verdicts land in chunks, through the job's own
-// writer: N verdicts leave at most ceil(N / 50) distinct xmin values (one
-// commit per chunk), each row the verdict it was given, a row re-pointed
-// since its probe untouched, every chunk's transaction running with
-// synchronous_commit off, and the connection's back to `on` after. `#[ignore]`d — it needs
-// a database — and CI's live-tests job runs it
-// (`cargo test --workspace --lib -- --ignored`):
+/// The scratch copy of the stamp table a live test or the census makes in
+/// `schema`: `public`'s columns and primary key, and its storage options too
+/// (`LIKE` copies no fillfactor), so the copy packs its pages as the
+/// migration does.
+#[cfg(test)]
+pub(crate) async fn create_stamp_copy(admin: &PgPool, schema: &str) {
+    let opts: Option<String> = sqlx::query_scalar(
+        "select array_to_string(reloptions, ', ') from pg_class \
+         where oid = 'public.mcp_library_liveness'::regclass",
+    )
+    .fetch_one(admin)
+    .await
+    .expect("public.mcp_library_liveness (a migrated database)");
+    let with = opts.map(|o| format!(" with ({o})")).unwrap_or_default();
+    let sql = format!(
+        "create table {schema}.mcp_library_liveness \
+         (like public.mcp_library_liveness including all){with}"
+    );
+    sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(admin)
+        .await
+        .expect(&sql);
+}
+
+// Live-DB proof of what a run writes, through the job's own writer and
+// selection: N verdicts commit at most ceil(N / 50) times, each chunk's
+// transaction with synchronous_commit off and the connection back to `on`
+// after; a verdict that did not change rewrites no entry row, its stamp is a
+// HOT update; a flip rewrites exactly its own row; a row re-pointed since its
+// probe keeps both its entry and its stamp; the never-asked go first and
+// orphan stamps are swept. `#[ignore]`d — they need a database — and CI's
+// live-tests job runs them (`cargo test --workspace --lib -- --ignored`):
 //
 //   DATABASE_URL=postgres://… cargo test -p talaria-mcp-library --lib -- --ignored liveness_live
 //
-// Like tests/catalog_live.rs, it builds its own schema (a copy of the
-// mirror's table) and points a one-connection pool at it alone, so the real
-// mirror is never read or written.
+// Like tests/catalog_live.rs, each builds its own schema (copies of the
+// mirror's table and the stamp table) and points a one-connection pool at it
+// alone, so the real mirror is never read or written.
 #[cfg(test)]
 mod liveness_live {
+    use std::collections::HashMap;
     use std::str::FromStr;
 
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -1060,14 +1178,21 @@ mod liveness_live {
     use super::*;
 
     const N: usize = 120;
+    const STATES: [LiveState; 4] = [
+        LiveState::Ok,
+        LiveState::Auth,
+        LiveState::Dead,
+        LiveState::Unknown,
+    ];
 
-    #[tokio::test]
-    #[ignore]
-    async fn liveness_live_n_verdicts_commit_once_a_chunk() {
+    /// Copies of the mirror and its stamp table (fillfactor and all) in a
+    /// schema of their own, and a one-connection pool that sees only it: the
+    /// synchronous_commit read and the table statistics are that session's.
+    async fn scratch(tag: &str) -> (PgPool, PgPool, String) {
         let url = std::env::var("DATABASE_URL")
             .expect("set DATABASE_URL (a migrated database) to run the ignored live tests");
         let admin = PgPool::connect(&url).await.expect("the database");
-        let schema = format!("mcp_liveness_live_{}", std::process::id());
+        let schema = format!("mcp_liveness_live_{tag}_{}", std::process::id());
         for sql in [
             format!("drop schema if exists {schema} cascade"),
             format!("create schema {schema}"),
@@ -1081,16 +1206,87 @@ mod liveness_live {
                 .await
                 .expect(&sql);
         }
+        create_stamp_copy(&admin, &schema).await;
         let opts = PgConnectOptions::from_str(&url)
             .expect("DATABASE_URL parses")
             .options([("search_path", schema.as_str())]);
-        // One connection: the synchronous_commit read at the end is the
-        // same session every chunk ran on.
         let pg = PgPoolOptions::new()
             .max_connections(1)
             .connect_with(opts)
             .await
             .expect("scratch pool");
+        (admin, pg, schema)
+    }
+
+    async fn drop_scratch(admin: &PgPool, pg: PgPool, schema: &str) {
+        pg.close().await;
+        let drop = format!("drop schema if exists {schema} cascade");
+        sqlx::query(sqlx::AssertSqlSafe(drop.as_str()))
+            .execute(admin)
+            .await
+            .unwrap();
+    }
+
+    /// This schema's chunk readings of synchronous_commit, taken out of the
+    /// shared hook: the other live tests write theirs beside them.
+    fn taken(schema: &str) -> Vec<String> {
+        let mut all = CHUNK_SYNCHRONOUS_COMMIT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut *all)
+            .into_iter()
+            .partition(|(path, _)| path == schema);
+        *all = rest;
+        mine.into_iter().map(|(_, s)| s).collect()
+    }
+
+    async fn sync_after(pg: &PgPool) -> String {
+        sqlx::query_scalar("show synchronous_commit")
+            .fetch_one(pg)
+            .await
+            .unwrap()
+    }
+
+    async fn xmins(pg: &PgPool, table: &str) -> HashMap<String, String> {
+        let sql = format!("select registry_name, xmin::text from {table}");
+        sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql.as_str()))
+            .fetch_all(pg)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect()
+    }
+
+    /// (n_tup_upd, n_tup_hot_upd) of the scratch stamp table, this session's
+    /// own counts flushed first.
+    async fn stamp_updates(pg: &PgPool) -> (i64, i64) {
+        sqlx::query("select pg_stat_force_next_flush()")
+            .execute(pg)
+            .await
+            .unwrap();
+        sqlx::query_as(
+            "select n_tup_upd, n_tup_hot_upd from pg_stat_user_tables \
+             where relid = 'mcp_library_liveness'::regclass",
+        )
+        .fetch_one(pg)
+        .await
+        .unwrap()
+    }
+
+    fn changed(before: &HashMap<String, String>, after: &HashMap<String, String>) -> Vec<String> {
+        let mut out: Vec<String> = after
+            .iter()
+            .filter(|(n, x)| before.get(*n) != Some(*x))
+            .map(|(n, _)| n.clone())
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn liveness_live_n_verdicts_commit_once_a_chunk() {
+        let (admin, pg, schema) = scratch("chunks").await;
         sqlx::query(
             "insert into mcp_library_entries (registry_name, title, kind, entry) \
              select 'live/' || g, 'Live ' || g, 'hosted', \
@@ -1102,12 +1298,6 @@ mod liveness_live {
         .await
         .unwrap();
 
-        let states = [
-            LiveState::Ok,
-            LiveState::Auth,
-            LiveState::Dead,
-            LiveState::Unknown,
-        ];
         let verdicts: Vec<Verdict> = (1..=N)
             .map(|i| Verdict {
                 name: format!("live/{i}"),
@@ -1117,36 +1307,26 @@ mod liveness_live {
                 } else {
                     format!("https://live-{i}.test/mcp")
                 },
-                state: states[i % 4],
+                state: STATES[i % 4],
                 detail: format!("detail {i}"),
             })
             .collect();
-        CHUNK_SYNCHRONOUS_COMMIT
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
         let mut seen = 0;
         let written = write_as_they_land(&pg, stream::iter(verdicts), |_| seen += 1).await;
         assert_eq!(seen, N, "the tally sees every verdict");
         assert_eq!(written, (N - 1) as u64, "every row but the re-pointed one");
-        let inside = std::mem::take(
-            &mut *CHUNK_SYNCHRONOUS_COMMIT
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
         assert_eq!(
-            inside,
+            taken(&schema),
             vec!["off"; N.div_ceil(VERDICT_CHUNK)],
             "each chunk commits without waiting on its flush"
         );
 
-        let commits: i64 = sqlx::query_scalar(
-            "select count(distinct xmin::text) from mcp_library_entries \
-             where live_checked_at is not null",
-        )
-        .fetch_one(&pg)
-        .await
-        .unwrap();
+        // Every first stamp is an insert in its chunk's transaction.
+        let commits: i64 =
+            sqlx::query_scalar("select count(distinct xmin::text) from mcp_library_liveness")
+                .fetch_one(&pg)
+                .await
+                .unwrap();
         assert!(
             commits as usize <= N.div_ceil(VERDICT_CHUNK),
             "{commits} commits for {N} verdicts"
@@ -1154,39 +1334,246 @@ mod liveness_live {
         assert_eq!(commits, 3);
 
         let rows: Vec<(String, Option<String>, Option<String>, bool)> = sqlx::query_as(
-            "select registry_name, live_state, live_detail, live_checked_at is not null \
-             from mcp_library_entries",
+            "select e.registry_name, e.live_state, e.live_detail, l.registry_name is not null \
+             from mcp_library_entries e \
+             left join mcp_library_liveness l on l.registry_name = e.registry_name",
         )
         .fetch_all(&pg)
         .await
         .unwrap();
         assert_eq!(rows.len(), N);
-        for (name, state, detail, checked) in rows {
+        for (name, state, detail, stamped) in rows {
             let i: usize = name.trim_start_matches("live/").parse().unwrap();
             if i == 7 {
-                assert_eq!((state, detail, checked), (None, None, false), "{name}");
+                assert_eq!((state, detail, stamped), (None, None, false), "{name}");
             } else {
-                assert_eq!(state.as_deref(), Some(states[i % 4].as_str()), "{name}");
+                assert_eq!(state.as_deref(), Some(STATES[i % 4].as_str()), "{name}");
                 assert_eq!(detail, Some(format!("detail {i}")), "{name}");
-                assert!(checked, "{name}");
+                assert!(stamped, "{name}");
             }
         }
+        // The live column the previous release stamped stays as it was.
+        let old: i64 = sqlx::query_scalar(
+            "select count(*) from mcp_library_entries where live_checked_at is not null",
+        )
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(old, 0, "live_checked_at is no longer written");
 
-        let sync: String = sqlx::query_scalar("show synchronous_commit")
-            .fetch_one(&pg)
-            .await
-            .unwrap();
         assert_eq!(
-            sync, "on",
+            sync_after(&pg).await,
+            "on",
             "synchronous_commit = off stayed inside the chunks"
         );
+        drop_scratch(&admin, pg, &schema).await;
+    }
 
-        pg.close().await;
-        let drop = format!("drop schema if exists {schema} cascade");
-        sqlx::query(sqlx::AssertSqlSafe(drop.as_str()))
-            .execute(&admin)
+    #[tokio::test]
+    #[ignore]
+    async fn liveness_live_unchanged_verdicts_write_no_entry_rows() {
+        let (admin, pg, schema) = scratch("unchanged").await;
+        // A mirror at steady state: every entry carries its verdict, and its
+        // stamp from an hour ago sits in name order, as the backfill leaves
+        // it. A pass asks one entry in six (as a run asks a slice of each
+        // page), names of a realistic length.
+        const M: i32 = 720;
+        let name = |i: usize| format!("io.example.live-{i:04}/an-mcp-server-with-a-realistic-name");
+        sqlx::query(
+            "insert into mcp_library_entries (registry_name, title, kind, entry, live_state, live_detail) \
+             select 'io.example.live-' || lpad(g::text, 4, '0') || '/an-mcp-server-with-a-realistic-name', \
+                    'Live ' || g, 'hosted', \
+                    jsonb_build_object('url', 'https://live-' || g || '.test/mcp'), \
+                    (array['ok', 'auth', 'dead', 'unknown'])[1 + g % 4], 'detail ' || g \
+             from generate_series(1, $1) g",
+        )
+        .bind(M)
+        .execute(&pg)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into mcp_library_liveness (registry_name, checked_at) \
+             select registry_name, now() - interval '1 hour' from mcp_library_entries \
+             order by registry_name",
+        )
+        .execute(&pg)
+        .await
+        .unwrap();
+        let probed: Vec<usize> = (1..=M as usize).filter(|i| i % 6 == 0).collect();
+        assert_eq!(probed.len(), N);
+        let verdict = |i: usize, url: String, state: LiveState, detail: String| Verdict {
+            name: name(i),
+            url,
+            state,
+            detail,
+        };
+        // Landed out of order, as probes do.
+        let mut order = probed.clone();
+        order.sort_by_key(|i| (i * 37) % 101);
+        let same: Vec<Verdict> = order
+            .iter()
+            .map(|&i| {
+                verdict(
+                    i,
+                    format!("https://live-{i}.test/mcp"),
+                    STATES[i % 4],
+                    format!("detail {i}"),
+                )
+            })
+            .collect();
+
+        // The same answers as last time: no entry row is written, every
+        // stamp is re-stamped in place, three async commits.
+        let entries0 = xmins(&pg, "mcp_library_entries").await;
+        let stamps0 = xmins(&pg, "mcp_library_liveness").await;
+        let (upd0, hot0) = stamp_updates(&pg).await;
+        let written = write_as_they_land(&pg, stream::iter(same), |_| {}).await;
+        assert_eq!(written, N as u64);
+        let (upd1, hot1) = stamp_updates(&pg).await;
+        let entries1 = xmins(&pg, "mcp_library_entries").await;
+        let stamps1 = xmins(&pg, "mcp_library_liveness").await;
+        assert_eq!(
+            changed(&entries0, &entries1),
+            Vec::<String>::new(),
+            "an unchanged verdict rewrites no entry row"
+        );
+        assert_eq!(upd1 - upd0, N as i64, "every probed entry is re-stamped");
+        assert_eq!(hot1 - hot0, upd1 - upd0, "every re-stamp is a HOT update");
+        let restamped = changed(&stamps0, &stamps1);
+        let mut want: Vec<String> = probed.iter().map(|&i| name(i)).collect();
+        want.sort();
+        assert_eq!(restamped, want, "the probed stamps, and only those");
+        let commits: std::collections::HashSet<&String> =
+            want.iter().map(|n| &stamps1[n]).collect();
+        assert!(commits.len() <= N.div_ceil(VERDICT_CHUNK), "{commits:?}");
+        assert_eq!(taken(&schema), vec!["off"; N.div_ceil(VERDICT_CHUNK)]);
+        assert_eq!(sync_after(&pg).await, "on");
+
+        // One verdict flips and another entry was re-pointed mid-probe: the
+        // flip rewrites exactly its own entry row, the re-pointed entry keeps
+        // its row and its stamp.
+        let (flip, moved) = (probed[0], probed[1]);
+        let checked_at = |n: String| {
+            let pg = pg.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "select checked_at::text from mcp_library_liveness where registry_name = $1",
+                )
+                .bind(n)
+                .fetch_one(&pg)
+                .await
+                .unwrap()
+            }
+        };
+        let moved_stamp = checked_at(name(moved)).await;
+        let next: Vec<Verdict> = probed
+            .iter()
+            .map(|&i| {
+                if i == flip {
+                    let s = STATES[(i + 1) % 4];
+                    verdict(i, format!("https://live-{i}.test/mcp"), s, "flipped".into())
+                } else if i == moved {
+                    verdict(
+                        i,
+                        "https://moved.test/mcp".into(),
+                        LiveState::Dead,
+                        "moved".into(),
+                    )
+                } else {
+                    verdict(
+                        i,
+                        format!("https://live-{i}.test/mcp"),
+                        STATES[i % 4],
+                        format!("detail {i}"),
+                    )
+                }
+            })
+            .collect();
+        let written = write_as_they_land(&pg, stream::iter(next), |_| {}).await;
+        assert_eq!(
+            written,
+            (N - 1) as u64,
+            "every verdict but the re-pointed one"
+        );
+        let entries2 = xmins(&pg, "mcp_library_entries").await;
+        let stamps2 = xmins(&pg, "mcp_library_liveness").await;
+        assert_eq!(changed(&entries1, &entries2), vec![name(flip)]);
+        assert_eq!(stamps2[&name(moved)], stamps1[&name(moved)]);
+        assert_eq!(checked_at(name(moved)).await, moved_stamp);
+        let (state, detail): (Option<String>, Option<String>) = sqlx::query_as(
+            "select live_state, live_detail from mcp_library_entries where registry_name = $1",
+        )
+        .bind(name(flip))
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(state.as_deref(), Some(STATES[(flip + 1) % 4].as_str()));
+        assert_eq!(detail.as_deref(), Some("flipped"));
+        taken(&schema);
+        drop_scratch(&admin, pg, &schema).await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn liveness_live_a_run_asks_the_unstamped_first_and_sweeps_orphans() {
+        let (admin, pg, schema) = scratch("run").await;
+        // b was asked an hour ago, a a minute ago, c never; a registry row
+        // and an operator stand-in both unasked: the stand-in goes first.
+        // A package and a plain-http endpoint are never asked.
+        sqlx::query(
+            "insert into mcp_library_entries (registry_name, title, kind, source, entry) values \
+               ('run/a', 'A', 'hosted', 'registry', '{\"url\":\"https://a.test/mcp\"}'), \
+               ('run/b', 'B', 'hosted', 'registry', '{\"url\":\"https://b.test/mcp\"}'), \
+               ('run/c', 'C', 'hosted', 'registry', '{\"url\":\"https://c.test/mcp\"}'), \
+               ('op:d.test', 'D', 'hosted', 'operator', '{\"url\":\"https://d.test/mcp\"}'), \
+               ('run/pkg', 'P', 'package', 'registry', '{\"url\":\"pkg:npm/p\"}'), \
+               ('run/http', 'H', 'hosted', 'registry', '{\"url\":\"http://h.test/mcp\"}')",
+        )
+        .execute(&pg)
+        .await
+        .unwrap();
+        sqlx::query(
+            "insert into mcp_library_liveness (registry_name, checked_at) values \
+               ('run/a', now() - interval '1 minute'), ('run/b', now() - interval '1 hour'), \
+               ('run/gone', now() - interval '2 hours')",
+        )
+        .execute(&pg)
+        .await
+        .unwrap();
+        let order: Vec<String> = sqlx::query_scalar(SELECT_BATCH)
+            .bind(LIVENESS_BATCH)
+            .fetch_all(&pg)
             .await
             .unwrap();
+        assert_eq!(order, ["op:d.test", "run/c", "run/b", "run/a"]);
+
+        let report = run_batch_with(&pg, |_name, _url| async {
+            (
+                LiveState::Auth,
+                "HTTP 401 — answers, wants credentials".to_string(),
+            )
+        })
+        .await
+        .unwrap();
+        assert!(report.starts_with("checked 4: 0 ok, 4 auth"), "{report}");
+        let stamped: Vec<String> = sqlx::query_scalar(
+            "select registry_name from mcp_library_liveness order by registry_name",
+        )
+        .fetch_all(&pg)
+        .await
+        .unwrap();
+        assert_eq!(
+            stamped,
+            ["op:d.test", "run/a", "run/b", "run/c"],
+            "every asked entry stamped, the orphan swept"
+        );
+        assert_eq!(
+            sweep_orphans(&pg).await.unwrap(),
+            0,
+            "nothing left to sweep"
+        );
+        taken(&schema);
+        drop_scratch(&admin, pg, &schema).await;
     }
 }
 
@@ -1353,14 +1740,7 @@ mod liveness_census {
                 .await
                 .unwrap();
         if side {
-            exec(
-                admin,
-                &format!(
-                    "create table {SCHEMA}.mcp_library_liveness \
-                     (like public.mcp_library_liveness including all) with (fillfactor = 70)"
-                ),
-            )
-            .await;
+            create_stamp_copy(admin, SCHEMA).await;
         }
         let opts = PgConnectOptions::from_str(url)
             .expect("DATABASE_URL parses")
@@ -1565,7 +1945,7 @@ mod liveness_census {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .iter()
-                    .filter(|s| s.as_str() == "off")
+                    .filter(|(path, s)| path == SCHEMA && s.as_str() == "off")
                     .count();
                 println!(
                     "  flip {:>4.1}% run {:>2}: {report}; xids {}, async {asynchronous}, wal {} B, \

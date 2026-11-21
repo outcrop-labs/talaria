@@ -26,12 +26,14 @@
 // entry is known by (namespace, website, endpoint) for brand matches and the
 // featured join, `tier` and `kind` are the filters.
 //
-// LIVENESS. `live_state` / `live_checked_at` / `live_detail` are written by
-// the liveness job (`liveness`): search sinks `dead` rows below everything
-// and the default answer leaves them out (counting them, so the picker can
-// offer "show N unreachable"); the featured shelf never shows one. A row the
-// sync rewrites with a changed entry loses its `live_checked_at` — the job
-// takes never-checked rows first, so the new endpoint is asked within a run.
+// LIVENESS. `live_state` / `live_detail` are written by the liveness job
+// (`liveness`): search sinks `dead` rows below everything and the default
+// answer leaves them out (counting them, so the picker can offer "show N
+// unreachable"); the featured shelf never shows one. When the job last asked
+// lives beside the row, in `mcp_library_liveness` (its stamp, read as the
+// hit's `checkedAt`). A row the sync rewrites with a changed entry loses its
+// stamp — the job takes never-stamped rows first, so the new endpoint is
+// asked within a run, and its `checkedAt` reads null until then.
 //
 // THE FEATURED LIST is the built-in `FEATURED_DOMAINS` merged with the
 // operator's edits (`featured`): added domains, hidden built-ins, and
@@ -304,10 +306,17 @@ macro_rules! search_match {
     };
 }
 
+/// The page, then each of its rows' stamps: the stamp is looked up by
+/// primary key for the rows the LIMIT kept, never joined to every match (a
+/// join would hash all of the stamps on every keystroke). The outer select
+/// only adds a column, so the page keeps the inner ORDER BY's order.
 pub(crate) const SEARCH_PAGE_SQL: &str = concat!(
     "with q as (select websearch_to_tsquery('simple', $1) as tq, $1::text as raw) \
-     select e.entry, e.live_state, \
-       (extract(epoch from e.live_checked_at) * 1000)::int8, e.live_detail \
+     select p.entry, p.live_state, \
+       (select (extract(epoch from l.checked_at) * 1000)::int8 \
+          from mcp_library_liveness l where l.registry_name = p.registry_name), \
+       p.live_detail \
+     from (select e.registry_name, e.entry, e.live_state, e.live_detail \
      from mcp_library_entries e, q \
      where ",
     search_match!(),
@@ -320,7 +329,7 @@ pub(crate) const SEARCH_PAGE_SQL: &str = concat!(
        e.tier asc, \
        ts_rank_cd(e.search, q.tq) desc, \
        e.title asc \
-     limit $4"
+     limit $4) p"
 );
 
 const SEARCH_DEAD_SQL: &str = concat!(
@@ -409,9 +418,11 @@ pub async fn search(pg: &PgPool, lib: &Arc<Library>, query: &str, f: &SearchFilt
 }
 
 /// The featured candidates, best first within each domain: `$1` the merged
-/// domain list.
+/// domain list. A shelf's few candidates each look their stamp up by key.
 pub(crate) const FEATURED_SQL: &str = "select e.domain, e.entry, e.live_state, \
-       (extract(epoch from e.live_checked_at) * 1000)::int8, e.live_detail \
+       (select (extract(epoch from l.checked_at) * 1000)::int8 \
+          from mcp_library_liveness l where l.registry_name = e.registry_name), \
+       e.live_detail \
      from mcp_library_entries e \
      where e.kind = 'hosted' and e.domain = any($1) \
        and (e.tier = 0 or e.source <> 'registry') \
@@ -614,6 +625,9 @@ fn raw_name(raw: &Value) -> Option<&str> {
 /// Insert or refresh one row. A changed entry loses its liveness stamp (the
 /// job re-asks it first); a changed ENDPOINT also loses the verdict, which
 /// described a URL the row no longer names. The same entry re-walked keeps both.
+/// A NEW row loses any stamp left under its name too: an entry deleted and
+/// listed again has not been asked since. The stamp's reset rides in the same
+/// statement, so the entry and its stamp change together.
 async fn upsert(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     source: &str,
@@ -622,36 +636,43 @@ async fn upsert(
     updated_at: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let entry = serde_json::to_value(s).unwrap_or(Value::Null);
-    sqlx::query(
-        "insert into mcp_library_entries \
-           (registry_name, source, title, description, domain, domains, tier, kind, entry, registry_updated_at, synced_at) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, now()) \
-         on conflict (registry_name) do update set \
-           source = excluded.source, title = excluded.title, description = excluded.description, \
-           domain = excluded.domain, domains = excluded.domains, tier = excluded.tier, \
-           kind = excluded.kind, entry = excluded.entry, \
-           registry_updated_at = excluded.registry_updated_at, synced_at = now(), \
-           live_checked_at = case when mcp_library_entries.entry is distinct from excluded.entry \
-             then null else mcp_library_entries.live_checked_at end, \
-           live_state = case when mcp_library_entries.entry->>'url' is distinct from excluded.entry->>'url' \
-             then null else mcp_library_entries.live_state end, \
-           live_detail = case when mcp_library_entries.entry->>'url' is distinct from excluded.entry->>'url' \
-             then null else mcp_library_entries.live_detail end",
-    )
-    .bind(&s.registry_name)
-    .bind(source)
-    .bind(&s.title)
-    .bind(&s.description)
-    .bind(&s.domain)
-    .bind(domains)
-    .bind(s.tier.rank())
-    .bind(if s.package.is_some() { "package" } else { "hosted" })
-    .bind(&entry)
-    .bind(updated_at)
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query(UPSERT_ENTRY)
+        .bind(&s.registry_name)
+        .bind(source)
+        .bind(&s.title)
+        .bind(&s.description)
+        .bind(&s.domain)
+        .bind(domains)
+        .bind(s.tier.rank())
+        .bind(if s.package.is_some() {
+            "package"
+        } else {
+            "hosted"
+        })
+        .bind(&entry)
+        .bind(updated_at)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
+
+/// One row's upsert and, when the entry is new or changed, its stamp's reset
+/// (`prev` reads the row as it was before this statement).
+const UPSERT_ENTRY: &str = "with prev as (select entry from mcp_library_entries where registry_name = $1), \
+       reset as (delete from mcp_library_liveness where registry_name = $1 \
+                 and not exists (select 1 from prev where prev.entry is not distinct from $9::jsonb)) \
+     insert into mcp_library_entries \
+       (registry_name, source, title, description, domain, domains, tier, kind, entry, registry_updated_at, synced_at) \
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, now()) \
+     on conflict (registry_name) do update set \
+       source = excluded.source, title = excluded.title, description = excluded.description, \
+       domain = excluded.domain, domains = excluded.domains, tier = excluded.tier, \
+       kind = excluded.kind, entry = excluded.entry, \
+       registry_updated_at = excluded.registry_updated_at, synced_at = now(), \
+       live_state = case when mcp_library_entries.entry->>'url' is distinct from excluded.entry->>'url' \
+         then null else mcp_library_entries.live_state end, \
+       live_detail = case when mcp_library_entries.entry->>'url' is distinct from excluded.entry->>'url' \
+         then null else mcp_library_entries.live_detail end";
 
 /// The liveness verdict on a mirrored endpoint, for the install gate: `Some`
 /// (the registry name and the probe's detail) when some entry names this
@@ -1195,7 +1216,8 @@ mod tests {
     // Search's dead-last ORDER and its hidden-dead count are Postgres's to
     // keep, so they are proven against a real database, not restated here:
     // tests/catalog_live.rs (`cargo test -p talaria-mcp-library --test
-    // catalog_live -- --ignored`, house rule: never CI).
+    // catalog_live -- --ignored`, house rule: never CI). The stamp's life
+    // across a sync is proven in `stamp_live` below, which CI runs.
 
     fn shelf_of(page: &SearchPage) -> Vec<String> {
         page.hits.iter().map(|h| h.server.url.clone()).collect()
@@ -1340,5 +1362,205 @@ mod tests {
         assert_eq!(Tier::parse("verified"), Some(Tier::Verified));
         assert_eq!(Tier::parse("community"), Some(Tier::Community));
         assert_eq!(Tier::parse("gold"), None);
+    }
+}
+
+// Live-DB proof that the sync keeps the liveness stamp's promise, and that
+// the readers return the stamp: a changed entry loses its stamp and is the
+// next run's first row, an identical re-walk keeps it, an entry deleted and
+// listed again starts unstamped, and search and the shelf answer the stamp's
+// time. `#[ignore]`d — it needs a database — and CI's live-tests job runs it
+// (`cargo test --workspace --lib -- --ignored`):
+//
+//   DATABASE_URL=postgres://… cargo test -p talaria-mcp-library --lib -- --ignored stamp_live
+#[cfg(test)]
+mod stamp_live {
+    use std::str::FromStr;
+
+    use futures_util::stream;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+    use crate::liveness::{LIVENESS_BATCH, LiveState, SELECT_BATCH, Verdict, write_as_they_land};
+
+    fn server(name: &str, domain: &str, title: &str) -> LibraryServer {
+        LibraryServer {
+            registry_name: name.into(),
+            title: title.into(),
+            description: Some(format!("{title} for the stamp live test")),
+            url: format!("https://mcp.{domain}/mcp"),
+            domain: Some(domain.into()),
+            icon: None,
+            tier: Tier::FirstParty,
+            required_headers: Vec::new(),
+            package: None,
+        }
+    }
+
+    async fn walk(pg: &PgPool, servers: &[LibraryServer]) {
+        let mut tx = pg.begin().await.unwrap();
+        for s in servers {
+            let domains = domains_of(None, s);
+            upsert(&mut tx, "registry", s, &domains, None)
+                .await
+                .unwrap();
+        }
+        tx.commit().await.unwrap();
+    }
+
+    /// (checked_at as epoch ms, the stamp row's xmin) — None when unstamped.
+    async fn stamp(pg: &PgPool, name: &str) -> Option<(i64, String)> {
+        sqlx::query_as(
+            "select (extract(epoch from checked_at) * 1000)::int8, xmin::text \
+             from mcp_library_liveness where registry_name = $1",
+        )
+        .bind(name)
+        .fetch_optional(pg)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn stamp_live_the_sync_resets_a_changed_entrys_stamp_and_readers_return_it() {
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (a migrated database) to run the ignored live tests");
+        let admin = PgPool::connect(&url).await.expect("the database");
+        let schema = format!("mcp_stamp_live_{}", std::process::id());
+        for sql in [
+            format!("drop schema if exists {schema} cascade"),
+            format!("create schema {schema}"),
+            format!(
+                "create table {schema}.mcp_library_entries \
+                 (like public.mcp_library_entries including all)"
+            ),
+            format!("create table {schema}.app_settings (like public.app_settings including all)"),
+            // The first full walk is done: the readers answer from the mirror.
+            format!(
+                "insert into {schema}.app_settings (key, value) \
+                 values ('mcp_library_sync', '{{\"fullDoneAt\":\"2026-01-01T00:00:00Z\"}}'::jsonb)"
+            ),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .execute(&admin)
+                .await
+                .expect(&sql);
+        }
+        crate::liveness::create_stamp_copy(&admin, &schema).await;
+        let opts = PgConnectOptions::from_str(&url)
+            .expect("DATABASE_URL parses")
+            .options([("search_path", schema.as_str())]);
+        let pg = PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(opts)
+            .await
+            .expect("scratch pool");
+
+        // github.com is a built-in featured domain: its first-party row is
+        // the shelf's candidate.
+        let a = server("com.github/mcp", "github.com", "GitHub");
+        let b = server("dev.stamp-b/mcp", "stamp-b.dev", "Stamp B");
+        let c = server("dev.stamp-c/mcp", "stamp-c.dev", "Stamp C");
+        walk(&pg, &[a.clone(), b.clone(), c.clone()]).await;
+        let probe = |s: &LibraryServer| Verdict {
+            name: s.registry_name.clone(),
+            url: s.url.clone(),
+            state: LiveState::Auth,
+            detail: "HTTP 401 — answers, wants credentials".into(),
+        };
+        let landed =
+            write_as_they_land(&pg, stream::iter([probe(&a), probe(&b), probe(&c)]), |_| {}).await;
+        assert_eq!(landed, 3);
+        let (a_at, a_xmin) = stamp(&pg, &a.registry_name).await.expect("a is stamped");
+        assert!(stamp(&pg, &b.registry_name).await.is_some());
+
+        // Search and the shelf answer the stamp's time and the verdict.
+        let lib = crate::library();
+        let page = search(&pg, &lib, "github", &SearchFilters::default()).await;
+        let hit = page
+            .hits
+            .iter()
+            .find(|h| h.server.registry_name == a.registry_name)
+            .expect("search finds a");
+        assert_eq!(
+            hit.live,
+            Some(Liveness {
+                state: "auth".into(),
+                checked_at: Some(a_at),
+                detail: Some("HTTP 401 — answers, wants credentials".into()),
+            })
+        );
+        let shelf = featured(&pg, &lib, false).await;
+        let hit = shelf
+            .hits
+            .iter()
+            .find(|h| h.server.registry_name == a.registry_name)
+            .expect("the shelf carries a");
+        assert_eq!(hit.live.as_ref().and_then(|l| l.checked_at), Some(a_at));
+
+        // An identical re-walk keeps every stamp, row version and all; a
+        // changed entry (same endpoint) loses its stamp but keeps its
+        // verdict, and is the next run's first row.
+        let mut b2 = b.clone();
+        b2.title = "Stamp B, renamed".into();
+        walk(&pg, &[a.clone(), b2, c.clone()]).await;
+        assert_eq!(
+            stamp(&pg, &a.registry_name).await,
+            Some((a_at, a_xmin)),
+            "an identical entry keeps its stamp untouched"
+        );
+        assert_eq!(
+            stamp(&pg, &b.registry_name).await,
+            None,
+            "a changed entry loses it"
+        );
+        let (state,): (Option<String>,) =
+            sqlx::query_as("select live_state from mcp_library_entries where registry_name = $1")
+                .bind(&b.registry_name)
+                .fetch_one(&pg)
+                .await
+                .unwrap();
+        assert_eq!(
+            state.as_deref(),
+            Some("auth"),
+            "same url: the verdict stays"
+        );
+        let first: Vec<(String, String)> = sqlx::query_as(SELECT_BATCH)
+            .bind(LIVENESS_BATCH)
+            .fetch_all(&pg)
+            .await
+            .unwrap();
+        assert_eq!(
+            first[0].0, b.registry_name,
+            "the changed entry is asked first"
+        );
+        let page = search(&pg, &lib, "stamp b", &SearchFilters::default()).await;
+        let live = page.hits[0].live.as_ref().expect("the verdict is shown");
+        assert_eq!((live.state.as_str(), live.checked_at), ("auth", None));
+
+        // Deleted (the registry dropped it) and listed again: its old stamp
+        // does not come back with it.
+        sqlx::query("delete from mcp_library_entries where registry_name = $1")
+            .bind(&c.registry_name)
+            .execute(&pg)
+            .await
+            .unwrap();
+        assert!(
+            stamp(&pg, &c.registry_name).await.is_some(),
+            "no foreign key: an orphan"
+        );
+        walk(&pg, &[c.clone()]).await;
+        assert_eq!(
+            stamp(&pg, &c.registry_name).await,
+            None,
+            "a new row starts unstamped"
+        );
+
+        pg.close().await;
+        let drop = format!("drop schema if exists {schema} cascade");
+        sqlx::query(sqlx::AssertSqlSafe(drop.as_str()))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }
