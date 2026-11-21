@@ -14,7 +14,7 @@
 //      is lost, every box pulls a second model.
 
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { boxComposeSpec } from './cmd/box/shared'
@@ -158,5 +158,50 @@ describe('sidecar plane — one definition, in the fragment', () => {
     // …and the fragment's TEI cache volume goes with the service.
     const volumes = /^volumes:\n([\s\S]*)$/m.exec(devbox)![1]!.split('\n').filter((l) => /^ {2}tei-cache:/.test(l))
     expect(volumes).toEqual(['  tei-cache: !reset null'])
+  })
+})
+
+describe('postgres — the flags the sidecar starts with', () => {
+  // The argv as compose hands it to the image: a flow sequence of quoted
+  // strings is JSON, so it reads exactly.
+  const argv = (): string[] => {
+    const block = serviceBlocks(FRAGMENT).postgres ?? ''
+    const flow = /^ {4}command: (\[[\s\S]*?\])/m.exec(block)?.[1]
+    return flow ? (JSON.parse(flow) as string[]) : []
+  }
+
+  test('the fragment pins max_connections and the three WAL flags, in that order', () => {
+    // wal_compression=lz4, checkpoint_timeout=15min and max_wal_size=1GB cut
+    // what a slow disk flushes (docs/CONTAINER.md); max_connections=200 is the
+    // pool clamp's headroom. A recreate applies them: `talaria deploy up`.
+    expect(argv()).toEqual([
+      'postgres',
+      '-c',
+      'max_connections=200',
+      '-c',
+      'wal_compression=lz4',
+      '-c',
+      'checkpoint_timeout=15min',
+      '-c',
+      'max_wal_size=1GB',
+    ])
+  })
+
+  test('no compose file turns durability off: no synchronous_commit, fsync or full_page_writes flag', () => {
+    // Async commit is a per-transaction choice for loss-tolerant telemetry
+    // (SET LOCAL in the job that writes it), never the cluster's default.
+    // Comment lines may name the settings; a flag may not, in the fragment or
+    // in any stack layered over it.
+    const flag = /\b(synchronous_commit|fsync|full_page_writes)\s*=/
+    const files = readdirSync(join(ROOT, 'docker')).filter((f) => f.endsWith('.yml'))
+    expect(files).toContain('sidecars.compose.yml')
+    for (const stack of STACKS) expect(files).toContain(stack.replace('docker/', ''))
+    const offending = files.filter((f) =>
+      readFileSync(join(ROOT, 'docker', f), 'utf8')
+        .split('\n')
+        .some((l) => !l.trim().startsWith('#') && flag.test(l)),
+    )
+    expect(offending).toEqual([])
+    expect(argv().some((a) => flag.test(a))).toBe(false)
   })
 })
