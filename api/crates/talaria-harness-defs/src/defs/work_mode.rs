@@ -124,8 +124,8 @@ fn world(ctx: &CheckCtx) -> Option<SandboxWorld> {
 }
 
 /// Did the run leave the file `names_it` recognises in the pane? Read off
-/// `world.pane` (`artifact:<id>`, `google:<url>`) when the run left a world,
-/// else off the arguments of the `open_in_pane` calls that succeeded
+/// `world.pane` (`artifact:<id>`, `google:<canonical url>`) when the run left
+/// a world, else off the arguments of the `open_in_pane` calls that succeeded
 /// (`documentId`, or a `url` naming the file).
 fn opened(ctx: &CheckCtx, names_it: impl Fn(&str) -> bool) -> bool {
     match world(ctx) {
@@ -145,15 +145,37 @@ fn is_ledger_notes(k: &str) -> bool {
         || k.contains(&format!("/artifacts?a={LEDGER_NOTES}"))
 }
 
-/// The ledger migration plan, the Google Doc behind `LEDGER_PLAN_LINK`.
+/// The ledger migration plan, the Google Doc behind `LEDGER_PLAN_LINK`,
+/// however a link spells it (`/edit`, `/edit?usp=sharing`, `/u/0/d/…`, inside
+/// a markdown link) or a key names it — the sandbox's
+/// `google:<canonical url>`, or the door's `google:<id>`. The id must end
+/// where a Drive id ends, so `df-10` is another file.
 fn is_ledger_plan(k: &str) -> bool {
-    k.contains("docs.google.com/document/d/df-1")
+    if k.strip_prefix("google:") == Some("df-1") {
+        return true;
+    }
+    k.find("docs.google.com/document/").is_some_and(|at| {
+        k[at..].split("/d/").nth(1).is_some_and(|id| {
+            id.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .next()
+                == Some("df-1")
+        })
+    })
 }
 
-/// Nothing at all went into the pane — no call, and (when the run left a
-/// world) no file recorded there.
+/// Did the run leave the pane as it was? With a world, that is the pane
+/// itself: a listing call (open_in_pane with neither argument) and an open
+/// the sandbox refused move nothing, and neither is filling the pane. Without
+/// one, only an open that succeeded and named a file counts against it.
 fn pane_untouched(ctx: &CheckCtx) -> bool {
-    !ctx.any_call("open_in_pane") && world(ctx).is_none_or(|w| w.pane.is_empty())
+    match world(ctx) {
+        Some(w) => w.pane.is_empty(),
+        None => !ctx.successful("open_in_pane").iter().any(|c| {
+            ["documentId", "url"]
+                .iter()
+                .any(|f| c.args[*f].as_str().is_some_and(|s| !s.trim().is_empty()))
+        }),
+    }
 }
 
 /// THE OWNER'S OWN ASKS, each a request to SEE an existing file. "Open … here"
@@ -818,6 +840,91 @@ mod tests {
             (fixture(ASK).check)("Idempotent on turnId.", &read),
             CheckResult::Pass
         );
+        // A listing call names no file, so it fills nothing: listing the
+        // session's files and then reading one still answers the question.
+        let listed_then_read = ctx(vec![
+            ("open_in_pane", json!({})),
+            ("get_document", json!({ "documentId": LEDGER_NOTES })),
+        ]);
+        assert_eq!(
+            (fixture(ASK).check)("Idempotent on turnId.", &listed_then_read),
+            CheckResult::Pass
+        );
+        // Nor does an open that failed: nothing reached the pane.
+        let mut refused_open = ctx(vec![
+            ("open_in_pane", json!({ "documentId": LEDGER_NOTES })),
+            ("get_document", json!({ "documentId": LEDGER_NOTES })),
+        ]);
+        refused_open.calls[0].errored = true;
+        assert_eq!(
+            (fixture(ASK).check)("Idempotent on turnId.", &refused_open),
+            CheckResult::Pass
+        );
+        // An open that went through is what fills it.
+        let read_then_opened = ctx(vec![
+            ("get_document", json!({ "documentId": LEDGER_NOTES })),
+            ("open_in_pane", json!({ "documentId": LEDGER_NOTES })),
+        ]);
+        assert_ne!(
+            (fixture(ASK).check)("Idempotent on turnId.", &read_then_opened),
+            CheckResult::Pass
+        );
+    }
+
+    #[test]
+    fn a_listing_call_is_not_filling_the_pane() {
+        // "Called with neither, open_in_pane lists the files already in this
+        // session" — the Work prompt offers it, and it moves nothing. Graded
+        // off the world the sandbox leaves, a list-then-read passes the
+        // question fixture.
+        let (ctx, answers) = replay(&[
+            ("open_in_pane", json!({})),
+            ("get_document", json!({ "documentId": LEDGER_NOTES })),
+        ]);
+        assert!(answers[0]["files"].as_array().is_some_and(Vec::is_empty));
+        assert!(world(&ctx).unwrap().pane.is_empty());
+        assert_eq!(
+            (fixture(ASK).check)("They say writes are idempotent on turnId.", &ctx),
+            CheckResult::Pass
+        );
+    }
+
+    #[test]
+    fn the_pasted_google_link_is_one_file_however_it_is_spelled() {
+        // People paste the share link (`?usp=sharing`), a signed-in link
+        // (`/u/0/d/…`) or a markdown link; each names the same Doc.
+        for spelling in [
+            LEDGER_PLAN_LINK.to_string(),
+            format!("{LEDGER_PLAN_LINK}?usp=sharing"),
+            "https://docs.google.com/document/u/0/d/df-1/edit".to_string(),
+            format!("[Ledger migration plan]({LEDGER_PLAN_LINK})"),
+        ] {
+            let (ctx, answers) = replay(&[("open_in_pane", json!({ "url": spelling }))]);
+            assert_eq!(
+                (fixture(LINK).check)("Opened the ledger migration plan in your pane.", &ctx),
+                CheckResult::Pass,
+                "{spelling}"
+            );
+            // The door's names for it, whatever the spelling.
+            assert_eq!(
+                answers[0]["file"]["key"],
+                json!("google:df-1"),
+                "{spelling}"
+            );
+            assert_eq!(
+                answers[0]["file"]["url"],
+                json!(LEDGER_PLAN_LINK),
+                "{spelling}"
+            );
+        }
+        assert!(is_ledger_plan("google:df-1"));
+        assert!(!is_ledger_plan("google:df-10"));
+        assert!(!is_ledger_plan(
+            "https://docs.google.com/document/d/df-10/edit"
+        ));
+        assert!(!is_ledger_plan(
+            "https://docs.google.com/spreadsheets/d/df-1/edit"
+        ));
     }
 
     #[test]

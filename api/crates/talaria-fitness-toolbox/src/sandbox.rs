@@ -168,6 +168,72 @@ fn kb_doc_of<'a>(w: &'a SandboxWorld, id: &Value) -> Result<&'a SandboxKbDoc, To
     })
 }
 
+/// What the pane calls a Talaria file of this kind — the door's
+/// `artifact_type`.
+fn pane_type(kind: &str) -> &'static str {
+    match kind {
+        "sheet" => "sheet",
+        "microsite" => "page",
+        "file" => "file",
+        _ => "document",
+    }
+}
+
+/// A Google link as the door reads it (`talaria_chips::parse_google_file_url`):
+/// the Drive id after `/d/` and the file type the editor segment before it
+/// names (`/document/d/<id>/edit`, `/document/u/0/d/<id>`, `/file/d/<id>/view`),
+/// or the `id` of a `drive.google.com/open?id=<id>` share link. None for a
+/// link that names no file — a publish-to-web page (`/d/e/…`), a folder, the
+/// Drive home — which the door refuses, and so does the sandbox.
+fn google_file_of(url: &str) -> Option<(&str, &'static str)> {
+    let rest = url
+        .strip_prefix("https://docs.google.com/")
+        .or_else(|| url.strip_prefix("https://drive.google.com/"))?;
+    let rest = rest.split('#').next().unwrap_or(rest);
+    let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let id_ok = |id: &str| {
+        !id.is_empty()
+            && id.len() <= 200
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    };
+    if let Some(d) = parts.iter().position(|p| *p == "d") {
+        let id = *parts.get(d + 1)?;
+        if id == "e" || !id_ok(id) {
+            return None;
+        }
+        let kind = parts[..d].iter().find_map(|seg| match *seg {
+            "document" => Some("document"),
+            "spreadsheets" => Some("spreadsheet"),
+            "presentation" => Some("presentation"),
+            "file" => Some("drive"),
+            _ => None,
+        })?;
+        return Some((id, kind));
+    }
+    if parts == ["open"] {
+        let id = query.split('&').find_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            (k == "id").then_some(v)
+        })?;
+        return id_ok(id).then_some((id, "drive"));
+    }
+    None
+}
+
+/// A Google file's canonical URL — the door's `GoogleFile::url`, so two
+/// spellings of one link (`/edit`, `/edit?usp=sharing`) are one file.
+fn google_url(id: &str, kind: &str) -> String {
+    match kind {
+        "document" => format!("https://docs.google.com/document/d/{id}/edit"),
+        "spreadsheet" => format!("https://docs.google.com/spreadsheets/d/{id}/edit"),
+        "presentation" => format!("https://docs.google.com/presentation/d/{id}/edit"),
+        _ => format!("https://drive.google.com/file/d/{id}/view"),
+    }
+}
+
 /// THE PERSONAL-ASSISTANT GATE, in one place. Production answers 401/403 from
 /// the API; the sentence here says which of the two conditions failed, because
 /// "you are not an assistant" and "your owner lacks the role" are different
@@ -1127,16 +1193,26 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
         // a knowledge doc is refused with where it opens. What was opened is
         // recorded in `world.pane` for a fixture to read back.
         //
-        // THE ANSWER IS THE DOOR'S SHAPE (`POST /api/agent/open`): `file`,
-        // `alreadyOpen`, `theyCanEdit`, `youCanEdit` and `message`, with the
+        // THE ANSWER IS THE DOOR'S SHAPE (`POST /api/agent/open`): an open
+        // answers `file {key, kind, id, title?, type, url?}`, `alreadyOpen`,
+        // `theyCanEdit`, `youCanEdit` and `message`, and a listing answers
+        // `files [{title, type, documentId | url}]` and `message`, with the
         // door's own sentences. A model reads that answer to decide what to
         // tell the person — view-only, already open, Google's access page — so
         // a sandbox that answered a tidier object would grade a reply to a
-        // result production never sends. Two things the sandbox cannot know
-        // are fixed: there is no conversation (so no `conversationId`), and
-        // the world has no per-person grants, so the person and the agent can
-        // both edit a Talaria file and a Google file's access is unknown
-        // (null), as the door answers it.
+        // result production never sends. A Google file is one file however
+        // its link is spelled: the door keys it by Drive id (`google:<id>`)
+        // and answers its canonical URL, and so does this. `world.pane` keeps
+        // it at that canonical URL (`google:<url>`), so a fixture can match
+        // the link the person pasted.
+        //
+        // What the sandbox cannot know is fixed, not invented: there is no
+        // conversation (no `conversationId`) and no clock (a listing has no
+        // `lastTouchedAt`, and is newest-opened first); the world has no
+        // per-person grants, so the person and the agent can both edit a
+        // Talaria file and a Google file's access is unknown (null), as the
+        // door answers it; and a listing holds only what `open_in_pane`
+        // opened, where production's holds every file the session touched.
         "open_in_pane" => {
             let document_id = a["documentId"]
                 .as_str()
@@ -1167,11 +1243,30 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                         .iter()
                         .rev()
                         .map(|key| match key.strip_prefix("artifact:") {
-                            Some(id) => json!({ "documentId": id, "title": w.documents.iter().find(|d| d.id == id).map(|d| d.title.clone()) }),
-                            None => json!({ "url": key.trim_start_matches("google:") }),
+                            Some(id) => {
+                                let d = w.documents.iter().find(|d| d.id == id);
+                                json!({
+                                    "title": d.map(|d| d.title.clone()),
+                                    "type": d.map(|d| pane_type(&d.kind)),
+                                    "documentId": id,
+                                })
+                            }
+                            None => {
+                                let url = key.trim_start_matches("google:");
+                                json!({
+                                    "title": Value::Null,
+                                    "type": google_file_of(url).map(|(_, k)| format!("google {k}")),
+                                    "url": url,
+                                })
+                            }
                         })
                         .collect();
-                    return Ok(json!({ "ok": true, "files": files }));
+                    let message = if files.is_empty() {
+                        "No files in this session yet that you can read — pass documentId or url to open one."
+                    } else {
+                        "The files in this session, newest first. Pass one's documentId (a Talaria file) or url (a Google file) to bring it back in front of them."
+                    };
+                    return Ok(json!({ "ok": true, "files": files, "message": message }));
                 }
                 (Some(_), Some(_)) => {
                     return Err(refuse("give documentId or url — one of them, not both"));
@@ -1190,10 +1285,8 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                         let id = id.split(['&', '#']).next().unwrap_or("");
                         let d = doc_of(w, &json!(id))?;
                         format!("artifact:{}", d.id)
-                    } else if url.starts_with("https://docs.google.com/")
-                        || url.starts_with("https://drive.google.com/")
-                    {
-                        format!("google:{url}")
+                    } else if let Some((id, kind)) = google_file_of(url) {
+                        format!("google:{}", google_url(id, kind))
                     } else {
                         return Err(refuse(
                             "that is not a link to a Talaria document or a Google file — the pane shows Talaria documents, sheets, pages and uploaded files, and Google Docs, Sheets, Slides and Drive files",
@@ -1230,40 +1323,18 @@ fn handle(tool: &str, a: &Value, w: &mut SandboxWorld) -> Result<Value, ToolRefu
                     "kind": "artifact",
                     "id": d.id,
                     "title": d.title,
-                    "type": match d.kind.as_str() {
-                        "sheet" => "sheet",
-                        "microsite" => "page",
-                        "file" => "file",
-                        _ => "document",
-                    },
+                    "type": pane_type(&d.kind),
                 }),
                 None => {
+                    // The pane keeps the canonical URL; the answer names the
+                    // file the door's way — `google:<id>`, and that URL.
                     let url = key.trim_start_matches("google:");
-                    // The id after `/d/`, and the editor segment before it —
-                    // what the door's URL reader takes the file's identity and
-                    // type from.
-                    let parts: Vec<&str> = url
-                        .split(['?', '#'])
-                        .next()
-                        .unwrap_or(url)
-                        .split('/')
-                        .collect();
-                    let d_at = parts.iter().position(|p| *p == "d");
-                    let id = d_at.and_then(|i| parts.get(i + 1)).copied();
-                    let kind = d_at.and_then(|i| {
-                        parts[..i].iter().find_map(|seg| match *seg {
-                            "document" => Some("document"),
-                            "spreadsheets" => Some("spreadsheet"),
-                            "presentation" => Some("presentation"),
-                            "file" => Some("drive"),
-                            _ => None,
-                        })
-                    });
+                    let parsed = google_file_of(url);
                     json!({
-                        "key": key,
+                        "key": parsed.map(|(id, _)| format!("google:{id}")),
                         "kind": "google",
-                        "id": id,
-                        "type": kind.map(|k| format!("google {k}")),
+                        "id": parsed.map(|(id, _)| id),
+                        "type": parsed.map(|(_, k)| format!("google {k}")),
                         "url": url,
                     })
                 }
@@ -3042,6 +3113,9 @@ mod tests {
         assert_eq!(answer["file"]["kind"], json!("google"));
         assert_eq!(answer["file"]["id"], json!("1sheet"));
         assert_eq!(answer["file"]["type"], json!("google spreadsheet"));
+        // The door's names for it: keyed by Drive id, at its canonical URL.
+        assert_eq!(answer["file"]["key"], json!("google:1sheet"));
+        assert_eq!(answer["file"]["url"], json!(sheet));
         // Google decides who may open it, so the door answers null for both.
         assert_eq!(answer["theyCanEdit"], Value::Null);
         assert_eq!(answer["youCanEdit"], Value::Null);
@@ -3073,6 +3147,32 @@ mod tests {
             .is_error
         );
         assert_eq!(s.world.pane.len(), 2, "{:?}", s.world.pane);
+        // So is another spelling of its link: one Drive id, one file, as the
+        // door lands one tab for it.
+        let shared = s.dispatch(
+            "open_in_pane",
+            &json!({ "url": format!("{sheet}?usp=sharing") }).to_string(),
+        );
+        assert!(!shared.is_error, "{}", shared.text);
+        let answer: Value = serde_json::from_str(&shared.text).unwrap();
+        assert_eq!(answer["alreadyOpen"], json!(true), "{answer}");
+        assert_eq!(answer["file"]["key"], json!("google:1sheet"));
+        assert_eq!(answer["file"]["url"], json!(sheet));
+        assert_eq!(s.world.pane.len(), 2, "{:?}", s.world.pane);
+        // A Google link that names no file — a publish-to-web page — is
+        // refused, as the door refuses it.
+        let published = s.dispatch(
+            "open_in_pane",
+            &json!({ "url": "https://docs.google.com/document/d/e/2PACX-1v/pubhtml" }).to_string(),
+        );
+        assert!(
+            published.is_error
+                && published
+                    .text
+                    .contains("not a link to a Talaria document or a Google file"),
+            "{}",
+            published.text
+        );
         // An unpaired angle bracket is not a link production reads.
         assert!(
             s.dispatch(
@@ -3089,6 +3189,19 @@ mod tests {
             listed.text.find("1sheet") < listed.text.find(&doc.id),
             "{}",
             listed.text
+        );
+        // In the door's listing shape: each file's type, and how to reopen it.
+        let listing: Value = serde_json::from_str(&listed.text).unwrap();
+        assert_eq!(listing["files"][0]["url"], json!(sheet), "{listing}");
+        assert_eq!(listing["files"][0]["type"], json!("google spreadsheet"));
+        assert_eq!(listing["files"][1]["documentId"], json!(doc.id));
+        assert_eq!(listing["files"][1]["type"], json!("document"));
+        assert!(
+            listing["message"]
+                .as_str()
+                .unwrap()
+                .contains("newest first"),
+            "{listing}"
         );
 
         // Production's refusals.
