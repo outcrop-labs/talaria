@@ -517,6 +517,7 @@ mod tests {
             ])),
             unheld: PermissionSet::new(),
             omitted: PermissionSet::new(),
+            added: PermissionSet::new(),
             shortfall,
             shortfall_why: why.map(str::to_string),
             minted: true,

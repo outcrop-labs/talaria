@@ -1,15 +1,16 @@
-// /api/workbench/git-hosts/{id}/agents. The host card's "Agents' tokens":
-// what an installation accepting a permission means for the agents, which is
-// not the same thing. GET → each agent with a GitHub permission set or a
-// repo grant on the host: its set (or the default), what its token carries
-// (the set met with what the installations its repos are minted on hold, as
-// the record has it), and its last token (the newest `git.credential` or
-// `git.credential_refused` row on the host: what GitHub put on it, or why
-// there was none). Beside them, `unclaimed`: what the installations hold,
-// metadata aside, that no Developer agent's set names — accepted on GitHub,
-// carried by no agent, because a grant is per agent and admin-only. Read from
-// the record and the trail, never GitHub. requireAdmin, like the rest of the
-// host plane.
+// /api/workbench/git-hosts/{id}/agents. What Agent policy › GitHub access
+// and the host dialog read: each agent with a set or a repo grant on the
+// host, beside what the installations accepted, because an installation
+// accepting a permission is not an agent's token carrying it. GET → per
+// agent, its set (or the default), what its token carries (the set met with
+// what the installations its repos are minted on hold, as the record has
+// it), and its last token (the newest `git.credential` or
+// `git.credential_refused` row on the host: what GitHub put on it, what
+// GitHub added to it unasked (`added`), or why there was none). Beside them,
+// `unclaimed`: what the installations hold, metadata aside, that no
+// Developer agent's set names — accepted on GitHub, carried by no agent,
+// because a grant is per agent and admin-only. Read from the record and the
+// trail, never GitHub. requireAdmin, like the rest of the host plane.
 
 use axum::Json;
 use axum::extract::{Path, State};

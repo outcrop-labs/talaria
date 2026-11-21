@@ -420,10 +420,10 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_
 
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_agents.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_agents.rs)
 
-> /api/workbench/git-hosts/{id}/agents. The host card's "Agents' tokens":
-> what an installation accepting a permission means for the agents, which is
-> not the same thing. GET → each agent with a GitHub permission set or a
-> repo grant on the host: its set (or the default), what its token carries
+> /api/workbench/git-hosts/{id}/agents. What Agent policy › GitHub access
+> and the host dialog read: each agent with a set or a repo grant on the
+> host, beside what the installations accepted, because an installation
+> accepting a permission is not an agent's token carrying it. GET → per
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
