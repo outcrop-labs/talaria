@@ -1077,6 +1077,23 @@ impl Effects {
     pub fn canary_ok(&mut self, digest: &str, at_ms: i64) {
         self.canary_ok.push((digest.to_string(), at_ms));
     }
+
+    /// Nothing asked for. Spelled out field by field, so a new kind of
+    /// effect cannot be left out of it.
+    fn is_empty(&self) -> bool {
+        let Effects {
+            assign,
+            good,
+            bad,
+            allow,
+            canary_ok,
+        } = self;
+        assign.is_empty()
+            && good.is_empty()
+            && bad.is_empty()
+            && allow.is_empty()
+            && canary_ok.is_empty()
+    }
 }
 
 /// Read, change and write the state under `key` in one transaction, the row
@@ -1120,17 +1137,23 @@ where
             .fetch_optional(&mut *tx)
             .await
             .map_err(store)?;
-    let mut state = parse_state(stored)?;
+    let mut state = parse_state(stored.clone())?;
     let mut fx = Effects::default();
     let out = f(&mut state, &mut fx)?;
     let value = serde_json::to_value(&state)
         .map_err(|e| StateError::Unreadable(format!("the state would not serialize: {e}")))?;
-    sqlx::query("update app_settings set value = $2, updated_at = now() where key = $1")
-        .bind(key)
-        .bind(&value)
-        .execute(&mut *tx)
-        .await
-        .map_err(store)?;
+    // A change that changed nothing, with nothing else asked for, leaves the
+    // row as it is: the state is a TOASTed value of several kB, rewritten
+    // whole by every UPDATE. (The row is still locked, and the transaction
+    // still commits, for the turn-taking above.)
+    if !(fx.is_empty() && stored.as_ref() == Some(&value)) {
+        sqlx::query("update app_settings set value = $2, updated_at = now() where key = $1")
+            .bind(key)
+            .bind(&value)
+            .execute(&mut *tx)
+            .await
+            .map_err(store)?;
+    }
     for (agent, digest) in &fx.assign {
         sqlx::query(
             "insert into hermes_agent_images (agent_id, digest) values ($1::uuid, $2) \

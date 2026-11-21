@@ -365,9 +365,9 @@ use talaria_hermes_channel::prepare::Room;
 use talaria_hermes_channel::{Engine, Fault, FleetOps, Snapshot, Tuning};
 use talaria_hermes_images::{ImageRecord, Phase, RolloutKind, Status, Window};
 
-const MIN: i64 = 60_000;
+pub(crate) const MIN: i64 = 60_000;
 
-struct Fake {
+pub(crate) struct Fake {
     pg: PgPool,
     now: AtomicI64,
     agents: Vec<ChannelAgent>,
@@ -503,7 +503,7 @@ impl Fake {
             serial: AtomicI64::new(1),
         }
     }
-    fn advance(&self, ms: i64) {
+    pub(crate) fn advance(&self, ms: i64) {
         self.now.fetch_add(ms, Ordering::SeqCst);
     }
     fn on(&self, slug: &str) -> String {
@@ -873,7 +873,7 @@ impl FleetOps for Fake {
     }
 }
 
-fn tuning() -> Tuning {
+pub(crate) fn tuning() -> Tuning {
     Tuning {
         min_stable_ms: 0,
         first_agent_soak_ms: 10 * MIN,
@@ -888,17 +888,17 @@ fn tuning() -> Tuning {
 
 /// A test's world: its state row, two digests (`old` good and current, `new`
 /// a prepared candidate stable names), and `n` agents on `old`.
-struct World {
-    pg: PgPool,
-    key: String,
+pub(crate) struct World {
+    pub(crate) pg: PgPool,
+    pub(crate) key: String,
     tag: String,
     old: String,
     new: String,
-    fake: Fake,
+    pub(crate) fake: Fake,
 }
 
 impl World {
-    async fn new(tag: &str, n: usize) -> World {
+    pub(crate) async fn new(tag: &str, n: usize) -> World {
         let pg = pg().await;
         cleanup(&pg, tag).await;
         let key = format!("hermes-test:{tag}");
@@ -961,13 +961,13 @@ impl World {
             fence: None,
         }
     }
-    async fn step(&self, t: &Tuning) -> Vec<String> {
+    pub(crate) async fn step(&self, t: &Tuning) -> Vec<String> {
         talaria_hermes_channel::step_with(&self.pg, &self.key, &self.fake, t)
             .await
             .unwrap()
             .expect("the test's own lock")
     }
-    async fn state(&self) -> talaria_hermes_images::ChannelState {
+    pub(crate) async fn state(&self) -> talaria_hermes_images::ChannelState {
         images::load_state_at(&self.pg, &self.key).await.unwrap()
     }
     async fn status_of(&self, d: &str) -> Status {
@@ -1081,7 +1081,7 @@ impl World {
             );
         }
     }
-    async fn done(self) {
+    pub(crate) async fn done(self) {
         sqlx::query("delete from app_settings where key = $1")
             .bind(&self.key)
             .execute(&self.pg)
@@ -1443,6 +1443,104 @@ async fn a_release_waits_its_minimum_time_on_stable_unless_rolled_now() {
         .unwrap();
     w.step(&t).await;
     assert_eq!(w.fake.on(&w.slug(0)), w.new, "Roll now does not wait");
+    w.done().await;
+}
+
+/// The state row's (xmin, xmax): a new version when it is written, a new
+/// xmax when it is locked.
+async fn row_version(w: &World) -> (String, String) {
+    sqlx::query_as("select xmin::text, xmax::text from app_settings where key = $1")
+        .bind(&w.key)
+        .fetch_one(&w.pg)
+        .await
+        .unwrap()
+}
+
+/// The quiet two days after a release: a step of an Upgrade waiting out its
+/// time on stable says what it said a minute ago, and neither writes the
+/// state row nor locks it (its xmin and xmax stay as they were); the step
+/// whose detail does change writes it.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_release_waiting_on_stable_writes_its_state_only_when_its_detail_changes() {
+    let w = World::new("quiet", 1).await;
+    let mut t = tuning();
+    t.min_stable_ms = 48 * 60 * MIN;
+    w.step(&t).await;
+    let opened = row_version(&w).await;
+    let said = w.state().await.rollout.unwrap().detail.unwrap();
+    assert!(said.contains("for 0 h"), "{said}");
+    for _ in 0..2 {
+        w.fake.advance(MIN);
+        w.step(&t).await;
+    }
+    assert_eq!(
+        row_version(&w).await,
+        opened,
+        "two quiet steps neither wrote the state row nor locked it"
+    );
+    assert_eq!(w.state().await.rollout.unwrap().detail.unwrap(), said);
+    w.fake.advance(60 * MIN);
+    w.step(&t).await;
+    let r = w.state().await.rollout.unwrap();
+    assert!(r.detail.as_deref().unwrap().contains("for 1 h"), "{r:?}");
+    assert_ne!(
+        row_version(&w).await.0,
+        opened.0,
+        "a changed detail is written"
+    );
+    assert!(w.fake.rolled().is_empty(), "and nothing moved");
+    w.done().await;
+}
+
+/// A state patch whose change changed nothing, with no effect asked for,
+/// leaves the row unwritten (its xmin stays; it is still locked for the
+/// turn-taking, so its xmax may move). One that asks for an effect writes
+/// it, and so does one that changes a field.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_state_patch_that_changes_nothing_leaves_the_row_unwritten() {
+    let w = World::new("nooppatch", 1).await;
+    // The fixture's row is a hand-written subset of the state; the first
+    // patch writes it out whole, as every row the engine has written is.
+    images::patch_state_at(&w.pg, &w.key, |_| Ok(()))
+        .await
+        .unwrap();
+    let written = row_version(&w).await;
+    let (_, out) = images::patch_state_at(&w.pg, &w.key, |s| Ok(s.current.clone()))
+        .await
+        .unwrap();
+    assert_eq!(out.as_deref(), Some(w.old.as_str()), "the closure ran");
+    assert_eq!(
+        row_version(&w).await.0,
+        written.0,
+        "a patch that changed nothing left the row as it was"
+    );
+    let old = w.old.clone();
+    images::patch_state_fx_at(&w.pg, &w.key, move |_, fx| {
+        fx.mark_good(&old);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let with_effect = row_version(&w).await;
+    assert_ne!(
+        with_effect.0, written.0,
+        "a patch asking for an effect writes the row"
+    );
+    let previous = w.old.clone();
+    images::patch_state_at(&w.pg, &w.key, move |s| {
+        s.previous = Some(previous);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_ne!(
+        row_version(&w).await.0,
+        with_effect.0,
+        "a patch changing a field writes the row"
+    );
+    assert_eq!(w.state().await.previous.as_deref(), Some(w.old.as_str()));
     w.done().await;
 }
 

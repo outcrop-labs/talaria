@@ -1312,19 +1312,37 @@ async fn awaiting_run_keys(pg: &PgPool) -> Result<Vec<String>, sqlx::Error> {
     .await
 }
 
-async fn prune_announced(
+/// The announce map with only the marks the prune keeps: a key the complete
+/// census still lists ($1), or a mark at or after the census was taken ($2).
+/// Read off the row being updated, in both places it appears below, so a
+/// mark claimed while the prune waited for the row is in the value it writes
+/// (a FROM subquery would hand it the map as it was before the wait).
+macro_rules! kept_announced {
+    () => {
+        "jsonb_build_object('announced', (\
+           select coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) \
+           from jsonb_each(coalesce(value -> 'announced', '{}'::jsonb)) as e \
+           where e.key = any($1::text[]) or (e.value #>> '{}') >= $2\
+         ))"
+    };
+}
+
+/// Drop the marks of approvals that were decided: keep a key in
+/// `live_keys` or one marked at or after `census_taken_at`. Written only when
+/// that changes the map: a pass that drops nothing (most of them) takes no
+/// row lock and commits nothing. `sweep_unannounced` is its caller; it is
+/// public for the live test that holds it to that.
+pub async fn prune_announced(
     pg: &PgPool,
     live_keys: &[String],
     census_taken_at: &str,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "update app_settings set value = jsonb_build_object('announced', (\
-           select coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) \
-           from jsonb_each(coalesce(value -> 'announced', '{}'::jsonb)) as e \
-           where e.key = any($1::text[]) or (e.value #>> '{}') >= $2\
-         )), updated_at = now() \
-         where key = $3",
-    )
+    sqlx::query(concat!(
+        "update app_settings set value = ",
+        kept_announced!(),
+        ", updated_at = now() where key = $3 and value is distinct from ",
+        kept_announced!()
+    ))
     .bind(live_keys)
     .bind(census_taken_at)
     .bind(ANNOUNCE_STATE_KEY)
