@@ -12,12 +12,16 @@
 // or the same token a push would get is minted and cached under the agent,
 // so the next push uses what this read. It answers
 //   {ok, source, secret, installation, asked, carried, shortfall,
-//    shortfallWhy, minted, error, reasons, at}
-// where `reasons` names, per key, why it is not on the token: `notInSet`
-// (the installation holds it; the agent's set does not name it),
+//    shortfallWhy, added, minted, error, reasons, at}
+// where `added` is what GitHub put on the token that was not asked for,
+// which Talaria kept and never asks for (`metadata: read` aside, which every
+// token carries; `{}` when nothing, null when the host does not say what its
+// token carries), and `reasons` names, per key, why it is not on the token:
+// `notInSet` (the installation holds it; the agent's set does not name it),
 // `installationLacks` (the set names it; the installation has not accepted
 // it), `githubRefused` (GitHub would not put it on a token for one
-// repository), `githubOmitted` (asked for, and left off). The token itself is
+// repository), `githubOmitted` (asked for, and left off). `reasons` never
+// names a key the token carries, an added one included. The token itself is
 // never in the answer. A mint writes the `git.credential` row the door would,
 // with the admin as its actor and `check: true`; a refusal writes nothing
 // (the trail's refusals are the agent's own git, which the admin alert
@@ -56,6 +60,7 @@ struct Checked {
     carried: Option<PermissionSet>,
     shortfall: Option<PermissionSet>,
     shortfall_why: Option<String>,
+    added: Option<PermissionSet>,
     minted: Option<bool>,
     error: Option<String>,
     reasons: Vec<Reason>,
@@ -80,6 +85,7 @@ impl Checked {
             "carried": set(self.carried),
             "shortfall": set(self.shortfall),
             "shortfallWhy": self.shortfall_why,
+            "added": set(self.added),
             "minted": self.minted,
             "error": self.error,
             "reasons": self.reasons.iter().map(Reason::wire).collect::<Vec<_>>(),
@@ -208,6 +214,8 @@ pub async fn post(
                 carried: c.carried.clone(),
                 shortfall: Some(c.shortfall.clone()),
                 shortfall_why: c.shortfall_why.clone(),
+                // Said only where the host says what its token carries.
+                added: c.carried.as_ref().map(|_| c.added.clone()),
                 minted: Some(c.minted),
                 ..Checked::default()
             }
@@ -234,7 +242,10 @@ pub async fn post(
         row.id,
         match (&checked.error, &checked.carried) {
             (Some(e), _) => format!("none ({e})"),
-            (None, Some(c)) => format!("carries {c}"),
+            (None, Some(c)) => match checked.added.as_ref().filter(|a| !a.is_empty()) {
+                Some(a) => format!("carries {c} (GitHub added {a} unasked)"),
+                None => format!("carries {c}"),
+            },
             (None, None) => format!("{} answers", checked.source.unwrap_or("nothing")),
         }
     );
@@ -256,7 +267,7 @@ mod tests {
     mod live {
         use super::super::*;
         use crate::workbench::live_support::{
-            agent, answer, bodies, cleanup, github, github_host, person, state, tag,
+            agent, answer, bodies, cleanup, github, github_adding, github_host, person, state, tag,
         };
 
         async fn check_as(
@@ -475,6 +486,83 @@ mod tests {
                 .await
                 .unwrap();
             cleanup(&state, &[&a], &[&admin, &manager], &[&h]).await;
+        }
+
+        #[tokio::test]
+        #[ignore = "needs a live database and Redis (DATABASE_URL, REDIS_URL)"]
+        async fn a_key_github_adds_is_kept_said_and_never_named_missing() {
+            let state = state().await;
+            let t = tag();
+            let (admin, as_admin) = person(&state, &t, "admin", "admin").await;
+            let a = agent(&state, &t, &admin).await;
+            // The installation holds checks to read, and GitHub puts it on
+            // every token unasked.
+            let (base, log) = github_adding("95111", json!({ "checks": "read" })).await;
+            let h = github_host(&state, &t, &base, "95111").await;
+            sqlx::query(
+                "update git_host_installations \
+                    set held = held || '{\"checks\":\"read\"}'::jsonb, \
+                        app_permissions = app_permissions || '{\"checks\":\"read\"}'::jsonb \
+                  where host_id = $1",
+            )
+            .bind(&h)
+            .execute(&state.pg)
+            .await
+            .unwrap();
+            talaria_git_hosts::add_grant(&state.pg, &a, &h, "acme/widgets")
+                .await
+                .unwrap();
+            let check = json!({ "host": h, "repo": "acme/widgets" });
+
+            let (status, body) = check_as(&state, &as_admin, &a, check.clone()).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["ok"], true, "{body}");
+            assert_eq!(body["minted"], true);
+            assert_eq!(body["error"], Value::Null, "no refusal: {body}");
+            assert_eq!(
+                body["asked"],
+                json!({ "contents": "write", "metadata": "read", "pull_requests": "write" })
+            );
+            assert_eq!(body["carried"]["checks"], "read", "{body}");
+            assert_eq!(body["added"], json!({ "checks": "read" }), "{body}");
+            assert!(
+                reason(&body, "checks").is_none(),
+                "a key on the token is never named as not on it: {body}"
+            );
+            // A key the installation holds that is not on the token is still
+            // named.
+            assert_eq!(reason(&body, "workflows").unwrap()["why"], "notInSet");
+            // Checks was never asked for, and nothing was revoked.
+            let posted = bodies(&log, "POST", "/app/installations/95111/access_tokens");
+            let asked: Value = serde_json::from_str(&posted[0]).unwrap();
+            assert!(asked["permissions"].get("checks").is_none(), "{asked}");
+            assert!(
+                bodies(&log, "DELETE", "/installation/token").is_empty(),
+                "kept, never revoked"
+            );
+
+            // The trail records it, and the editor's last token says it.
+            let rows: Vec<Value> = sqlx::query_scalar(
+                "select after from audit_log where action = 'git.credential' \
+                 and target_id = $1 order by created_at",
+            )
+            .bind(&a)
+            .fetch_all(&state.pg)
+            .await
+            .unwrap();
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(rows[0]["added"], json!({ "checks": "read" }));
+            let (_, editor) = answer(get_editor(&state, &as_admin, &a).await).await;
+            let last = &editor["hosts"][0]["repos"][0]["lastToken"];
+            assert_eq!(last["added"], json!({ "checks": "read" }), "{editor}");
+
+            // Served from the cache, it still says what GitHub added.
+            let (_, again) = check_as(&state, &as_admin, &a, check.clone()).await;
+            assert_eq!(again["minted"], false);
+            assert_eq!(again["added"], body["added"]);
+            assert!(reason(&again, "checks").is_none(), "{again}");
+
+            cleanup(&state, &[&a], &[&admin], &[&h]).await;
         }
 
         async fn get_editor(

@@ -161,14 +161,30 @@ pub(crate) fn held() -> Value {
 /// the repository listing of `acme/widgets` need: the installation holds
 /// [`held`]; each mint answers `tok-<n>` carrying what was posted.
 pub(crate) async fn github(inst: &'static str) -> (String, Log) {
+    github_adding(inst, json!({})).await
+}
+
+/// [`github`], where the installation also holds `extra` and every mint
+/// puts `extra` on the token beside what was posted, unasked: GitHub adding
+/// keys of its own.
+pub(crate) async fn github_adding(inst: &'static str, extra: Value) -> (String, Log) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
     let log: Log = Arc::default();
     let seen = log.clone();
     let mints = Arc::new(AtomicUsize::new(0));
+    let merged = move |base: Value| -> Value {
+        let mut out = base.as_object().cloned().unwrap_or_default();
+        for (k, v) in extra.as_object().into_iter().flatten() {
+            out.insert(k.clone(), v.clone());
+        }
+        Value::Object(out)
+    };
+    let holds = merged(held());
     tokio::spawn(async move {
         while let Ok((mut sock, _)) = listener.accept().await {
             let (seen, mints) = (seen.clone(), mints.clone());
+            let (holds, merged) = (holds.clone(), merged.clone());
             tokio::spawn(async move {
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 4096];
@@ -218,7 +234,7 @@ pub(crate) async fn github(inst: &'static str) -> (String, Log) {
                         json!({
                             "id": inst.parse::<i64>().unwrap(),
                             "account": { "login": "acme" },
-                            "permissions": held(),
+                            "permissions": holds,
                         })
                         .to_string(),
                     ),
@@ -230,7 +246,7 @@ pub(crate) async fn github(inst: &'static str) -> (String, Log) {
                             json!({
                                 "token": format!("tok-{n}"),
                                 "expires_at": "2099-01-01T00:00:00Z",
-                                "permissions": asked["permissions"],
+                                "permissions": merged(asked["permissions"].clone()),
                                 "repository_selection": "selected",
                                 "repositories": [{ "full_name": "acme/widgets" }],
                             })

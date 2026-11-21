@@ -550,6 +550,12 @@ pub struct AgentCredential {
     pub unheld: PermissionSet,
     /// The part of `shortfall` GitHub was asked for and left off the token.
     pub omitted: PermissionSet,
+    /// What the token carries that `asked` did not name: keys GitHub put on
+    /// a GitHub App token of its own accord, which Talaria kept and never
+    /// asks for (`metadata: read` aside, which every token carries). Empty
+    /// for a PAT and every other kind of host, which say nothing about what
+    /// they carry.
+    pub added: PermissionSet,
     /// Minted by this call, rather than served from a cache or stored.
     pub minted: bool,
 }
@@ -569,6 +575,7 @@ impl std::fmt::Debug for AgentCredential {
             .field("shortfall_why", &self.shortfall_why)
             .field("unheld", &self.unheld)
             .field("omitted", &self.omitted)
+            .field("added", &self.added)
             .field("minted", &self.minted)
             .finish()
     }
@@ -666,6 +673,7 @@ async fn issue_login(
         shortfall_why: issued.shortfall_why,
         unheld: issued.unheld,
         omitted: issued.omitted,
+        added: issued.added,
         minted: issued.minted,
     };
     match host {
@@ -741,6 +749,7 @@ fn agent_credential(
         shortfall: issued.shortfall,
         shortfall_why: issued.shortfall_why,
         omitted: PermissionSet::new(),
+        added: PermissionSet::new(),
         minted: issued.minted,
     }
 }
