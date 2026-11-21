@@ -4062,7 +4062,10 @@ alter table tasks drop column if exists conversation_id`,
   // identifier is Hermes' own and the install's only input; path is the
   // skill directory inside repo (exact = false marks a skills.sh slug the
   // index never resolved, found by name at fetch time); rank is the index's
-  // own order, which lists Hermes' official skills first.
+  // own order, which lists Hermes' official skills first. (Since 2026-11-21
+  // rank is the row's position on the day it arrived, read only by older
+  // releases: the listing sorts by source and name, as Hermes builds the
+  // index, so a skill added mid-list rewrites no other row.)
   `create table if not exists skills_index_entries (
      identifier text primary key,
      name text not null,
@@ -5326,9 +5329,18 @@ alter table tasks drop column if exists conversation_id`,
    ) with (fillfactor = 50)`,
   // Backfilled in the rotation's own order (the run's ORDER BY), so the 300
   // rows a run stamps sit together on a handful of pages from its first run.
-  // live_checked_at stays on the entry for one release, unread and unwritten:
-  // the previous image rolled back onto this database still rotates on its
-  // frozen values.
+  // live_checked_at stays on the entry for one release, unread. A deliberate
+  // exception to docs/UPDATES.md's rule that moved data keeps its old copy
+  // current while both releases can run: keeping the per-probe stamp current
+  // there (both writes, or a trigger) is exactly the six-index rewrite this
+  // removes. The catalog sync still nulls it when an entry changes — free,
+  // that upsert rewrites the row anyway — so a rolled-back release still asks
+  // a changed entry first. What a previous release run on this database
+  // shows: check times ("checked N ago") frozen at the upgrade until its own
+  // probes re-stamp them, oldest first, about 13 hours for the whole mirror.
+  // It is telemetry: verdicts, details, dead counts and the install gate
+  // read live_state and live_detail, which stay current. A later release
+  // drops the column.
   `insert into mcp_library_liveness (registry_name, checked_at)
      select registry_name, live_checked_at from mcp_library_entries
       where live_checked_at is not null

@@ -657,7 +657,11 @@ async fn upsert(
 }
 
 /// One row's upsert and, when the entry is new or changed, its stamp's reset
-/// (`prev` reads the row as it was before this statement).
+/// (`prev` reads the row as it was before this statement). A changed entry
+/// also loses its old `live_checked_at`, as before the stamp moved: nothing
+/// here reads that column, but a release rolled back onto this database
+/// does, and asks a null first. It costs nothing — the upsert rewrites the
+/// row anyway — and the column is never set to a time any more.
 const UPSERT_ENTRY: &str = "with prev as (select entry from mcp_library_entries where registry_name = $1), \
        reset as (delete from mcp_library_liveness where registry_name = $1 \
                  and not exists (select 1 from prev where prev.entry is not distinct from $9::jsonb)) \
@@ -669,6 +673,8 @@ const UPSERT_ENTRY: &str = "with prev as (select entry from mcp_library_entries 
        domain = excluded.domain, domains = excluded.domains, tier = excluded.tier, \
        kind = excluded.kind, entry = excluded.entry, \
        registry_updated_at = excluded.registry_updated_at, synced_at = now(), \
+       live_checked_at = case when mcp_library_entries.entry is distinct from excluded.entry \
+         then null else mcp_library_entries.live_checked_at end, \
        live_state = case when mcp_library_entries.entry->>'url' is distinct from excluded.entry->>'url' \
          then null else mcp_library_entries.live_state end, \
        live_detail = case when mcp_library_entries.entry->>'url' is distinct from excluded.entry->>'url' \
@@ -1500,10 +1506,37 @@ mod stamp_live {
 
         // An identical re-walk keeps every stamp, row version and all; a
         // changed entry (same endpoint) loses its stamp but keeps its
-        // verdict, and is the next run's first row.
+        // verdict, and is the next run's first row. The previous release's
+        // live_checked_at, frozen at the upgrade, follows the same rule, so a
+        // release rolled back onto this database asks the changed entry first.
+        sqlx::query("update mcp_library_entries set live_checked_at = now() - interval '1 hour'")
+            .execute(&pg)
+            .await
+            .unwrap();
+        let frozen = |name: String| {
+            let pg = pg.clone();
+            async move {
+                sqlx::query_scalar::<_, bool>(
+                    "select live_checked_at is not null from mcp_library_entries \
+                     where registry_name = $1",
+                )
+                .bind(name)
+                .fetch_one(&pg)
+                .await
+                .unwrap()
+            }
+        };
         let mut b2 = b.clone();
         b2.title = "Stamp B, renamed".into();
         walk(&pg, &[a.clone(), b2, c.clone()]).await;
+        assert!(
+            frozen(a.registry_name.clone()).await,
+            "an identical entry keeps it"
+        );
+        assert!(
+            !frozen(b.registry_name.clone()).await,
+            "a changed entry's is nulled"
+        );
         assert_eq!(
             stamp(&pg, &a.registry_name).await,
             Some((a_at, a_xmin)),

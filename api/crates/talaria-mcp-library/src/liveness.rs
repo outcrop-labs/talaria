@@ -1373,11 +1373,26 @@ mod liveness_live {
     #[ignore]
     async fn liveness_live_unchanged_verdicts_write_no_entry_rows() {
         let (admin, pg, schema) = scratch("unchanged").await;
+        // The stamp table is the migration's: fillfactor 50, room on every
+        // page for a new version of each row on it.
+        let opts: Option<String> = sqlx::query_scalar(
+            "select array_to_string(reloptions, ',') from pg_class \
+             where oid = 'mcp_library_liveness'::regclass",
+        )
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(opts.as_deref(), Some("fillfactor=50"));
         // A mirror at steady state: every entry carries its verdict, and its
         // stamp from an hour ago sits in name order, as the backfill leaves
-        // it. A pass asks one entry in six (as a run asks a slice of each
-        // page), names of a realistic length.
+        // it. A pass asks what a run asks: the next 300 stamps of the
+        // rotation, a contiguous block of whole pages, and the verdicts land
+        // roughly in the order asked, so each 50-verdict chunk re-stamps most
+        // of a page at once. That is the layout a lower fillfactor fails
+        // (at 70 a page has room for new versions of under half its rows).
+        // Names of a realistic length.
         const M: i32 = 720;
+        const P: usize = LIVENESS_BATCH as usize;
         let name = |i: usize| format!("io.example.live-{i:04}/an-mcp-server-with-a-realistic-name");
         sqlx::query(
             "insert into mcp_library_entries (registry_name, title, kind, entry, live_state, live_detail) \
@@ -1399,17 +1414,17 @@ mod liveness_live {
         .execute(&pg)
         .await
         .unwrap();
-        let probed: Vec<usize> = (1..=M as usize).filter(|i| i % 6 == 0).collect();
-        assert_eq!(probed.len(), N);
+        let probed: Vec<usize> = (1..=P).collect();
         let verdict = |i: usize, url: String, state: LiveState, detail: String| Verdict {
             name: name(i),
             url,
             state,
             detail,
         };
-        // Landed out of order, as probes do.
+        // Landed a little out of order, as probes do: shuffled within each
+        // run of ten.
         let mut order = probed.clone();
-        order.sort_by_key(|i| (i * 37) % 101);
+        order.sort_by_key(|i| (i / 10, (i * 7) % 10));
         let same: Vec<Verdict> = order
             .iter()
             .map(|&i| {
@@ -1423,12 +1438,12 @@ mod liveness_live {
             .collect();
 
         // The same answers as last time: no entry row is written, every
-        // stamp is re-stamped in place, three async commits.
+        // stamp is re-stamped in place, six async commits.
         let entries0 = xmins(&pg, "mcp_library_entries").await;
         let stamps0 = xmins(&pg, "mcp_library_liveness").await;
         let (upd0, hot0) = stamp_updates(&pg).await;
         let written = write_as_they_land(&pg, stream::iter(same), |_| {}).await;
-        assert_eq!(written, N as u64);
+        assert_eq!(written, P as u64);
         let (upd1, hot1) = stamp_updates(&pg).await;
         let entries1 = xmins(&pg, "mcp_library_entries").await;
         let stamps1 = xmins(&pg, "mcp_library_liveness").await;
@@ -1437,7 +1452,7 @@ mod liveness_live {
             Vec::<String>::new(),
             "an unchanged verdict rewrites no entry row"
         );
-        assert_eq!(upd1 - upd0, N as i64, "every probed entry is re-stamped");
+        assert_eq!(upd1 - upd0, P as i64, "every probed entry is re-stamped");
         assert_eq!(hot1 - hot0, upd1 - upd0, "every re-stamp is a HOT update");
         let restamped = changed(&stamps0, &stamps1);
         let mut want: Vec<String> = probed.iter().map(|&i| name(i)).collect();
@@ -1445,8 +1460,8 @@ mod liveness_live {
         assert_eq!(restamped, want, "the probed stamps, and only those");
         let commits: std::collections::HashSet<&String> =
             want.iter().map(|n| &stamps1[n]).collect();
-        assert!(commits.len() <= N.div_ceil(VERDICT_CHUNK), "{commits:?}");
-        assert_eq!(taken(&schema), vec!["off"; N.div_ceil(VERDICT_CHUNK)]);
+        assert!(commits.len() <= P.div_ceil(VERDICT_CHUNK), "{commits:?}");
+        assert_eq!(taken(&schema), vec!["off"; P.div_ceil(VERDICT_CHUNK)]);
         assert_eq!(sync_after(&pg).await, "on");
 
         // One verdict flips and another entry was re-pointed mid-probe: the
@@ -1492,7 +1507,7 @@ mod liveness_live {
         let written = write_as_they_land(&pg, stream::iter(next), |_| {}).await;
         assert_eq!(
             written,
-            (N - 1) as u64,
+            (P - 1) as u64,
             "every verdict but the re-pointed one"
         );
         let entries2 = xmins(&pg, "mcp_library_entries").await;
@@ -2017,6 +2032,31 @@ mod liveness_census {
             }
             println!("census explain | {label}\n{}", lines.join("\n"));
         }
+        // The shelf's candidates: two first-party hosted entries on each
+        // built-in featured domain (the synthetic domains match none), so
+        // the plan below runs the stamp lookup once per candidate.
+        sqlx::query(
+            "update mcp_library_entries e set domain = d.dom, tier = 0 from ( \
+               select registry_name, \
+                 ($1::text[])[1 + (row_number() over (order by registry_name) - 1)::int \
+                   % cardinality($1::text[])] as dom \
+               from mcp_library_entries \
+               where kind = 'hosted' and entry->>'url' like 'https://%' \
+               order by registry_name limit 2 * cardinality($1::text[])) d \
+             where e.registry_name = d.registry_name",
+        )
+        .bind(&domains)
+        .execute(&pg)
+        .await
+        .expect("featured candidates");
+        exec(&pg, "analyze mcp_library_entries").await;
+        let candidates = sqlx::query(FEATURED_SQL)
+            .bind(&domains)
+            .fetch_all(&pg)
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(candidates, 2 * domains.len(), "every candidate is found");
         let sql = format!("explain (analyze, buffers) {FEATURED_SQL}");
         let mut lines: Vec<String> = Vec::new();
         for _ in 0..3 {
@@ -2026,7 +2066,11 @@ mod liveness_census {
                 .await
                 .unwrap();
         }
-        println!("census explain | featured\n{}", lines.join("\n"));
+        println!(
+            "census explain | featured ({candidates} candidates on {} domains)\n{}",
+            domains.len(),
+            lines.join("\n")
+        );
         let sql = format!("explain (analyze, buffers) {SELECT_BATCH}");
         for _ in 0..3 {
             lines = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))

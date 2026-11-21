@@ -191,8 +191,12 @@ describe('postgres — the flags the sidecar starts with', () => {
     // Async commit is a per-transaction choice for loss-tolerant telemetry
     // (SET LOCAL in the job that writes it), never the cluster's default.
     // Comment lines may name the settings; a flag may not, in the fragment or
-    // in any stack layered over it.
-    const flag = /\b(synchronous_commit|fsync|full_page_writes)\s*=/
+    // in any stack layered over it. No word boundary: `-cfsync=off` is a flag
+    // too. And postgres's `-F` is fsync=off spelled short, alone or bundled
+    // with other single-letter switches (this also refuses the harmless
+    // `-cF…`, a spelling nothing here uses).
+    const flag = /(synchronous_commit|fsync|full_page_writes)\s*=/
+    const fsyncOff = (a: string): boolean => /^-[A-Za-z]*F/.test(a)
     const files = readdirSync(join(ROOT, 'docker')).filter((f) => f.endsWith('.yml'))
     expect(files).toContain('sidecars.compose.yml')
     for (const stack of STACKS) expect(files).toContain(stack.replace('docker/', ''))
@@ -202,6 +206,8 @@ describe('postgres — the flags the sidecar starts with', () => {
         .some((l) => !l.trim().startsWith('#') && flag.test(l)),
     )
     expect(offending).toEqual([])
-    expect(argv().some((a) => flag.test(a))).toBe(false)
+    expect(argv().some((a) => flag.test(a) || fsyncOff(a))).toBe(false)
+    expect(['-F', '-Fc', '-eF'].every(fsyncOff)).toBe(true)
+    expect(['-c', 'max_wal_size=1GB', 'postgres'].some(fsyncOff)).toBe(false)
   })
 })
