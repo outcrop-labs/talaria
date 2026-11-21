@@ -163,6 +163,67 @@ pub(crate) fn reindex_content(state: &AppState, id: &str, updated: &talaria_arti
     }
 }
 
+/// An artifact as an AGENT's write is answered: which document, what kind,
+/// what it is called and when it moved — everything except the body. Shared
+/// by the create, the PUT and `/{id}/edit`, so the three writes an agent makes
+/// answer in one shape. `id` first.
+///
+/// THE BODY IS THE ONE FIELD NOBODY ON THESE DOORS NEEDS, and the one that
+/// broke them. The agent just wrote it, and `get_document` re-reads it in one
+/// call. And an agent's answer reaches the chip reader pretty-printed, inside
+/// Hermes' `{"result": "…"}` envelope, cut to 4000 chars by its plugin. A
+/// document-sized string in it pushed the id past the cut (the create's
+/// answer opened `id, kind, title, icon, body…`, so a markdown body of about
+/// 2.5 KB lost the id), and the file never joined the session from the tool
+/// event. Without the body the answer is a few hundred characters whatever
+/// the document's size.
+pub(crate) fn slim(a: &talaria_artifacts::Artifact) -> Value {
+    json!({
+        "id": a.id,
+        "kind": a.kind,
+        "title": a.title,
+        "updatedAt": a.updated_at,
+    })
+}
+
+/// AN AGENT'S WRITE, ON ITS LIVE TURN: the document chip that puts the file
+/// in the session's pane, landed by the route that made the write. The
+/// create, the PUT and `/{id}/edit` call it, each only for an agent key — a
+/// person writing their own document has it open and needs no chip about it.
+/// `changes` is the edit's change list (the chip shows what moved); a create
+/// or a whole-body rewrite has none.
+///
+/// FROM HERE AS WELL AS FROM THE TOOL RESULT. The tool-events door lands the
+/// same chip from the agent's answer, addressed to the conversation the call
+/// was made in (`talaria_chips::session_hint`); this side has the write in
+/// full, but names no conversation. Same chip id, so whichever arrives second
+/// merges onto the first instead of adding a row.
+///
+/// ONLY ON A LIVE TURN (`surface_on_live_turn`): a document chip opens the
+/// file in the pane, and a write with no streaming reply — a cron run, a
+/// background job — must not open it in the pane of whoever the agent last
+/// spoke to. DETACHED: the write already happened, and failing the response
+/// over a chip would tell the agent it did not.
+pub(crate) fn land_document_chip(
+    state: &AppState,
+    agent: &str,
+    artifact: &talaria_artifacts::Artifact,
+    changes: Option<&Value>,
+) {
+    let chip = talaria_chips::document_chip(&artifact.id, Some(&artifact.title), changes);
+    let (state, agent) = (state.clone(), agent.to_string());
+    tokio::spawn(async move {
+        let redis = state.redis().await.ok();
+        // No live turn is ordinary rather than a failure: a work-session or
+        // cron write has no chat row to land on.
+        if let Err(e) =
+            talaria_chips::surface_on_live_turn(&state.pg, redis, &agent, vec![chip]).await
+        {
+            tracing::warn!("[artifacts] document chip surface failed for {agent}: {e}");
+        }
+    });
+}
+
 pub(crate) async fn body_editor(
     state: &AppState,
     headers: &HeaderMap,
@@ -545,6 +606,18 @@ pub async fn put(
     if content {
         reindex_content(&state, &id, &updated);
     }
+    // AN AGENT'S REWRITE (`update_document`) IS ANSWERED LIKE ITS EDIT: the
+    // artifact without its body (`slim`), and the document chip landed from
+    // here. The whole body in the answer cost the tool event its id past
+    // about 2.5 KB, so a long rewrite of a sheet or a doc never reached the
+    // pane at all. No `editors` either: an agent cannot change sharing, never
+    // reads the list back, and every grant on a shared document added ~150
+    // characters to a wire with a 4000-character cut (one grant beside a
+    // 200-character non-ASCII title came to 1,564).
+    if human.is_none() {
+        land_document_chip(&state, &actor, &updated, None);
+        return Ok(Json(json!({ "artifact": slim(&updated) })).into_response());
+    }
     let editors = match list_editors(&state.pg, ITEM_ARTIFACT, &id).await {
         Ok(e) => e,
         Err(e) => {
@@ -623,6 +696,207 @@ pub async fn delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use talaria_api_facades::kb::perms::EditorGrant;
+
+    const ID: &str = "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2";
+
+    fn artifact(kind: &str, title: &str, body: &str) -> talaria_artifacts::Artifact {
+        talaria_artifacts::Artifact {
+            id: ID.into(),
+            kind: kind.into(),
+            title: title.into(),
+            icon: None,
+            body: body.into(),
+            content_type: None,
+            storage_ref: None,
+            visibility: "org".into(),
+            edit_policy: "org".into(),
+            public_slug: None,
+            official: false,
+            kb_doc_id: None,
+            folder_id: None,
+            owner_user_id: None,
+            rag_routing: "auto".into(),
+            google_file_id: None,
+            google_file_url: None,
+            created_by: Some("agent-model".into()),
+            updated_by: Some("agent-model".into()),
+            created_at: "2026-01-05T09:00:00.000Z".into(),
+            updated_at: "2026-01-05T09:04:12.000Z".into(),
+        }
+    }
+
+    /// Markdown of exactly `len` characters: headings, bullets and a table,
+    /// the shape an agent's brief has.
+    fn markdown(len: usize) -> String {
+        let mut out = String::new();
+        let mut n = 0;
+        while out.chars().count() < len {
+            n += 1;
+            out.push_str(&format!(
+                "## Section {n}\n\n- the first point of section {n}, with a [link](https://example.com/{n})\n\
+                 - a second point that says a little more about it\n\n| item | owner |\n|---|---|\n| row {n} | ops |\n\n"
+            ));
+        }
+        out.chars().take(len).collect()
+    }
+
+    /// A JSON string's body as Python's `json.dumps` writes it with
+    /// `ensure_ascii` (the default): `"` and `\` escaped, the short escapes
+    /// for the control characters that have them, and every other character
+    /// outside printable ASCII as `\uXXXX` — UTF-16 units, lowercase hex.
+    fn python_ascii(s: &str) -> String {
+        let mut out = String::new();
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                '\u{8}' => out.push_str("\\b"),
+                '\u{c}' => out.push_str("\\f"),
+                ' '..='~' => out.push(c),
+                c => {
+                    let mut units = [0u16; 2];
+                    for unit in c.encode_utf16(&mut units) {
+                        out.push_str(&format!("\\u{unit:04x}"));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// WHAT THE CHIP READER IS HANDED, for an answer this crate gave an agent
+    /// — the live wire as FR1's Hermes v0.22.4 probe recorded it: the toolkit
+    /// pretty-prints the answer with a 2-space indent (`ok()`), Hermes' MCP
+    /// handler wraps that text as `{"result": …}` (`json.dumps`, default
+    /// separators, `ensure_ascii`), and the talaria-events plugin cuts the
+    /// envelope to 4000 characters (`_clamp`).
+    fn as_the_door_reads(answer: &Value) -> String {
+        let text = serde_json::to_string_pretty(answer).expect("plain data");
+        let enveloped = format!("{{\"result\": \"{}\"}}", python_ascii(&text));
+        enveloped.chars().take(4_000).collect()
+    }
+
+    /// The document chips the tool-events door reads off that wire, under
+    /// the name Hermes registered the tool by.
+    fn door_chips(tool: &str, args: &str, answer: &Value) -> Vec<Value> {
+        let name = format!("mcp__talaria__{tool}");
+        talaria_chips::chips_from_tool(
+            talaria_chips::bare_tool_name(&name),
+            args,
+            &talaria_chips::mcp_result_text(&as_the_door_reads(answer)),
+        )
+        .into_iter()
+        .filter(|c| c["entity"] == "document")
+        .collect()
+    }
+
+    fn agent_grant() -> Vec<EditorGrant> {
+        vec![EditorGrant {
+            principal_type: "agent".into(),
+            principal_id: "a-fleet-agent-model-name-of-some-length".into(),
+            role: "editor".into(),
+        }]
+    }
+
+    /// AN AGENT'S CREATE AND REWRITE ARE ANSWERED LIKE ITS EDIT: no body, the
+    /// id first, and a few hundred characters whatever the document's size —
+    /// under 1,500 on the wire even when the title is 200 characters that
+    /// `ensure_ascii` turns into six each. The objects below are the
+    /// handlers' own literals (`artifacts::post`'s agent branch and the PUT's
+    /// agent branch); the live suite reads the real routes' answers. With
+    /// the human answer's `editors` beside it, one grant took the rewrite's
+    /// wire to 1,564, which is why the agent's answer leaves it out.
+    #[test]
+    fn an_agents_create_and_rewrite_answers_leave_the_body_out_and_lead_with_the_id() {
+        let title = "é".repeat(200);
+        let a = artifact("doc", &title, &markdown(4_739));
+        let create = json!({ "artifact": slim(&a) });
+        let rewrite = json!({ "artifact": slim(&a) });
+        for (what, answer) in [("create", &create), ("rewrite", &rewrite)] {
+            let artifact = answer["artifact"].as_object().expect("an object");
+            assert!(artifact.get("body").is_none(), "{what}: {answer}");
+            assert_eq!(
+                artifact.keys().next().map(String::as_str),
+                Some("id"),
+                "{what}: the id leads"
+            );
+            assert_eq!(
+                artifact.keys().map(String::as_str).collect::<Vec<_>>(),
+                vec!["id", "kind", "title", "updatedAt"],
+                "{what}: the edit route's shape"
+            );
+            let wire = as_the_door_reads(answer);
+            let n = wire.chars().count();
+            assert!(n < 1_500, "{what}: {n} chars on the wire");
+            assert!(wire.ends_with("\"}"), "{what}: nothing was cut: {wire}");
+            assert!(
+                !wire.contains("Section 1"),
+                "{what}: the body never rides along"
+            );
+        }
+    }
+
+    /// THE DOOR READS EVERY WRITER'S ANSWER WHOLE NOW, and a reader's not at
+    /// all. Before this, a create answered with its body first, so a markdown
+    /// body of a few KB took the id past the plugin's cut — the first
+    /// assertion is that failure, kept so the reason for `slim` stays visible.
+    #[test]
+    fn every_agent_writer_lands_its_document_chip_through_the_wire_and_a_read_lands_none() {
+        let href = format!("/artifacts?a={ID}");
+        let long = markdown(4_739);
+        let args = r#"{"title": "Launch brief", "markdown": "…"}"#;
+
+        // The old create answer: the whole artifact, body before the end.
+        let doc = artifact("doc", "Launch brief", &long);
+        assert!(
+            door_chips("create_document", args, &json!({ "artifact": doc })).is_empty(),
+            "a body-first answer loses its id to the cut"
+        );
+
+        let rows: Vec<Vec<String>> = (0..500)
+            .map(|r| (0..4).map(|c| format!("r{r}c{c}")).collect())
+            .collect();
+        let grid = serde_json::to_string(&rows).expect("plain data");
+        let html = format!(
+            "<html><body>{}</body></html>",
+            "<p>a paragraph</p>".repeat(400)
+        );
+        for (tool, kind, body) in [
+            ("create_document", "doc", long.as_str()),
+            ("create_sheet", "sheet", grid.as_str()),
+            ("create_page", "microsite", html.as_str()),
+        ] {
+            let a = artifact(kind, "Launch brief", body);
+            let chips = door_chips(tool, args, &json!({ "artifact": slim(&a) }));
+            assert_eq!(chips.len(), 1, "{tool}: {chips:?}");
+            assert_eq!(chips[0]["href"], href, "{tool}");
+            assert_eq!(chips[0]["title"], "Launch brief", "{tool}");
+        }
+        let sheet = artifact("sheet", "Launch tracker", &grid);
+        let chips = door_chips(
+            "update_document",
+            &format!(r#"{{"documentId": "{ID}", "rows": [["a"]]}}"#),
+            &json!({ "artifact": slim(&sheet) }),
+        );
+        assert_eq!(chips.len(), 1, "update_document: {chips:?}");
+        assert_eq!(chips[0]["href"], href);
+
+        // A read of the same document — its answer is the whole artifact —
+        // lands nothing: reading is for the agent's own context.
+        for body in ["a short body", long.as_str()] {
+            let read = artifact("doc", "Launch brief", body);
+            let chips = door_chips(
+                "get_document",
+                &format!(r#"{{"documentId": "{ID}"}}"#),
+                &json!({ "artifact": read, "editors": editors_json(&agent_grant()) }),
+            );
+            assert!(chips.is_empty(), "get_document: {chips:?}");
+        }
+    }
 
     #[test]
     fn a_base_that_is_not_a_timestamp_is_a_400_sentence() {

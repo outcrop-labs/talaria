@@ -18,14 +18,17 @@
 // no key at all — an older plugin, or a session the container minted for a
 // completions turn — takes the newest live session, the v1 approximation
 // kept for the frames that cannot say. The CHIPS follow the same key: they
-// land in the conversation the session id names (for a pinned agent the
-// Hermes session id is the conversation id), and without one only while
-// exactly one turn could be meant. A call the plugin reports FAILED is also
-// marked failed on the chat reply that ran it, found by the conversation its
-// session names, its tool-call id and when it finished: Hermes' completions
-// stream calls every finished call `completed`, so this door is the only
-// place a chat turn learns otherwise, and it rings the conversation's
-// readers so a tab that drew the call from the stream re-reads it.
+// land in the conversation the session id names — for a pinned agent the
+// Hermes session id is the conversation id, and on the completions arm it is
+// the `api-…` session the chat turn recorded against its conversation
+// (`talaria_chips::session_hint`) — and with a key that names no
+// conversation, only while exactly one turn could be meant. A call the
+// plugin reports FAILED is also marked failed on the chat reply that ran it,
+// found by the conversation its session names, its tool-call id and when it
+// finished: Hermes' completions stream calls every finished call
+// `completed`, so this door is the only place a chat turn learns otherwise,
+// and it rings the conversation's readers so a tab that drew the call from
+// the stream re-reads it.
 
 use axum::Json;
 use axum::extract::State;
@@ -144,7 +147,20 @@ pub async fn post(
             .ok()
             .and_then(|principal| principal.owner_user_id);
             let agent = &caller.model;
-            let hint = talaria_chips::conversation_hint(&parsed);
+            // THE CONVERSATION THE CALL WAS MADE IN: a UUID the frame names,
+            // else the conversation its Hermes session was recorded against
+            // (`session_hint`) — the completions arm's `api-…` session, which
+            // is every unpinned agent's chat. Without that a chip landed only
+            // while the agent was answering in exactly one place.
+            let hint = match talaria_chips::session_hint(&state.pg, agent, &parsed).await {
+                Ok(hint) => hint,
+                Err(e) => {
+                    // A lookup that failed names nothing: the chips take the
+                    // unaddressed rule, which drops them under ambiguity.
+                    tracing::warn!("[tool-events] session lookup for {agent} failed: {e}");
+                    None
+                }
+            };
             match talaria_chips::surface_tool_chips_in(
                 &state.pg,
                 redis,

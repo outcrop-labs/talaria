@@ -7,20 +7,34 @@
   import QueryState from '@/components/ui/QueryState.svelte'
   import Select from '@/components/ui/Select.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
+  import type { DotStatus } from '@/components/ui/chip'
   import {
     addOptions,
+    checkLines,
+    checkRepos,
     fromOf,
     heldSentence,
     heldState,
     impactNote,
+    keyLines,
+    keySentence,
+    keyState,
+    keyTone,
     setRows,
+    since,
+    tokenAware,
     withPermission,
     withoutPermission,
+    workspaceSecretNotice,
     type AgentGithubPermissions,
     type HostPermissions,
+    type KeyState,
     type PermissionScope,
+    type TokenCheck,
   } from '@/lib/agent-github-permissions'
-  import { getJson, putJsonOr } from '@/lib/fetch-json'
+  import { useClock } from '@/lib/clock.svelte'
+  import { errorMessage, getJson, postJson, putJsonOr } from '@/lib/fetch-json'
   import type { PermissionLevel, PermissionMap } from '@/lib/git-permissions'
   import { pushToast, toastError } from '@/lib/toast.svelte'
 
@@ -32,7 +46,15 @@
   // what the installation does not hold is said, with why, and still
   // settable. Each change is the whole next set, written as a compare-and-set
   // from what this panel read, and applied on change.
+  //
+  // What the installation holds is the most a token can carry, not what the
+  // agent's does. Each key says what the agent's last token for this set
+  // carried (its credential's audit row, from GitHub's mint reply), and only
+  // while nothing was minted what the record says, never as verified. Check
+  // token (admins) gets the token the agent's next push gets, and says why
+  // any key is not on it. A server that sends none of this draws as before.
   let { agentId }: { agentId: string } = $props()
+  const clock = useClock()
 
   const qc = useQueryClient()
   const queryKey = $derived(['workbench-github-permissions', agentId])
@@ -49,11 +71,18 @@
     error?: string
   }
 
+  // Check token: per host, the repo picked and the last answer.
+  let picked = $state<Record<string, string>>({})
+  let checking = $state<string | null>(null)
+  let checks = $state<Record<string, { repo: string; result: TokenCheck }>>({})
+
   let saving = $state<string | null>(null)
   const write = async (h: HostPermissions, to: PermissionMap | null) => {
     saving = h.host
     try {
       const res = await putJsonOr<Saved>(`/api/workbench/github-permissions/${agentId}`, { host: h.host, from: fromOf(h), to }, [409])
+      // The set is not what the last Check token measured: its answer goes.
+      checks = Object.fromEntries(Object.entries(checks).filter(([host]) => host !== h.host))
       if (res.current) {
         pushToast({
           title: 'These permissions changed since you read them',
@@ -76,6 +105,28 @@
     ['repository', 'Repository'],
     ['organization', 'Organization'],
   ]
+
+  const repoFor = (h: HostPermissions) => picked[h.host] ?? checkRepos(h)[0] ?? ''
+  const check = async (h: HostPermissions) => {
+    const repo = repoFor(h)
+    if (!repo) return
+    checking = h.host
+    let result: TokenCheck
+    try {
+      result = await postJson<TokenCheck>(`/api/workbench/github-permissions/${agentId}/check`, { host: h.host, repo })
+    } catch (e) {
+      // A refusal's sentence, verbatim: the same words the agent's push gets.
+      result = { ok: false, error: errorMessage(e) }
+    }
+    checks = { ...checks, [h.host]: { repo, result } }
+    // A check that minted wrote the agent's credential row: read it back.
+    await qc.invalidateQueries({ queryKey })
+    checking = null
+  }
+
+  const DOT: Record<ReturnType<typeof keyTone>, DotStatus> = { success: 'ok', warn: 'warn', neutral: 'idle' }
+  const chipTitle = (h: HostPermissions, s: KeyState) =>
+    tokenAware(h) ? keySentence(s, clock.now) : s.kind === 'record' ? (heldSentence(s.held) ?? 'The installation holds this.') : undefined
 </script>
 
 <QueryState {query} errorTitle="Could not load GitHub permissions" errorVariant="inline">
@@ -107,13 +158,13 @@
                 <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-ink-dim">{label}</span>
                 <div class="flex flex-wrap items-center gap-1.5">
                   {#each rows[scope] as r (r.key)}
-                    {@const state = heldState(h, r.key, r.level)}
+                    {@const state = keyState(h, r.key, r.level, r.scope)}
                     {@const impact = impactNote(r.key)}
                     <span class="inline-flex items-center gap-1 rounded-md border border-line-subtle bg-raised/40 px-1.5 py-0.5">
                       <Chip
                         class="normal-case"
-                        tone={state.kind === 'held' || state.kind === 'unknown' ? 'neutral' : 'warn'}
-                        title={heldSentence(state) ?? 'The installation holds this.'}
+                        tone={keyTone(state)}
+                        title={chipTitle(h, state)}
                         onRemove={d.canEdit && count > 1 && !busy ? () => void write(h, withoutPermission(h.permissions ?? {}, r.key)) : undefined}
                       >
                         {r.key}
@@ -138,23 +189,86 @@
               </div>
             {/if}
           {/each}
-          <!-- Why a key does not ride, said once per key: no gate, just what
-               GitHub still has to do. -->
-          {#each [...rows.repository, ...rows.organization] as r (r.key)}
-            {@const state = heldState(h, r.key, r.level)}
-            {#if state.kind === 'appMissing' || state.kind === 'awaitingApproval' || state.kind === 'notHeld'}
-              <p class="text-xs text-warning">
-                <span class="font-mono">{r.key}: {r.level}</span>. {heldSentence(state)}
-                {#if state.kind !== 'appMissing'}
-                  {#each state.installations.filter((i) => i.url) as i (i.id)}
-                    <a href={i.url} target="_blank" rel="noreferrer" class="ml-1 text-accent hover:underline">{i.account || i.id} on GitHub</a>
-                  {/each}
-                {/if}
-              </p>
+          {@const secretNotice = workspaceSecretNotice(h)}
+          {#if secretNotice}
+            <p class="text-xs text-warning" data-testid="github-permissions-secret">{secretNotice}</p>
+          {/if}
+          {#if tokenAware(h)}
+            <!-- What the agent's token carries, key by key: the last token
+                 minted for this set, or the record while none was. -->
+            <ul class="space-y-1" data-testid="github-permissions-token">
+              {#each keyLines(h, d.catalog, clock.now) as line (line.keys.map((k) => k.key).join())}
+                <li class="flex items-start gap-2 text-xs text-muted">
+                  <StatusDot status={DOT[keyTone(line.state)]} class="mt-[5px]" />
+                  <span class="min-w-0">
+                    <span class="font-mono text-fg">{line.keys.map((k) => `${k.key}: ${k.level}`).join(', ')}</span>
+                    {' · '}{line.sentence}{#if line.state.kind === 'notYet' && d.canCheck && checkRepos(h).length > 0}:
+                      <Button variant="link" size="sm" class="h-auto p-0 text-xs" disabled={checking === h.host} onclick={() => void check(h)}>Check token</Button>
+                    {/if}
+                    {#each line.installations.filter((i) => i.url) as i (i.id)}
+                      <a href={i.url} target="_blank" rel="noreferrer" class="ml-1 text-accent hover:underline">{i.account || i.id} on GitHub</a>
+                    {/each}
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <!-- Why a key does not ride, said once per key: no gate, just what
+                 GitHub still has to do. -->
+            {#each [...rows.repository, ...rows.organization] as r (r.key)}
+              {@const state = heldState(h, r.key, r.level)}
+              {#if state.kind === 'appMissing' || state.kind === 'awaitingApproval' || state.kind === 'notHeld'}
+                <p class="text-xs text-warning">
+                  <span class="font-mono">{r.key}: {r.level}</span>. {heldSentence(state)}
+                  {#if state.kind !== 'appMissing'}
+                    {#each state.installations.filter((i) => i.url) as i (i.id)}
+                      <a href={i.url} target="_blank" rel="noreferrer" class="ml-1 text-accent hover:underline">{i.account || i.id} on GitHub</a>
+                    {/each}
+                  {/if}
+                </p>
+              {/if}
+            {/each}
+            {#if [...rows.repository, ...rows.organization].some((r) => heldState(h, r.key, r.level).kind === 'unknown')}
+              <p class="text-xs text-muted">{heldSentence({ kind: 'unknown' })}</p>
             {/if}
-          {/each}
-          {#if [...rows.repository, ...rows.organization].some((r) => heldState(h, r.key, r.level).kind === 'unknown')}
-            <p class="text-xs text-muted">{heldSentence({ kind: 'unknown' })}</p>
+          {/if}
+          {#if d.canCheck && checkRepos(h).length > 0}
+            {@const repos = checkRepos(h)}
+            {@const done = checks[h.host]}
+            <div class="space-y-1.5" data-testid="github-permissions-check">
+              <div class="flex flex-wrap items-center gap-1.5">
+                {#if repos.length > 1}
+                  <Select
+                    size="sm"
+                    class="w-56 text-xs"
+                    aria-label="Repository to check"
+                    value={repoFor(h)}
+                    disabled={checking === h.host}
+                    onchange={(e) => (picked = { ...picked, [h.host]: (e.currentTarget as HTMLSelectElement).value })}
+                  >
+                    {#each repos as repo (repo)}<option value={repo}>{repo}</option>{/each}
+                  </Select>
+                {/if}
+                <Button size="sm" variant="outline" disabled={checking === h.host} onclick={() => void check(h)}>
+                  {checking === h.host ? 'Checking…' : 'Check token'}
+                </Button>
+                <InfoTip
+                  text="Gets the token this agent's next git push gets for the repository, the cached one or a fresh mint, and says what GitHub put on it. The token itself is never shown."
+                />
+              </div>
+              {#if done}
+                {@const account = (h.installations ?? []).find((i) => i.id === done.result.installation)?.account}
+                <ul class="space-y-1" role="status">
+                  {#each checkLines(done.result, done.repo, h.name, account) as line, i (i)}
+                    <li class="flex items-start gap-2 text-xs text-muted">
+                      <StatusDot status={DOT[line.tone]} class="mt-[5px]" />
+                      <span class="min-w-0">{line.text}</span>
+                    </li>
+                  {/each}
+                  {#if done.result.at}<li class="pl-3.5 text-[11px] text-muted">Checked {since(done.result.at, clock.now)}.</li>{/if}
+                </ul>
+              {/if}
+            </div>
           {/if}
           {#if d.canEdit}
             {@const options = addOptions(h, d.catalog)}

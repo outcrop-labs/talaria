@@ -17,6 +17,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
+use crate::files::artifacts_id::{land_document_chip, slim};
 use talaria_agent_auth::{AgentCaller, AgentSubject, agent_caller, iso_to_epoch_ms};
 use talaria_api_facades::fleet::describe_agent;
 use talaria_api_facades::kb::perms::{
@@ -220,31 +221,6 @@ pub async fn get(
     Ok(Json(json!({ "artifacts": artifacts })).into_response())
 }
 
-/// THE NEW FILE'S CHIP, landed by the route that made it — the edit route's
-/// rule (`artifacts_id_edit::land_document_chip`) for a create. The tool-events
-/// door lands the same chip from the tool's answer, but that answer arrives
-/// cut to 4000 chars by the agent's plugin, and a create answers with the
-/// whole body, so a document of any length lost its id there and never joined
-/// the session's files — never opened in the Work pane. Same chip id, so
-/// whichever lands second merges onto the first. Detached: the create already
-/// happened.
-///
-/// ONLY ON A LIVE TURN (`surface_on_live_turn`). A create with no streaming
-/// reply — a cron run, a background job — lands nothing, rather than opening
-/// the file in the pane of whoever the agent last spoke to.
-fn land_created_chip(state: &AppState, agent: &str, artifact: &Artifact) {
-    let chip = talaria_chips::document_chip(&artifact.id, Some(&artifact.title), None);
-    let (state, agent) = (state.clone(), agent.to_string());
-    tokio::spawn(async move {
-        let redis = state.redis().await.ok();
-        if let Err(e) =
-            talaria_chips::surface_on_live_turn(&state.pg, redis, &agent, vec![chip]).await
-        {
-            tracing::warn!("[artifacts] create chip surface failed for {agent}: {e}");
-        }
-    });
-}
-
 pub async fn post(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -371,8 +347,13 @@ pub async fn post(
             Some(json!({ "title": artifact.title, "kind": artifact.kind })),
         );
         let created = updated.unwrap_or(artifact);
-        land_created_chip(&state, &name, &created);
-        return Ok(Json(json!({ "artifact": created })).into_response());
+        // THE NEW FILE JOINS THE SESSION, and the agent hears what an edit
+        // tells it: the chip lands from here on the live turn, and the
+        // answer leaves the body out (`slim`) — the agent just wrote it, and
+        // a body-first answer lost its id to the plugin's 4000-char cut, so
+        // the tool event could not address the chip to its conversation.
+        land_document_chip(&state, &name, &created, None);
+        return Ok(Json(json!({ "artifact": slim(&created) })).into_response());
     }
 
     let user = require_perm(&state, &headers, "artifacts.create").await?;
