@@ -184,7 +184,7 @@ pub fn focus_line(focus: Option<&PaneFocus>) -> String {
                 f.id,
             )
         }
-        None => "No file is open in the teammate's pane yet. When they ask for a document, sheet or page, create one; it opens in the pane by itself.".into(),
+        None => "No file is open in the teammate's pane yet. When they ask for a new document, sheet or page, create one; it opens in the pane by itself. When they ask to see one that already exists, open it with open_in_pane.".into(),
     }
 }
 
@@ -384,10 +384,13 @@ mod tests {
     }
 
     #[test]
-    fn no_focus_says_nothing_is_open_and_to_create_one() {
+    fn no_focus_says_nothing_is_open_and_how_a_file_gets_there() {
+        // A new file is created; an existing one is opened. "When they ask
+        // for a document, create one" alone read "show me the notes" as a
+        // request for a new document.
         assert_eq!(
             focus_line(None),
-            "No file is open in the teammate's pane yet. When they ask for a document, sheet or page, create one; it opens in the pane by itself."
+            "No file is open in the teammate's pane yet. When they ask for a new document, sheet or page, create one; it opens in the pane by itself. When they ask to see one that already exists, open it with open_in_pane."
         );
     }
 
