@@ -1602,23 +1602,23 @@ mod live {
                 age.to_string(),
             );
             async move {
+                // The after-data the door's `refused_after` writes.
                 sqlx::query(
                     "insert into audit_log (actor, action, target_type, target_id, target_label, after, created_at) \
-                     values ($1, 'git.credential_refused', 'agent', $2, $3, $4, now() - $5::interval)",
+                     values ($1, 'git.credential_refused', 'agent', $2, $3, \
+                             jsonb_build_object('source', 'git_host', 'host', 'github.com', \
+                               'host_id', $4::text, 'repo', $5::text, 'kind', 'refused', \
+                               'message', $6::text, \
+                               'asked', '{\"contents\":\"write\",\"metadata\":\"read\"}'::jsonb, \
+                               'shortfall', '{}'::jsonb), \
+                             now() - $7::interval)",
                 )
                 .bind(&actor)
                 .bind(&target)
                 .bind(format!("{host_id}:{repo}"))
-                .bind(serde_json::json!({
-                    "source": "git_host",
-                    "host": "github.com",
-                    "host_id": host_id,
-                    "repo": repo,
-                    "kind": "refused",
-                    "message": format!("GitHub refused a token for {repo}"),
-                    "asked": { "contents": "write", "metadata": "read" },
-                    "shortfall": {},
-                }))
+                .bind(&host_id)
+                .bind(&repo)
+                .bind(format!("GitHub refused a token for {repo}"))
                 .bind(age)
                 .execute(&pg)
                 .await
