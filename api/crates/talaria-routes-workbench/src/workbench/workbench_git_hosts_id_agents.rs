@@ -8,9 +8,11 @@
 // `git.credential_refused` row on the host: what GitHub put on it, what
 // GitHub added to it unasked (`added`), or why there was none). Beside them,
 // `unclaimed`: what the installations hold, metadata aside, that no
-// Developer agent's set names — accepted on GitHub, carried by no agent,
-// because a grant is per agent and admin-only. Read from the record and the
-// trail, never GitHub. requireAdmin, like the rest of the host plane.
+// Developer agent's set names — accepted on GitHub, granted to no agent,
+// because a grant is per agent and admin-only (a key GitHub put on a token
+// unasked is that token's `added`, and may still be listed here). Read from
+// the record and the trail, never GitHub. requireAdmin, like the rest of the
+// host plane.
 
 use axum::Json;
 use axum::extract::{Path, State};
