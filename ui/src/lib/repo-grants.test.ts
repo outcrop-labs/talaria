@@ -77,6 +77,18 @@ describe('saveRepoGrants', () => {
     expect(sent).toHaveLength(1)
   })
 
+  it('never reads a 409 without `current` as saved', async () => {
+    // A proxy or a cut-short body: the write did not land, and says why when
+    // it can.
+    vi.stubGlobal('fetch', reply(409, { error: 'conflict upstream' }))
+    const said = await saveRepoGrants('agent-1', read, { repos: read.repos, rules: read.rules }).catch((e: unknown) => e)
+    expect(said).toBeInstanceOf(Error)
+    expect((said as Error).message).toBe('conflict upstream')
+    vi.stubGlobal('fetch', reply(409, {}))
+    const silent = await saveRepoGrants('agent-1', read, { repos: read.repos, rules: read.rules }).catch((e: unknown) => e)
+    expect((silent as Error).message).toBe('The server did not say whether the repositories were saved.')
+  })
+
   it('throws any other refusal with the server sentence', async () => {
     vi.stubGlobal('fetch', reply(403, { error: "only this agent's managers can change it" }))
     const err = await saveRepoGrants('agent-1', read, { repos: [], rules: [] }).catch((e: unknown) => e)

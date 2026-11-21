@@ -170,11 +170,17 @@ export async function saveRepoGrants(
   next: { repos: HostRepo[]; rules: RepoRule[] },
   hostName?: (id: string) => string,
 ): Promise<SaveOutcome> {
-  const res = await putJsonOr<{ granted?: HostRepo[]; current?: GrantsRead }>(
+  const res = await putJsonOr<{ granted?: HostRepo[]; current?: GrantsRead; error?: unknown }>(
     `/api/workbench/repos/${encodeURIComponent(agentId)}`,
     { repos: next.repos.map((r) => ({ host: r.host, repo: r.repo })), rules: next.rules, from: read },
     [409],
   )
   if (res.current) return { kind: 'changed', current: res.current, title: changedTitle(read, res.current, hostName), body: CHANGED_BODY }
-  return { kind: 'saved', granted: res.granted ?? [] }
+  // Only a write that landed answers with its grants. A 409 that brought no
+  // `current` (a proxy's page, a body cut short) says nothing landed, and
+  // must never read as saved: that would clear the edits and say nothing.
+  if (!Array.isArray(res.granted)) {
+    throw new Error(typeof res.error === 'string' && res.error.trim() ? res.error : 'The server did not say whether the repositories were saved.')
+  }
+  return { kind: 'saved', granted: res.granted }
 }
