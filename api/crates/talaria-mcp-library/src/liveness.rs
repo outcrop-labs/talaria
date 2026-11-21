@@ -24,7 +24,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use futures_util::stream::{self, StreamExt};
+use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::Value;
 use sqlx::PgPool;
 use talaria_safe_fetch::{ValidatingResolver, assert_fetchable_url};
@@ -436,26 +436,51 @@ const WRITE_VERDICTS: &str = "update mcp_library_entries e \
      from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as v(name, state, detail, url) \
      where e.registry_name = v.name and e.entry->>'url' = v.url";
 
+/// A chunk's four columns, bound in `registry_name` order. The UPDATE walks
+/// the arrays in order (a nested loop over the unnest into the primary key),
+/// so this is the order it takes its row locks in: one fixed, ascending order
+/// for every chunk rather than whatever order the probes happened to land in.
+/// A writer that also locks by ascending name can never form a cycle with
+/// it; for one that does not, see `save_chunk`.
+fn chunk_columns(chunk: &[Verdict]) -> [Vec<&str>; 4] {
+    let mut rows: Vec<&Verdict> = chunk.iter().collect();
+    rows.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    let mut cols: [Vec<&str>; 4] = std::array::from_fn(|_| Vec::with_capacity(rows.len()));
+    for v in rows {
+        cols[0].push(v.name.as_str());
+        cols[1].push(v.state.as_str());
+        cols[2].push(v.detail.as_str());
+        cols[3].push(v.url.as_str());
+    }
+    cols
+}
+
+/// What each chunk's own transaction read back for `synchronous_commit`, in
+/// order: the live test's proof that a chunk never waits on its WAL flush.
+#[cfg(test)]
+static CHUNK_SYNCHRONOUS_COMMIT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 /// One chunk: one UPDATE in one transaction that does not wait for its WAL
 /// flush (`synchronous_commit = off`, for this transaction only). A crash
 /// can lose the last fraction of a second of verdicts, and that costs
 /// nothing: every verdict is derived again on the row's next pass, and an
 /// unwritten one leaves the row first in line for it. Rows written.
 async fn write_chunk(pg: &PgPool, chunk: &[Verdict]) -> Result<u64, sqlx::Error> {
-    let mut names = Vec::with_capacity(chunk.len());
-    let mut states = Vec::with_capacity(chunk.len());
-    let mut details = Vec::with_capacity(chunk.len());
-    let mut urls = Vec::with_capacity(chunk.len());
-    for v in chunk {
-        names.push(v.name.as_str());
-        states.push(v.state.as_str());
-        details.push(v.detail.as_str());
-        urls.push(v.url.as_str());
-    }
+    let [names, states, details, urls] = chunk_columns(chunk);
     let mut tx = pg.begin().await?;
     sqlx::query("set local synchronous_commit = off")
         .execute(&mut *tx)
         .await?;
+    #[cfg(test)]
+    {
+        let seen: String = sqlx::query_scalar("show synchronous_commit")
+            .fetch_one(&mut *tx)
+            .await?;
+        CHUNK_SYNCHRONOUS_COMMIT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(seen);
+    }
     let written = sqlx::query(WRITE_VERDICTS)
         .bind(&names)
         .bind(&states)
@@ -468,10 +493,26 @@ async fn write_chunk(pg: &PgPool, chunk: &[Verdict]) -> Result<u64, sqlx::Error>
     Ok(written)
 }
 
+/// Postgres broke a lock cycle by aborting this transaction.
+fn is_deadlock(e: &sqlx::Error) -> bool {
+    e.as_database_error()
+        .and_then(|d| d.code())
+        .is_some_and(|code| code == "40P01")
+}
+
 /// A chunk written, or its failure logged: one lost chunk never fails the
-/// batch, as one lost row never did. Rows written.
+/// batch, as one lost row never did. A chunk holds up to fifty row locks
+/// until it commits, where a verdict used to hold one, so the catalog sync
+/// (a page of upserts in the registry's order in one transaction, a prune
+/// that deletes many rows in one statement) can meet it in a deadlock. Postgres
+/// aborts one side; if that is the chunk, it is tried once more rather than
+/// dropped. Rows written.
 async fn save_chunk(pg: &PgPool, chunk: &[Verdict]) -> u64 {
-    match write_chunk(pg, chunk).await {
+    let mut outcome = write_chunk(pg, chunk).await;
+    if outcome.as_ref().is_err_and(is_deadlock) {
+        outcome = write_chunk(pg, chunk).await;
+    }
+    match outcome {
         Ok(n) => n,
         Err(e) => {
             tracing::warn!("[mcp/liveness] {} verdicts not saved: {e}", chunk.len());
@@ -480,12 +521,38 @@ async fn save_chunk(pg: &PgPool, chunk: &[Verdict]) -> u64 {
     }
 }
 
-/// `verdicts` written `VERDICT_CHUNK` at a time, one transaction each. Rows
-/// written.
-pub async fn write_verdicts(pg: &PgPool, verdicts: &[Verdict]) -> u64 {
-    let mut written = 0;
-    for chunk in verdicts.chunks(VERDICT_CHUNK) {
-        written += save_chunk(pg, chunk).await;
+/// Every verdict of a run, written as it lands: each full chunk on a task of
+/// its own beside the stream, the short last one after it, `seen` called on
+/// each verdict first (the run's tally). The job's only writer, and the one
+/// the live test drives. Rows written.
+async fn write_as_they_land(
+    pg: &PgPool,
+    verdicts: impl Stream<Item = Verdict>,
+    mut seen: impl FnMut(&Verdict),
+) -> u64 {
+    let mut verdicts = std::pin::pin!(verdicts);
+    let mut chunker = Chunker::default();
+    let mut writes = Vec::new();
+    while let Some(v) = verdicts.next().await {
+        seen(&v);
+        // Each full chunk is written beside the probes, not between them: a
+        // probe is not polled while this loop awaits, and its 6s deadline
+        // keeps running, so a slow write here would turn live servers dead.
+        // A run cut off at `max_run_ms` keeps every chunk already handed off.
+        if let Some(chunk) = chunker.push(v) {
+            let pg = pg.clone();
+            writes.push(tokio::spawn(async move { save_chunk(&pg, &chunk).await }));
+        }
+    }
+    let mut written = match chunker.finish() {
+        Some(rest) => save_chunk(pg, &rest).await,
+        None => 0,
+    };
+    for w in writes {
+        match w.await {
+            Ok(n) => written += n,
+            Err(e) => tracing::warn!("[mcp/liveness] a verdict write did not finish: {e}"),
+        }
     }
     written
 }
@@ -505,46 +572,25 @@ async fn run_batch(pg: &PgPool) -> Result<String, String> {
         return Ok("no hosted entries to check".into());
     }
     let n = rows.len();
-    let mut probes = std::pin::pin!(
-        stream::iter(rows)
-            .map(|(name, url)| async move {
-                let (state, detail) = classify_liveness(&probe(&url).await);
-                Verdict {
-                    name,
-                    url,
-                    state,
-                    detail,
-                }
-            })
-            .buffer_unordered(LIVENESS_CONCURRENCY)
-    );
+    let probes = stream::iter(rows)
+        .map(|(name, url)| async move {
+            let (state, detail) = classify_liveness(&probe(&url).await);
+            Verdict {
+                name,
+                url,
+                state,
+                detail,
+            }
+        })
+        .buffer_unordered(LIVENESS_CONCURRENCY);
     let mut t = Tally::default();
-    let mut chunker = Chunker::default();
-    let mut writes = Vec::new();
-    while let Some(v) = probes.next().await {
-        match v.state {
-            LiveState::Ok => t.ok += 1,
-            LiveState::Auth => t.auth += 1,
-            LiveState::Dead => t.dead += 1,
-            LiveState::Unknown => t.unknown += 1,
-        }
-        // Each full chunk is written beside the probes, not between them: a
-        // probe is not polled while this loop awaits, and its 6s deadline
-        // keeps running, so a slow write here would turn live servers dead.
-        // A run cut off at `max_run_ms` keeps every chunk already handed off.
-        if let Some(chunk) = chunker.push(v) {
-            let pg = pg.clone();
-            writes.push(tokio::spawn(async move { save_chunk(&pg, &chunk).await }));
-        }
-    }
-    if let Some(rest) = chunker.finish() {
-        save_chunk(pg, &rest).await;
-    }
-    for w in writes {
-        if let Err(e) = w.await {
-            tracing::warn!("[mcp/liveness] a verdict write did not finish: {e}");
-        }
-    }
+    write_as_they_land(pg, probes, |v| match v.state {
+        LiveState::Ok => t.ok += 1,
+        LiveState::Auth => t.auth += 1,
+        LiveState::Dead => t.dead += 1,
+        LiveState::Unknown => t.unknown += 1,
+    })
+    .await;
     Ok(format!(
         "checked {n}: {} ok, {} auth, {} dead, {} unknown",
         t.ok, t.auth, t.dead, t.unknown
@@ -924,17 +970,28 @@ mod tests {
         // In landing order, none twice and none dropped.
         let flat: Vec<Verdict> = chunks_of(137).into_iter().flatten().collect();
         assert_eq!(flat, (0..137).map(verdict).collect::<Vec<_>>());
-        // A full batch commits at most six times, and the batch writer cuts
-        // at the same size the run does.
+        // A full batch commits at most six times.
         assert_eq!(VERDICT_CHUNK, 50);
         assert_eq!(chunks_of(LIVENESS_BATCH as usize).len(), 6);
-        let sliced: Vec<usize> = (0..137)
-            .map(verdict)
-            .collect::<Vec<_>>()
-            .chunks(VERDICT_CHUNK)
-            .map(<[Verdict]>::len)
-            .collect();
-        assert_eq!(sliced, sizes(137));
+    }
+
+    #[test]
+    fn a_chunk_binds_its_rows_in_name_order_each_row_whole() {
+        // Landed out of order, as probes do.
+        let chunk: Vec<Verdict> = [3, 11, 0, 7, 2].into_iter().map(verdict).collect();
+        let [names, states, details, urls] = chunk_columns(&chunk);
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted, "one lock order for every chunk");
+        assert_eq!(names.len(), chunk.len());
+        // Every row's four fields stay together.
+        for (i, name) in names.iter().enumerate() {
+            let v = chunk.iter().find(|v| v.name == *name).unwrap();
+            assert_eq!(
+                (states[i], details[i], urls[i]),
+                (v.state.as_str(), v.detail.as_str(), v.url.as_str())
+            );
+        }
     }
 
     #[test]
@@ -961,10 +1018,11 @@ mod tests {
     }
 }
 
-// Live-DB proof that a batch's verdicts land in chunks: N verdicts leave at
-// most ceil(N / 50) distinct xmin values (one commit per chunk), each row the
-// verdict it was given, a row re-pointed since its probe untouched, and the
-// connection's synchronous_commit back to `on` after. `#[ignore]`d — it needs
+// Live-DB proof that a run's verdicts land in chunks, through the job's own
+// writer: N verdicts leave at most ceil(N / 50) distinct xmin values (one
+// commit per chunk), each row the verdict it was given, a row re-pointed
+// since its probe untouched, every chunk's transaction running with
+// synchronous_commit off, and the connection's back to `on` after. `#[ignore]`d — it needs
 // a database — and CI's live-tests job runs it
 // (`cargo test --workspace --lib -- --ignored`):
 //
@@ -1043,8 +1101,24 @@ mod liveness_live {
                 detail: format!("detail {i}"),
             })
             .collect();
-        let written = write_verdicts(&pg, &verdicts).await;
+        CHUNK_SYNCHRONOUS_COMMIT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        let mut seen = 0;
+        let written = write_as_they_land(&pg, stream::iter(verdicts), |_| seen += 1).await;
+        assert_eq!(seen, N, "the tally sees every verdict");
         assert_eq!(written, (N - 1) as u64, "every row but the re-pointed one");
+        let inside = std::mem::take(
+            &mut *CHUNK_SYNCHRONOUS_COMMIT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        assert_eq!(
+            inside,
+            vec!["off"; N.div_ceil(VERDICT_CHUNK)],
+            "each chunk commits without waiting on its flush"
+        );
 
         let commits: i64 = sqlx::query_scalar(
             "select count(distinct xmin::text) from mcp_library_entries \

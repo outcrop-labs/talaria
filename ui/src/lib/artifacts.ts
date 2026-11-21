@@ -1,5 +1,5 @@
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
-import { createQuery } from '@tanstack/svelte-query'
+import { createQuery, keepPreviousData } from '@tanstack/svelte-query'
 import { delJson, delJsonGone, errorSentence, getJsonOr404, getList, HttpError, postJson, putJson, putJsonOr } from '@/lib/fetch-json'
 import type { SaveAnswer } from '@/lib/save-base.svelte'
 import type { EditPolicy, KbEditor, Visibility } from '@/lib/kb'
@@ -81,7 +81,10 @@ export const startOfLocalDay = (now: number): string => {
  *  The whole list carries every body there is — megabytes, growing every day with
  *  run transcripts and brief mirrors. The day is in the key, so a new day reads
  *  afresh; keyed under ['artifacts'], so every invalidation of the list refreshes
- *  it too. The Files browser and KB attachments keep `useArtifacts`. */
+ *  it too. At midnight the new day's key starts empty: yesterday's heads stand in
+ *  until it answers (the Files cards' isToday filter shows none of them), so a
+ *  board left open overnight does not fall back to its skeleton while it loads.
+ *  The Files browser and KB attachments keep `useArtifacts`. */
 export const useArtifactsSince = (since: MaybeGetter<string>) =>
   createQuery(() => {
     const s = resolve(since)
@@ -89,6 +92,7 @@ export const useArtifactsSince = (since: MaybeGetter<string>) =>
       queryKey: ['artifacts', 'heads', s],
       queryFn: (): Promise<ArtifactHead[]> =>
         getList<ArtifactHead>(`/api/artifacts?since=${encodeURIComponent(s)}&fields=heads`, 'artifacts'),
+      placeholderData: keepPreviousData,
     }
   })
 

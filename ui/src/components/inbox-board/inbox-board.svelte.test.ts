@@ -269,3 +269,67 @@ test('the board leaves its skeleton when the brief settles after every other sou
   stop()
   vi.useRealTimers()
 })
+
+test("the board keeps its cards through local midnight while the new day's files load", async () => {
+  // A Home tab left open overnight: the day is in the files key, so midnight
+  // starts a new query. It must not put the board back on its skeleton.
+  const NEXT = new Date(2026, 10, 21).getTime()
+  vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: NEXT - 1_500 })
+  h.client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const today = `/api/artifacts?since=${encodeURIComponent(at(MIDNIGHT))}&fields=heads`
+  const tomorrow = `/api/artifacts?since=${encodeURIComponent(at(NEXT))}&fields=heads`
+  const answers: Record<string, unknown> = {
+    '/api/home/queues': { queues: QUEUES },
+    [today]: { artifacts: heads(ALL, NOW) },
+    '/api/conversations?kind=sessions': { conversations: [] },
+    '/api/research': { runs: [] },
+    '/api/agents': { agents: [] },
+    '/api/boards/b1/tasks': { tasks: [] },
+    '/api/boards/b1/members': { members: [] },
+  }
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+  // The new day's read is held open, to look at the board while it is in flight.
+  let answerTomorrow: (r: Response) => void = () => {}
+  const asked: string[] = []
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      asked.push(url)
+      if (url === tomorrow) return new Promise<Response>((resolve) => (answerTomorrow = resolve))
+      return answers[url] === undefined ? new Response('{}', { status: 404 }) : json(answers[url])
+    }),
+  )
+  const seen = { pending: true, failure: null as unknown, docs: [] as string[] }
+  const stop = $effect.root(() => {
+    const board = useInboxBoard(
+      () => null,
+      () => true,
+    )
+    $effect(() => {
+      seen.failure = board.failure
+      seen.pending = board.pending
+      seen.docs = board.cards.filter((c) => c.source === 'doc').map((c) => c.key)
+    })
+  })
+  for (let i = 0; i < 20 && seen.pending; i++) await settle()
+  expect(seen.pending).toBe(false)
+  expect(seen.docs.length).toBeGreaterThan(0)
+
+  // The clock ticks past midnight; the new day's heads are on their way.
+  vi.advanceTimersByTime(2_000)
+  for (let i = 0; i < 20 && !asked.includes(tomorrow); i++) await settle()
+  expect(asked).toContain(tomorrow)
+  for (let i = 0; i < 5; i++) await settle()
+  expect(seen.pending).toBe(false)
+  expect(seen.failure).toBeNull()
+  // Yesterday's heads stand in, and none of them is today's.
+  expect(seen.docs).toEqual([])
+
+  answerTomorrow(json({ artifacts: [] }))
+  for (let i = 0; i < 5; i++) await settle()
+  expect(seen.pending).toBe(false)
+  expect(seen.failure).toBeNull()
+  stop()
+  vi.useRealTimers()
+})
