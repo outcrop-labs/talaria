@@ -539,10 +539,11 @@ impl Reason {
 /// holds (`held`, from the record; metadata aside) that the agent's `set`
 /// does not name, and each key the token went without, from the token
 /// itself (`issued`) or, when there was none, from the refusal's shortfall.
-/// A key the issued token carries is never one of them, whatever the set
-/// says: GitHub may put a key on a token unasked (`added`), and a key on the
-/// token is not "not on the token". `account` names the installation's
-/// account in the details.
+/// A key the issued token carries at the level the installation holds it is
+/// never one of them, whatever the set says: GitHub may put a key on a token
+/// unasked (`added`), and a key on the token is not "not on the token". One
+/// it carries below that level is still named: the level it lacks is not in
+/// the set. `account` names the installation's account in the details.
 pub fn reasons(
     set: &PermissionSet,
     held: Option<&PermissionSet>,
@@ -555,14 +556,16 @@ pub fn reasons(
         .map(|a| format!(" on {a}"))
         .unwrap_or_default();
     let mut out = Vec::new();
-    let on_token = |key: &str| {
+    // Whether the issued token carries `key` at `level` or above.
+    let on_token = |key: &str, level: Level| {
         issued
             .and_then(|c| c.carried.as_ref())
-            .is_some_and(|c| c.contains(key))
+            .and_then(|c| c.get(key))
+            .is_some_and(|carried| carried >= level)
     };
     if let Some(held) = held {
         for (key, level) in held.iter() {
-            if key == "metadata" || set.contains(key) || on_token(key) {
+            if key == "metadata" || set.contains(key) || on_token(key, level) {
                 continue;
             }
             out.push(Reason {
@@ -791,6 +794,20 @@ mod tests {
         let r = reasons(&c.asked, Some(&held), Some("acme"), Some(&c), None);
         let keys: Vec<(&str, &str)> = r.iter().map(|r| (r.key.as_str(), r.why)).collect();
         assert_eq!(keys, [("actions", "notInSet")]);
+
+        // The installation holds checks at write and GitHub added it at
+        // read: the write the token lacks is still not in the set.
+        let held_write = held.union(&set(&[("checks", Level::Write)]));
+        let r = reasons(&c.asked, Some(&held_write), Some("acme"), Some(&c), None);
+        let keys: Vec<(&str, Level, &str)> =
+            r.iter().map(|r| (r.key.as_str(), r.level, r.why)).collect();
+        assert_eq!(
+            keys,
+            [
+                ("actions", Level::Write, "notInSet"),
+                ("checks", Level::Write, "notInSet"),
+            ]
+        );
 
         // With no token to read (a refusal), a held key outside the set is
         // still named, checks included.
