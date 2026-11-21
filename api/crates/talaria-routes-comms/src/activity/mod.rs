@@ -7,6 +7,7 @@ pub mod cost_unpriced;
 pub mod cost_unpriced_lookup;
 pub mod history;
 pub mod home;
+pub mod home_queues;
 pub mod notifications;
 pub mod notifications_ack;
 pub mod notifications_boards;

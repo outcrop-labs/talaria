@@ -71,3 +71,7 @@ tracing = { workspace = true }
 url = { workspace = true }
 base64 = { workspace = true }
 talaria-api-facades = { workspace = true }
+
+[dev-dependencies]
+# The live tests build an AppState (home_queues_live.rs).
+talaria-config = { workspace = true }

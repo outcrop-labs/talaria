@@ -2010,6 +2010,12 @@ pub fn router(state: AppState) -> Router {
             "/api/home",
             get(talaria_routes_comms::activity::home::get).fallback(|| async { method_not_allowed("GET") }),
         )
+        // The queues alone, for the web Inbox's board: the same pass /api/home
+        // answers them from, without the admin glance (alerts, cost) around it.
+        .route(
+            "/api/home/queues",
+            get(talaria_routes_comms::activity::home_queues::get).fallback(|| async { method_not_allowed("GET") }),
+        )
         .route(
             "/api/join",
             get(talaria_routes_integrations::account::join::get).fallback(|| async { method_not_allowed("GET") }),

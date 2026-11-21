@@ -1,11 +1,11 @@
 import { useAgents } from '@/lib/agents'
-import { useArtifacts } from '@/lib/artifacts'
+import { startOfLocalDay, useArtifactsSince } from '@/lib/artifacts'
 import { useClock } from '@/lib/clock.svelte'
 import { useConversations } from '@/lib/conversations.svelte'
 import type { BriefView } from '@/lib/daily-brief-types'
 import { buildInboxCards, laneCards, type InboxCard, type InboxLane } from '@/lib/inbox-board'
 import { useResearchRuns } from '@/lib/research'
-import { useHome } from '@/routes/app/home/home'
+import { useHomeQueues } from '@/routes/app/home/home'
 import { useTicketAssignees } from './ticket-assignees.svelte'
 
 export const ACTION = { size: 'xs', voice: 'sans' } as const
@@ -62,20 +62,41 @@ export interface InboxBoardState {
   retry(): void
 }
 
+/** A source's two facts, both read every time, never one short of the other.
+ *
+ *  svelte-query tells a query's readers only about the result fields they have
+ *  read (TanStack's tracked properties). `failure` used to read `isError` alone
+ *  while nothing had answered yet, and `pending` stopped at the unsettled brief
+ *  before it reached any `data`, so sessions, research and files each tracked
+ *  `isError` and nothing else. Their answers then changed only fields nobody
+ *  was tracking, never reached the board, and it showed its skeleton until each
+ *  of those lists next CHANGED — forever, for a reader with no brief, and on
+ *  every load where the brief answered after them. */
+function sourceState(s: { query: { data: unknown; isError: boolean } }): { waiting: boolean; failed: boolean } {
+  const missing = s.query.data === undefined
+  const isError = s.query.isError
+  return { waiting: missing && !isError, failed: missing && isError }
+}
+
 export function useInboxBoard(brief: () => BriefView | null, briefSettled: () => boolean): InboxBoardState {
-  const home = useHome()
+  const clock = useClock()
+  // The board reads only what it shows: the queues without the admin glance
+  // around them, and today's documents without their bodies (the Files cards'
+  // own isToday filter still decides, so the cards are the ones the whole list
+  // gave). Changes only when the reader's day does.
+  const today = $derived(startOfLocalDay(clock.now))
+  const queues = useHomeQueues()
   const sessions = useConversations('sessions')
   const runs = useResearchRuns()
-  const artifacts = useArtifacts()
+  const artifacts = useArtifactsSince(() => today)
   const sources = [
-    { name: 'tickets', query: home },
+    { name: 'tickets', query: queues },
     { name: 'sessions', query: sessions },
     { name: 'research', query: runs },
     { name: 'files', query: artifacts },
   ]
   const agents = useAgents()
-  const clock = useClock()
-  const assignees = useTicketAssignees(() => home.data?.queues ?? null, () => agents.data?.agents ?? [])
+  const assignees = useTicketAssignees(() => queues.data ?? null, () => agents.data?.agents ?? [])
 
   const minute = $derived(Math.floor(clock.now / 60_000))
   const agentLabels = $derived(new Map((agents.data?.agents ?? []).map((a) => [a.id, a.label])))
@@ -84,7 +105,7 @@ export function useInboxBoard(brief: () => BriefView | null, briefSettled: () =>
     buildInboxCards({
       now: minute * 60_000,
       brief: brief(),
-      queues: home.data?.queues ?? null,
+      queues: queues.data ?? null,
       sessions: sessions.data ?? null,
       runs: runs.data ?? null,
       artifacts: artifacts.data ?? null,
@@ -102,10 +123,11 @@ export function useInboxBoard(brief: () => BriefView | null, briefSettled: () =>
       return lanes
     },
     get pending() {
-      return !briefSettled() || sources.some((s) => s.query.data === undefined && !s.query.isError)
+      const states = sources.map(sourceState)
+      return !briefSettled() || states.some((s) => s.waiting)
     },
     get failure() {
-      const failed = sources.filter((s) => s.query.isError && s.query.data === undefined)
+      const failed = sources.filter((s) => sourceState(s).failed)
       return failed.length > 0 ? { sources: failed.map((s) => s.name), error: failed[0]!.query.error } : null
     },
     get now() {

@@ -36,10 +36,18 @@ export interface HomeSummary {
   boards: number
 }
 
-export const useHome = () =>
+/** The three human queues, as /api/home and /api/home/queues both answer them. */
+export type HomeQueues = HomeSummary['queues']
+
+/** The queues alone: GET /api/home/queues, the same pass /api/home answers them
+ *  from, without the admin glance around them (the live alert count, the cost
+ *  overview, the activity feed), which the Inbox never showed. Keyed under
+ *  ['home'], so every invalidation of the summary refreshes it too. /api/home
+ *  itself stays the mobile app's landing read. */
+export const useHomeQueues = () =>
   createQuery(() => ({
-    queryKey: ['home'],
-    queryFn: (): Promise<HomeSummary> => getJson<HomeSummary>('/api/home'),
+    queryKey: ['home', 'queues'],
+    queryFn: async (): Promise<HomeQueues> => (await getJson<{ queues: HomeQueues }>('/api/home/queues')).queues,
     refetchInterval: 30_000,
   }))
 
