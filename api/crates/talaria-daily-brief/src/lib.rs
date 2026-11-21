@@ -1126,11 +1126,15 @@ pub struct SweepResult {
 /// counts the brief as due (`sweep_window_ms`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sweeper {
-    /// The scheduled pass, on its five-minute tick.
+    /// The scheduled pass, on its tick.
     Job,
-    /// A reader's GET, which sweeps first only when the job has fallen behind.
+    /// A reader's GET, which sweeps first only when the job has missed a tick.
     Read,
 }
+
+/// The scheduled pass's period: one tick every five minutes. Named because
+/// the read path's window is measured against it (`sweep_window_ms`).
+const JOB_EVERY_MS: i64 = 5 * 60_000;
 
 /// How far short of `sweep_minutes` the JOB may claim a brief.
 ///
@@ -1140,16 +1144,26 @@ pub enum Sweeper {
 /// faster than the last one's reads as 4:59.99 later — and an exact window
 /// would skip that tick and put the cadence back to every ten minutes, the
 /// bug the claim exists to fix. A minute is far above any jitter and far
-/// below the tick. A reader gets no slack: it sweeps only once a full window
-/// has passed, which is to say only when the job is late.
+/// below the tick.
 const JOB_TICK_SLACK_MS: i64 = 60_000;
 
 /// The age a brief's last claim must reach before `by` may sweep it again.
+///
+/// A READER WAITS A WHOLE TICK LONGER THAN THE JOB. With equal windows a read
+/// that claimed a brief once — in the 90 s after a deploy before the first
+/// tick, say — would lock the job out for good: the job's next tick lands
+/// less than a window after the read's stamp and skips, the next read lands
+/// a window after it and claims again, and the reads keep the brief on every
+/// window while the job never sweeps it. With the reader's window at
+/// `sweep_minutes` plus one tick, the job's first tick a full job window past
+/// a read's claim always comes before the next read could claim, so the job
+/// takes the brief back (within two ticks at the default five minutes), and
+/// from then on a read finds a sweep due only when the job has missed a tick.
 fn sweep_window_ms(config: &BriefConfig, by: Sweeper) -> i64 {
     let full = config.sweep_minutes * 60_000;
     match by {
         Sweeper::Job => (full - JOB_TICK_SLACK_MS).max(0),
-        Sweeper::Read => full,
+        Sweeper::Read => full + JOB_EVERY_MS,
     }
 }
 
@@ -1830,8 +1844,8 @@ pub async fn get_brief(
 /// Err and reads anyway.
 ///
 /// With the job claiming every brief on every tick, a read finds one due only
-/// when the job has fallen a full window behind — a missed tick, a deploy, a
-/// pass still running. That is the case this keeps.
+/// when the job has missed a tick — a deploy, a pass still running, a lease
+/// lost (see `sweep_window_ms`). That is the case this keeps.
 pub async fn sweep_if_due(
     deps: &BriefDeps,
     user: &BriefUser,
@@ -2200,7 +2214,7 @@ pub fn daily_brief_job_spec(deps: Arc<BriefDeps>) -> talaria_scheduler::JobSpec 
         // of the OPEN (a brief can be at most five minutes late), and it is the
         // tick the per-brief `sweep_minutes` throttle rides on, so a sweep
         // interval below five minutes has no effect without changing this too.
-        every_ms: 5 * 60_000,
+        every_ms: JOB_EVERY_MS as u64,
         // Let a deploy settle before the first pass. A crash-looping instance
         // must never reach a job that writes a document to every person in the
         // workspace.
@@ -2467,13 +2481,12 @@ mod tests {
 
     #[test]
     fn sweep_due_reads_the_throttle_honestly() {
-        let config = five_minute_config();
-        let read = sweep_window_ms(&config, Sweeper::Read);
+        let window = 300_000;
         let now = 1_790_481_420_000;
-        assert!(sweep_due(None, read, now));
-        assert!(!sweep_due(Some(now - 60_000), read, now));
+        assert!(sweep_due(None, window, now));
+        assert!(!sweep_due(Some(now - 60_000), window, now));
         // Exactly at the throttle still sweeps — the test is >=.
-        assert!(sweep_due(Some(now - 300_000), read, now));
+        assert!(sweep_due(Some(now - 300_000), window, now));
     }
 
     // THE CADENCE. The job claims a brief with its tick's own instant, so the
@@ -2499,23 +2512,76 @@ mod tests {
         assert!(!sweep_due(Some(tick), job, tick + 60_000));
     }
 
-    // A READER sweeps first only when the job is a full window behind; inside
-    // the window the job's last claim stands.
+    // A READER sweeps first only when the job has missed a tick: its window is
+    // the sweep interval plus one tick, so inside it the job's last claim
+    // stands.
     #[test]
     fn a_reader_sweeps_only_when_the_job_is_late() {
         let config = five_minute_config();
         let read = sweep_window_ms(&config, Sweeper::Read);
         let tick = 1_790_481_420_000;
-        assert!(!sweep_due(Some(tick), read, tick + 4 * 60_000));
-        assert!(!sweep_due(Some(tick), read, tick + 5 * 60_000 - 1));
-        assert!(sweep_due(Some(tick), read, tick + 5 * 60_000));
+        assert!(!sweep_due(Some(tick), read, tick + 5 * 60_000));
+        assert!(!sweep_due(Some(tick), read, tick + 10 * 60_000 - 1));
+        assert!(sweep_due(Some(tick), read, tick + 10 * 60_000));
         // The job's slack never goes below zero, whatever the config says.
         let one_minute = BriefConfig {
             sweep_minutes: 1,
             ..five_minute_config()
         };
         assert_eq!(sweep_window_ms(&one_minute, Sweeper::Job), 0);
-        assert_eq!(sweep_window_ms(&one_minute, Sweeper::Read), 60_000);
+        assert_eq!(sweep_window_ms(&one_minute, Sweeper::Read), 360_000);
+    }
+
+    // THE LOCK-OUT. A read that claimed a brief while the job was away — the
+    // 90 s after a deploy, a missed tick — must not keep it. With the reader's
+    // window equal to the job's, the job's next tick fell inside the read's
+    // window and skipped, the next read claimed again a window later, and the
+    // reads kept the brief for good. Every phase of a read claim against the
+    // tick grid, with a reader polling every 20 s: the job takes the brief
+    // back at its first tick a job window past the claim (two ticks at the
+    // default five minutes), and no read claims it again.
+    #[test]
+    fn a_read_claim_never_locks_the_job_out() {
+        for sweep_minutes in [1, 5, 15] {
+            let config = BriefConfig {
+                sweep_minutes,
+                ..five_minute_config()
+            };
+            let job = sweep_window_ms(&config, Sweeper::Job);
+            let read = sweep_window_ms(&config, Sweeper::Read);
+            let tick = JOB_EVERY_MS;
+            for offset in (1_000..tick).step_by(7_000) {
+                // The tick grid is k * tick; the read claimed at `offset`.
+                let mut stamp = offset;
+                let (mut job_claims, mut read_claims) = (0, 0);
+                let mut first_job_claim = None;
+                let mut t = offset + 1_000;
+                while t < offset + 12 * tick {
+                    if t % tick == 0 && sweep_due(Some(stamp), job, t) {
+                        stamp = t;
+                        job_claims += 1;
+                        if first_job_claim.is_none() {
+                            first_job_claim = Some(t);
+                        }
+                    }
+                    if (t - offset) % 20_000 == 0 && sweep_due(Some(stamp), read, t) {
+                        stamp = t;
+                        read_claims += 1;
+                    }
+                    t += 1_000;
+                }
+                let first = first_job_claim.expect("the job claims the brief back");
+                assert!(
+                    first - offset <= job + tick,
+                    "sweep_minutes {sweep_minutes}, offset {offset}: the job was locked out until {first}"
+                );
+                assert_eq!(
+                    read_claims, 0,
+                    "sweep_minutes {sweep_minutes}, offset {offset}: a read claimed again"
+                );
+                assert!(job_claims > 0);
+            }
+        }
     }
 
     // THE CROSS-DAY SUPPRESSION, as its one decision reads. Every assertion
