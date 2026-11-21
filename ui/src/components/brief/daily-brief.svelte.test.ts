@@ -129,6 +129,29 @@ function checkedPage(): BriefView {
   return p
 }
 
+/** The page after both lines were checked off, task:two last. */
+function bothCheckedPage(): BriefView {
+  const p = checkedPage()
+  p.lastSeq = 5
+  const lines = p.sections[0]!.lines
+  const two = lines.find((l) => l.key === 'task:two')!
+  const closing = entry({
+    ...two.current,
+    id: 'e-4',
+    seq: 5,
+    batch: 'b-3',
+    kind: 'checked',
+    supersedes: two.current.id,
+    priority: 'ok',
+    statusLabel: 'CHECKED OFF',
+    badge: null,
+    body: '',
+    evidence: [],
+  })
+  p.sections[0]!.lines = lines.map((l) => (l.key === 'task:two' ? { ...l, current: closing, history: [...l.history, closing], resolved: true, unseen: true } : l))
+  return p
+}
+
 const cached = (): BriefView => (h.client as QueryClient).getQueryData<BriefResponse>(BRIEF_KEY) as BriefView
 const lineOf = (p: BriefView, key: string): BriefLine => p.sections.flatMap((s) => s.lines).find((l) => l.key === key)!
 const send = (event: unknown) => {
@@ -328,4 +351,24 @@ test('a page read before the mark landed does not overwrite the page its answer 
   await (h.client as QueryClient).refetchQueries({ queryKey: BRIEF_KEY })
   expect(lineOf(cached(), 'task:one').resolved).toBe(true)
   expect(cached().lastSeq).toBe(4)
+})
+
+test('two marks answering out of order keep the newer page', async () => {
+  const actions = mount(page())
+  await settle()
+  const first = deferredPost()
+  const second = deferredPost()
+  const a = actions.markItem('task:one', 'check')
+  const b = actions.markItem('task:two', 'check')
+  await settle()
+  // The second mark's answer has both check-offs; the first's was read before
+  // the second committed, and arrives last.
+  second.resolve({ ok: true, brief: bothCheckedPage() })
+  await b
+  first.resolve({ ok: true, brief: checkedPage() })
+  await a
+  expect(cached().lastSeq).toBe(5)
+  expect(lineOf(cached(), 'task:one').resolved).toBe(true)
+  expect(lineOf(cached(), 'task:two').resolved).toBe(true)
+  expect(gets()).toBe(0)
 })

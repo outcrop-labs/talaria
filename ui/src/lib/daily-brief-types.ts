@@ -239,13 +239,13 @@ export function withMark(page: BriefResponse, key: string, action: BriefMarkActi
 
 /** The page with one line put back as `from` had it — the undo of an
  *  optimistic mark whose POST failed. Line-level, so a second mark still in
- *  flight on another line keeps its own state. `from` itself when the pages
- *  are different documents or the line cannot be found. */
+ *  flight on another line keeps its own state, and everything else stays as
+ *  current as `page` is. `page` unchanged when the two are different
+ *  documents or either lacks the line: the caller refetches either way. */
 export function withLineFrom(page: BriefResponse, from: BriefResponse | undefined, key: string): BriefResponse {
-  if (!from) return page
-  if ('absent' in page || 'absent' in from || page.id !== from.id) return from
+  if (!from || 'absent' in page || 'absent' in from || page.id !== from.id) return page
   const original = from.sections.flatMap((s) => s.lines).find((l) => l.key === key)
-  if (!original) return from
+  if (!original) return page
   let changed = false
   const sections = page.sections.map((s) => {
     const i = s.lines.findIndex((l) => l.key === key)
@@ -253,7 +253,7 @@ export function withLineFrom(page: BriefResponse, from: BriefResponse | undefine
     changed = true
     return { ...s, lines: s.lines.map((l, j) => (j === i ? original : l)).sort(byDocumentOrder) }
   })
-  return changed ? { ...page, sections } : from
+  return changed ? { ...page, sections } : page
 }
 
 /** Whether a realtime 'brief' event says something the cached page has not

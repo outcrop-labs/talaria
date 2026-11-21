@@ -52,13 +52,18 @@ pub async fn get(
     // person opening the surface is the one moment latency is visible, and
     // sweeping afterwards would hand them the stale page and the fresh one a
     // realtime nudge later — a document that visibly rewrites itself on
-    // arrival, which is the exact impression an append-only brief must never
-    // give. A failed sweep is logged and the read still answers with the page
-    // as it stands.
+    // arrival, which an append-only brief should not do. A failed sweep is
+    // logged and the read still answers with the page as it stands.
     //
-    // WITHIN A BUDGET (ON_READ_SWEEP_BUDGET). The sweep runs as its own task,
-    // so one that outlives the budget is not cancelled: it finishes, holding
-    // its claim, and publishes what it appends.
+    // WITHIN A BUDGET (ON_READ_SWEEP_BUDGET), AND THAT IS A TRADE. A sweep that
+    // fits the budget lands before the read, as above. One that does not —
+    // drafting replies, a model note: a minute or more — keeps running as its
+    // own task, holding its claim, and the read answers now; its append then
+    // reaches the page over realtime, so on that path the page does update a
+    // moment after it opens. The alternative was the read waiting out the
+    // whole sweep, past the client's 30 s deadline, and failing. The path is
+    // rare by construction: the job claims every brief on every tick, and a
+    // read finds a sweep due only when the job has missed one.
     let sweep = {
         let deps = deps.clone();
         let user = user.clone();

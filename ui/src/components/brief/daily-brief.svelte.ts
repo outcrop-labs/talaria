@@ -232,7 +232,10 @@ export function useBriefActions() {
       if (pending.get(sourceKey)?.token === mark.token) pending.delete(sourceKey)
 
       if (ok && answer?.brief) {
-        qc.setQueryData<BriefResponse>(BRIEF_KEY, withPendingMarks(answer.brief))
+        // Through the same recency test as a GET: two marks on different
+        // lines answer in either order, and the answer read before the other
+        // mark committed must not land over the page that has both.
+        qc.setQueryData<BriefResponse>(BRIEF_KEY, withPendingMarks(newerPage(answer.brief, qc.getQueryData<BriefResponse>(BRIEF_KEY))))
       } else if (ok) {
         void refresh()
       } else {
