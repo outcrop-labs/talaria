@@ -337,7 +337,8 @@ pub async fn installation_account(
 
 /// A `git.credential` row's after-data for a login the host issued. Never
 /// the token: `hashed_token` is its SHA-256, base64, exactly how GitHub's
-/// audit log records a token, so an operator can follow it there.
+/// audit log records a token, so an operator can follow it there. `added`,
+/// what GitHub put on the token unasked, is written only when there is any.
 pub fn issued_after(host: &str, cred: &AgentCredential, hashed: &str) -> Value {
     let mut after = json!({
         "source": "git_host",
@@ -353,6 +354,9 @@ pub fn issued_after(host: &str, cred: &AgentCredential, hashed: &str) -> Value {
     });
     if let Some(why) = &cred.shortfall_why {
         after["shortfallWhy"] = json!(why);
+    }
+    if !cred.added.is_empty() {
+        after["added"] = cred.added.to_json();
     }
     after
 }
@@ -413,6 +417,9 @@ pub struct LastToken {
     pub carried: Option<PermissionSet>,
     pub shortfall: Option<PermissionSet>,
     pub shortfall_why: Option<String>,
+    /// What GitHub put on the token unasked, which Talaria kept. None when
+    /// it put nothing there, and on a row written before rows said.
+    pub added: Option<PermissionSet>,
     /// The refusal's sentence.
     pub error: Option<String>,
     pub minted: Option<bool>,
@@ -444,6 +451,7 @@ impl LastToken {
             carried: set_at(after, "carried"),
             shortfall: set_at(after, "shortfall"),
             shortfall_why: text_at(after, "shortfallWhy"),
+            added: set_at(after, "added"),
             error: text_at(after, "message"),
             minted: after.get("minted").and_then(Value::as_bool),
         })
@@ -463,6 +471,7 @@ impl LastToken {
             "carried": self.carried.as_ref().map(PermissionSet::to_json),
             "shortfall": self.shortfall.as_ref().map(PermissionSet::to_json),
             "shortfallWhy": self.shortfall_why,
+            "added": self.added.as_ref().map(PermissionSet::to_json),
             "error": self.error,
             "minted": self.minted,
             "current": matches!((&self.asked, set), (Some(a), Some(s)) if a.canonical() == s.canonical()),
@@ -508,7 +517,7 @@ pub struct Reason {
     pub key: String,
     pub level: Level,
     /// `notInSet` (the installation holds it; the agent's set does not name
-    /// it), `installationLacks` (the set names it; the installation has not
+    /// it, and the token does not carry it), `installationLacks` (the set names it; the installation has not
     /// accepted it), `githubRefused` (GitHub would not put it on a token for
     /// one repository), `githubOmitted` (asked for, and left off the token).
     pub why: &'static str,
@@ -530,7 +539,11 @@ impl Reason {
 /// holds (`held`, from the record; metadata aside) that the agent's `set`
 /// does not name, and each key the token went without, from the token
 /// itself (`issued`) or, when there was none, from the refusal's shortfall.
-/// `account` names the installation's account in the details.
+/// A key the issued token carries at the level the installation holds it is
+/// never one of them, whatever the set says: GitHub may put a key on a token
+/// unasked (`added`), and a key on the token is not "not on the token". One
+/// it carries below that level is still named: the level it lacks is not in
+/// the set. `account` names the installation's account in the details.
 pub fn reasons(
     set: &PermissionSet,
     held: Option<&PermissionSet>,
@@ -543,9 +556,16 @@ pub fn reasons(
         .map(|a| format!(" on {a}"))
         .unwrap_or_default();
     let mut out = Vec::new();
+    // Whether the issued token carries `key` at `level` or above.
+    let on_token = |key: &str, level: Level| {
+        issued
+            .and_then(|c| c.carried.as_ref())
+            .and_then(|c| c.get(key))
+            .is_some_and(|carried| carried >= level)
+    };
     if let Some(held) = held {
         for (key, level) in held.iter() {
-            if key == "metadata" || set.contains(key) {
+            if key == "metadata" || set.contains(key) || on_token(key, level) {
                 continue;
             }
             out.push(Reason {
@@ -650,6 +670,7 @@ mod tests {
             shortfall,
             unheld,
             omitted,
+            added: PermissionSet::new(),
             minted: true,
         }
     }
@@ -745,6 +766,105 @@ mod tests {
     }
 
     #[test]
+    fn a_key_the_token_carries_is_never_named_as_not_on_it() {
+        // The installation holds checks and actions; the set names neither.
+        // GitHub put checks on the token unasked: it is on the token, so it
+        // is not "not in the set". Actions is not on the token, and is still
+        // named.
+        let held = set(&[
+            ("actions", Level::Write),
+            ("checks", Level::Read),
+            ("contents", Level::Write),
+            ("metadata", Level::Read),
+            ("pull_requests", Level::Write),
+        ]);
+        let mut c = cred(
+            PermissionSet::new(),
+            PermissionSet::new(),
+            PermissionSet::new(),
+        );
+        c.asked = set(&[
+            ("contents", Level::Write),
+            ("metadata", Level::Read),
+            ("pull_requests", Level::Write),
+        ]);
+        let checks = set(&[("checks", Level::Read)]);
+        c.carried = Some(c.asked.union(&checks));
+        c.added = checks.clone();
+        let r = reasons(&c.asked, Some(&held), Some("acme"), Some(&c), None);
+        let keys: Vec<(&str, &str)> = r.iter().map(|r| (r.key.as_str(), r.why)).collect();
+        assert_eq!(keys, [("actions", "notInSet")]);
+
+        // The installation holds checks at write and GitHub added it at
+        // read: the write the token lacks is still not in the set.
+        let held_write = held.union(&set(&[("checks", Level::Write)]));
+        let r = reasons(&c.asked, Some(&held_write), Some("acme"), Some(&c), None);
+        let keys: Vec<(&str, Level, &str)> =
+            r.iter().map(|r| (r.key.as_str(), r.level, r.why)).collect();
+        assert_eq!(
+            keys,
+            [
+                ("actions", Level::Write, "notInSet"),
+                ("checks", Level::Write, "notInSet"),
+            ]
+        );
+
+        // With no token to read (a refusal), a held key outside the set is
+        // still named, checks included.
+        let refusal = HostRefusal {
+            message: "GitHub refused a token for acme/widgets (422: no)".into(),
+            kind: "refused",
+            shortfall: PermissionSet::new(),
+            asked: c.asked.clone(),
+        };
+        let r = reasons(&c.asked, Some(&held), None, None, Some(&refusal));
+        let keys: Vec<&str> = r.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["actions", "checks"]);
+    }
+
+    #[test]
+    fn what_github_added_is_recorded_only_when_there_is_any_and_read_back() {
+        let none = cred(
+            PermissionSet::new(),
+            PermissionSet::new(),
+            PermissionSet::new(),
+        );
+        let after = issued_after("github.com", &none, "h");
+        assert!(after.get("added").is_none(), "{after}");
+
+        let mut c = cred(
+            PermissionSet::new(),
+            PermissionSet::new(),
+            PermissionSet::new(),
+        );
+        let checks = set(&[("checks", Level::Read)]);
+        c.carried = Some(c.carried.clone().unwrap().union(&checks));
+        c.added = checks.clone();
+        let after = issued_after("github.com", &c, "h");
+        assert_eq!(after["added"], json!({ "checks": "read" }));
+        assert_eq!(after["carried"]["checks"], "read");
+
+        // Read back, and on the editor's wire.
+        let last = LastToken::from_row("a1", CREDENTIAL_ACTION, &after, 5).unwrap();
+        assert_eq!(last.added, Some(checks));
+        assert_eq!(last.wire(None)["added"], json!({ "checks": "read" }));
+        // A row that wrote none, and a row written before rows said: null.
+        let quiet = LastToken::from_row(
+            "a1",
+            CREDENTIAL_ACTION,
+            &issued_after("github.com", &none, "h"),
+            6,
+        )
+        .unwrap();
+        assert_eq!(quiet.added, None);
+        assert_eq!(quiet.wire(None)["added"], Value::Null);
+        let old = json!({ "host_id": "github", "repo": "acme/widgets", "source": "git_host" });
+        let old = LastToken::from_row("a1", CREDENTIAL_ACTION, &old, 7).unwrap();
+        assert_eq!(old.added, None);
+        assert_eq!(old.wire(None)["added"], Value::Null);
+    }
+
+    #[test]
     fn the_rows_carry_what_was_asked_and_never_the_token() {
         let wf = set(&[("workflows", Level::Write)]);
         let c = cred(wf.clone(), wf.clone(), PermissionSet::new());
@@ -755,7 +875,7 @@ mod tests {
         assert!(after.get("shortfallWhy").is_none());
         assert!(!after.to_string().contains("ghs_never_shown"));
         let refusal = HostRefusal {
-            message: "GitHub minted a token for acme/widgets wider than Talaria asked for (it carries checks:read, which was not asked for); it was revoked and never used".into(),
+            message: "GitHub minted a token for acme/widgets wider than Talaria asked for (it carries contents:write, above the read asked for); it was revoked and never used".into(),
             kind: "overbroad",
             shortfall: PermissionSet::new(),
             asked: wf.clone(),
@@ -768,7 +888,7 @@ mod tests {
         // token asked for the set the agent holds now is current.
         let last = LastToken::from_row("a1", REFUSED_ACTION, &after, 0).unwrap();
         assert!(!last.ok);
-        assert!(last.error.as_deref().unwrap().contains("checks:read"));
+        assert!(last.error.as_deref().unwrap().contains("contents:write"));
         let wire = last.wire(Some(&wf));
         assert_eq!(wire["current"], true);
         assert_eq!(wire["at"], "1970-01-01T00:00:00.000Z");

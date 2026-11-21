@@ -19,8 +19,9 @@
 // login (`workspaceSecret`, by name, never opened), and each repo its
 // agent's last token (`lastToken`: the newest `git.credential` or
 // `git.credential_refused` row — what GitHub put on it, what it went
-// without and why, or why there was none — and `current`, whether it was
-// asked for the set the agent holds now). The agent's managers and fleet
+// without and why, what GitHub added to it unasked (`added`, null when
+// nothing), or why there was none — and `current`, whether it was asked
+// for the set the agent holds now). The agent's managers and fleet
 // readers read it; `canEdit` says whether this caller writes, and
 // `canCheck` whether it may press "Check token" (POST …/check, admins).
 //
