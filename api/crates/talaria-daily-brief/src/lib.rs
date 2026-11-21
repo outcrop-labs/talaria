@@ -1299,6 +1299,16 @@ async fn sweep_row_if_due(
     if !sweep_due(row.last_swept_ms, window_ms, at_ms) {
         return Ok(None);
     }
+    // HELD IN THIS PROCESS FOR AS LONG AS IT RUNS. The stamp below is a
+    // throttle: a sweep that outlives the job's window — drafting replies,
+    // a model note, minutes on a slow disk — would otherwise be overtaken by
+    // the next tick, and two sweeps of one brief would snapshot the same log
+    // and append the same lines. Within an instance this set is the lock;
+    // across instances the stamp still serializes every sweep shorter than
+    // the window, and the job's lease keeps the passes themselves apart.
+    let Some(_held) = SweepHold::take(&row.id) else {
+        return Ok(None);
+    };
     // CLAIMED BEFORE ANY WORK. See `claim_sweep`: one sweep at a time per
     // brief, stamped with this caller's instant.
     let pg = &deps.state.pg;
@@ -1313,6 +1323,32 @@ async fn sweep_row_if_due(
         release_sweep(pg, &row.id, at_ms, row.last_swept_ms).await;
     }
     result.map(Some)
+}
+
+/// Briefs with a sweep running in this process, by brief id.
+static SWEEPS_IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+
+/// A brief's place in `SWEEPS_IN_FLIGHT`, given back when dropped — at the
+/// end of the sweep, on an error, or if the sweep's task is dropped midway.
+struct SweepHold(String);
+
+impl SweepHold {
+    /// The hold on `brief_id`, or None while another sweep of it is running.
+    fn take(brief_id: &str) -> Option<SweepHold> {
+        let mut held = SWEEPS_IN_FLIGHT.lock().unwrap_or_else(|p| p.into_inner());
+        held.insert(brief_id.to_string())
+            .then(|| SweepHold(brief_id.to_string()))
+    }
+}
+
+impl Drop for SweepHold {
+    fn drop(&mut self) {
+        SWEEPS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.0);
+    }
 }
 
 /// The sweep itself, on a brief this caller has claimed.
@@ -2530,6 +2566,107 @@ mod tests {
         };
         assert_eq!(sweep_window_ms(&one_minute, Sweeper::Job), 0);
         assert_eq!(sweep_window_ms(&one_minute, Sweeper::Read), 360_000);
+    }
+
+    async fn swept_ms(pg: &PgPool, brief: &str) -> Option<i64> {
+        sqlx::query_scalar(
+            "select (trunc(extract(epoch from last_swept_at) * 1000))::bigint \
+             from daily_briefs where id = $1::uuid",
+        )
+        .bind(brief)
+        .fetch_one(pg)
+        .await
+        .expect("read the stamp")
+    }
+
+    /// The claim against a migrated database: two claims at once, one winner;
+    /// refused inside the window, won past it; the stamp reads back to the
+    /// millisecond; and a failed sweep hands back only its own claim.
+    /// `#[ignore]`d — it needs a database; ci.yml's api job runs it in its
+    /// live-DB steps:
+    ///
+    ///   DATABASE_URL=postgres://… cargo test -p talaria-daily-brief --lib -- --ignored live_
+    #[tokio::test]
+    #[ignore = "live DB: set DATABASE_URL"]
+    async fn live_the_claim_has_one_winner_and_a_failed_sweep_hands_it_back() {
+        let url = std::env::var("DATABASE_URL").expect("set DATABASE_URL to run the live tests");
+        let pg = PgPool::connect(&url).await.expect("connect");
+        let sub = format!("brief-claim-live:{}", Uuid::new_v4());
+        let user: String =
+            sqlx::query_scalar("insert into users (sub) values ($1) returning id::text")
+                .bind(&sub)
+                .fetch_one(&pg)
+                .await
+                .expect("a user");
+        let brief: String = sqlx::query_scalar(
+            "insert into daily_briefs (user_id, brief_date, last_seq) \
+             values ($1::uuid, current_date, 1) returning id::text",
+        )
+        .bind(&user)
+        .fetch_one(&pg)
+        .await
+        .expect("a brief");
+        let tick = 1_790_481_420_123_i64;
+        let window = 240_000;
+
+        let (a, b) = tokio::join!(
+            claim_sweep(&pg, &brief, tick, window),
+            claim_sweep(&pg, &brief, tick, window)
+        );
+        let winners = [a.expect("claim a"), b.expect("claim b")];
+        assert_eq!(winners.iter().filter(|won| **won).count(), 1, "one winner");
+        assert_eq!(
+            swept_ms(&pg, &brief).await,
+            Some(tick),
+            "to the millisecond"
+        );
+
+        let later = tick + 300_000;
+        assert!(
+            !claim_sweep(&pg, &brief, tick + 60_000, window)
+                .await
+                .unwrap()
+        );
+        assert!(claim_sweep(&pg, &brief, later, window).await.unwrap());
+
+        // Not this caller's stamp: left alone. Its own: handed back.
+        release_sweep(&pg, &brief, tick + 1, Some(tick)).await;
+        assert_eq!(swept_ms(&pg, &brief).await, Some(later));
+        release_sweep(&pg, &brief, later, Some(tick)).await;
+        assert_eq!(swept_ms(&pg, &brief).await, Some(tick));
+        release_sweep(&pg, &brief, tick, None).await;
+        assert_eq!(swept_ms(&pg, &brief).await, None, "never swept, again");
+
+        sqlx::query("delete from daily_briefs where id = $1::uuid")
+            .bind(&brief)
+            .execute(&pg)
+            .await
+            .unwrap();
+        sqlx::query("delete from users where sub = $1")
+            .bind(&sub)
+            .execute(&pg)
+            .await
+            .unwrap();
+    }
+
+    // A sweep that runs past its window still holds its brief: a second one
+    // in this process backs off until the first is done.
+    #[test]
+    fn a_running_sweep_holds_its_brief_until_it_ends() {
+        let first = SweepHold::take("brief-held").expect("the first sweep takes the brief");
+        assert!(
+            SweepHold::take("brief-held").is_none(),
+            "a second sweep backs off"
+        );
+        assert!(
+            SweepHold::take("brief-other").is_some(),
+            "another brief is free"
+        );
+        drop(first);
+        assert!(
+            SweepHold::take("brief-held").is_some(),
+            "free again once the sweep ends"
+        );
     }
 
     // THE LOCK-OUT. A read that claimed a brief while the job was away — the
