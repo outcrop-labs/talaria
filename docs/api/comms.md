@@ -548,14 +548,14 @@ Source: [`api/crates/talaria-routes-comms/src/comms/conversations_id_files.rs`](
 > GET /api/conversations/{id}/files — the session's files, for the Work pane.
 >
 > WHAT THE PANE SHOWS. A work session's pane is the files the session has
-> touched: every Talaria document and Google file a chip on one of its
+> touched: every Talaria document and Google file the agent created, edited
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `{kind, files}` | 200, 404 | — |
 
-**GET** — The session's files, oldest first appearance first: every Talaria document and Google file the conversation's chips name (`touched`, with `lastTouchedAt` the newest message naming it and `touchedFor` the person that turn was for), then the teammate's pins (`pinned`), then a legacy work session's living document (`living`). Artifacts the caller cannot read are left out; at most 100 files.
+**GET** — The session's files, oldest first appearance first: every Talaria document and Google file the agent created, edited or opened (a Google file it only read is not listed) (`touched`, with `lastTouchedAt` the newest message naming it and `touchedFor` the person that turn was for), then the teammate's pins (`pinned`), then a legacy work session's living document (`living`). Artifacts the caller cannot read are left out; at most 100 files.
 
 ## `/api/conversations/{id}/members`
 

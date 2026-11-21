@@ -2250,7 +2250,17 @@ pub fn verdict_at(reported: Option<i64>, now: i64) -> i64 {
 /// none. The session arm's session is the conversation's own id; the
 /// completions arm's is the `api-…` session Hermes derived, which the chat
 /// turn recorded against its conversation when its stream opened.
-async fn verdict_conversation(
+///
+/// ONE RULE FOR EVERY DOOR THE PLUGIN POSTS TO. A failure verdict is kept
+/// for the conversation this names, and a chip lands in it
+/// (`talaria_chips::session_hint`): both read the same id off the same
+/// frame, and two readings of it is how a verdict and a chip from one call
+/// end up in two threads. A UUID counts only as one of this agent's own
+/// conversations; any other key only through a `chat` attribution of this
+/// agent's whose conversation is also this agent's. A key with no such row —
+/// a cron or work session's, an older plugin's, another agent's — names
+/// nothing, and the caller decides what nothing means.
+pub async fn session_conversation(
     pg: &PgPool,
     agent_model: &str,
     session_id: &str,
@@ -2306,7 +2316,7 @@ pub async fn record_tool_failure(
     let Some(id) = plain_call_id(tool_call_id) else {
         return Ok(None);
     };
-    let Some(conversation) = verdict_conversation(pg, agent_model, session_id).await? else {
+    let Some(conversation) = session_conversation(pg, agent_model, session_id).await? else {
         tracing::debug!(
             "[tool-events] {agent_model}: {id} failed in session {session_id:?}, which names no \
              conversation — not kept"

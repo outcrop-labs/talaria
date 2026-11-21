@@ -62,6 +62,7 @@ mod notify_engine_live;
 mod notify_hub_live;
 mod notify_producers_live;
 mod office_export_live;
+mod pane_tabs_live;
 mod pending_dedupe_live;
 mod plan_row_live;
 mod plugin_tickets_live;
