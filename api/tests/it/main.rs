@@ -29,6 +29,7 @@ mod board_agent_access;
 mod board_notify_live;
 mod board_sync_live;
 mod boards_store;
+mod brief_append_live;
 mod brief_item_live;
 mod brief_verdict_carry_live;
 mod browser_toolsets_live;

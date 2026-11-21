@@ -8,6 +8,7 @@
   import { cn } from '@/lib/cn'
   import { fade, QUICK } from '@/lib/motion'
   import { approvalOf, cardActions, openLabel, ownersOf, type CardAction, type InboxCard } from '@/lib/inbox-board'
+  import { briefMarkFailed } from '@/components/brief/daily-brief.svelte'
   import { ACTION, FILLED, GHOST, type BoardActions } from './inbox-board.svelte'
 
   let {
@@ -34,6 +35,9 @@
 
   let busy = $state<CardAction | null>(null)
   let error = $state<string | null>(null)
+  // A mark moves the card to its new lane at once, and a failed one moves it
+  // back as a NEW card — this component's own `error` never sees that answer.
+  const shownError = $derived(error ?? (line && briefMarkFailed(line.key) ? 'That did not go through.' : null))
 
   async function run(id: CardAction): Promise<void> {
     if (busy) return
@@ -101,8 +105,8 @@
         {/snippet}
       </DropdownMenu>
     {/if}
-    {#if error}
-      <span transition:fade={QUICK} class="font-sans text-[12px] text-[color:var(--theme-danger)]">{error}</span>
+    {#if shownError}
+      <span transition:fade={QUICK} class="font-sans text-[12px] text-[color:var(--theme-danger)]">{shownError}</span>
     {/if}
   </div>
 {/if}

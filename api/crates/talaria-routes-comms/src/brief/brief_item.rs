@@ -7,6 +7,12 @@
 // The reader's timezone rides along because the check-off must land on the
 // brief they are LOOKING at, which the fallback read may have served across
 // a UTC midnight their timezone has not reached.
+//
+// THE ANSWER CARRIES THE PAGE. On success the body is `{ ok: true, brief }`,
+// where `brief` is exactly what GET /api/brief would answer now — read after
+// the mark, with no sweep — so the client replaces its cached page with it
+// instead of waiting on a refetch. The click costs one round trip: the mark's
+// own commit, then a read.
 
 use axum::Json;
 use axum::extract::State;
@@ -14,7 +20,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use talaria_body::{enum_member, nullable_optional_string_member, string_member};
-use talaria_daily_brief::{BriefUser, mark_brief_item, real_brief_deps};
+use talaria_daily_brief::{BriefUser, get_brief, mark_brief_item, real_brief_deps};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -63,7 +69,22 @@ pub async fn post(
         )
         .await
         {
-            Ok(mark) if mark.ok => Json(json!({ "ok": true })).into_response(),
+            Ok(mark) if mark.ok => {
+                // The page as GET would serve it. A read that fails here does
+                // not turn a landed mark into an error — the verdict is in the
+                // log — so the answer is the bare ok, and the client refetches.
+                match get_brief(&deps, &user, body.tz.as_deref()).await {
+                    Err(e) => {
+                        tracing::error!("[brief] read after item mark failed: {e}");
+                        Json(json!({ "ok": true })).into_response()
+                    }
+                    Ok(read) => Json(json!({
+                        "ok": true,
+                        "brief": super::brief::brief_body(read).0,
+                    }))
+                    .into_response(),
+                }
+            }
             // 404 rather than 400: the request was well formed, the line just is
             // not on today's page — usually a stale tab from yesterday's brief.
             Ok(mark) => house_error(
