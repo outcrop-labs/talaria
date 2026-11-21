@@ -677,6 +677,47 @@ fn install_tokens() -> &'static TokenCache {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Tokens a fresh mint took the place of while they still had time left
+/// ([`Github::installation_token`]: the installation came to hold what one
+/// went without). Each is still live on GitHub until it expires, and every
+/// revoke finds tokens only here and in the cache, so each revoke that
+/// sweeps the cache sweeps this list by the same rule: a narrowing reaches
+/// every token minted under the old grant, not only the one served last.
+/// Lock order: the cache, then this list, never the other way.
+type RetiredTokens = Mutex<Vec<(TokenKey, CachedToken)>>;
+fn retired_tokens() -> &'static RetiredTokens {
+    static RETIRED: OnceLock<RetiredTokens> = OnceLock::new();
+    RETIRED.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Move `key`'s cached token to the retired list, when the cache still holds
+/// `token` there (another serve may already have replaced it). Takes the
+/// cache it is called under, so the move is one step to any revoke.
+fn retire(cache: &mut HashMap<TokenKey, CachedToken>, key: &TokenKey, token: &str) {
+    if !cache.get(key).is_some_and(|t| t.token == token) {
+        return;
+    }
+    if let Some(t) = cache.remove(key) {
+        let now = now_ms();
+        let mut retired = retired_tokens().lock().unwrap();
+        retired.retain(|(_, t)| t.expires_at > now);
+        retired.push((key.clone(), t));
+    }
+}
+
+/// Take out of the retired list every token `doomed` picks, for the caller
+/// to revoke. Expired ones are dropped on the way: GitHub has ended them.
+fn take_retired(doomed: impl Fn(&TokenKey, &CachedToken) -> bool) -> Vec<CachedToken> {
+    let now = now_ms();
+    let mut retired = retired_tokens().lock().unwrap();
+    let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut *retired)
+        .into_iter()
+        .filter(|(_, t)| t.expires_at > now)
+        .partition(|(k, t)| doomed(k, t));
+    *retired = kept;
+    taken.into_iter().map(|(_, t)| t).collect()
+}
+
 /// A cached token is served only while it has more than this left. Git may
 /// hold it for a whole push, and a token that expires mid-push fails the push.
 const SERVE_MARGIN_MS: i64 = 5 * 60_000;
@@ -766,28 +807,29 @@ fn learn_route(host_id: &str, repo: &str, inst: &str) {
 /// /installation/token`, authenticated by the token itself, at the origin it
 /// was minted on), so the next ask mints against what the agent may do now.
 /// Only this process's cache: the registry broadcasts the same revoke to
-/// every other api process (talaria-git-hosts' `revoke`).
+/// every other api process (talaria-git-hosts' `revoke`). A token a fresh
+/// mint took the place of and that is still live goes too
+/// ([`retired_tokens`]).
 pub async fn revoke_agent_tokens(
     host_id: Option<&str>,
     agent_id: &str,
     repo: Option<&str>,
 ) -> Revocation {
+    let picks = |k: &TokenKey| {
+        k.agent.as_deref() == Some(agent_id)
+            && host_id.is_none_or(|h| k.host == h)
+            && repo.is_none_or(|want| {
+                k.repo
+                    .as_deref()
+                    .is_some_and(|r| r.eq_ignore_ascii_case(want))
+            })
+    };
     let doomed: Vec<CachedToken> = {
         let mut cache = install_tokens().lock().unwrap();
-        let keys: Vec<TokenKey> = cache
-            .keys()
-            .filter(|k| {
-                k.agent.as_deref() == Some(agent_id)
-                    && host_id.is_none_or(|h| k.host == h)
-                    && repo.is_none_or(|want| {
-                        k.repo
-                            .as_deref()
-                            .is_some_and(|r| r.eq_ignore_ascii_case(want))
-                    })
-            })
-            .cloned()
-            .collect();
-        keys.iter().filter_map(|k| cache.remove(k)).collect()
+        let keys: Vec<TokenKey> = cache.keys().filter(|k| picks(k)).cloned().collect();
+        let mut doomed: Vec<CachedToken> = keys.iter().filter_map(|k| cache.remove(k)).collect();
+        doomed.extend(take_retired(|k, _| picks(k)));
+        doomed
     };
     let mut out = Revocation::default();
     for t in doomed {
@@ -805,10 +847,11 @@ pub async fn revoke_agent_tokens(
 /// `host_id`: its credentials changed, and nothing minted or read under the
 /// old ones may outlive them.
 pub fn forget_host(host_id: &str) {
-    install_tokens()
-        .lock()
-        .unwrap()
-        .retain(|k, _| k.host != host_id);
+    {
+        let mut cache = install_tokens().lock().unwrap();
+        cache.retain(|k, _| k.host != host_id);
+        take_retired(|k, _| k.host == host_id);
+    }
     holdings_cache()
         .lock()
         .unwrap()
@@ -858,8 +901,14 @@ pub enum MintError {
         repo: String,
         unselected: Option<String>,
     },
-    /// The connection, the transport, or a reply that could not be read.
+    /// The transport, or a reply that could not be read.
     Other(String),
+    /// This connection's own configuration could not be used: the App's key
+    /// or the PAT would not unseal, or the key would not parse. Nothing was
+    /// asked of GitHub, and the words are about Talaria's own state, so the
+    /// credential door logs them as an internal error and never hands them
+    /// to an agent's git.
+    Local(String),
 }
 
 impl std::fmt::Display for MintError {
@@ -911,7 +960,7 @@ impl std::fmt::Display for MintError {
                 f,
                 "no installation of this host's GitHub App covers {repo} — install the App on that repository (or add the repository to its installation), then select the installation in Admin → Git hosts"
             ),
-            MintError::Other(why) => f.write_str(why),
+            MintError::Other(why) | MintError::Local(why) => f.write_str(why),
         }
     }
 }
@@ -932,6 +981,7 @@ impl MintError {
             MintError::NothingAsked { .. } => "nothingAsked",
             MintError::Unrouted { .. } => "unrouted",
             MintError::Other(_) => "other",
+            MintError::Local(_) => "local",
         }
     }
 
@@ -1565,19 +1615,22 @@ impl Github {
     ) -> Revocation {
         let beyond =
             |carried: &PermissionSet| carried.without(|k| k == "metadata").missing_from(held);
+        let picks = |k: &TokenKey, t: &CachedToken| {
+            k.host == self.host_id && k.inst == installation_id && !beyond(&t.carried).is_empty()
+        };
         let doomed: Vec<(String, PermissionSet)> = {
             let mut cache = install_tokens().lock().unwrap();
             let keys: Vec<TokenKey> = cache
                 .iter()
-                .filter(|(k, t)| {
-                    k.host == self.host_id
-                        && k.inst == installation_id
-                        && !beyond(&t.carried).is_empty()
-                })
+                .filter(|(k, t)| picks(k, t))
                 .map(|(k, _)| k.clone())
                 .collect();
-            keys.iter()
-                .filter_map(|k| cache.remove(k))
+            let mut doomed: Vec<CachedToken> =
+                keys.iter().filter_map(|k| cache.remove(k)).collect();
+            // A retired token still live carries what it was minted with.
+            doomed.extend(take_retired(picks));
+            doomed
+                .into_iter()
                 .map(|t| {
                     let keys = beyond(&t.carried);
                     (t.token, keys)
@@ -1687,14 +1740,12 @@ impl Github {
                 return Ok(served);
             }
             // Narrower than what the installation now gives, and nothing
-            // more: it is dropped, not revoked, because a push may be
-            // holding it, and it carries nothing the agent may not.
-            {
-                let mut cache = install_tokens().lock().unwrap();
-                if cache.get(&key).is_some_and(|t| t.token == served.token) {
-                    cache.remove(&key);
-                }
-            }
+            // more: it is retired, not revoked, because a push may be
+            // holding it, and it carries nothing the agent may not today.
+            // It stays where every revoke reaches it until it expires
+            // ([`retired_tokens`]): a later narrowing of the agent's grant
+            // takes it back with the token minted in its place.
+            retire(&mut install_tokens().lock().unwrap(), &key, &served.token);
             tracing::info!(
                 "[github] installation {installation_id} of host {} now holds {gained}, which the cached token for {repo} went without — minting a fresh one",
                 self.host_id
@@ -1709,7 +1760,7 @@ impl Github {
                 repo: repo.to_string(),
             });
         }
-        let jwt = self.app_jwt().map_err(MintError::Other)?;
+        let jwt = self.app_jwt().map_err(MintError::Local)?;
         let base = self.api();
         let mut held = self.known_holdings(installation_id, false).await;
         let (mut effective, mut shortfall) = narrow(ask, held.as_ref());
@@ -1898,7 +1949,7 @@ impl Github {
         {
             return Ok(InstallationWide(hit.token.clone()));
         }
-        let jwt = self.app_jwt().map_err(MintError::Other)?;
+        let jwt = self.app_jwt().map_err(MintError::Local)?;
         tracing::info!(
             "[github] minting an installation-wide token on installation {installation_id} of host {} for {purpose}",
             self.host_id
@@ -1976,7 +2027,7 @@ impl Github {
         {
             return Ok(inst);
         }
-        let jwt = self.app_jwt().map_err(MintError::Other)?;
+        let jwt = self.app_jwt().map_err(MintError::Local)?;
         match repo_installation_with(&self.api(), &jwt, repo).await {
             Ok(Some(id)) if self.cfg.installation_ids.contains(&id) => {
                 learn_route(&self.host_id, repo, &id);
@@ -2042,7 +2093,7 @@ impl Github {
         if self.cfg.mode.as_deref() == Some("pat") {
             return Ok(self
                 .pat()
-                .map_err(MintError::Other)?
+                .map_err(MintError::Local)?
                 .map(|token| IssuedToken {
                     token,
                     installation: None,
@@ -2108,10 +2159,11 @@ impl Github {
     /// do changed while the mint was out, so a token minted against the old
     /// grant is never served again.
     pub async fn revoke_issued(&self, token: &str) -> bool {
-        install_tokens()
-            .lock()
-            .unwrap()
-            .retain(|k, t| !(k.host == self.host_id && t.token == token));
+        {
+            let mut cache = install_tokens().lock().unwrap();
+            cache.retain(|k, t| !(k.host == self.host_id && t.token == token));
+            take_retired(|k, t| k.host == self.host_id && t.token == token);
+        }
         revoke_installation_token(&self.api(), token).await
     }
 
@@ -5485,6 +5537,7 @@ mod tests {
                         github_201(&format!("ghs_r3_{n}"), posted_permissions(req)),
                     )
                 }
+                ("DELETE", "/installation/token") => (204, String::new()),
                 _ => (500, r#"{"message":"unexpected"}"#.into()),
             },
         )
@@ -5569,6 +5622,28 @@ mod tests {
         assert_eq!(cached.token, next.token);
         assert_eq!(reads(&store), 3, "no holdings read for an empty shortfall");
         assert_eq!(calls(&seen.lock().unwrap(), "POST", mint_path).len(), 2);
+
+        // The token minted before the acceptance left the cache with most
+        // of its hour left, and is still live on GitHub. A narrowing of the
+        // agent's grant takes back both: the one served now and that one.
+        let back = revoke_agent_tokens(Some(&conn.host_id), "a-r3", None).await;
+        assert_eq!((back.revoked, back.failed), (2, 0), "{back:?}");
+        let log = seen.lock().unwrap().clone();
+        let mut revoked: Vec<&str> = calls(&log, "DELETE", "/installation/token")
+            .iter()
+            .map(|r| r.auth.as_str())
+            .collect();
+        revoked.sort_unstable();
+        assert_eq!(
+            revoked,
+            [
+                format!("Bearer {}", first.token),
+                format!("Bearer {}", next.token)
+            ]
+        );
+        // Each is taken back once: nothing of the agent's is left to revoke.
+        let again = revoke_agent_tokens(Some(&conn.host_id), "a-r3", None).await;
+        assert_eq!((again.revoked, again.failed), (0, 0));
     }
 
     /// GitHub minted the token and left an asked key off it: the token is
@@ -5683,6 +5758,8 @@ mod tests {
         );
         assert_eq!(MintError::Other("x".into()).kind(), "other");
         assert!(MintError::Other("x".into()).shortfall().is_empty());
+        assert_eq!(MintError::Local("x".into()).kind(), "local");
+        assert!(MintError::Local("x".into()).shortfall().is_empty());
     }
 
     // ── PR status: read-only, every call a GET ────────────────────────────────

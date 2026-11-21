@@ -344,4 +344,173 @@ mod tests {
         // Nothing read: unknown.
         assert_eq!(carries(&row, &a, &selected, &[]), None);
     }
+
+    // ── Live-DB: the route's own reads end to end ────────────────────────────
+    //
+    // #[ignore]d (house rule: no service-dependent tests in the default run;
+    // ci.yml's api job sweeps ignored lib tests in its live-DB steps, against
+    // its scratch database and Redis). Nothing here asks GitHub: the route
+    // reads the record and the trail only.
+    //
+    //   DATABASE_URL=postgres://… REDIS_URL=… TALARIA_SECRET_KEY=… \
+    //     cargo test -p talaria-routes-workbench git_hosts_id_agents -- --ignored
+
+    mod live {
+        use super::super::*;
+        use crate::workbench::live_support::{
+            agent, answer, cleanup, github_host, person, state, tag,
+        };
+        use axum::http::StatusCode;
+
+        async fn agents_as(
+            state: &AppState,
+            headers: &HeaderMap,
+            host: &str,
+        ) -> (StatusCode, Value) {
+            answer(
+                get(
+                    State(state.clone()),
+                    headers.clone(),
+                    Path(host.to_string()),
+                )
+                .await,
+            )
+            .await
+        }
+
+        async fn give(state: &AppState, agent: &str, host: &str, set: Value) {
+            sqlx::query(
+                "insert into agent_github_permissions (agent_id, host_id, permissions) \
+                 values ($1::uuid, $2, $3)",
+            )
+            .bind(agent)
+            .bind(host)
+            .bind(set)
+            .execute(&state.pg)
+            .await
+            .expect("the set");
+        }
+
+        #[tokio::test]
+        #[ignore = "needs a live database and Redis (DATABASE_URL, REDIS_URL)"]
+        async fn the_hosts_agents_say_what_each_token_carries_and_what_no_one_claims() {
+            let state = state().await;
+            let t = tag();
+            let (admin, as_admin) = person(&state, &t, "admin", "admin").await;
+            let (manager, as_manager) = person(&state, &t, "manager", "member").await;
+            // Nothing listens at this API origin: the route never asks GitHub.
+            let h = github_host(&state, &t, "http://127.0.0.1:9", "95201").await;
+            // A Developer agent on the default, granted a repo.
+            let on_default = agent(&state, &t, &manager).await;
+            talaria_git_hosts::add_grant(&state.pg, &on_default, &h, "acme/widgets")
+                .await
+                .unwrap();
+            // A Developer agent given workflows, granted the same repo.
+            let given = agent(&state, &format!("{t}b"), &manager).await;
+            talaria_git_hosts::add_grant(&state.pg, &given, &h, "acme/widgets")
+                .await
+                .unwrap();
+            let with_workflows = json!({
+                "contents": "write", "metadata": "read", "pull_requests": "write", "workflows": "write",
+            });
+            give(&state, &given, &h, with_workflows.clone()).await;
+            // An agent whose switch is off, with a set and no repo: it is
+            // listed, and its set claims nothing.
+            let off = agent(&state, &format!("{t}c"), &manager).await;
+            sqlx::query("update agent_defs set developer = false where id = $1::uuid")
+                .bind(&off)
+                .execute(&state.pg)
+                .await
+                .unwrap();
+            give(&state, &off, &h, json!({ "secrets": "write" })).await;
+            // The door refused the agent on the default a token, and wrote
+            // its row the way it does.
+            let message = "GitHub refused a token for acme/widgets (422: The permissions requested are not granted to this installation.)";
+            let refusal = talaria_git_hosts::HostRefusal {
+                message: message.into(),
+                kind: "refused",
+                shortfall: PermissionSet::new(),
+                asked: default_set(),
+            };
+            talaria_audit::try_log_audit(
+                &state.pg,
+                talaria_audit::AuditEntry {
+                    actor: "wb-live",
+                    action: credential::REFUSED_ACTION,
+                    target_type: "agent",
+                    target_id: Some(&on_default),
+                    target_label: Some(&format!("{h}:acme/widgets")),
+                    before: None,
+                    after: Some(credential::refused_after(
+                        "github.com",
+                        &h,
+                        "acme/widgets",
+                        &refusal,
+                    )),
+                },
+            )
+            .await
+            .expect("the row");
+
+            // Admins only.
+            let (status, _) = agents_as(&state, &as_manager, &h).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+
+            let (status, body) = agents_as(&state, &as_admin, &h).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["host"], h.as_str());
+            assert_eq!(body["default"], default_set().to_json());
+            let agents = body["agents"].as_array().expect("agents");
+            assert_eq!(agents.len(), 3, "{body}");
+            let of = |id: &str| {
+                agents
+                    .iter()
+                    .find(|a| a["agentId"] == id)
+                    .unwrap_or_else(|| panic!("{id} is listed: {body}"))
+            };
+
+            let a = of(&on_default);
+            assert_eq!(a["developer"], true);
+            assert_eq!(a["isDefault"], true);
+            assert_eq!(a["set"], default_set().to_json());
+            assert_eq!(a["carries"], default_set().to_json(), "{a}");
+            assert_eq!(a["repos"], json!(["acme/widgets"]));
+            let last = &a["lastToken"];
+            assert_eq!(last["ok"], false, "{a}");
+            assert_eq!(last["repo"], "acme/widgets");
+            assert_eq!(last["error"], message);
+            assert_eq!(last["current"], true, "asked for the set it holds now");
+
+            let b = of(&given);
+            assert_eq!(b["isDefault"], false);
+            assert_eq!(b["set"], with_workflows);
+            assert_eq!(
+                b["carries"], with_workflows,
+                "the installation holds all of it: {b}"
+            );
+            assert_eq!(b["lastToken"], Value::Null);
+
+            let c = of(&off);
+            assert_eq!(c["developer"], false);
+            assert_eq!(c["set"], json!({ "secrets": "write" }));
+            assert_eq!(c["repos"], json!([]));
+
+            // Held and named by no Developer agent: administration, the
+            // organization key, and secrets (named only by the agent whose
+            // switch is off). workflows is claimed; metadata never counts.
+            assert_eq!(
+                body["unclaimed"],
+                json!({ "administration": "write", "organization_secrets": "read", "secrets": "write" }),
+                "{body}"
+            );
+
+            cleanup(
+                &state,
+                &[&on_default, &given, &off],
+                &[&admin, &manager],
+                &[&h],
+            )
+            .await;
+        }
+    }
 }

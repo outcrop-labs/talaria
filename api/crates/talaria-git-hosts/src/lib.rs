@@ -596,7 +596,8 @@ impl std::fmt::Debug for AgentCredential {
 /// login (GitHub refused the mint, the token came back wider than asked, the
 /// installation holds none of the set, no installation covers the repo), in
 /// the host's own sentence, which the door hands the agent; or the database
-/// failed, which stays an internal error.
+/// failed, or the host's own credential would not unseal, which stays an
+/// internal error.
 pub async fn grant_login(
     pg: &PgPool,
     sb: &SecretBox,
@@ -677,6 +678,9 @@ async fn issue_login(
                 Ok(Some(credential(login, issued)))
             }
             Ok(None) => Ok(None),
+            // The App key or the PAT would not unseal: Talaria's own state,
+            // never the agent's to read.
+            Err(talaria_github::MintError::Local(e)) => Err(GrantError::Internal(e)),
             Err(e) => Err(GrantError::Host(HostRefusal::of_mint(&e, set))),
         },
         Host::Forgejo(_) => {
@@ -687,15 +691,35 @@ async fn issue_login(
             match host.repo_login(repo, &job).await {
                 Ok(Some(issued)) => Ok(Some(agent_credential(row, repo, set, issued))),
                 Ok(None) => Ok(None),
-                Err(message) => Err(GrantError::Host(HostRefusal {
-                    message,
-                    kind: "host",
-                    shortfall: PermissionSet::new(),
-                    asked: set.clone(),
-                })),
+                // A Forgejo login is the host's workspace secret, read here:
+                // its failure names that secret and its state, or the
+                // database's error. The log keeps those words; the agent and
+                // the trail get a sentence that names nothing of the
+                // workspace.
+                Err(e) => {
+                    tracing::warn!(
+                        "[git-hosts] the login of git host {} could not be read for {repo}: {e}",
+                        row.id
+                    );
+                    Err(GrantError::Host(HostRefusal {
+                        message: forgejo_login_unreadable(row),
+                        kind: "credential",
+                        shortfall: PermissionSet::new(),
+                        asked: set.clone(),
+                    }))
+                }
             }
         }
     }
+}
+
+/// What an agent's git is told when the credential a Forgejo host's row
+/// names cannot be read: which host, and who fixes it, never the secret.
+fn forgejo_login_unreadable(row: &HostRow) -> String {
+    format!(
+        "the git host {} has no usable login right now — an admin checks the credential it names in Admin → Git hosts",
+        row.name
+    )
 }
 
 /// The credential door's record of a login `row` issued for `repo` through
@@ -810,5 +834,76 @@ mod tests {
             scope.withheld().is_empty(),
             "an ungranted ask asks no store"
         );
+    }
+
+    /// A login that fails on Talaria's own side is never the host's refusal:
+    /// a Forgejo host whose credential cannot be read tells the agent a
+    /// sentence that names no secret, and a GitHub App key that will not
+    /// unseal is an internal error, never handed to the agent's git.
+    #[tokio::test]
+    async fn a_login_that_fails_on_talarias_side_names_nothing_of_the_workspace() {
+        let set = PermissionSet::of(&[("contents", Level::Write)]);
+        let forge = HostRow {
+            id: "forge".into(),
+            kind: HostKind::Forgejo,
+            name: "Forge".into(),
+            base_url: "https://git.example.com".into(),
+            api_url: None,
+            auth: serde_json::json!({}),
+            repo_creation_orgs: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let unreadable = Host::Forgejo(Forgejo::new(
+            &forge.id,
+            &forge.base_url,
+            None,
+            Err("the workspace secret \"forge-bot\" could not be opened".into()),
+        ));
+        let Err(GrantError::Host(refusal)) =
+            issue_login(&unreadable, &forge, "acme/app", "a1", &set).await
+        else {
+            panic!("a refusal with a sentence");
+        };
+        assert_eq!(refusal.kind, "credential");
+        assert!(refusal.message.contains("Forge"), "{}", refusal.message);
+        assert!(
+            !refusal.message.contains("forge-bot"),
+            "{}",
+            refusal.message
+        );
+        assert_eq!(refusal.asked, set);
+
+        let github = HostRow {
+            id: "gh-unsealable".into(),
+            kind: HostKind::Github,
+            name: "GitHub".into(),
+            base_url: "https://github.com".into(),
+            // Nothing listens here: the key fails before any request.
+            api_url: Some("http://127.0.0.1:9".into()),
+            auth: serde_json::json!({
+                "mode": "app",
+                "app": { "appId": "7", "installationIds": ["91"], "privateKeyEnc": "not-sealed" },
+            }),
+            repo_creation_orgs: vec![],
+            created_at: String::new(),
+            updated_at: String::new(),
+        };
+        let sb = SecretBox::from_parts(
+            [7u8; 32],
+            HashMap::from([(1u32, talaria_secretbox::new_dek().expect("entropy"))]),
+            Some(1),
+        );
+        let host = Host::Github(Github::new(
+            &github.id,
+            &github.base_url,
+            github.api_url.as_deref(),
+            &github.auth,
+            sb,
+        ));
+        match issue_login(&host, &github, "acme/app", "a1", &set).await {
+            Err(GrantError::Internal(e)) => assert!(e.contains("unseal"), "{e}"),
+            other => panic!("an internal error, not {other:?}"),
+        }
     }
 }

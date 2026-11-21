@@ -17,7 +17,10 @@
 // A host that will not give a login says why, in its own sentence
 // ([`HostRefusal`]): the door hands it to the agent's git (the helper prints
 // it) and records a `git.credential_refused` row, and the check shows it. A
-// database failure is never that sentence: it stays an internal error.
+// failure on Talaria's own side is never that sentence: a database error, or
+// a GitHub App key or PAT that will not unseal, stays an internal error, and
+// a Forgejo host whose credential cannot be read is told in a sentence that
+// names the host and no secret.
 //
 // WHAT A TOKEN CARRIED, AND WHY NOT MORE. Each `git.credential` row records
 // what was asked, what GitHub put on the token, and what it went without;
@@ -59,8 +62,8 @@ pub struct HostRefusal {
     /// The host's sentence (talaria-github's `MintError` display): what an
     /// agent or an admin acts on. It never carries a credential.
     pub message: String,
-    /// Which kind of refusal (`MintError::kind`), or `host` for a host other
-    /// than GitHub.
+    /// Which kind of refusal (`MintError::kind`), or `credential` for a
+    /// Forgejo host whose own login could not be read.
     pub kind: &'static str,
     /// What the ask named that the installation was known not to hold.
     pub shortfall: PermissionSet,
@@ -86,7 +89,8 @@ pub enum GrantError {
     /// The host would not: its sentence, safe to show the agent and the
     /// admin.
     Host(HostRefusal),
-    /// The database failed: logged, and a 500 to the caller.
+    /// The database failed, or the host's own credential would not unseal:
+    /// logged, and a 500 to the caller.
     Internal(String),
 }
 
