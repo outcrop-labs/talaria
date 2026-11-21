@@ -28,6 +28,15 @@
 // no longer carries — an unchanged row is never rewritten. A search that
 // finds the mirror empty nudges a sync itself, at most once per five
 // minutes, so a fresh install's first open still answers.
+//
+// WHY NO STORED POSITION DRIVES THE ORDER. Hermes builds the index sorted by
+// source (official, skills.sh, github) and then name
+// (scripts/build_skills_index.py), so the listing sorts on those two
+// columns itself. A stored position would shift for every row after a skill
+// added or removed mid-list, which every crawl does: comparing it made each
+// fresh crawl rewrite ~85% of the mirror to move ~40 rows. `rank` keeps the
+// row's position on the day it arrived, for a release before this one,
+// which still sorts by it.
 
 use std::fmt;
 use std::io::Read;
@@ -368,7 +377,8 @@ struct SyncState {
 /// sha256 over the parsed rows in index order — every field the mirror
 /// stores, each length-prefixed so no two lists hash alike, and not the
 /// index's `generated_at`, which moves on every rebuild whether or not a row
-/// did. The order is in it because `rank` is.
+/// did. An index that only reorders its rows hashes differently, and its
+/// store then finds nothing to write.
 fn entries_digest(entries: &[CatalogEntry]) -> String {
     fn field(h: &mut Sha256, f: &str) {
         h.update((f.len() as u64).to_le_bytes());
@@ -548,20 +558,22 @@ struct Stored {
     gone: u64,
 }
 
-/// The rows of a batch that differ from the mirror's, in any stored field or
-/// in rank; a row equal in every one is not touched. `synced_at` is when a
-/// row last changed.
+/// The rows of a batch that differ from the mirror's in a stored field; a
+/// row equal in every one is not touched, wherever it now sits in the list
+/// (the position is not compared: a skill added above it moves it, and
+/// nothing about it changed). `synced_at` is when a row last changed.
 const UPDATE_CHANGED: &str = "update skills_index_entries e set \
        name = u.n, description = u.d, source = u.s, trust_level = u.t, repo = u.r, \
-       path = u.p, exact = u.x, tags = u.g::jsonb, rank = u.k, synced_at = now() \
+       path = u.p, exact = u.x, tags = u.g::jsonb, synced_at = now() \
      from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], \
-                 $6::text[], $7::text[], $8::bool[], $9::text[], $10::int4[]) \
-       as u(i, n, d, s, t, r, p, x, g, k) \
+                 $6::text[], $7::text[], $8::bool[], $9::text[]) \
+       as u(i, n, d, s, t, r, p, x, g) \
      where e.identifier = u.i \
-       and (e.name, e.description, e.source, e.trust_level, e.repo, e.path, e.exact, e.tags, e.rank) \
-           is distinct from (u.n, u.d, u.s, u.t, u.r, u.p, u.x, u.g::jsonb, u.k)";
+       and (e.name, e.description, e.source, e.trust_level, e.repo, e.path, e.exact, e.tags) \
+           is distinct from (u.n, u.d, u.s, u.t, u.r, u.p, u.x, u.g::jsonb)";
 
-/// The rows of a batch the mirror lacks.
+/// The rows of a batch the mirror lacks, each with its position in this
+/// index as `rank` (read only by a release before this one).
 const INSERT_NEW: &str = "insert into skills_index_entries \
        (identifier, name, description, source, trust_level, repo, path, exact, tags, rank, synced_at) \
      select i, n, d, s, t, r, p, x, g::jsonb, k, now() \
@@ -577,8 +589,8 @@ const DELETE_GONE: &str = "delete from skills_index_entries e \
 
 /// Update the rows that differ, insert the new ones, delete what the index
 /// no longer carries — one transaction, so a search sees the old mirror or
-/// the new one, never half. A row equal to its index entry, rank included,
-/// is never rewritten.
+/// the new one, never half. A row equal to its index entry is never
+/// rewritten, however far the rows above it moved it.
 async fn store(pg: &PgPool, entries: &[CatalogEntry]) -> Result<Stored, sqlx::Error> {
     let mut out = Stored::default();
     let mut tx = pg.begin().await?;
@@ -597,25 +609,30 @@ async fn store(pg: &PgPool, entries: &[CatalogEntry]) -> Result<Stored, sqlx::Er
             .map(|e| serde_json::to_string(&e.tags).unwrap_or_else(|_| "[]".into()))
             .collect();
         let ranks: Vec<i32> = (0..batch.len() as i32).map(|i| base + i).collect();
-        for (sql, n) in [
-            (UPDATE_CHANGED, &mut out.updated),
-            (INSERT_NEW, &mut out.inserted),
-        ] {
-            *n += sqlx::query(sql)
-                .bind(&ids)
-                .bind(&names)
-                .bind(&descs)
-                .bind(&sources)
-                .bind(&trusts)
-                .bind(&repos)
-                .bind(&paths)
-                .bind(&exacts)
-                .bind(&tags)
-                .bind(&ranks)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
+        // The batch's columns, bound alike to both statements.
+        macro_rules! rows {
+            ($sql:expr) => {
+                sqlx::query($sql)
+                    .bind(&ids)
+                    .bind(&names)
+                    .bind(&descs)
+                    .bind(&sources)
+                    .bind(&trusts)
+                    .bind(&repos)
+                    .bind(&paths)
+                    .bind(&exacts)
+                    .bind(&tags)
+            };
         }
+        out.updated += rows!(UPDATE_CHANGED)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        out.inserted += rows!(INSERT_NEW)
+            .bind(&ranks)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
     }
     let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
     out.gone = sqlx::query(DELETE_GONE)
@@ -657,7 +674,11 @@ fn from_row(r: Row) -> CatalogEntry {
 
 /// Ranking, in order: the name IS the query, trust (builtin, then trusted,
 /// then community — the order Hermes' own search cuts by), the name starts
-/// with the query, text rank, then the index's own order.
+/// with the query, text rank, then the index's own order, read off the row
+/// as Hermes sorts it: source (official, skills.sh, github — `source_order`
+/// in Hermes' scripts/build_skills_index.py), then name, compared as Python
+/// compares strings (code point order, which is `collate "C"`), then the
+/// identifier for a name two skills share.
 const SEARCH_SQL: &str = "with q as (select websearch_to_tsquery('simple', $1) as tq, $1::text as raw) \
      select identifier, name, description, source, trust_level, repo, path, exact, tags \
      from skills_index_entries e, q \
@@ -670,7 +691,9 @@ const SEARCH_SQL: &str = "with q as (select websearch_to_tsquery('simple', $1) a
        case e.trust_level when 'builtin' then 0 when 'trusted' then 1 else 2 end, \
        (e.name ilike q.raw || '%') desc, \
        ts_rank_cd(e.search, q.tq) desc, \
-       e.rank asc \
+       case e.source when 'official' then 0 when 'skills.sh' then 1 else 2 end, \
+       e.name collate \"C\", \
+       e.identifier \
      limit $2";
 
 /// Search the mirror. An empty mirror nudges a sync first (once per five
@@ -895,9 +918,11 @@ mod tests {
 
 // Live CENSUS of the mirror's writes — a measurement, not a behavior test:
 // the store half of a sync (`apply_index`) over a production-sized synthetic
-// index of 19,742 installable rows, in the three shapes a refresh meets
-// (an identical index, 1% of the rows changed, one row inserted at the top),
-// printed for the pull request that changes it. A CHECKPOINT before each
+// index of 19,742 installable rows, sorted as Hermes sorts it, in the shapes
+// a refresh meets (an identical index, 1% of the rows changed, one row
+// inserted at the top, and a real crawl: a few skills added and removed at
+// their alphabetical places and a few descriptions edited), printed for the
+// pull request that changes it. A CHECKPOINT before each
 // sync stands for the six hours between them. Per sync: write transactions
 // (the `pg_snapshot_xmax` delta), WAL bytes (`pg_current_wal_lsn`),
 // `pg_stat_wal`'s records and full-page images, and the rows written (xmin
@@ -973,8 +998,9 @@ mod store_census {
         WORDS[(mix(i as u64 * 131 + k) % WORDS.len() as u64) as usize]
     }
 
-    /// Row `i` of the synthetic index: Hermes' own optional skills first,
-    /// then GitHub taps, then skills.sh, as the real index lists them.
+    /// Row `i` of the synthetic index: the first 153 are Hermes' own
+    /// optional skills, the next 1,093 GitHub taps, the rest skills.sh.
+    /// `hermes_sorted` puts a list of them in the index's order.
     pub(super) fn synthetic(i: usize) -> CatalogEntry {
         let (source, trust, repo, path, id) = if i < 153 {
             let path = format!("optional-skills/{}/{}-{i}", word(i, 1), word(i, 2));
@@ -1009,6 +1035,18 @@ mod store_census {
                 .map(|k| word(i, 50 + k).to_string())
                 .collect(),
         }
+    }
+
+    /// The order Hermes builds its index in (`source_order`, then name, in
+    /// scripts/build_skills_index.py) — the order SEARCH_SQL reads back.
+    pub(super) fn hermes_sorted(mut entries: Vec<CatalogEntry>) -> Vec<CatalogEntry> {
+        let group = |s: &str| match s {
+            "official" => 0,
+            "skills.sh" => 1,
+            _ => 2,
+        };
+        entries.sort_by(|a, b| (group(&a.source), &a.name).cmp(&(group(&b.source), &b.name)));
+        entries
     }
 
     fn census_url() -> Option<String> {
@@ -1097,7 +1135,7 @@ mod store_census {
             .connect_with(opts)
             .await
             .expect("census pool");
-        let base: Vec<CatalogEntry> = (0..ROWS).map(synthetic).collect();
+        let base = hermes_sorted((0..ROWS).map(synthetic).collect());
         let mut st = SyncState::default();
         apply_index(
             &pg,
@@ -1109,19 +1147,61 @@ mod store_census {
         .expect("the first sync fills the mirror");
         exec(&pg, "vacuum (analyze) skills_index_entries").await;
 
-        // 1% of the rows change their description; then one new row lands
-        // at the top of the list, shifting every rank under it.
+        // 1% of the rows change their description; then one new official
+        // skill lands at the top of the list, above every other row; then a
+        // crawl the size of two real consecutive ones: 19 skills added at
+        // their alphabetical places, 17 gone, 5 descriptions edited.
         let mut changed = base.clone();
         for e in changed.iter_mut().step_by(100) {
             e.description.push_str(" (updated)");
         }
+        let mut top = synthetic(0);
+        top.name = "0-first-skill".into();
+        top.id = "official/new/0-first-skill".into();
+        top.path = "optional-skills/new/0-first-skill".into();
         let mut inserted = changed.clone();
-        inserted.insert(0, synthetic(ROWS + 1));
-        println!("census skills: {ROWS} rows, one CHECKPOINT before each sync");
+        inserted.insert(0, top);
+        assert_eq!(
+            hermes_sorted(inserted.clone()),
+            inserted,
+            "the top row sorts first"
+        );
+        // `n` distinct positions in 0..len, the same every census.
+        let spots = |n: usize, len: usize, seed: u64| {
+            let mut at = std::collections::BTreeSet::new();
+            let mut k = seed;
+            while at.len() < n {
+                at.insert((mix(k) % len as u64) as usize);
+                k += 1;
+            }
+            at
+        };
+        let removed = spots(17, inserted.len(), 2_000);
+        let mut crawl: Vec<CatalogEntry> = inserted
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| !removed.contains(k))
+            .map(|(_, e)| e.clone())
+            .collect();
+        for at in spots(5, crawl.len(), 3_000) {
+            crawl[at].description.push_str(" (edited upstream)");
+        }
+        let added: Vec<CatalogEntry> = (0..19).map(|k| synthetic(ROWS + 100 + k)).collect();
+        crawl.extend(added.iter().cloned());
+        let crawl = hermes_sorted(crawl);
+        let first_new = crawl
+            .iter()
+            .position(|e| added.iter().any(|a| a.id == e.id))
+            .unwrap_or_default();
+        println!(
+            "census skills: {ROWS} rows, one CHECKPOINT before each sync; the crawl adds 19 \
+             (the first at position {first_new}), removes 17, edits 5"
+        );
         for (n, (label, entries)) in [
             ("identical index", &base),
             ("1% of rows changed", &changed),
             ("one row inserted at the top", &inserted),
+            ("a real crawl", &crawl),
         ]
         .into_iter()
         .enumerate()
@@ -1167,8 +1247,9 @@ mod store_census {
 // Live-DB proof that the mirror writes only what changed: an identical index
 // takes the digest's skip and writes no row; without the digest the store
 // itself finds nothing to write; one changed entry is one row version; a
-// vanished entry is deleted; and the listing reads the same rows in the same
-// order as the store before it did. `#[ignore]`d — it needs a database — and
+// skill added mid-list is one new row and moves no other; a vanished entry
+// is deleted; and the listing reads the same rows in the same order as the
+// store before it did, which sorted by each row's stored position. `#[ignore]`d — it needs a database — and
 // CI's live-tests job runs it (`cargo test --workspace --lib -- --ignored`):
 //
 //   DATABASE_URL=postgres://… cargo test -p talaria-skills-marketplace --lib -- --ignored skills_store_live
@@ -1179,15 +1260,24 @@ mod store_live {
 
     use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-    use super::store_census::synthetic;
+    use super::store_census::{hermes_sorted, synthetic};
     use super::*;
 
-    const ROWS: usize = 300;
+    /// 40 official, 130 GitHub and 130 skills.sh rows, in the index's order.
+    fn base_index() -> Vec<CatalogEntry> {
+        hermes_sorted(
+            (0..40)
+                .chain(153..283)
+                .chain(1_246..1_376)
+                .map(synthetic)
+                .collect(),
+        )
+    }
 
     /// The store as it was before it learned to leave an unchanged row
-    /// alone: every row upserted, rank and all, then whatever the
-    /// transaction did not stamp deleted. The listing must not tell the two
-    /// apart.
+    /// alone: every row upserted with its position as `rank`, which that
+    /// release's listing sorted by, then whatever the transaction did not
+    /// stamp deleted. The listing must not tell the two apart.
     async fn old_store(pg: &PgPool, entries: &[CatalogEntry]) {
         let mut tx = pg.begin().await.unwrap();
         for (batch_no, batch) in entries.chunks(UPSERT_BATCH).enumerate() {
@@ -1298,11 +1388,12 @@ mod store_live {
         }
     }
 
-    /// Every stored column but `synced_at`, in identifier order.
-    async fn contents(pg: &PgPool) -> Vec<(String, String, String, String, i32, bool, String)> {
+    /// Every stored column but `synced_at` and `rank` (the old store's
+    /// moving position; this one keeps a row's first), in identifier order.
+    async fn contents(pg: &PgPool) -> Vec<(String, String, String, String, bool, String)> {
         sqlx::query_as(
             "select identifier, name || '|' || description || '|' || source || '|' || trust_level, \
-               repo, path, rank, exact, tags::text \
+               repo, path, exact, tags::text \
              from skills_index_entries order by identifier",
         )
         .fetch_all(pg)
@@ -1318,7 +1409,7 @@ mod store_live {
         let admin = PgPool::connect(&url).await.expect("the database");
         let (pg, schema) = scratch(&admin, &url, "new").await;
         let (old, old_schema) = scratch(&admin, &url, "old").await;
-        let base: Vec<CatalogEntry> = (0..ROWS).map(synthetic).collect();
+        let base = base_index();
         let mut st = SyncState::default();
 
         let report = apply_index(&pg, &mut st, index(&base, 0), Some("W/\"a\"".into()))
@@ -1369,24 +1460,57 @@ mod store_live {
         assert_eq!(moved, vec![&one[5].id]);
         assert_eq!(delta(w1, writes(&pg).await), (0, 1, 0));
 
-        // The last entry left the index: deleted, and nothing else written.
-        let mut fewer = one.clone();
-        let gone = fewer.pop().unwrap();
+        // A skill added mid-list, at its alphabetical place: every row under
+        // it moves down one place in the index, and the mirror writes the
+        // one new row and nothing else.
+        let added = synthetic(5_000);
+        let more = hermes_sorted([one.clone(), vec![added.clone()]].concat());
+        let at = more.iter().position(|e| e.id == added.id).unwrap();
+        assert!(
+            (1..more.len() - 100).contains(&at),
+            "mid-list, with rows under it: {at}"
+        );
+        let rows1 = xmins(&pg).await;
         let w2 = writes(&pg).await;
-        let report = apply_index(&pg, &mut st, index(&fewer, 4), None)
+        let report = apply_index(&pg, &mut st, index(&more, 4), None)
+            .await
+            .unwrap();
+        assert!(report.contains("(0 changed, 1 new, 0 gone)"), "{report}");
+        assert_eq!(delta(w2, writes(&pg).await), (1, 0, 0));
+        let rows2 = xmins(&pg).await;
+        assert!(
+            rows1.iter().all(|(id, x)| rows2.get(id) == Some(x)),
+            "no row under the new one is rewritten"
+        );
+
+        // The last entry left the index: deleted, and nothing else written.
+        let mut fewer = more.clone();
+        let gone = fewer.pop().unwrap();
+        let w3 = writes(&pg).await;
+        let report = apply_index(&pg, &mut st, index(&fewer, 5), None)
             .await
             .unwrap();
         assert!(report.contains("(0 changed, 0 new, 1 gone)"), "{report}");
-        assert_eq!(delta(w2, writes(&pg).await), (0, 0, 1));
+        assert_eq!(delta(w3, writes(&pg).await), (0, 0, 1));
         assert!(entry(&pg, &gone.id).await.unwrap().is_none());
 
         // The old store over the same history reads back the same mirror:
-        // every column, and every listing in the same order.
+        // every column but its moving rank, and every listing in the same
+        // order (official, then skills.sh, then GitHub within each trust
+        // level, and by name within each).
         old_store(&old, &base).await;
         old_store(&old, &one).await;
+        old_store(&old, &more).await;
         old_store(&old, &fewer).await;
         assert_eq!(contents(&pg).await, contents(&old).await);
-        for q in ["", "rust", "agent search", fewer[3].name.as_str(), "skills"] {
+        for q in [
+            "",
+            "rust",
+            "agent search",
+            fewer[3].name.as_str(),
+            "skills",
+            added.name.as_str(),
+        ] {
             assert_eq!(
                 search(&pg, q).await.unwrap(),
                 search(&old, q).await.unwrap(),
