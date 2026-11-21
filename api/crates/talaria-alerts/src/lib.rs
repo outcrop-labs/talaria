@@ -5,8 +5,8 @@
 // outbox (depth, age, breaker, what has been lost), what each GitHub App
 // installation has accepted (the record talaria-git-hosts keeps — never GitHub
 // itself), the agents given GitHub permissions it has not, a git token revoke
-// GitHub did not confirm, and stuck tickets on boards the requesting user can
-// access.
+// GitHub did not confirm, a granted repo an agent's git got no token for, and
+// stuck tickets on boards the requesting user can access.
 //
 // THE RULE THIS FILE IS FOR: anything whose failure mode is SILENCE has to be
 // asked here, because nothing else asks it. A dead container is obvious the
@@ -352,6 +352,13 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         match unconfirmed_revokes(pg).await {
             Ok(n) => alerts.extend(revoke_failed_alert(n)),
             Err(e) => tracing::warn!("[alerts] token revoke read failed: {e}"),
+        }
+        // A granted repo the git host gave an agent no token for: the push
+        // fails in a sandbox nobody is watching, and the agent's git was told
+        // why, which no admin otherwise hears.
+        match refused_credentials(pg).await {
+            Ok(rows) => alerts.extend(refused_credentials_alert(&rows)),
+            Err(e) => tracing::warn!("[alerts] refused git credential read failed: {e}"),
         }
     }
 
@@ -983,6 +990,77 @@ pub fn revoke_failed_alert(n: i64) -> Option<Alert> {
     })
 }
 
+/// One granted repo an agent's git got no token for in the last hour, and
+/// the git host's sentence (`git.credential_refused` rows, one per agent,
+/// repo and sentence).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedCredential {
+    /// The agent's display name, or its model when the agent is gone.
+    pub agent: String,
+    pub repo: String,
+    pub message: String,
+}
+
+/// The refusals of the last hour, newest first. The door records one per
+/// (agent, repo, sentence) per ten minutes, so this is a short list.
+async fn refused_credentials(pg: &sqlx::PgPool) -> Result<Vec<RefusedCredential>, sqlx::Error> {
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "select coalesce(d.display_name, a.actor), coalesce(a.after->>'repo', ''), \
+                coalesce(a.after->>'message', '') \
+         from audit_log a left join agent_defs d on d.id::text = a.target_id \
+         where a.action = 'git.credential_refused' and a.created_at > now() - interval '1 hour' \
+         group by 1, 2, 3 order by max(a.created_at) desc limit 20",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(agent, repo, message)| RefusedCredential {
+            agent,
+            repo,
+            message,
+        })
+        .collect())
+}
+
+/// How many refusals the alert names before it counts the rest.
+const REFUSALS_NAMED: usize = 5;
+
+/// The alert for granted repos an agent's git got no token for: which agents
+/// and repos, and the git host's own words (GitHub refused the mint, the
+/// token came back wider than asked, the installation holds none of the
+/// agent's set). None when there are none.
+pub fn refused_credentials_alert(rows: &[RefusedCredential]) -> Option<Alert> {
+    if rows.is_empty() {
+        return None;
+    }
+    let mut agents: Vec<&str> = rows.iter().map(|r| r.agent.as_str()).collect();
+    agents.sort_unstable();
+    agents.dedup();
+    let n = agents.len();
+    let mut each: Vec<String> = rows
+        .iter()
+        .take(REFUSALS_NAMED)
+        .map(|r| format!("{} on {}: {}", r.agent, r.repo, r.message))
+        .collect();
+    if rows.len() > REFUSALS_NAMED {
+        each.push(format!("and {} more", rows.len() - REFUSALS_NAMED));
+    }
+    Some(Alert {
+        severity: AlertSeverity::Warning,
+        title: if n == 1 {
+            format!("{} got no GitHub token for a granted repo", agents[0])
+        } else {
+            format!("{n} agents got no GitHub token for a granted repo")
+        },
+        detail: format!(
+            "In the last hour: {}. The agent's git was told the same, and its push or API call failed. Admin → Git hosts shows what each installation holds and where an owner accepts a permission; the audit trail (git.credential_refused) has each one.",
+            each.join("; ")
+        ),
+        href: GIT_HOSTS_HREF,
+    })
+}
+
 /// Where the unpriced alert sends an admin: the Cost tab's unpriced panel.
 pub const UNPRICED_HREF: &str = "/observability/cost#unpriced";
 
@@ -1320,6 +1398,43 @@ mod tests {
             "{}",
             three.detail
         );
+    }
+
+    #[test]
+    fn a_granted_repo_with_no_token_is_named_with_the_hosts_words() {
+        assert!(refused_credentials_alert(&[]).is_none());
+        let refused = |agent: &str, repo: &str, message: &str| RefusedCredential {
+            agent: agent.into(),
+            repo: repo.into(),
+            message: message.into(),
+        };
+        let one = refused_credentials_alert(&[refused(
+            "Billy",
+            "acme/site",
+            "GitHub minted a token for acme/site wider than Talaria asked for (it carries checks:read, which was not asked for); it was revoked and never used",
+        )])
+        .unwrap();
+        assert_eq!(one.severity, AlertSeverity::Warning);
+        assert_eq!(one.title, "Billy got no GitHub token for a granted repo");
+        assert!(
+            one.detail
+                .contains("Billy on acme/site: GitHub minted a token for acme/site wider"),
+            "{}",
+            one.detail
+        );
+        assert_eq!(one.href, GIT_HOSTS_HREF);
+        let many: Vec<RefusedCredential> = (0..7)
+            .map(|i| {
+                refused(
+                    if i % 2 == 0 { "Ana" } else { "Billy" },
+                    &format!("acme/r{i}"),
+                    "x",
+                )
+            })
+            .collect();
+        let two = refused_credentials_alert(&many).unwrap();
+        assert_eq!(two.title, "2 agents got no GitHub token for a granted repo");
+        assert!(two.detail.contains("and 2 more"), "{}", two.detail);
     }
 
     #[test]

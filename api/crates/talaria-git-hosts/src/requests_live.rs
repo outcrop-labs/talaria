@@ -582,7 +582,7 @@ async fn an_approval_merges_into_the_set_atomically_and_a_removed_grant_withdraw
         .await
         .unwrap();
     let change = set_granted_repos(&pg, &a, &[]).await.unwrap();
-    assert_eq!(change.withdrawn, [open.clone()]);
+    assert_eq!(change.withdrawn, std::slice::from_ref(&open));
     assert_eq!(status_of(&pg, &open).await, "withdrawn");
     assert_eq!(
         requests::approve(&pg, &open, &by, Level::Write, None)

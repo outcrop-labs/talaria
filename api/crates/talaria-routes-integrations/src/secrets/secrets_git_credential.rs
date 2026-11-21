@@ -46,18 +46,28 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-use talaria_agent_auth::{agent_is_developer, now_ms, refuse_legacy, require_agent};
+use talaria_agent_auth::{now_ms, refuse_legacy, require_agent};
 use talaria_audit::{AuditEntry, try_log_audit};
 use talaria_body::{optional_max_string_member, parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_git_hosts::{self as hosts, CredentialScope, PermissionSet};
+use talaria_git_hosts::credential::{self, Ask, HostRefusal, Resolution, SecretAnswer, StoreRead};
+use talaria_git_hosts::{self as hosts, AgentCredential};
 use talaria_session::secretbox_or_500;
 use talaria_state::AppState;
-use talaria_workspace_secrets::credential_for_host;
 
 /// The sentence a non-Developer agent gets, at this door and at the push
 /// check beside it. It names the switch, because that is what an admin turns.
-pub(crate) const NOT_A_DEVELOPER: &str = "this agent is not a Developer Agent, so Talaria gives it no git credential and no push — an admin turns on its Developer Agent switch";
+pub(crate) const NOT_A_DEVELOPER: &str = credential::NOT_A_DEVELOPER;
+
+/// The headers every answer that carries a credential, or why there is none,
+/// goes out with: nothing between here and git keeps it.
+const NO_STORE: [(header::HeaderName, &str); 2] = [
+    (
+        header::CACHE_CONTROL,
+        "no-store, no-cache, must-revalidate, private",
+    ),
+    (header::PRAGMA, "no-cache"),
+];
 
 pub async fn post(
     State(state): State<AppState>,
@@ -107,70 +117,72 @@ pub async fn post(
         return Ok(refuse_legacy(&caller, "A git credential")
             .unwrap_or_else(|| house_error(StatusCode::NOT_FOUND, "no credential for that host")));
     };
-    // A DEVELOPER AGENT. The switch is what grants the Workbench, and the git
-    // door is the Workbench's: grant rows and secrets left behind when it was
-    // turned off answer nothing.
-    match agent_is_developer(&state.pg, &caller.model).await {
-        Ok(true) => {}
-        Ok(false) => {
+
+    // THE ORDER (talaria-git-hosts' `credential::resolve`, which an admin's
+    // "Check token" walks too): the Developer switch, then the grant before
+    // any credential is opened, then the workspace store (a spend: audited,
+    // and it burns a one-shot), then the host's own login. A credential
+    // somebody deliberately granted for this host is a more specific answer
+    // than the registered git host's own login, and an operator who pinned
+    // one expects it used — on a registered host, for the repos this agent
+    // was granted there.
+    let asked = path.as_deref().map(|p| format!(" {p}")).unwrap_or_default();
+    let sb = secretbox_or_500(&state, "[secrets] credential read failed").await?;
+    let ask = Ask {
+        agent_id: &agent_id,
+        agent_model: &caller.model,
+        authority: &host,
+        path: path.as_deref(),
+    };
+    let resolution = match credential::resolve(&state.pg, &sb, &ask, StoreRead::Spend).await {
+        Ok(r) => r,
+        Err(e) => return Ok(internal("[secrets] git credential failed", e)),
+    };
+    let served = match resolution {
+        // A DEVELOPER AGENT. The switch is what grants the Workbench, and the
+        // git door is the Workbench's: grant rows and secrets left behind
+        // when it was turned off answer nothing.
+        Resolution::NotDeveloper => {
             tracing::warn!(
                 "[secrets] {} asked for a credential for {host} but is not a Developer Agent — refused",
                 caller.model
             );
             return Ok(house_error(StatusCode::FORBIDDEN, NOT_A_DEVELOPER));
         }
-        Err(e) => return Ok(internal("[secrets] developer check failed", e)),
-    }
-
-    // THE GRANT, before any credential is opened. Reported to the OPERATOR,
-    // never elaborated to the caller: which credentials exist and which
-    // hosts they cover is a map of the workspace, and git only needs to know
-    // it got nothing. The operator log DOES name the path — the caller asked
-    // for it, an admin can see the grants anyway, and "which repo was the
-    // agent stuck on" is otherwise a guessing game (the 2026-09-14 hang
-    // needed the api logs AND the grant table to reconstruct).
-    let asked = path.as_deref().map(|p| format!(" {p}")).unwrap_or_default();
-    let scope = match hosts::credential_scope(&state.pg, &agent_id, &host, path.as_deref()).await {
-        Ok(s) => s,
-        Err(e) => return Ok(internal("[secrets] git host read failed", e)),
-    };
-    if let CredentialScope::Ungranted { host_id, repo } = &scope {
-        match repo {
-            Some(repo) => tracing::warn!(
-                "[secrets] {} has no grant for {repo} on git host {host_id} — no credential for {host}{asked}",
-                caller.model
-            ),
-            None => tracing::warn!(
-                "[secrets] {} asked git host {host_id} ({host}) for a credential without naming a repo — refused",
-                caller.model
-            ),
+        // THE GRANT, before any credential is opened. Reported to the
+        // OPERATOR, never elaborated to the caller: which credentials exist
+        // and which hosts they cover is a map of the workspace, and git only
+        // needs to know it got nothing. The operator log DOES name the path
+        // — the caller asked for it, an admin can see the grants anyway, and
+        // "which repo was the agent stuck on" is otherwise a guessing game
+        // (the 2026-09-14 hang needed the api logs AND the grant table to
+        // reconstruct).
+        Resolution::Ungranted { host_id, repo } => {
+            match repo {
+                Some(repo) => tracing::warn!(
+                    "[secrets] {} has no grant for {repo} on git host {host_id} — no credential for {host}{asked}",
+                    caller.model
+                ),
+                None => tracing::warn!(
+                    "[secrets] {} asked git host {host_id} ({host}) for a credential without naming a repo — refused",
+                    caller.model
+                ),
+            }
+            return Ok(no_credential());
         }
-        return Ok(no_credential());
-    }
-
-    // TWO SOURCES, workspace store first. A credential somebody deliberately
-    // granted for this host is a more specific answer than the registered
-    // git host's own login, and an operator who pinned one expects it used —
-    // on a registered host, for the repos this agent was granted there.
-    let sb = secretbox_or_500(&state, "[secrets] credential read failed").await?;
-    let stored =
-        match credential_for_host(&state.pg, &sb, &caller.model, &host, scope.withheld()).await {
-            Ok(c) => c,
-            Err(e) => return Ok(internal("[secrets] credential read failed", e)),
-        };
-    let served = match (stored, scope) {
-        (Some(c), scope) => Served {
-            username: c.username,
-            password: c.password,
-            name: c.name.clone(),
-            source: Source::WorkspaceSecret { name: c.name },
-            host_id: match &scope {
-                CredentialScope::Granted { row, .. } => Some(row.id.clone()),
-                _ => None,
-            },
-            repo: match scope {
-                CredentialScope::Granted { rule, .. } => Some(rule.repo),
-                _ => hosts::repo_of_path(path.as_deref().unwrap_or_default()),
+        Resolution::Secret(SecretAnswer {
+            name,
+            login: Some(login),
+            host_id,
+            repo,
+        }) => Served {
+            username: login.username,
+            password: login.password,
+            name: name.clone(),
+            source: Source::WorkspaceSecret {
+                name,
+                host_id,
+                repo,
             },
         },
         // The login of the git host registered at the host git named
@@ -179,35 +191,55 @@ pub async fn post(
         // on the host) — the credential the agent pushes and calls the host's
         // API with, and the one that used to ride into the model's context
         // inside the clone URL.
-        (None, CredentialScope::Granted { row, rule, .. }) => {
-            match hosts::grant_login(&state.pg, &sb, &row, &rule.repo, &agent_id).await {
-                Ok(Some(g)) => Served {
-                    username: g.login.username,
-                    password: g.login.password,
-                    name: format!("{}:{}", g.host_id, g.repo),
-                    source: Source::GitHost {
-                        installation: g.installation,
-                        carried: g.carried,
-                        shortfall: g.shortfall,
-                        shortfall_why: g.shortfall_why,
-                        minted: g.minted,
-                    },
-                    host_id: Some(g.host_id),
-                    repo: Some(g.repo),
-                },
-                Ok(None) => {
-                    tracing::warn!(
-                        "[secrets] git host {} has no login to give for {} ({} asked)",
-                        row.id,
-                        rule.repo,
-                        caller.model
-                    );
-                    return Ok(no_credential());
-                }
-                Err(e) => return Ok(internal("[secrets] git host credential failed", e)),
-            }
+        Resolution::Host(c) => Served {
+            username: c.login.username.clone(),
+            password: c.login.password.clone(),
+            name: format!("{}:{}", c.host_id, c.repo),
+            source: Source::GitHost(c),
+        },
+        Resolution::NoLogin { host_id, repo } => {
+            tracing::warn!(
+                "[secrets] git host {host_id} has no login to give for {repo} ({} asked)",
+                caller.model
+            );
+            return Ok(no_credential());
         }
-        (None, _) => {
+        // A GRANTED repo the host would give no login for: the agent's git
+        // is told why, in the host's own sentence (GitHub refused the mint,
+        // the token came back wider than asked, the installation holds none
+        // of the set), because "no credential" alone sends it guessing. A
+        // refusal names nothing about the workspace the grant check would
+        // not already: the repo is the agent's own.
+        Resolution::Refused {
+            host_id,
+            repo,
+            refusal,
+        } => {
+            tracing::warn!(
+                "[secrets] git host {host_id} gave {} no login for {repo}: {}",
+                caller.model,
+                refusal.message
+            );
+            record_refusal(
+                &state,
+                &caller.model,
+                &agent_id,
+                &host,
+                &host_id,
+                &repo,
+                &refusal,
+            )
+            .await;
+            return Ok((
+                StatusCode::BAD_GATEWAY,
+                NO_STORE,
+                Json(json!({ "error": credential::helper_safe(&refusal.message) })),
+            )
+                .into_response());
+        }
+        // A probe's answer never reaches the door (it spends), and a spend
+        // that opened nothing is no answer.
+        Resolution::Secret(SecretAnswer { login: None, .. }) | Resolution::Unanswered => {
             tracing::warn!(
                 "[secrets] {} has no credential allowed for {host}{asked} (a workspace secret also spendable at a registered git host answers only for a repo granted there)",
                 caller.model
@@ -226,7 +258,7 @@ pub async fn post(
             &state.pg,
             AuditEntry {
                 actor: &caller.model,
-                action: "git.credential",
+                action: credential::CREDENTIAL_ACTION,
                 target_type: "agent",
                 target_id: Some(&agent_id),
                 target_label: Some(&served.name),
@@ -249,17 +281,25 @@ pub async fn post(
         caller.model,
         served.name
     );
-    Ok((
-        [
-            (
-                header::CACHE_CONTROL,
-                "no-store, no-cache, must-revalidate, private",
-            ),
-            (header::PRAGMA, "no-cache"),
-        ],
-        Json(json!({ "username": served.username, "password": served.password })),
-    )
-        .into_response())
+    // A token that goes without part of what the agent was given says so,
+    // on git's stderr through the helper: which key, and why (the
+    // installation has not accepted it, or GitHub's own words). The default
+    // ask, carried whole, says nothing.
+    let note = match &served.source {
+        Source::GitHost(c) if !c.shortfall.is_empty() => {
+            let account = match &c.installation {
+                Some(inst) => credential::installation_account(&state.pg, &c.host_id, inst).await,
+                None => None,
+            };
+            credential::shortfall_note(c, account.as_deref())
+        }
+        _ => None,
+    };
+    let mut answer = json!({ "username": served.username, "password": served.password });
+    if let Some(note) = note {
+        answer["note"] = json!(note);
+    }
+    Ok((NO_STORE, Json(answer)).into_response())
 }
 
 /// The one answer every refusal past the identity checks gives the caller.
@@ -269,23 +309,22 @@ fn no_credential() -> Response {
 
 /// Where a served credential came from.
 enum Source {
-    /// A workspace secret granted to the agent and spendable at the host.
-    WorkspaceSecret { name: String },
-    /// The registered git host's own login for the granted repo.
-    GitHost {
-        installation: Option<String>,
-        carried: Option<PermissionSet>,
-        shortfall: PermissionSet,
-        /// GitHub's words for the part of the ask it would not put on the
-        /// token (organization permissions on a repository token).
-        shortfall_why: Option<String>,
-        minted: bool,
+    /// A workspace secret granted to the agent and spendable at the host,
+    /// and the registered host and repo it was granted on (None on a host
+    /// nobody registered).
+    WorkspaceSecret {
+        name: String,
+        host_id: Option<String>,
+        repo: Option<String>,
     },
+    /// The registered git host's own login for the granted repo, and what
+    /// is known about it.
+    GitHost(Box<AgentCredential>),
 }
 
 impl Source {
     fn minted(&self) -> bool {
-        matches!(self, Source::GitHost { minted: true, .. })
+        matches!(self, Source::GitHost(c) if c.minted)
     }
 }
 
@@ -297,43 +336,95 @@ struct Served {
     /// or `<host id>:<repo>`.
     name: String,
     source: Source,
-    host_id: Option<String>,
-    repo: Option<String>,
 }
 
 /// The `git.credential` row's after-data. Never the token: `hashed_token` is
 /// its SHA-256, base64 — exactly how GitHub's audit log records a token, so
 /// an operator can follow it there — and nothing a reader could spend.
 fn audit_after(served: &Served, host: &str, hashed: &str) -> Value {
-    let mut after = json!({
-        "host": host,
-        "host_id": served.host_id,
-        "repo": served.repo,
-        "hashed_token": hashed,
-    });
     match &served.source {
-        Source::WorkspaceSecret { name } => {
-            after["source"] = json!("workspace_secret");
-            after["secret"] = json!(name);
-        }
-        Source::GitHost {
-            installation,
-            carried,
-            shortfall,
-            shortfall_why,
-            minted,
-        } => {
-            after["source"] = json!("git_host");
-            after["installation"] = json!(installation);
-            after["carried"] = carried.as_ref().map_or(Value::Null, PermissionSet::to_json);
-            after["shortfall"] = shortfall.to_json();
-            if let Some(why) = shortfall_why {
-                after["shortfallWhy"] = json!(why);
-            }
-            after["minted"] = json!(minted);
-        }
+        Source::WorkspaceSecret {
+            name,
+            host_id,
+            repo,
+        } => credential::secret_after(host, name, host_id.as_deref(), repo.as_deref(), hashed),
+        Source::GitHost(c) => credential::issued_after(host, c, hashed),
     }
-    after
+}
+
+/// Record a refusal as a `git.credential_refused` row, at most one per
+/// (agent, repo, sentence) in [`REFUSED_TTL_MS`]: git asks on every fetch and
+/// push, and one refusal is one line in the trail and in the admin's alert,
+/// not one per retry. A row that fails to land gives its claim back.
+async fn record_refusal(
+    state: &AppState,
+    model: &str,
+    agent_id: &str,
+    host: &str,
+    host_id: &str,
+    repo: &str,
+    refusal: &HostRefusal,
+) {
+    if !claim_refusal(agent_id, repo, &refusal.message, now_ms()) {
+        return;
+    }
+    let label = format!("{host_id}:{repo}");
+    let written = try_log_audit(
+        &state.pg,
+        AuditEntry {
+            actor: model,
+            action: credential::REFUSED_ACTION,
+            target_type: "agent",
+            target_id: Some(agent_id),
+            target_label: Some(&label),
+            before: None,
+            after: Some(credential::refused_after(host, host_id, repo, refusal)),
+        },
+    )
+    .await;
+    if let Err(e) = written {
+        forget_refusal(agent_id, repo, &refusal.message);
+        tracing::warn!(
+            "[secrets] the git.credential_refused audit row for {model} ({label}) was not written: {e}"
+        );
+    }
+}
+
+/// How long one refusal is remembered as already recorded.
+const REFUSED_TTL_MS: i64 = 10 * 60_000;
+
+type RefusalClaims = Mutex<HashMap<(String, String, String), i64>>;
+
+fn refusal_claims() -> &'static RefusalClaims {
+    static CLAIMS: OnceLock<RefusalClaims> = OnceLock::new();
+    CLAIMS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Claim the row for `agent_id`'s refusal on `repo` saying `message`. True
+/// when none was recorded within the window. Per process, like the serve
+/// pairs below.
+fn claim_refusal(agent_id: &str, repo: &str, message: &str, now: i64) -> bool {
+    let mut claims = refusal_claims().lock().unwrap();
+    claims.retain(|_, at| now - *at < REFUSED_TTL_MS);
+    let key = (
+        agent_id.to_string(),
+        repo.to_ascii_lowercase(),
+        message.to_string(),
+    );
+    if claims.contains_key(&key) {
+        return false;
+    }
+    claims.insert(key, now);
+    true
+}
+
+/// Give back a claim [`claim_refusal`] made, because its row did not land.
+fn forget_refusal(agent_id: &str, repo: &str, message: &str) {
+    refusal_claims().lock().unwrap().remove(&(
+        agent_id.to_string(),
+        repo.to_ascii_lowercase(),
+        message.to_string(),
+    ));
 }
 
 /// How long an (agent, token) pair is remembered as already audited. An
@@ -376,6 +467,7 @@ fn forget_serve(agent_id: &str, hashed: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use talaria_git_hosts::{Level, PermissionSet};
 
     #[test]
     fn a_pair_is_audited_on_its_first_serve_and_again_only_after_the_window() {
@@ -405,24 +497,39 @@ mod tests {
         );
     }
 
+    fn credential(shortfall: PermissionSet, why: Option<&str>) -> AgentCredential {
+        AgentCredential {
+            login: talaria_git_hosts::Login {
+                username: "x-access-token".into(),
+                password: "ghs_secret_value".into(),
+            },
+            host_id: "github".into(),
+            repo: "acme/widgets".into(),
+            installation: Some("93001".into()),
+            asked: PermissionSet::of(&[
+                ("contents", Level::Write),
+                ("metadata", Level::Read),
+                ("pull_requests", Level::Write),
+            ]),
+            carried: Some(PermissionSet::of(&[
+                ("contents", Level::Write),
+                ("metadata", Level::Read),
+            ])),
+            unheld: PermissionSet::new(),
+            omitted: PermissionSet::new(),
+            shortfall,
+            shortfall_why: why.map(str::to_string),
+            minted: true,
+        }
+    }
+
     #[test]
     fn the_audit_row_carries_the_hash_and_what_the_token_carries_never_the_token() {
         let served = Served {
             username: "x-access-token".into(),
             password: "ghs_secret_value".into(),
             name: "github:acme/widgets".into(),
-            source: Source::GitHost {
-                installation: Some("93001".into()),
-                carried: Some(PermissionSet::of(&[
-                    ("contents", talaria_git_hosts::Level::Write),
-                    ("metadata", talaria_git_hosts::Level::Read),
-                ])),
-                shortfall: PermissionSet::new(),
-                shortfall_why: None,
-                minted: true,
-            },
-            host_id: Some("github".into()),
-            repo: Some("acme/widgets".into()),
+            source: Source::GitHost(Box::new(credential(PermissionSet::new(), None))),
         };
         let hashed = hosts::hashed_token(&served.password);
         let after = audit_after(&served, "github.com", &hashed);
@@ -434,6 +541,7 @@ mod tests {
                 "host_id": "github",
                 "repo": "acme/widgets",
                 "installation": "93001",
+                "asked": { "contents": "write", "metadata": "read", "pull_requests": "write" },
                 "carried": { "contents": "write", "metadata": "read" },
                 "shortfall": {},
                 "minted": true,
@@ -441,25 +549,18 @@ mod tests {
             })
         );
         assert!(!after.to_string().contains("ghs_secret_value"));
+        assert!(served.source.minted());
 
         // Organization keys GitHub would not put on the token: the shortfall
         // names them, with GitHub's own words beside it.
         let refused = Served {
-            source: Source::GitHost {
-                installation: Some("93001".into()),
-                carried: None,
-                shortfall: PermissionSet::of(&[(
-                    "organization_secrets",
-                    talaria_git_hosts::Level::Read,
-                )]),
-                shortfall_why: Some("not on a repository token".into()),
-                minted: true,
-            },
+            source: Source::GitHost(Box::new(credential(
+                PermissionSet::of(&[("organization_secrets", Level::Read)]),
+                Some("not on a repository token"),
+            ))),
             username: served.username.clone(),
             password: served.password.clone(),
             name: served.name.clone(),
-            host_id: served.host_id.clone(),
-            repo: served.repo.clone(),
         };
         let after = audit_after(&refused, "github.com", &hashed);
         assert_eq!(
@@ -471,17 +572,48 @@ mod tests {
         let stored = Served {
             source: Source::WorkspaceSecret {
                 name: "deploy-pat".into(),
+                host_id: None,
+                repo: None,
             },
-            host_id: None,
-            repo: None,
             name: "deploy-pat".into(),
             ..served
         };
         let after = audit_after(&stored, "gitlab.example.com", "h");
         assert_eq!(after["source"], "workspace_secret");
         assert_eq!(after["secret"], "deploy-pat");
+        assert_eq!(after["host_id"], Value::Null);
         assert!(after.get("minted").is_none());
         assert!(!stored.source.minted());
+    }
+
+    #[test]
+    fn one_refusal_is_one_row_in_its_window() {
+        let agent = format!("agent-{}", uuid::Uuid::new_v4());
+        let t0 = 5_000_000;
+        assert!(claim_refusal(&agent, "acme/widgets", "m1", t0));
+        assert!(
+            !claim_refusal(&agent, "ACME/Widgets", "m1", t0 + 1),
+            "same repo, any case"
+        );
+        assert!(
+            claim_refusal(&agent, "acme/widgets", "m2", t0 + 2),
+            "another sentence"
+        );
+        assert!(
+            claim_refusal(&agent, "acme/gadgets", "m1", t0 + 3),
+            "another repo"
+        );
+        assert!(
+            claim_refusal(&agent, "acme/widgets", "m1", t0 + REFUSED_TTL_MS),
+            "past the window"
+        );
+        forget_refusal(&agent, "acme/widgets", "m2");
+        assert!(claim_refusal(
+            &agent,
+            "acme/widgets",
+            "m2",
+            t0 + REFUSED_TTL_MS + 1
+        ));
     }
 
     // ── Live-DB: the door end to end ─────────────────────────────────────────
@@ -583,7 +715,8 @@ mod tests {
         async fn cleanup(state: &AppState, agents: &[&str], host_id: &str, secret: Option<&str>) {
             for id in agents {
                 sqlx::query(
-                    "delete from audit_log where action = 'git.credential' and target_id = $1",
+                    "delete from audit_log where action in ('git.credential', 'git.credential_refused') \
+                     and target_id = $1",
                 )
                 .bind(*id)
                 .execute(&state.pg)
@@ -852,17 +985,23 @@ mod tests {
             .expect("the secret is created");
         }
 
-        /// GitHub as the mint meets it: an installation that holds more than
-        /// the sandbox asks for, and one token for the one repo.
-        async fn github_stub() -> (String, Arc<std::sync::Mutex<Vec<(String, String, String)>>>) {
+        /// What a loopback GitHub saw: method, path, body.
+        type Seen = Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
+
+        /// A loopback GitHub answering each request by `route(method, path,
+        /// body)`.
+        async fn github_with(
+            route: impl Fn(&str, &str, &str) -> (u16, String) + Send + Sync + 'static,
+        ) -> (String, Seen) {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-            let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen: Seen = Arc::new(std::sync::Mutex::new(Vec::new()));
             let log = seen.clone();
+            let route = Arc::new(route);
             tokio::spawn(async move {
                 while let Ok((mut sock, _)) = listener.accept().await {
-                    let log = log.clone();
+                    let (log, route) = (log.clone(), route.clone());
                     tokio::spawn(async move {
                         let mut buf = Vec::new();
                         let mut chunk = [0u8; 4096];
@@ -896,33 +1035,7 @@ mod tests {
                         log.lock()
                             .unwrap()
                             .push((method.clone(), path.clone(), body.clone()));
-                        let (status, answer) = match (method.as_str(), path.as_str()) {
-                            ("GET", "/app/installations/93001") => (
-                                200,
-                                json!({
-                                    "id": 93001,
-                                    "permissions": {
-                                        "contents": "write",
-                                        "pull_requests": "write",
-                                        "workflows": "write",
-                                        "metadata": "read",
-                                    },
-                                })
-                                .to_string(),
-                            ),
-                            ("POST", "/app/installations/93001/access_tokens") => (
-                                201,
-                                json!({
-                                    "token": "ghs_live_once",
-                                    "expires_at": "2099-01-01T00:00:00Z",
-                                    "permissions": { "contents": "write", "metadata": "read" },
-                                    "repository_selection": "selected",
-                                    "repositories": [{ "full_name": "acme/widgets" }],
-                                })
-                                .to_string(),
-                            ),
-                            _ => (500, r#"{"message":"unexpected in this test"}"#.to_string()),
-                        };
+                        let (status, answer) = route(&method, &path, &body);
                         let reply = format!(
                             "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
                             answer.len()
@@ -933,6 +1046,253 @@ mod tests {
                 }
             });
             (base, seen)
+        }
+
+        /// GitHub as the mint meets it: an installation that holds more than
+        /// the sandbox asks for, and one token for the one repo.
+        async fn github_stub() -> (String, Seen) {
+            github_with(|method, path, _| match (method, path) {
+                ("GET", "/app/installations/93001") => (
+                    200,
+                    json!({
+                        "id": 93001,
+                        "permissions": {
+                            "contents": "write",
+                            "pull_requests": "write",
+                            "workflows": "write",
+                            "metadata": "read",
+                        },
+                    })
+                    .to_string(),
+                ),
+                ("POST", "/app/installations/93001/access_tokens") => (
+                    201,
+                    json!({
+                        "token": "ghs_live_once",
+                        "expires_at": "2099-01-01T00:00:00Z",
+                        "permissions": { "contents": "write", "metadata": "read" },
+                        "repository_selection": "selected",
+                        "repositories": [{ "full_name": "acme/widgets" }],
+                    })
+                    .to_string(),
+                ),
+                _ => (500, r#"{"message":"unexpected in this test"}"#.to_string()),
+            })
+            .await
+        }
+
+        /// GitHub's 201 for a mint, in the shape GitHub sends it, for
+        /// `acme/widgets`, carrying `permissions`.
+        fn github_201(token: &str, permissions: Value) -> String {
+            let expires = talaria_agent_auth::epoch_ms_to_iso(now_ms() + 3_600_000);
+            json!({
+                "token": token,
+                "expires_at": format!("{}Z", &expires[..19]),
+                "permissions": permissions,
+                "repository_selection": "selected",
+                "repositories": [{
+                    "id": 1,
+                    "name": "widgets",
+                    "full_name": "acme/widgets",
+                    "private": true,
+                    "owner": { "login": "acme", "id": 1, "type": "Organization" },
+                }],
+            })
+            .to_string()
+        }
+
+        /// The App's connection for installation `inst`, sealed with this
+        /// state's secretbox.
+        async fn app_auth(state: &AppState, inst: &str) -> Value {
+            let sb = state.secretbox().await.expect("secretbox loads");
+            let pem = include_str!("../../../../tests/it/fixtures/github-jwt-traditional.pem");
+            json!({
+                "mode": "app",
+                "app": {
+                    "appId": "12345",
+                    "installationIds": [inst],
+                    "privateKeyEnc": sb.seal(pem).expect("the key seals"),
+                },
+            })
+        }
+
+        /// The `git.credential_refused` rows written for `agent_id`.
+        async fn refused_rows(state: &AppState, agent_id: &str) -> Vec<Value> {
+            sqlx::query_scalar::<_, Option<Value>>(
+                "select after from audit_log where action = 'git.credential_refused' \
+                 and target_id = $1 order by created_at",
+            )
+            .bind(agent_id)
+            .fetch_all(&state.pg)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(Option::unwrap_or_default)
+            .collect()
+        }
+
+        /// A token wider than asked is refused, as it always was: the door
+        /// now says so to the agent's git, in the mint's own sentence, and
+        /// records it once however often git asks.
+        #[tokio::test]
+        #[ignore = "needs a live database (DATABASE_URL)"]
+        async fn a_token_wider_than_asked_is_a_502_with_the_reason_and_one_refused_row() {
+            let state = state().await;
+            let tag = tag();
+            let (id, _model, key) = agent(&state, &tag, true).await;
+            let (base, seen) = github_with(|method, path, _| match (method, path) {
+                ("GET", "/app/installations/93101") => (
+                    200,
+                    json!({
+                        "id": 93101,
+                        "account": { "login": "acme" },
+                        "permissions": {
+                            "contents": "write",
+                            "pull_requests": "write",
+                            "checks": "read",
+                            "metadata": "read",
+                        },
+                    })
+                    .to_string(),
+                ),
+                // Checks never asked for, and on the token.
+                ("POST", "/app/installations/93101/access_tokens") => (
+                    201,
+                    github_201(
+                        "ghs_too_wide",
+                        json!({ "contents": "write", "metadata": "read", "pull_requests": "write", "checks": "read" }),
+                    ),
+                ),
+                ("DELETE", "/installation/token") => (204, String::new()),
+                _ => (500, r#"{"message":"unexpected in this test"}"#.to_string()),
+            })
+            .await;
+            let auth = app_auth(&state, "93101").await;
+            let (host_id, authority) = host(&state, &tag, Some(&base), auth).await;
+            grant(&state, &id, &host_id, "acme/widgets").await;
+
+            let (status, body) = ask(&state, &key, &authority, Some("acme/widgets.git")).await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+            let error = body["error"].as_str().expect("the sentence");
+            assert!(
+                error.contains("it carries checks:read, which was not asked for"),
+                "{error}"
+            );
+            assert!(body.get("password").is_none(), "{body}");
+            assert!(!body.to_string().contains("ghs_too_wide"));
+            let rows = refused_rows(&state, &id).await;
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(rows[0]["kind"], "overbroad");
+            assert_eq!(rows[0]["repo"], "acme/widgets");
+            assert_eq!(rows[0]["host_id"], host_id.as_str());
+            assert_eq!(
+                rows[0]["asked"],
+                json!({ "contents": "write", "metadata": "read", "pull_requests": "write" })
+            );
+            assert!(credential_rows(&state, &id).await.is_empty());
+
+            // Git asks again on the next fetch: the same answer, no second row.
+            let (status, body) = ask(&state, &key, &authority, Some("acme/widgets.git")).await;
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+            assert_eq!(refused_rows(&state, &id).await.len(), 1);
+            let revoked = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, p, _)| m == "DELETE" && p == "/installation/token")
+                .count();
+            assert_eq!(revoked, 2, "each too-wide token was revoked, never served");
+
+            cleanup(&state, &[&id], &host_id, None).await;
+        }
+
+        /// An agent given workflows on an installation that has not accepted
+        /// it gets the rest, and is told which key is missing and why.
+        #[tokio::test]
+        #[ignore = "needs a live database (DATABASE_URL)"]
+        async fn a_token_short_of_a_given_key_carries_a_note_naming_it() {
+            let state = state().await;
+            let tag = tag();
+            let (id, _model, key) = agent(&state, &tag, true).await;
+            let (base, seen) = github_with(|method, path, body| match (method, path) {
+                // GitHub refuses what the installation has not accepted.
+                ("POST", "/app/installations/93201/access_tokens") if body.contains("workflows") => (
+                    422,
+                    r#"{"message":"The permissions requested are not granted to this installation.","documentation_url":"https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app","status":"422"}"#.to_string(),
+                ),
+                ("POST", "/app/installations/93201/access_tokens") => {
+                    let posted: Value = serde_json::from_str(body).unwrap_or_default();
+                    (201, github_201("ghs_short", posted["permissions"].clone()))
+                }
+                _ => (500, r#"{"message":"unexpected in this test"}"#.to_string()),
+            })
+            .await;
+            let auth = app_auth(&state, "93201").await;
+            let (host_id, authority) = host(&state, &tag, Some(&base), auth).await;
+            grant(&state, &id, &host_id, "acme/widgets").await;
+            // The record: the installation, on acme, holds the default.
+            sqlx::query(
+                "insert into git_host_installations \
+                   (host_id, installation_id, account, app_permissions, held, checked_at) \
+                 values ($1, 93201, 'acme', $2, $3, now())",
+            )
+            .bind(&host_id)
+            .bind(json!({ "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read" }))
+            .bind(json!({ "contents": "write", "pull_requests": "write", "metadata": "read" }))
+            .execute(&state.pg)
+            .await
+            .unwrap();
+            // An admin gave it workflows besides the default.
+            let given = json!({ "contents": "write", "metadata": "read", "pull_requests": "write", "workflows": "write" });
+            sqlx::query(
+                "insert into agent_github_permissions (agent_id, host_id, permissions) \
+                 values ($1::uuid, $2, $3)",
+            )
+            .bind(&id)
+            .bind(&host_id)
+            .bind(&given)
+            .execute(&state.pg)
+            .await
+            .unwrap();
+
+            let (status, body) = ask(&state, &key, &authority, Some("acme/widgets.git")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["password"], "ghs_short");
+            let note = body["note"].as_str().expect("a note");
+            assert!(
+                note.contains("not workflows:write")
+                    && note.contains("installation on acme has not accepted workflows:write"),
+                "{note}"
+            );
+            assert!(!note.contains('"') && !note.contains('\\'), "{note}");
+            let posts: Vec<String> = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, p, _)| m == "POST" && p.ends_with("/access_tokens"))
+                .map(|(_, _, b)| b.clone())
+                .collect();
+            assert_eq!(
+                posts.len(),
+                1,
+                "sized to the record, never asked for workflows: {posts:?}"
+            );
+            assert!(!posts[0].contains("workflows"), "{}", posts[0]);
+            let rows = credential_rows(&state, &id).await;
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(rows[0]["asked"], given);
+            assert_eq!(rows[0]["shortfall"], json!({ "workflows": "write" }));
+            assert_eq!(
+                rows[0]["carried"],
+                json!({ "contents": "write", "metadata": "read", "pull_requests": "write" })
+            );
+
+            sqlx::query("delete from agent_github_permissions where agent_id = $1::uuid")
+                .bind(&id)
+                .execute(&state.pg)
+                .await
+                .unwrap();
+            cleanup(&state, &[&id], &host_id, None).await;
         }
 
         #[tokio::test]

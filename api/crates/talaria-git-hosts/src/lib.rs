@@ -25,7 +25,10 @@
 //   credential the sandbox's git asks for a login by host and path: the host
 //              whose origin it names, a repo on the agent's own grant list
 //              (checked before any credential is opened), the adapter's
-//              repo-scoped login, narrowed on GitHub to what a push spends
+//              repo-scoped login, narrowed on GitHub to what a push spends;
+//              the door's whole order in one place (`credential::resolve`),
+//              which an admin's "Check token" runs too, and the rows that
+//              record what each token carried or why none was given
 //   holdings   what a GitHub host's App asks for and what each installation
 //              it uses has accepted (`git_host_installations`), refreshed on
 //              a schedule, read by the mint, the alerts and the host card
@@ -43,6 +46,7 @@
 // The interface every adapter implements, and every type it answers in, is
 // talaria-git-host-types'. `Host` is the dispatch over the registered kinds.
 
+pub mod credential;
 pub mod grants;
 pub mod holdings;
 pub mod permissions;
@@ -66,6 +70,7 @@ use talaria_forgejo::Forgejo;
 use talaria_github::Github;
 use talaria_secretbox::SecretBox;
 
+pub use credential::{GrantError, HostRefusal};
 pub use grants::{
     GrantChange, PROTECTED_BRANCHES, RepoFlow, RepoRef, RepoRule, add_grant, effective_base,
     granted_repos, list_repo_flows, push_allowed, repo_flow, repo_rule, repo_rules, resolve_grant,
@@ -511,7 +516,7 @@ pub async fn credential_scope(
 
 /// The names of every registered host but `except` — what a workspace secret
 /// must not cover to answer an ask that is not on that host's grant list.
-fn withheld_names(rows: &[HostRow], except: Option<&str>) -> Vec<String> {
+pub(crate) fn withheld_names(rows: &[HostRow], except: Option<&str>) -> Vec<String> {
     rows.iter()
         .filter(|r| Some(r.id.as_str()) != except)
         .flat_map(HostRow::names)
@@ -527,18 +532,46 @@ pub struct AgentCredential {
     /// The GitHub App installation the token was minted on. None for a PAT
     /// and for every other kind of host.
     pub installation: Option<String>,
+    /// What the token was asked for: the agent's set on the host (or the
+    /// default) as the mint read it.
+    pub asked: PermissionSet,
     /// What the token carries, when the host says (a GitHub App token). None
     /// when it does not: a PAT or a Forgejo token carries whatever its owner
     /// gave it.
     pub carried: Option<PermissionSet>,
-    /// What the ask named that the GitHub App's installation does not hold,
-    /// or that GitHub would not put on a repository token.
+    /// What the ask named that the token does not carry: what the GitHub
+    /// App's installation does not hold, what GitHub would not put on a
+    /// repository token, and what GitHub left off the token it minted.
     pub shortfall: PermissionSet,
     /// GitHub's words for what it would not put on the token, when it said
-    /// (organization permissions on a repository token).
+    /// (organization permissions on a repository token, or keys it left off).
     pub shortfall_why: Option<String>,
+    /// The part of `shortfall` the installation did not hold at the mint.
+    pub unheld: PermissionSet,
+    /// The part of `shortfall` GitHub was asked for and left off the token.
+    pub omitted: PermissionSet,
     /// Minted by this call, rather than served from a cache or stored.
     pub minted: bool,
+}
+
+impl std::fmt::Debug for AgentCredential {
+    /// Everything but the token, which is never printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentCredential")
+            .field("username", &self.login.username)
+            .field("password", &"<redacted>")
+            .field("host_id", &self.host_id)
+            .field("repo", &self.repo)
+            .field("installation", &self.installation)
+            .field("asked", &self.asked)
+            .field("carried", &self.carried)
+            .field("shortfall", &self.shortfall)
+            .field("shortfall_why", &self.shortfall_why)
+            .field("unheld", &self.unheld)
+            .field("omitted", &self.omitted)
+            .field("minted", &self.minted)
+            .finish()
+    }
 }
 
 /// THE AGENT'S CREDENTIAL from the registered host, for a repo
@@ -558,28 +591,34 @@ pub struct AgentCredential {
 /// is revoked, and the agent gets nothing (the grant or the switch went) or
 /// one more mint against what it may do now. A token served from the cache
 /// is not re-checked: the narrowing's revoke took it out of every cache.
+///
+/// A FAILURE SAYS WHICH KIND ([`GrantError`]): the host would not give a
+/// login (GitHub refused the mint, the token came back wider than asked, the
+/// installation holds none of the set, no installation covers the repo), in
+/// the host's own sentence, which the door hands the agent; or the database
+/// failed, which stays an internal error.
 pub async fn grant_login(
     pg: &PgPool,
     sb: &SecretBox,
     row: &HostRow,
     repo: &str,
     agent_id: &str,
-) -> Result<Option<AgentCredential>, String> {
+) -> Result<Option<AgentCredential>, GrantError> {
     let host = connect(pg, sb, row).await;
-    let set = permissions::host_permissions(pg, agent_id, &row.id).await?;
-    let job = |permissions: PermissionSet| RepoAccess::Job {
-        agent_id: agent_id.to_string(),
-        permissions,
-    };
-    let Some(issued) = host.repo_login(repo, &job(set.clone())).await? else {
+    let set = permissions::host_permissions(pg, agent_id, &row.id)
+        .await
+        .map_err(GrantError::Internal)?;
+    let Some(issued) = issue_login(&host, row, repo, agent_id, &set).await? else {
         return Ok(None);
     };
     if !issued.minted {
-        return Ok(Some(agent_credential(row, repo, issued)));
+        return Ok(Some(issued));
     }
-    let now = permissions::recheck(pg, agent_id, &row.id, repo).await?;
+    let now = permissions::recheck(pg, agent_id, &row.id, repo)
+        .await
+        .map_err(GrantError::Internal)?;
     if now.as_ref() == Some(&set) {
-        return Ok(Some(agent_credential(row, repo, issued)));
+        return Ok(Some(issued));
     }
     let revoked = match &host {
         Host::Github(github) => github.revoke_issued(&issued.login.password).await,
@@ -601,22 +640,83 @@ pub async fn grant_login(
     let Some(now) = now else {
         return Ok(None);
     };
-    Ok(host
-        .repo_login(repo, &job(now))
-        .await?
-        .map(|issued| agent_credential(row, repo, issued)))
+    issue_login(&host, row, repo, agent_id, &now).await
 }
 
-/// The credential door's record of a login `row` issued for `repo`.
-fn agent_credential(row: &HostRow, repo: &str, issued: IssuedLogin) -> AgentCredential {
+/// One login from `host` for `repo`, filed under `agent_id` and asked for
+/// `set`. On GitHub the mint's own failure is kept typed (talaria-github's
+/// `MintError`): its kind and shortfall ride on the refusal beside its
+/// sentence. Every other kind of host says only its sentence.
+async fn issue_login(
+    host: &Host,
+    row: &HostRow,
+    repo: &str,
+    agent_id: &str,
+    set: &PermissionSet,
+) -> Result<Option<AgentCredential>, GrantError> {
+    let credential = |login: Login, issued: talaria_github::IssuedToken| AgentCredential {
+        login,
+        host_id: row.id.clone(),
+        repo: repo.to_string(),
+        installation: issued.installation,
+        asked: set.clone(),
+        carried: issued.carried,
+        shortfall: issued.shortfall,
+        shortfall_why: issued.shortfall_why,
+        unheld: issued.unheld,
+        omitted: issued.omitted,
+        minted: issued.minted,
+    };
+    match host {
+        Host::Github(github) => match github.agent_token(repo, set, agent_id).await {
+            Ok(Some(issued)) => {
+                let login = Login {
+                    username: "x-access-token".into(),
+                    password: issued.token.clone(),
+                };
+                Ok(Some(credential(login, issued)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(GrantError::Host(HostRefusal::of_mint(&e, set))),
+        },
+        Host::Forgejo(_) => {
+            let job = RepoAccess::Job {
+                agent_id: agent_id.to_string(),
+                permissions: set.clone(),
+            };
+            match host.repo_login(repo, &job).await {
+                Ok(Some(issued)) => Ok(Some(agent_credential(row, repo, set, issued))),
+                Ok(None) => Ok(None),
+                Err(message) => Err(GrantError::Host(HostRefusal {
+                    message,
+                    kind: "host",
+                    shortfall: PermissionSet::new(),
+                    asked: set.clone(),
+                })),
+            }
+        }
+    }
+}
+
+/// The credential door's record of a login `row` issued for `repo` through
+/// the adapter's interface (a host other than GitHub).
+fn agent_credential(
+    row: &HostRow,
+    repo: &str,
+    asked: &PermissionSet,
+    issued: IssuedLogin,
+) -> AgentCredential {
     AgentCredential {
         login: issued.login,
         host_id: row.id.clone(),
         repo: repo.to_string(),
         installation: issued.installation,
+        asked: asked.clone(),
         carried: issued.carried,
+        unheld: issued.shortfall.clone(),
         shortfall: issued.shortfall,
         shortfall_why: issued.shortfall_why,
+        omitted: PermissionSet::new(),
         minted: issued.minted,
     }
 }
