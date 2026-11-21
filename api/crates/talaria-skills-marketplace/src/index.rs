@@ -443,6 +443,17 @@ async fn sync_inner(pg: &PgPool, st: &mut SyncState) -> Result<String, String> {
     let parsed = tokio::task::spawn_blocking(move || parse_index(&body))
         .await
         .map_err(|e| format!("the index parse died: {e}"))??;
+    apply_index(pg, st, parsed, new_etag).await
+}
+
+/// A parsed index → the mirror and the sync state. The fetch's half of a
+/// sync stays in `sync_inner`; this half is what the live census drives.
+async fn apply_index(
+    pg: &PgPool,
+    st: &mut SyncState,
+    parsed: ParsedIndex,
+    new_etag: Option<String>,
+) -> Result<String, String> {
     if parsed.entries.len() < MIN_INSTALLABLE {
         return Err(format!(
             "Hermes' skills index carried only {} installable rows of {} — refusing to shrink the mirror to that",
@@ -787,5 +798,276 @@ mod tests {
         assert_eq!(clean_rel("a//b"), None);
         assert_eq!(clean_rel("a\\b"), None);
         assert_eq!(clean_rel("./a"), None);
+    }
+}
+
+// Live CENSUS of the mirror's writes — a measurement, not a behavior test:
+// the store half of a sync (`apply_index`) over a production-sized synthetic
+// index of 19,742 installable rows, in the three shapes a refresh meets
+// (an identical index, 1% of the rows changed, one row inserted at the top),
+// printed for the pull request that changes it. A CHECKPOINT before each
+// sync stands for the six hours between them. Per sync: write transactions
+// (the `pg_snapshot_xmax` delta), WAL bytes (`pg_current_wal_lsn`),
+// `pg_stat_wal`'s records and full-page images, and the rows written (xmin
+// moved, inserted, deleted). The WAL counters are the cluster's, so it wants
+// a database nothing else is connected to; it returns at once without
+// TALARIA_WRITE_CENSUS=1, so CI's --ignored step passes over it:
+//
+//   TALARIA_WRITE_CENSUS=1 DATABASE_URL=postgres://… \
+//     cargo test -p talaria-skills-marketplace --lib -- --ignored --nocapture skills_store_live_census
+#[cfg(test)]
+mod store_census {
+    use std::collections::HashMap;
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+
+    const ROWS: usize = 19_742;
+    const SCHEMA: &str = "skills_index_census";
+    const WORDS: [&str; 40] = [
+        "agent",
+        "browser",
+        "calendar",
+        "code",
+        "data",
+        "deploy",
+        "design",
+        "docs",
+        "email",
+        "files",
+        "finance",
+        "git",
+        "image",
+        "infra",
+        "json",
+        "kubernetes",
+        "legal",
+        "logs",
+        "maps",
+        "markdown",
+        "memory",
+        "metrics",
+        "notes",
+        "pdf",
+        "python",
+        "research",
+        "review",
+        "rust",
+        "search",
+        "security",
+        "sheets",
+        "slides",
+        "sql",
+        "testing",
+        "travel",
+        "video",
+        "weather",
+        "web",
+        "writing",
+        "youtube",
+    ];
+
+    /// splitmix64: a fixed stream per row, so every census builds the same index.
+    fn mix(mut x: u64) -> u64 {
+        x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^ (x >> 31)
+    }
+
+    fn word(i: usize, k: u64) -> &'static str {
+        WORDS[(mix(i as u64 * 131 + k) % WORDS.len() as u64) as usize]
+    }
+
+    /// Row `i` of the synthetic index: Hermes' own optional skills first,
+    /// then GitHub taps, then skills.sh, as the real index lists them.
+    pub(super) fn synthetic(i: usize) -> CatalogEntry {
+        let (source, trust, repo, path, id) = if i < 153 {
+            let path = format!("optional-skills/{}/{}-{i}", word(i, 1), word(i, 2));
+            let id = format!("official/{}/{}-{i}", word(i, 1), word(i, 2));
+            ("official", "builtin", OFFICIAL_REPO.to_string(), path, id)
+        } else if i < 153 + 1_093 {
+            let repo = format!("tap-{}/{}-skills", i % 37, word(i, 3));
+            let path = format!("skills/{}-{i}", word(i, 2));
+            let id = format!("{repo}/{path}");
+            let trust = if i % 9 == 0 { "trusted" } else { "community" };
+            ("github", trust, repo, path, id)
+        } else {
+            let repo = format!("owner-{}/{}-{}", i % 2_311, word(i, 4), i % 97);
+            let path = format!("skills/{}-{i}", word(i, 2));
+            let id = format!("skills-sh/{repo}/{}-{i}", word(i, 2));
+            ("skills.sh", "community", repo, path, id)
+        };
+        let description: String = (0..34)
+            .map(|k| word(i, 100 + k))
+            .collect::<Vec<_>>()
+            .join(" ");
+        CatalogEntry {
+            id,
+            name: format!("{}-{}-{i}", word(i, 2), word(i, 5)),
+            description,
+            source: source.into(),
+            trust_level: trust.into(),
+            repo,
+            path,
+            exact: i % 11 != 0,
+            tags: (0..(i % 4) as u64)
+                .map(|k| word(i, 50 + k).to_string())
+                .collect(),
+        }
+    }
+
+    fn census_url() -> Option<String> {
+        if std::env::var("TALARIA_WRITE_CENSUS").ok().as_deref() != Some("1") {
+            eprintln!("census skipped: set TALARIA_WRITE_CENSUS=1 and DATABASE_URL to run it");
+            return None;
+        }
+        Some(std::env::var("DATABASE_URL").expect("DATABASE_URL for the census"))
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct Mark {
+        xmax: i64,
+        lsn: i64,
+        records: i64,
+        fpi: i64,
+    }
+
+    async fn mark(pg: &PgPool) -> Mark {
+        sqlx::query("select pg_stat_force_next_flush()")
+            .execute(pg)
+            .await
+            .unwrap();
+        let (xmax, lsn, records, fpi): (i64, i64, i64, i64) = sqlx::query_as(
+            "select pg_snapshot_xmax(pg_current_snapshot())::text::int8, \
+               pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::int8, \
+               w.wal_records, w.wal_fpi from pg_stat_wal w",
+        )
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        Mark {
+            xmax,
+            lsn,
+            records,
+            fpi,
+        }
+    }
+
+    async fn xmins(pg: &PgPool) -> HashMap<String, String> {
+        sqlx::query_as::<_, (String, String)>(
+            "select identifier, xmin::text from skills_index_entries",
+        )
+        .fetch_all(pg)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect()
+    }
+
+    async fn exec(pg: &PgPool, sql: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(pg)
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+
+    fn parsed(entries: &[CatalogEntry], stamp: &str) -> ParsedIndex {
+        ParsedIndex {
+            generated_at: Some(stamp.into()),
+            entries: entries.to_vec(),
+            total: 100_000,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn skills_store_live_census() {
+        let Some(url) = census_url() else { return };
+        let admin = PgPool::connect(&url).await.expect("the database");
+        exec(&admin, &format!("drop schema if exists {SCHEMA} cascade")).await;
+        exec(&admin, &format!("create schema {SCHEMA}")).await;
+        exec(
+            &admin,
+            &format!(
+                "create table {SCHEMA}.skills_index_entries \
+                 (like public.skills_index_entries including all)"
+            ),
+        )
+        .await;
+        let opts = PgConnectOptions::from_str(&url)
+            .expect("DATABASE_URL parses")
+            .options([("search_path", SCHEMA)]);
+        let pg = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("census pool");
+        let base: Vec<CatalogEntry> = (0..ROWS).map(synthetic).collect();
+        let mut st = SyncState::default();
+        apply_index(
+            &pg,
+            &mut st,
+            parsed(&base, "2026-11-20T00:00:00Z"),
+            Some("W/\"0\"".into()),
+        )
+        .await
+        .expect("the first sync fills the mirror");
+        exec(&pg, "vacuum (analyze) skills_index_entries").await;
+
+        // 1% of the rows change their description; then one new row lands
+        // at the top of the list, shifting every rank under it.
+        let mut changed = base.clone();
+        for e in changed.iter_mut().step_by(100) {
+            e.description.push_str(" (updated)");
+        }
+        let mut inserted = changed.clone();
+        inserted.insert(0, synthetic(ROWS + 1));
+        println!("census skills: {ROWS} rows, one CHECKPOINT before each sync");
+        for (n, (label, entries)) in [
+            ("identical index", &base),
+            ("1% of rows changed", &changed),
+            ("one row inserted at the top", &inserted),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            exec(&pg, "checkpoint").await;
+            let before = xmins(&pg).await;
+            let m0 = mark(&pg).await;
+            let report = apply_index(
+                &pg,
+                &mut st,
+                parsed(entries, &format!("2026-11-20T0{}:00:00Z", n + 1)),
+                Some(format!("W/\"{}\"", n + 1)),
+            )
+            .await
+            .expect("a sync");
+            let m1 = mark(&pg).await;
+            let after = xmins(&pg).await;
+            let rewritten = after
+                .iter()
+                .filter(|(id, x)| before.get(*id).is_some_and(|b| b != *x))
+                .count();
+            let inserted_rows = after.keys().filter(|id| !before.contains_key(*id)).count();
+            let deleted = before.keys().filter(|id| !after.contains_key(*id)).count();
+            let wal = m1.lsn - m0.lsn;
+            println!(
+                "census skills per sync | {label} | {report} | write xacts {} | rows written {} \
+                 (updated {rewritten}, inserted {inserted_rows}, deleted {deleted}) | \
+                 WAL {:.2} MB ({wal} B) | records {} | FPI {} | per hour (÷6): WAL {:.2} MB, rows {:.0}",
+                m1.xmax - m0.xmax,
+                rewritten + inserted_rows + deleted,
+                wal as f64 / 1e6,
+                m1.records - m0.records,
+                m1.fpi - m0.fpi,
+                wal as f64 / 6e6,
+                (rewritten + inserted_rows + deleted) as f64 / 6.0,
+            );
+        }
+        pg.close().await;
+        exec(&admin, &format!("drop schema if exists {SCHEMA} cascade")).await;
     }
 }

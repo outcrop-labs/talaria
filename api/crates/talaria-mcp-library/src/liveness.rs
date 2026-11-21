@@ -557,29 +557,49 @@ async fn write_as_they_land(
     written
 }
 
+/// A run's rows: never-checked first (stand-ins ahead of registry rows among
+/// those), then the oldest verdict, hosted https endpoints only.
+pub(crate) const SELECT_BATCH: &str = "select registry_name, entry->>'url' from mcp_library_entries \
+     where kind = 'hosted' and entry->>'url' like 'https://%' \
+     order by live_checked_at asc nulls first, (source <> 'registry') desc, registry_name \
+     limit $1";
+
 async fn run_batch(pg: &PgPool) -> Result<String, String> {
-    let rows: Vec<(String, String)> = sqlx::query_as(
-        "select registry_name, entry->>'url' from mcp_library_entries \
-         where kind = 'hosted' and entry->>'url' like 'https://%' \
-         order by live_checked_at asc nulls first, (source <> 'registry') desc, registry_name \
-         limit $1",
-    )
-    .bind(LIVENESS_BATCH)
-    .fetch_all(pg)
+    run_batch_with(pg, |_name, url| async move {
+        classify_liveness(&probe(&url).await)
+    })
     .await
-    .map_err(|e| e.to_string())?;
+}
+
+/// One batch, asking each row's endpoint through `prober` (name, url) →
+/// (verdict, detail). The job's prober is `probe` read by
+/// `classify_liveness`; the live census hands in a stand-in, so what it
+/// measures is the job's own selection and writer, with no network.
+async fn run_batch_with<P, F>(pg: &PgPool, prober: P) -> Result<String, String>
+where
+    P: Fn(String, String) -> F,
+    F: std::future::Future<Output = (LiveState, String)>,
+{
+    let rows: Vec<(String, String)> = sqlx::query_as(SELECT_BATCH)
+        .bind(LIVENESS_BATCH)
+        .fetch_all(pg)
+        .await
+        .map_err(|e| e.to_string())?;
     if rows.is_empty() {
         return Ok("no hosted entries to check".into());
     }
     let n = rows.len();
     let probes = stream::iter(rows)
-        .map(|(name, url)| async move {
-            let (state, detail) = classify_liveness(&probe(&url).await);
-            Verdict {
-                name,
-                url,
-                state,
-                detail,
+        .map(|(name, url)| {
+            let answer = prober(name.clone(), url.clone());
+            async move {
+                let (state, detail) = answer.await;
+                Verdict {
+                    name,
+                    url,
+                    state,
+                    detail,
+                }
             }
         })
         .buffer_unordered(LIVENESS_CONCURRENCY);
@@ -1167,5 +1187,476 @@ mod liveness_live {
             .execute(&admin)
             .await
             .unwrap();
+    }
+}
+
+// Live CENSUS of the job's writes — a measurement, not a behavior test: one
+// simulated hour (12 runs) of the job's own selection and writer over a
+// production-sized synthetic mirror, printed for the pull request that
+// changes them. The shape is a production instance's with none of its
+// content: 65,133 entries, 45,685 of them hosted https endpoints, ~1 kB of
+// entry each, every probe-able row already carrying a verdict and a stamp
+// spread over one rotation (152 runs). A stand-in prober flips a fixed share
+// of the verdicts it is asked for (0%, 3%, 10%), with no network.
+//
+// CHECKPOINT is the clock: one before every run at stock settings (one run
+// per 5-minute checkpoint), one every third run under a 15-minute
+// `checkpoint_timeout`. The first touch of a page after a checkpoint is a
+// full-page image, and those are what a slow disk pays for.
+//
+// Per run it reads: write transactions (the `pg_snapshot_xmax` delta, which
+// takes no xid itself), how many of them committed with synchronous_commit
+// off (CHUNK_SYNCHRONOUS_COMMIT), WAL bytes (the `pg_current_wal_lsn` delta),
+// `pg_stat_wal`'s records and full-page images, and the entry rows rewritten
+// (rows whose xmin moved). The WAL counters are the cluster's, so it wants a
+// database nothing else is connected to, and a role allowed to CHECKPOINT. It
+// returns at once without TALARIA_WRITE_CENSUS=1, so CI's --ignored step
+// passes over it:
+//
+//   TALARIA_WRITE_CENSUS=1 DATABASE_URL=postgres://… \
+//     cargo test -p talaria-mcp-library --lib -- --ignored --nocapture liveness_live_census
+#[cfg(test)]
+mod liveness_census {
+    use std::collections::HashMap;
+    use std::str::FromStr;
+    use std::sync::{Arc, Mutex};
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+    use crate::catalog::{FEATURED_SQL, SEARCH_PAGE_SQL};
+    use crate::featured::{FeaturedConfig, merged_domains};
+
+    const ENTRIES: i32 = 65_133;
+    const HOSTED_HTTPS: i32 = 45_685;
+    const RUNS: usize = 12;
+    const SCHEMA: &str = "mcp_liveness_census";
+    const STATES: [LiveState; 4] = [
+        LiveState::Ok,
+        LiveState::Auth,
+        LiveState::Dead,
+        LiveState::Unknown,
+    ];
+
+    fn detail_of(s: LiveState) -> &'static str {
+        match s {
+            LiveState::Ok => "HTTP 200 — answered initialize",
+            LiveState::Auth => "HTTP 401 — answers, wants credentials",
+            LiveState::Dead => "HTTP 404 — no MCP endpoint here",
+            LiveState::Unknown => "HTTP 400",
+        }
+    }
+
+    /// FNV-1a: fixed and dependency-free, so every census flips the same rows.
+    fn fnv(bytes: &[u8], seed: u64) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64 ^ seed.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h
+    }
+
+    /// The census runs only when asked.
+    fn census_url() -> Option<String> {
+        if std::env::var("TALARIA_WRITE_CENSUS").ok().as_deref() != Some("1") {
+            eprintln!("census skipped: set TALARIA_WRITE_CENSUS=1 and DATABASE_URL to run it");
+            return None;
+        }
+        Some(std::env::var("DATABASE_URL").expect("DATABASE_URL for the census"))
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct Mark {
+        xmax: i64,
+        lsn: i64,
+        records: i64,
+        fpi: i64,
+    }
+
+    /// The cluster's counters, read on the one connection that wrote: its
+    /// own WAL statistics are flushed first so `pg_stat_wal` includes them.
+    async fn mark(pg: &PgPool) -> Mark {
+        sqlx::query("select pg_stat_force_next_flush()")
+            .execute(pg)
+            .await
+            .unwrap();
+        let (xmax, lsn, records, fpi): (i64, i64, i64, i64) = sqlx::query_as(
+            "select pg_snapshot_xmax(pg_current_snapshot())::text::int8, \
+               pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::int8, \
+               w.wal_records, w.wal_fpi from pg_stat_wal w",
+        )
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        Mark {
+            xmax,
+            lsn,
+            records,
+            fpi,
+        }
+    }
+
+    /// (n_tup_upd, n_tup_hot_upd) of a scratch table, after a flush.
+    async fn updates(pg: &PgPool, table: &str) -> (i64, i64) {
+        sqlx::query("select pg_stat_force_next_flush()")
+            .execute(pg)
+            .await
+            .unwrap();
+        sqlx::query_as(
+            "select coalesce(n_tup_upd, 0), coalesce(n_tup_hot_upd, 0) \
+             from pg_stat_user_tables where relid = to_regclass($1)",
+        )
+        .bind(table)
+        .fetch_optional(pg)
+        .await
+        .unwrap()
+        .unwrap_or((0, 0))
+    }
+
+    async fn xmins(pg: &PgPool) -> HashMap<String, String> {
+        sqlx::query_as::<_, (String, String)>(
+            "select registry_name, xmin::text from mcp_library_entries",
+        )
+        .fetch_all(pg)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect()
+    }
+
+    async fn exec(pg: &PgPool, sql: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(pg)
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+
+    /// A fresh scratch schema holding the mirror at steady state, and a
+    /// one-connection pool that sees only it. Whether the stamp lives in
+    /// its own table is the migrated database's answer: the scratch copy
+    /// follows `public`.
+    async fn seed(admin: &PgPool, url: &str) -> (PgPool, bool) {
+        exec(admin, &format!("drop schema if exists {SCHEMA} cascade")).await;
+        exec(admin, &format!("create schema {SCHEMA}")).await;
+        exec(
+            admin,
+            &format!(
+                "create table {SCHEMA}.mcp_library_entries \
+                 (like public.mcp_library_entries including all)"
+            ),
+        )
+        .await;
+        let (side,): (bool,) =
+            sqlx::query_as("select to_regclass('public.mcp_library_liveness') is not null")
+                .fetch_one(admin)
+                .await
+                .unwrap();
+        if side {
+            exec(
+                admin,
+                &format!(
+                    "create table {SCHEMA}.mcp_library_liveness \
+                     (like public.mcp_library_liveness including all) with (fillfactor = 70)"
+                ),
+            )
+            .await;
+        }
+        let opts = PgConnectOptions::from_str(url)
+            .expect("DATABASE_URL parses")
+            .options([("search_path", SCHEMA)]);
+        let pg = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("census pool");
+        sqlx::query(SEED_ENTRIES)
+            .bind(ENTRIES)
+            .bind(HOSTED_HTTPS)
+            .execute(&pg)
+            .await
+            .expect("seed the entries");
+        if side {
+            // The migration's own backfill, in rotation order.
+            exec(
+                &pg,
+                "insert into mcp_library_liveness (registry_name, checked_at) \
+                 select registry_name, live_checked_at from mcp_library_entries \
+                  where live_checked_at is not null \
+                  order by live_checked_at, (source <> 'registry') desc, registry_name \
+                 on conflict do nothing",
+            )
+            .await;
+            exec(&pg, "vacuum (analyze) mcp_library_liveness").await;
+        }
+        exec(&pg, "vacuum (analyze) mcp_library_entries").await;
+        (pg, side)
+    }
+
+    /// The synthetic mirror. Words come from a fixed vocabulary picked by
+    /// hash, so the text search has realistic hits; the physical order is
+    /// the names' md5, unrelated to the rotation; each probe-able row's
+    /// stamp is one of the rotation's 5-minute steps.
+    const SEED_ENTRIES: &str = "\
+        with v as (select string_to_array('github slack notion postgres weather search calendar \
+           email files docs browser memory sql vector maps finance crypto stripe payments jira linear \
+           asana trello figma design image video audio speech translate news sports music spotify \
+           youtube reddit discord telegram sms twilio mailchimp hubspot salesforce zendesk intercom \
+           shopify inventory shipping travel flights hotels booking food recipes health fitness legal \
+           contracts invoices accounting tax recruiting jobs learning courses math science climate \
+           energy solar home automation security identity vault secrets kubernetes docker cloud \
+           storage backup sync drive photos camera vision agent prompt embeddings chat assistant \
+           voice meeting analytics metrics logs tracing incident status uptime monitor scraper \
+           crawler feeds podcast books wiki knowledge notes todo tasks projects tracking crm sales \
+           marketing seo ads social content writing blog markdown pdf sheets slides charts diagrams \
+           code git review testing deploy build package python rust terminal shell', ' ') as w), \
+        g as ( \
+          select i, \
+            'io.census.' || substr(md5('ns' || i), 1, 8) || '/' || substr(md5('nm' || i), 1, 12) \
+              || '-mcp' as name, \
+            case when i <= $2 then 'https' when i <= $2 + 1500 then 'http' else 'pkg' end as shape, \
+            v.w[1 + abs(hashtext('a' || i)) % cardinality(v.w)] as w1, \
+            v.w[1 + abs(hashtext('b' || i)) % cardinality(v.w)] as w2, \
+            (select string_agg(v.w[1 + abs(hashtext(k || '-' || i)) % cardinality(v.w)], ' ') \
+               from generate_series(1, 27) k) as descr \
+          from generate_series(1, $1) i, v), \
+        r as ( \
+          select g.*, \
+            w1 || '-' || substr(md5('d' || i), 1, 6) || '.com' as dom, \
+            case when shape = 'https' then row_number() over ( \
+              partition by shape = 'https' order by md5(name || 'r')) - 1 end as rot, \
+            abs(hashtext(name || 's')) % 100 as bucket \
+          from g), \
+        e as ( \
+          select r.*, \
+            case shape when 'https' then 'https://mcp.' || dom || '/mcp' \
+                       when 'http' then 'http://mcp.' || dom || '/mcp' \
+                       else 'pkg:npm/@' || w1 || '/' || substr(md5('p' || i), 1, 10) end as url, \
+            case when i % 20 = 0 then 0 when i % 5 = 0 then 1 else 2 end::int2 as tier, \
+            case when shape <> 'https' then null when bucket < 12 then 'ok' \
+                 when bucket < 47 then 'auth' when bucket < 92 then 'dead' else 'unknown' end as state \
+          from r) \
+        insert into mcp_library_entries (registry_name, source, title, description, domain, domains, \
+          tier, kind, entry, registry_updated_at, synced_at, live_state, live_checked_at, live_detail) \
+        select name, case when i % 500 = 0 then 'well-known' else 'registry' end, \
+          initcap(w1) || ' ' || initcap(w2), descr, dom, \
+          array[dom, 'mcp.' || dom, w1 || '.io'], tier, \
+          case shape when 'pkg' then 'package' else 'hosted' end, \
+          jsonb_build_object('registryName', name, 'title', initcap(w1) || ' ' || initcap(w2), \
+            'description', descr, 'url', url, 'domain', dom, 'icon', null, \
+            'tier', case tier when 0 then 'first-party' when 1 then 'verified' else 'community' end, \
+            'requiredHeaders', jsonb_build_array(jsonb_build_object('name', 'Authorization', \
+              'description', 'A bearer token from your ' || initcap(w1) || ' account settings', \
+              'isRequired', true, 'isSecret', true, \
+              'placeholder', 'Bearer …', 'default', null, 'choices', null, 'value', null, \
+              'variables', null)), \
+            'package', null, \
+            'remotes', jsonb_build_array(jsonb_build_object('type', 'streamable-http', 'url', url)), \
+            'version', '1.' || (i % 17) || '.' || (i % 5), \
+            'repository', 'https://github.com/' || w1 || '/' || substr(md5('p' || i), 1, 10)), \
+          now() - (i % 900) * interval '1 hour', now(), state, \
+          case when state is null then null \
+               else now() - (1 + rot / 300) * interval '5 minutes' end, \
+          case state when 'ok' then 'HTTP 200 — answered initialize' \
+                     when 'auth' then 'HTTP 401 — answers, wants credentials' \
+                     when 'dead' then 'HTTP 404 — no MCP endpoint here' \
+                     when 'unknown' then 'HTTP 400' end \
+        from e order by md5(name)";
+
+    #[derive(Default)]
+    struct Hour {
+        checkpoints: usize,
+        xids: i64,
+        asynchronous: usize,
+        wal: i64,
+        records: i64,
+        fpi: i64,
+        rewritten: usize,
+        entry_upd: i64,
+        entry_hot: i64,
+        stamp_upd: i64,
+        stamp_hot: i64,
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn liveness_live_census() {
+        let Some(url) = census_url() else { return };
+        let admin = PgPool::connect(&url).await.expect("the database");
+        let (timeout,): (String,) = sqlx::query_as("show checkpoint_timeout")
+            .fetch_one(&admin)
+            .await
+            .unwrap();
+        let (compression,): (String,) = sqlx::query_as("show wal_compression")
+            .fetch_one(&admin)
+            .await
+            .unwrap();
+        // One run is 5 minutes: a checkpoint per run at the stock 5min, one
+        // per three runs at 15min.
+        let every = match timeout.as_str() {
+            "15min" => 3,
+            "5min" => 1,
+            other => panic!("checkpoint_timeout {other}: the census knows 5min and 15min"),
+        };
+        println!(
+            "census liveness: checkpoint_timeout {timeout}, wal_compression {compression}, \
+             {ENTRIES} entries, {HOSTED_HTTPS} hosted https, {RUNS} runs of {LIVENESS_BATCH}"
+        );
+        let mut last: Option<PgPool> = None;
+        for flip in [0u64, 30, 100] {
+            if let Some(pg) = last.take() {
+                pg.close().await;
+            }
+            let (pg, side) = seed(&admin, &url).await;
+            let stored: Vec<(String, String)> = sqlx::query_as(
+                "select registry_name, live_state from mcp_library_entries \
+                 where live_state is not null",
+            )
+            .fetch_all(&pg)
+            .await
+            .unwrap();
+            let states: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(
+                stored
+                    .into_iter()
+                    .map(|(n, s)| {
+                        let i = STATES.iter().position(|x| x.as_str() == s).unwrap();
+                        (n, i)
+                    })
+                    .collect(),
+            ));
+            let mut hour = Hour::default();
+            for run in 0..RUNS {
+                if run % every == 0 {
+                    exec(&pg, "checkpoint").await;
+                    hour.checkpoints += 1;
+                }
+                let before_rows = xmins(&pg).await;
+                let (eu0, eh0) = updates(&pg, "mcp_library_entries").await;
+                let (su0, sh0) = updates(&pg, "mcp_library_liveness").await;
+                CHUNK_SYNCHRONOUS_COMMIT
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clear();
+                let m0 = mark(&pg).await;
+                let st = states.clone();
+                let report = run_batch_with(&pg, move |name: String, _url: String| {
+                    let mut st = st.lock().unwrap();
+                    let cur = st.get(&name).copied().unwrap_or(2);
+                    let now = if fnv(name.as_bytes(), run as u64) % 1000 < flip {
+                        (cur + 1) % STATES.len()
+                    } else {
+                        cur
+                    };
+                    st.insert(name, now);
+                    let s = STATES[now];
+                    std::future::ready((s, detail_of(s).to_string()))
+                })
+                .await
+                .expect("a run");
+                let m1 = mark(&pg).await;
+                let (eu1, eh1) = updates(&pg, "mcp_library_entries").await;
+                let (su1, sh1) = updates(&pg, "mcp_library_liveness").await;
+                let after_rows = xmins(&pg).await;
+                let rewritten = after_rows
+                    .iter()
+                    .filter(|(n, x)| before_rows.get(*n) != Some(*x))
+                    .count();
+                let asynchronous = CHUNK_SYNCHRONOUS_COMMIT
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .filter(|s| s.as_str() == "off")
+                    .count();
+                println!(
+                    "  flip {:>4.1}% run {:>2}: {report}; xids {}, async {asynchronous}, wal {} B, \
+                     records {}, fpi {}, entry rows rewritten {rewritten} (upd {} hot {}), \
+                     stamp upd {} hot {}",
+                    flip as f64 / 10.0,
+                    run + 1,
+                    m1.xmax - m0.xmax,
+                    m1.lsn - m0.lsn,
+                    m1.records - m0.records,
+                    m1.fpi - m0.fpi,
+                    eu1 - eu0,
+                    eh1 - eh0,
+                    su1 - su0,
+                    sh1 - sh0,
+                );
+                hour.xids += m1.xmax - m0.xmax;
+                hour.asynchronous += asynchronous;
+                hour.wal += m1.lsn - m0.lsn;
+                hour.records += m1.records - m0.records;
+                hour.fpi += m1.fpi - m0.fpi;
+                hour.rewritten += rewritten;
+                hour.entry_upd += eu1 - eu0;
+                hour.entry_hot += eh1 - eh0;
+                hour.stamp_upd += su1 - su0;
+                hour.stamp_hot += sh1 - sh0;
+            }
+            println!(
+                "census liveness per hour | flip {:.1}% | side table {side} | checkpoints {} | \
+                 write xacts {} | async {} | WAL {:.2} MB ({} B) | records {} | FPI {} | \
+                 entry rows rewritten {} (upd {}, HOT {}) | stamp upd {} (HOT {})",
+                flip as f64 / 10.0,
+                hour.checkpoints,
+                hour.xids,
+                hour.asynchronous,
+                hour.wal as f64 / 1e6,
+                hour.wal,
+                hour.records,
+                hour.fpi,
+                hour.rewritten,
+                hour.entry_upd,
+                hour.entry_hot,
+                hour.stamp_upd,
+                hour.stamp_hot,
+            );
+            last = Some(pg);
+        }
+
+        // The read side on the same table: the picker's two keystroke
+        // queries, the shelf and the run's own selection.
+        let pg = last.expect("a census pool");
+        let domains = merged_domains(&FeaturedConfig::default());
+        for (label, query, limit) in [
+            ("search page, empty query", "", 60i64),
+            ("search page, one word", "weather", 60i64),
+        ] {
+            let sql = format!("explain (analyze, buffers) {SEARCH_PAGE_SQL}");
+            let mut lines: Vec<String> = Vec::new();
+            for _ in 0..3 {
+                lines = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(query)
+                    .bind(None::<i16>)
+                    .bind(None::<&str>)
+                    .bind(limit)
+                    .bind(false)
+                    .fetch_all(&pg)
+                    .await
+                    .unwrap();
+            }
+            println!("census explain | {label}\n{}", lines.join("\n"));
+        }
+        let sql = format!("explain (analyze, buffers) {FEATURED_SQL}");
+        let mut lines: Vec<String> = Vec::new();
+        for _ in 0..3 {
+            lines = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(&domains)
+                .fetch_all(&pg)
+                .await
+                .unwrap();
+        }
+        println!("census explain | featured\n{}", lines.join("\n"));
+        let sql = format!("explain (analyze, buffers) {SELECT_BATCH}");
+        for _ in 0..3 {
+            lines = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(LIVENESS_BATCH)
+                .fetch_all(&pg)
+                .await
+                .unwrap();
+        }
+        println!("census explain | run selection\n{}", lines.join("\n"));
+        pg.close().await;
+        exec(&admin, &format!("drop schema if exists {SCHEMA} cascade")).await;
     }
 }

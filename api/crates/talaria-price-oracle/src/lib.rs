@@ -726,11 +726,28 @@ async fn refresh_auto_prices(
         }
     };
 
+    let counts = apply_catalog(pg, targets, &catalog, only.is_some()).await?;
+    // auto_prices is a cached column of the endpoints serve window — the
+    // next completion must be able to see the fill.
+    talaria_gateway::registry::invalidate_endpoints_cache();
+    Ok(counts)
+}
+
+/// The fetched catalog → each target endpoint's published prices, lookups
+/// and fill map. No network: the fetch is `refresh_auto_prices`'s half, and
+/// this half is what the live census drives. `merge` is a targeted retry,
+/// which merges its one entry into the fill map instead of replacing it.
+async fn apply_catalog(
+    pg: &PgPool,
+    targets: Vec<(String, String, String, Vec<String>)>,
+    catalog: &Catalog,
+    merge: bool,
+) -> Result<RefreshCounts, String> {
     let mut counts = RefreshCounts::default();
     for (id, _name, provider, models) in targets {
         let mut auto = JsonMap::new();
         for m in models {
-            let decision = decide(&catalog, &provider, &m);
+            let decision = decide(catalog, &provider, &m);
             if !matches!(decision, Decision::Price { .. }) {
                 // No catalog price applies any more: drop an earlier pass's
                 // row for this model — a "-1" stored before negatives were
@@ -800,7 +817,7 @@ async fn refresh_auto_prices(
         }
         // A full pass replaces the endpoint's fill map (a model that left the
         // catalog leaves it); a targeted retry merges its one entry in.
-        let sql = if only.is_some() {
+        let sql = if merge {
             "update llm_endpoints set auto_prices = coalesce(auto_prices, '{}'::jsonb) || $1, \
              updated_at = now() where id = $2::uuid"
         } else {
@@ -814,9 +831,6 @@ async fn refresh_auto_prices(
             .map_err(|e| format!("auto_prices write failed: {e}"))?;
         counts.endpoints += 1;
     }
-    // auto_prices is a cached column of the endpoints serve window — the
-    // next completion must be able to see the fill.
-    talaria_gateway::registry::invalidate_endpoints_cache();
     Ok(counts)
 }
 
@@ -1593,5 +1607,181 @@ mod tests {
             !spec.per_instance,
             "the catalog and the tables it reads are fleet-shared; it takes the lease"
         );
+    }
+}
+
+// Live CENSUS of a price refresh's writes — a measurement, not a behavior
+// test: the write half of a refresh (`apply_catalog`) for one cloud endpoint
+// with 175 models against a synthetic catalog (most priced, some missing,
+// some variable), printed for the pull request that changes it. A CHECKPOINT
+// before the measured refresh stands for the six hours since the last one.
+// It reads write transactions (the `pg_snapshot_xmax` delta), WAL bytes
+// (`pg_current_wal_lsn`) and `pg_stat_wal`'s records and full-page images —
+// the cluster's counters, so it wants a database nothing else is connected
+// to. It returns at once without TALARIA_WRITE_CENSUS=1, so CI's --ignored
+// step passes over it:
+//
+//   TALARIA_WRITE_CENSUS=1 DATABASE_URL=postgres://… \
+//     cargo test -p talaria-price-oracle --lib -- --ignored --nocapture price_refresh_live_census
+#[cfg(test)]
+mod refresh_census {
+    use std::str::FromStr;
+
+    use serde_json::json;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+
+    pub(super) const MODELS: usize = 175;
+    const SCHEMA: &str = "price_refresh_census";
+
+    pub(super) fn model(k: usize) -> String {
+        format!("vendor-{}/model-{k}", k % 7)
+    }
+
+    /// The catalog the endpoint's models meet: one in 25 is missing, one in
+    /// 35 has a variable price, the rest are priced; plus entries no model
+    /// asks for, so it is catalog-sized.
+    pub(super) fn catalog() -> Catalog {
+        let mut rows: Vec<Value> = Vec::new();
+        for k in 0..MODELS {
+            if k % 25 == 24 {
+                continue;
+            }
+            let (p, c) = if k % 35 == 3 {
+                ("-1".to_string(), "-1".to_string())
+            } else {
+                (
+                    format!("{:.9}", (k + 1) as f64 * 1e-7),
+                    format!("{:.9}", (k + 1) as f64 * 4e-7),
+                )
+            };
+            rows.push(json!({ "id": model(k), "pricing": {
+                "prompt": p, "completion": c, "input_cache_read": "0.0000001" } }));
+        }
+        for k in 0..300 {
+            rows.push(
+                json!({ "id": format!("other-{}/unasked-{k}", k % 11), "pricing": {
+                "prompt": "0.000001", "completion": "0.000002" } }),
+            );
+        }
+        build_catalog(&rows)
+    }
+
+    fn census_url() -> Option<String> {
+        if std::env::var("TALARIA_WRITE_CENSUS").ok().as_deref() != Some("1") {
+            eprintln!("census skipped: set TALARIA_WRITE_CENSUS=1 and DATABASE_URL to run it");
+            return None;
+        }
+        Some(std::env::var("DATABASE_URL").expect("DATABASE_URL for the census"))
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct Mark {
+        xmax: i64,
+        lsn: i64,
+        records: i64,
+        fpi: i64,
+    }
+
+    async fn mark(pg: &PgPool) -> Mark {
+        sqlx::query("select pg_stat_force_next_flush()")
+            .execute(pg)
+            .await
+            .unwrap();
+        let (xmax, lsn, records, fpi): (i64, i64, i64, i64) = sqlx::query_as(
+            "select pg_snapshot_xmax(pg_current_snapshot())::text::int8, \
+               pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::int8, \
+               w.wal_records, w.wal_fpi from pg_stat_wal w",
+        )
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        Mark {
+            xmax,
+            lsn,
+            records,
+            fpi,
+        }
+    }
+
+    async fn exec(pg: &PgPool, sql: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(pg)
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+
+    /// A scratch schema with the four tables a refresh reads and writes,
+    /// one cloud endpoint selling `MODELS` models, and a one-connection pool
+    /// that sees only it.
+    pub(super) async fn scratch(admin: &PgPool, url: &str, schema: &str) -> PgPool {
+        exec(admin, &format!("drop schema if exists {schema} cascade")).await;
+        exec(admin, &format!("create schema {schema}")).await;
+        for t in [
+            "llm_endpoints",
+            "provider_prices",
+            "price_lookups",
+            "usage_events",
+        ] {
+            exec(
+                admin,
+                &format!("create table {schema}.{t} (like public.{t} including all)"),
+            )
+            .await;
+        }
+        let opts = PgConnectOptions::from_str(url)
+            .expect("DATABASE_URL parses")
+            .options([("search_path", schema)]);
+        let pg = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("scratch pool");
+        let models: Vec<String> = (0..MODELS).map(model).collect();
+        sqlx::query(
+            "insert into llm_endpoints (name, provider, class, models) \
+             values ('census-cloud', 'openrouter', 'cloud', $1)",
+        )
+        .bind(serde_json::to_value(&models).unwrap())
+        .execute(&pg)
+        .await
+        .unwrap();
+        pg
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn price_refresh_live_census() {
+        let Some(url) = census_url() else { return };
+        let admin = PgPool::connect(&url).await.expect("the database");
+        let pg = scratch(&admin, &url, SCHEMA).await;
+        let catalog = catalog();
+        let targets = models_to_price(&pg, None).await.unwrap();
+        // The first refresh fills; the measured one is a steady-state pass.
+        let first = apply_catalog(&pg, targets.clone(), &catalog, false)
+            .await
+            .unwrap();
+        exec(&pg, "checkpoint").await;
+        let m0 = mark(&pg).await;
+        let c = apply_catalog(&pg, targets, &catalog, false).await.unwrap();
+        let m1 = mark(&pg).await;
+        let wal = m1.lsn - m0.lsn;
+        println!(
+            "census price per refresh | 1 endpoint, {MODELS} models: {} priced, {} no price \
+             (first pass {} priced) | write xacts {} | WAL {:.3} MB ({wal} B) | records {} | FPI {} \
+             | per hour (÷6): write xacts {:.1}, WAL {:.3} MB",
+            c.priced,
+            c.no_match,
+            first.priced,
+            m1.xmax - m0.xmax,
+            wal as f64 / 1e6,
+            m1.records - m0.records,
+            m1.fpi - m0.fpi,
+            (m1.xmax - m0.xmax) as f64 / 6.0,
+            wal as f64 / 6e6,
+        );
+        pg.close().await;
+        exec(&admin, &format!("drop schema if exists {SCHEMA} cascade")).await;
     }
 }

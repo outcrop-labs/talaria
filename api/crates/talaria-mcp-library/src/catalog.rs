@@ -304,7 +304,7 @@ macro_rules! search_match {
     };
 }
 
-const SEARCH_PAGE_SQL: &str = concat!(
+pub(crate) const SEARCH_PAGE_SQL: &str = concat!(
     "with q as (select websearch_to_tsquery('simple', $1) as tq, $1::text as raw) \
      select e.entry, e.live_state, \
        (extract(epoch from e.live_checked_at) * 1000)::int8, e.live_detail \
@@ -408,6 +408,15 @@ pub async fn search(pg: &PgPool, lib: &Arc<Library>, query: &str, f: &SearchFilt
     page
 }
 
+/// The featured candidates, best first within each domain: `$1` the merged
+/// domain list.
+pub(crate) const FEATURED_SQL: &str = "select e.domain, e.entry, e.live_state, \
+       (extract(epoch from e.live_checked_at) * 1000)::int8, e.live_detail \
+     from mcp_library_entries e \
+     where e.kind = 'hosted' and e.domain = any($1) \
+       and (e.tier = 0 or e.source <> 'registry') \
+     order by (e.source = 'operator') desc, e.tier asc, (e.source = 'registry') desc, e.title asc";
+
 /// The featured shelf from the mirror: one hosted server per featured domain
 /// (the built-ins merged with the operator's edits), in the editorial order —
 /// the operator's stand-in when there is one, else the PUBLISHER'S OWN entry:
@@ -423,18 +432,11 @@ pub async fn featured(pg: &PgPool, lib: &Arc<Library>, include_dead: bool) -> Se
     let cfg = featured::load(pg).await;
     let domains = featured::merged_domains(&cfg);
     type Row = (String, Value, Option<String>, Option<i64>, Option<String>);
-    let rows: Vec<Row> = sqlx::query_as(
-        "select e.domain, e.entry, e.live_state, \
-           (extract(epoch from e.live_checked_at) * 1000)::int8, e.live_detail \
-         from mcp_library_entries e \
-         where e.kind = 'hosted' and e.domain = any($1) \
-           and (e.tier = 0 or e.source <> 'registry') \
-         order by (e.source = 'operator') desc, e.tier asc, (e.source = 'registry') desc, e.title asc",
-    )
-    .bind(&domains)
-    .fetch_all(pg)
-    .await
-    .unwrap_or_default();
+    let rows: Vec<Row> = sqlx::query_as(FEATURED_SQL)
+        .bind(&domains)
+        .fetch_all(pg)
+        .await
+        .unwrap_or_default();
     let candidates: Vec<(String, CatalogHit)> = rows
         .into_iter()
         .filter_map(|(d, entry, state, checked, detail)| {
