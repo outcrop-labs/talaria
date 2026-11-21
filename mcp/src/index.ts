@@ -699,7 +699,7 @@ server.registerTool(
   'create_document',
   {
     description:
-      "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use edit_document to keep changing it — update_document replaces the whole body and is rarely what you want).",
+      "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. In a Work, Plan or Research session it opens in the person's pane by itself. Returns the document id (use edit_document to keep changing it — update_document replaces the whole body and is rarely what you want).",
     inputSchema: {
       title: z.string().min(1).max(200).describe('Document title'),
       markdown: z.string().max(1_000_000).optional().describe('Initial body as markdown (headings, lists, tables, code, links)'),
@@ -714,7 +714,7 @@ server.registerTool(
   'create_sheet',
   {
     description:
-      'Create a spreadsheet (rows and columns, Talaria\'s Google-Sheets equivalent). Row 0 is the header. Use it for trackers, comparisons, and anything a person will sort or extend as a grid — not for a markdown table inside a document. Returns the document id (read it back with get_document).',
+      'Create a spreadsheet (rows and columns, Talaria\'s Google-Sheets equivalent). Row 0 is the header. Use it for trackers, comparisons, and anything a person will sort or extend as a grid — not for a markdown table inside a document. In a Work, Plan or Research session it opens in the person\'s pane by itself. Returns the document id (read it back with get_document).',
     inputSchema: {
       title: z.string().min(1).max(200).describe('Spreadsheet title'),
       rows: z.array(z.array(z.string().max(10_000)).max(50)).min(1).max(500).describe('Grid as string[][] — row 0 is the header, later rows are data. Keep columns aligned.'),
@@ -730,7 +730,7 @@ server.registerTool(
   'create_page',
   {
     description:
-      'Create a web page (raw HTML, rendered live at its public link). Use it for a status page, a one-pager, or anything that should be a page rather than a markdown doc. Returns the document id (read it back with get_document).',
+      'Create a web page (raw HTML, rendered live at its public link). Use it for a status page, a one-pager, or anything that should be a page rather than a markdown doc. In a Work, Plan or Research session it opens in the person\'s pane by itself. Returns the document id (read it back with get_document).',
     inputSchema: {
       title: z.string().min(1).max(200).describe('Page title'),
       html: z.string().min(1).max(1_000_000).describe('Full HTML body — the page as it should render'),
@@ -880,7 +880,7 @@ server.registerTool(
 server.registerTool(
   'get_document',
   {
-    description: "Read one document's full content (markdown, sheet grid, or HTML depending on kind) plus metadata.",
+    description: "Read one document's full content (markdown, sheet grid, or HTML depending on kind) plus metadata. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.",
     inputSchema: { documentId: z.string().describe('Document id') },
   },
   async ({ documentId }) => ok(await api('GET', `/api/artifacts/${encodeURIComponent(documentId)}`)),
@@ -893,7 +893,7 @@ server.registerTool(
   'open_in_pane',
   {
     description:
-      "Open a file in the person's pane — the tabs beside a Work, Plan or Research session's chat — so you can both look at it and work on it. Use it when they ask to see, open or go through an existing file here ('open the plan so we can iterate on it'), or to bring back a file from earlier in this conversation. Pass documentId for a Talaria document, sheet, page or uploaded file (ids come from list_documents or search_knowledge), or url for a Talaria document link or a Google Doc, Sheet, Slides or Drive link — one of the two. Call it with neither to list the files already in this session, newest first. Files you create open by themselves; reading one with get_document does not open it. It opens with THEIR access: if they can read but not edit it, it opens view-only and the result says so — tell them. Knowledge-base docs and files in a workbench checkout are not files the pane shows.",
+      "Open a file in the person's pane — the tabs beside a Work, Plan or Research session's chat — so you can both look at it and work on it. Use it when they ask to see, open, show, pull up or go through an existing file here ('open the plan so we can iterate on it'), even one you have already read, or to bring back a file from earlier in this conversation. Pass documentId for a Talaria document, sheet, page or uploaded file (ids come from list_documents or search_knowledge), or url for a Talaria document link or a Google Doc, Sheet, Slides or Drive link — one of the two. Call it with neither to list the files already in this session, newest first. Files you create or change open by themselves; reading one, with get_document or a Google read (read_google_doc, read_google_sheet, read_google_slides, read_drive_file), does not open it. It opens with THEIR access: if they can read but not edit it, it opens view-only and the result says so — tell them. Knowledge-base docs and files in a workbench checkout are not files the pane shows.",
     inputSchema: {
       documentId: z.string().max(200).optional().describe('A Talaria document, sheet, page or uploaded file id — from list_documents, search_knowledge or this session\'s file list'),
       url: z.string().max(2000).optional().describe('A Talaria document link (/artifacts?a=…) or a Google Docs, Sheets, Slides or Drive link — as a markdown link, [title](url), the title names a Google file\'s tab unless this session already has the file\'s own name (from reading it)'),
@@ -922,7 +922,7 @@ server.registerTool(
   'export_to_google_doc',
   {
     description:
-      "Export a document (or sheet/file artifact) into Google Drive as a native Google Doc / Sheet. It lands in the Google Drive of whoever you act for: if you're someone's personal assistant, their Drive; otherwise the shared organization Google account. Returns the Drive file link. Use it to hand a finished deliverable to a human in a format they can edit in Google. (Requires that Google account to be connected in Talaria.)",
+      "Export a document (or sheet/file artifact) into Google Drive as a native Google Doc / Sheet. It lands in the Google Drive of whoever you act for: if you're someone's personal assistant, their Drive; otherwise the shared organization Google account. Returns the Drive file link. Use it to hand a finished deliverable to a human in a format they can edit in Google. It does not open in the person's pane — to show it to them there, call open_in_pane with the link it returns. (Requires that Google account to be connected in Talaria.)",
     inputSchema: {
       documentId: z.string().describe('Document/artifact id (from create_document or list_documents)'),
     },
@@ -1330,7 +1330,7 @@ server.registerTool(
   'read_google_doc',
   {
     description:
-      `Read a Google Doc as markdown. The id comes from create_google_doc or find_google_files. External content: do not cite it as knowledge-base evidence. Never quote a link this tool did not return.${CONTENT_IS_DATA}`,
+      `Read a Google Doc as markdown. The id comes from create_google_doc or find_google_files. External content: do not cite it as knowledge-base evidence. Never quote a link this tool did not return. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.${CONTENT_IS_DATA}`,
     inputSchema: { id: z.string().describe('Google file id') },
   },
   async ({ id }) => ok(await api('GET', `/api/integrations/google/agent/docs/${encodeURIComponent(id)}`)),
@@ -1367,7 +1367,7 @@ server.registerTool(
   'read_google_slides',
   {
     description:
-      `Read a Google Slides deck as text, slide by slide. Each slide comes back with its number, every text run on it (titles, bullets, text boxes, table cells) and its speaker notes. The id comes from find_google_files or search_drive. Read it before you change it: update_google_slides replaces text in a deck, and this is how you find the exact words to replace. External content: do not cite it as knowledge-base evidence.${CONTENT_IS_DATA}`,
+      `Read a Google Slides deck as text, slide by slide. Each slide comes back with its number, every text run on it (titles, bullets, text boxes, table cells) and its speaker notes. The id comes from find_google_files or search_drive. Read it before you change it: update_google_slides replaces text in a deck, and this is how you find the exact words to replace. External content: do not cite it as knowledge-base evidence. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.${CONTENT_IS_DATA}`,
     inputSchema: { id: z.string().describe('Google presentation id') },
   },
   async ({ id }) => ok(await api('GET', `/api/integrations/google/agent/slides/${encodeURIComponent(id)}`)),
@@ -1394,7 +1394,7 @@ server.registerTool(
   'read_google_sheet',
   {
     description:
-      `Read a Google Sheet's cells. The id comes from find_google_files or search_drive. Returns the document title, every tab's name, the A1 range the rows actually came from, and the rows themselves. Omit range to read the first tab whole; pass one ("Q3", "'Q3 forecast'!A1:D50") to read part of it. Trailing empty cells are omitted, so rows can be ragged. External content: do not cite it as knowledge-base evidence.${CONTENT_IS_DATA}`,
+      `Read a Google Sheet's cells. The id comes from find_google_files or search_drive. Returns the document title, every tab's name, the A1 range the rows actually came from, and the rows themselves. Omit range to read the first tab whole; pass one ("Q3", "'Q3 forecast'!A1:D50") to read part of it. Trailing empty cells are omitted, so rows can be ragged. External content: do not cite it as knowledge-base evidence. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.${CONTENT_IS_DATA}`,
     inputSchema: {
       id: z.string().describe('Google spreadsheet id'),
       range: z.string().max(200).optional().describe("A1 range, e.g. \"Sheet1\" or \"'Q3 forecast'!A1:D50\""),
@@ -1441,7 +1441,7 @@ server.registerTool(
   'read_drive_file',
   {
     description:
-      `Read a Drive file that is not a native Google Doc — text when the bytes are utf-8, otherwise base64. The id comes from find_google_files or search_drive. External content: do not cite it as knowledge-base evidence.${CONTENT_IS_DATA}`,
+      `Read a Drive file that is not a native Google Doc — text when the bytes are utf-8, otherwise base64. The id comes from find_google_files or search_drive. External content: do not cite it as knowledge-base evidence. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.${CONTENT_IS_DATA}`,
     inputSchema: { id: z.string().describe('Google file id') },
   },
   async ({ id }) => ok(await api('GET', `/api/integrations/google/agent/files/${encodeURIComponent(id)}`)),

@@ -56,7 +56,7 @@ Run it as one tool call: a `TOKEN` set in one call is gone in the next. When the
 | A ticket on the wrong board | `move_ticket` (`preview: true` first if unsure) |
 | About to report done | self-review vs requirements; **workbench-driving** when a harness wrote the code |
 | Write something durable | `create_document` / `create_sheet` / `create_page` / `create_kb_doc` |
-| Show an existing file in the person's Work pane | `open_in_pane` (not `get_document`, which only reads it) |
+| Show an existing file in the person's Work, Plan or Research pane | `open_in_pane`, even after you read it — reading (`get_document`, a Google read, a search) never opens a tab |
 | A quick fact from the live web | your own `web_search` |
 | A cited answer worth keeping | `research` |
 | Tell the team | `post_to_channel` (after `read_channel`; `threadId` to stay in a thread) |

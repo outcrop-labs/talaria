@@ -23,15 +23,26 @@
 // spreadsheet was updated when the write is sitting in a queue. The list below
 // is the truth as of the tools that exist; it is ordered immediate-first
 // because the immediate set is the short, closed one.
+//
+// WHAT OPENS A TAB IS ONE RULE, stated once: a file becomes a tab when the
+// agent creates it, changes it, or opens it with open_in_pane, and reading
+// never opens one. The lead used to say every file "you create or open"
+// appears as a tab, and an agent that had only READ a document took "open"
+// to cover the read, told the person it was in their pane, and was wrong.
+// Reads stay out of the pane on purpose: an agent grounds one answer on
+// several files, and a tab per read would move the person's pane away from
+// the file they are reading every time. So an explicit ask — see, open, show,
+// pull up, go through — is the agent's cue to call open_in_pane, even for a
+// file it has already read.
 
 /// The Work-surface system block. Kept as one const — no database read — so
 /// the harness registry can enumerate it without booting Talaria, the same
 /// rule `PLAN_MODE_PROMPT` follows.
-pub const WORK_MODE_PROMPT: &str = "This is a WORK SESSION on the Work surface. The teammate's chat is on the left; the pane on the right shows this session's files. Every document, sheet, page or Google file you create or open in this session appears there as a tab, and the teammate can open one there too. When they ask for something new, create it with a tool — create_document, create_sheet or create_page for a Talaria file, create_google_doc for a native Google Doc — and it opens in the pane by itself. To put a file that ALREADY EXISTS in front of them — \"open the plan here so we can go through it\", \"bring back the sheet from earlier\" — call open_in_pane with its documentId or its link: reading a file with get_document does not open it, and pasting it into the chat is not opening it. Called with neither, open_in_pane lists the files already in this session, newest first. A line below this one names the file open in their pane right now: when they say \"this doc\" or \"the sheet\", they mean THAT file, so work on it unless they point you at another one. There is no separate plan document to write into — the files are the work.
+pub const WORK_MODE_PROMPT: &str = "This is a WORK SESSION on the Work surface. The teammate's chat is on the left; the pane on the right shows this session's files as tabs, and the teammate can open one there too. A file appears there as a tab when you create it, change it, or open it with open_in_pane. Reading a file never opens it: get_document, read_google_doc, read_google_sheet, read_google_slides, read_drive_file and every search bring the file to you, not to them. So when the teammate asks to see, open, show, pull up or go through a file — \"open the plan here so we can go through it\", \"show me the pricing sheet\", \"bring back the sheet from earlier\" — call open_in_pane with its documentId or its link, even if you have already read it; pasting it into the chat is not opening it. A question about what a file says is not a request to see it: read the file and answer. Called with neither a documentId nor a link, open_in_pane lists the files already in this session, newest first. When they ask for something new, create it with a tool — create_document, create_sheet or create_page for a Talaria file, create_google_doc for a native Google Doc — and it opens in the pane by itself. A line below this one names the file open in their pane right now: when they say \"this doc\" or \"the sheet\", they mean THAT file, so work on it unless they point you at another one. There is no separate plan document to write into — the files are the work.
 
 THE DOCUMENT IS THE OUTPUT, NOT YOUR MESSAGE. When the work is a change to the file, make the change with a tool and let the pane show it. Do not paste the document, the new section, or the rewritten rows into the chat as well — the teammate is looking at the file, and a wall of duplicated content in the conversation buries the one thing they needed to read. Your message says what you changed and why, in a couple of sentences: \"Added a rollback section with the three steps, and fixed the date in the summary.\" If you are proposing rather than doing — you cannot reach the file, or you are asking before you act — then the text belongs in the message, and say that is what it is.
 
-Reading is free and you should do it before you write. Read the document, the calendar, the mailbox or the Drive listing you are about to act on, so your change is grounded in what is actually there rather than what you assume.
+Reading is free — it does not put the file in their pane — and you should do it before you write. Read the document, the calendar, the mailbox or the Drive listing you are about to act on, so your change is grounded in what is actually there rather than what you assume.
 
 WRITES ARE NOT FREE, and the split is not uniform:
 
@@ -173,7 +184,7 @@ pub fn focus_line(focus: Option<&PaneFocus>) -> String {
                 f.id,
             )
         }
-        None => "No file is open in the teammate's pane yet. When they ask for a document, sheet or page, create one; it opens in the pane by itself.".into(),
+        None => "No file is open in the teammate's pane yet. When they ask for a new document, sheet or page, create one; it opens in the pane by itself. When they ask to see one that already exists, open it with open_in_pane.".into(),
     }
 }
 
@@ -184,12 +195,79 @@ mod tests {
     // The prompt is prose, so these guard the facts inside it rather than its
     // wording — a tool that moves between the two lists, or a queued tool that
     // stops being named at all, is the failure worth catching.
+    /// The reads that bring a file to the agent and never to the person's
+    /// pane — every one the toolkit registers for a Talaria or Google file.
+    const READS: [&str; 5] = [
+        "get_document",
+        "read_google_doc",
+        "read_google_sheet",
+        "read_google_slides",
+        "read_drive_file",
+    ];
+
+    /// The sentence that starts at `lead`, up to the next full stop — so a
+    /// fact guard can say WHICH sentence names a tool, not merely that the
+    /// prompt does somewhere.
+    fn sentence_from<'a>(prompt: &'a str, lead: &str) -> &'a str {
+        let at = prompt
+            .find(lead)
+            .unwrap_or_else(|| panic!("the prompt has no sentence starting {lead:?}"));
+        let rest = &prompt[at..];
+        &rest[..rest.find(". ").unwrap_or(rest.len())]
+    }
+
     #[test]
     fn the_prompt_names_the_door_that_opens_an_existing_file() {
         // Without the name the agent pastes the document into chat: the tool
         // sits behind tool_search, and "open" reads like get_document.
         assert!(WORK_MODE_PROMPT.contains("open_in_pane"));
-        assert!(WORK_MODE_PROMPT.contains("get_document does not open it"));
+        assert!(WORK_MODE_PROMPT.contains("call open_in_pane with its documentId or its link"));
+    }
+
+    #[test]
+    fn the_prompt_says_reading_never_opens_a_tab() {
+        // THE OVERCLAIM THAT MISLED AN AGENT. "Every file you create or open
+        // appears there as a tab" let a read count as an open, so an agent
+        // that had only read a document said it was in the person's pane.
+        assert!(
+            !WORK_MODE_PROMPT.contains("create or open"),
+            "the lead must not let a read count as an open"
+        );
+        assert!(
+            WORK_MODE_PROMPT
+                .contains("A file appears there as a tab when you create it, change it, or open it with open_in_pane")
+        );
+        let never = sentence_from(WORK_MODE_PROMPT, "Reading a file never opens it");
+        for read in READS {
+            assert!(
+                never.contains(read),
+                "{read} is a read, and the never-opens sentence does not name it: {never}"
+            );
+        }
+        assert!(never.contains("every search"), "{never}");
+        // The "Reading is free" paragraph says it too, where the agent is
+        // told to read first.
+        assert!(
+            sentence_from(WORK_MODE_PROMPT, "Reading is free")
+                .contains("does not put the file in their pane")
+        );
+    }
+
+    #[test]
+    fn an_explicit_ask_to_see_a_file_is_the_cue_for_open_in_pane() {
+        // The person's own words, every one of them, and the clause that
+        // covers a file the agent read earlier in the session.
+        let ask = sentence_from(WORK_MODE_PROMPT, "So when the teammate asks to see");
+        for verb in ["see", "open", "show", "pull up", "go through"] {
+            assert!(ask.contains(verb), "{verb} is missing from: {ask}");
+        }
+        assert!(ask.contains("call open_in_pane"), "{ask}");
+        assert!(ask.contains("even if you have already read it"), "{ask}");
+        // And the other side: a question about a file is answered, not opened.
+        assert!(
+            WORK_MODE_PROMPT
+                .contains("A question about what a file says is not a request to see it")
+        );
     }
 
     #[test]
@@ -306,10 +384,13 @@ mod tests {
     }
 
     #[test]
-    fn no_focus_says_nothing_is_open_and_to_create_one() {
+    fn no_focus_says_nothing_is_open_and_how_a_file_gets_there() {
+        // A new file is created; an existing one is opened. "When they ask
+        // for a document, create one" alone read "show me the notes" as a
+        // request for a new document.
         assert_eq!(
             focus_line(None),
-            "No file is open in the teammate's pane yet. When they ask for a document, sheet or page, create one; it opens in the pane by itself."
+            "No file is open in the teammate's pane yet. When they ask for a new document, sheet or page, create one; it opens in the pane by itself. When they ask to see one that already exists, open it with open_in_pane."
         );
     }
 

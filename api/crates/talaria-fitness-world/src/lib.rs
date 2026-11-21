@@ -413,10 +413,11 @@ pub struct SandboxWorld {
     /// What the agent did to the session itself, if anything.
     #[serde(default)]
     pub layout: SandboxLayout,
-    /// The files the agent put in the person's pane with `open_in_pane`, as
-    /// the pane keys them (`artifact:<id>`, `google:<url>`), oldest first — so
-    /// a fixture can grade that "open the plan here" opened the plan rather
-    /// than pasting it into the chat.
+    /// The files the agent put in the person's pane with `open_in_pane`
+    /// (`artifact:<id>`, and a Google file at its canonical URL,
+    /// `google:<url>`, so two spellings of one link are one file), oldest
+    /// first — so a fixture can grade that "open the plan here" opened the
+    /// plan rather than pasting it into the chat.
     #[serde(default)]
     pub pane: Vec<String>,
     /// Files the agent has produced in its own workspace. `save_image_artifact`
