@@ -7040,14 +7040,14 @@ empty_list: []
         // A 502 is the git host's reason it gave no token: passed on, with
         // nothing on stdout.
         let refused = Some((
-            r#"{"error":"GitHub minted a token for acme/widgets wider than Talaria asked for (it carries checks:read, which was not asked for); it was revoked and never used"}"#,
+            r#"{"error":"GitHub minted a token for acme/widgets wider than Talaria asked for (it carries workflows:write, above the read asked for); it was revoked and never used"}"#,
             502,
         ));
         let (code, stdout, stderr, _) = run(false, refused, scoped);
         assert_eq!(code, 0, "{stderr}");
         assert!(stdout.is_empty(), "{stdout}");
         assert!(
-            stderr.contains("talaria: GitHub minted a token for acme/widgets wider than Talaria asked for (it carries checks:read, which was not asked for)"),
+            stderr.contains("talaria: GitHub minted a token for acme/widgets wider than Talaria asked for (it carries workflows:write, above the read asked for)"),
             "{stderr}"
         );
     }

@@ -819,6 +819,12 @@ fn mcp_attention_alert(labels: &[String]) -> Option<Alert> {
 /// card lists each installation's permissions and has the Refresh.
 pub const GIT_HOSTS_HREF: &str = "/admin/git";
 
+/// Where an alert about what agents' GitHub tokens carry sends an admin:
+/// Agent policy → GitHub access, which lists every agent with its set and
+/// its tokens' state, and whose editor names, per permission, what the
+/// installation holds and where an owner accepts it on GitHub.
+pub const GITHUB_ACCESS_HREF: &str = "/admin/github";
+
 /// The GitHub App alerts, from the holdings record alone (`hosts`, as
 /// `recorded_holdings` reads it): one warning naming every installation with
 /// a permission change waiting for an owner of its account, and one naming
@@ -944,13 +950,13 @@ pub fn dormant_permissions_alert(
             format!("{n} agents hold GitHub permissions the installation has not accepted")
         },
         detail: format!(
-            "{}. An admin gave {} in Talaria, and the tokens of those repos carry the rest without {} until the GitHub App asks for {} and an owner of the account accepts the change on GitHub (Admin → Git hosts names each installation and where to accept it).",
+            "{}. An admin gave {} in Talaria, and the tokens of those repos carry the rest without {} until the GitHub App asks for {} and an owner of the account accepts the change on GitHub (Agent policy → GitHub access shows each agent's set beside what the installation holds, and where an owner accepts it).",
             each.join("; "),
             if each.len() == 1 { "it" } else { "them" },
             if each.len() == 1 { "it" } else { "them" },
             if each.len() == 1 { "it" } else { "them" }
         ),
-        href: GIT_HOSTS_HREF,
+        href: GITHUB_ACCESS_HREF,
     })
 }
 
@@ -1376,7 +1382,14 @@ mod tests {
             "{}",
             one.detail
         );
-        assert_eq!(one.href, "/admin/git");
+        // About what agents' tokens carry: it opens their GitHub access.
+        assert_eq!(one.href, "/admin/github");
+        assert!(
+            one.detail.contains("Agent policy → GitHub access")
+                && !one.detail.contains("Git hosts"),
+            "{}",
+            one.detail
+        );
         let two = dormant_permissions_alert(&[
             dormant("a1", "Dev", &["acme/site"]),
             dormant("a2", "Ana", &["acme/app", "acme/api"]),
@@ -1426,7 +1439,7 @@ mod tests {
             "Ana",
             "GitHub",
             "acme/site",
-            "GitHub minted a token for acme/site wider than Talaria asked for (it carries checks:read, which was not asked for); it was revoked and never used",
+            "GitHub minted a token for acme/site wider than Talaria asked for (it carries workflows:write, above the read asked for); it was revoked and never used",
         )])
         .unwrap();
         assert_eq!(one.severity, AlertSeverity::Warning);

@@ -684,8 +684,11 @@ pub fn git_permission_authority(board_id: Option<String>) -> Authority {
 }
 
 /// One open `workbench_permission_requests` row, in column order — the
-/// agent's display name and the ticket's board are nullable.
+/// request's id, the agent's id and model, its display name (nullable), the
+/// repo, permission, level, status and why, when it was raised, and the
+/// ticket's board (nullable).
 type GitPermissionRow = (
+    String,
     String,
     String,
     Option<String>,
@@ -698,12 +701,31 @@ type GitPermissionRow = (
     Option<String>,
 );
 
+/// Where a GitHub permission request is decided: the asking agent's editor
+/// in Agent policy → GitHub access, beside what the agent holds and what the
+/// installation holds. The id is `agent_defs.id`, a uuid, so it needs no
+/// escaping.
+fn git_permission_href(agent_id: &str) -> String {
+    format!("/admin/github?agent={agent_id}")
+}
+
 /// What a census row says about one GitHub permission request. Pure: the
 /// title is typed fields only, never the agent's words; the detail is the
 /// agent's `why`, which the authority bounds.
 fn git_permission_approval(row: GitPermissionRow) -> PendingApproval {
-    let (id, agent_model, agent_name, repo, permission, level, status, why, created_ms, board_id) =
-        row;
+    let (
+        id,
+        agent_id,
+        agent_model,
+        agent_name,
+        repo,
+        permission,
+        level,
+        status,
+        why,
+        created_ms,
+        board_id,
+    ) = row;
     let agent = agent_name.unwrap_or(agent_model);
     let waiting = status == "awaiting_github";
     let title = if waiting {
@@ -728,7 +750,7 @@ fn git_permission_approval(row: GitPermissionRow) -> PendingApproval {
         id,
         title,
         detail,
-        href: "/admin/git".into(),
+        href: git_permission_href(&agent_id),
         waiting_since: epoch_ms_to_iso(created_ms),
         owner_user_ids: Vec::new(),
         authority: git_permission_authority(board_id),
@@ -740,9 +762,9 @@ fn git_permission_approval(row: GitPermissionRow) -> PendingApproval {
 /// and GitHub does not hold it yet (`awaiting_github`).
 async fn git_permission_approvals(pg: &PgPool) -> Result<Vec<PendingApproval>, sqlx::Error> {
     let rows: Vec<GitPermissionRow> = sqlx::query_as(
-        "select r.id::text, r.agent_model, d.display_name, r.repo, r.permission, r.level, \
-                r.status, r.why, (trunc(extract(epoch from r.created_at) * 1000))::bigint, \
-                t.board_id::text \
+        "select r.id::text, r.agent_id::text, r.agent_model, d.display_name, r.repo, \
+                r.permission, r.level, r.status, r.why, \
+                (trunc(extract(epoch from r.created_at) * 1000))::bigint, t.board_id::text \
          from workbench_permission_requests r \
          left join agent_defs d on d.id = r.agent_id \
          left join tasks t on t.id = r.task_id \
@@ -2142,6 +2164,7 @@ mod tests {
         let row = |status: &str, why: &str, board: Option<&str>| {
             (
                 "r1".to_string(),
+                "a1".to_string(),
                 "dev-billy".to_string(),
                 Some("Billy".to_string()),
                 "acme/site".to_string(),
@@ -2158,7 +2181,8 @@ mod tests {
         assert_eq!(pending.key, "git_permission:r1");
         assert_eq!(pending.title, "Billy needs workflows write on acme/site");
         assert_eq!(pending.detail, "the agent says: CI must change");
-        assert_eq!(pending.href, "/admin/git");
+        // Decided in the asking agent's own editor, never Git hosts.
+        assert_eq!(pending.href, "/admin/github?agent=a1");
         assert_eq!(
             pending.authority,
             Authority::Admin {
@@ -2179,6 +2203,7 @@ mod tests {
             "the agent's words are the pending row's, not the wait's"
         );
         assert_eq!(waiting.authority, Authority::Admin { on_board: None });
+        assert_eq!(waiting.href, "/admin/github?agent=a1");
         assert!(!announce_to_named_only(ApprovalKind::GitPermission));
     }
 

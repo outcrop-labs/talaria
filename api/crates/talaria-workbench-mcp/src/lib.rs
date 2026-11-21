@@ -340,7 +340,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "request_git_permission",
-            "description": "Ask an admin for a GitHub permission your git token lacks — when GitHub refused something you did on a granted repo for want of one (a 403 \"Resource not accessible by integration\", an X-Accepted-GitHub-Permissions header naming what it needed, or a push refused with \"refusing to allow a GitHub App to create or update workflow `.github/workflows/<file>` without `workflows` permission\", which is workflows at write). That GitHub App form is your per-agent token, and this tool is the fix. The other form, \"refusing to allow a Personal Access Token (or an OAuth App) to create or update workflow … without `workflow` scope\", means your token was NOT the GitHub App's: a workspace secret answered git at that host first (list_repos' github.narrowing is workspaceSecret, naming the secret), or the host connects with a personal access token (hostWide). No request changes that token, so do not file one: tell an admin which secret or host it was, on the ticket. A `talaria:` line from git naming a permission your token goes without says why: an installation that has not accepted it waits on an owner of the GitHub account, and asking again changes nothing. Name the repo where it happened and each permission GitHub wanted, by GitHub's App permission name (contents, pull_requests, workflows, secrets, actions, administration, organization_secrets, …) at the level it wanted. Approval adds it to your permissions on that repo's git host, for every repo you hold there, and your next git credential for those repos carries it. Refused only for a name or level GitHub does not know, a repo you are not granted, or a host whose own token decides (no per-agent permissions there). Asking again while one is open adds your words to it. An admin decides in Admin → Git hosts; the outcome shows in list_repos (permissionRequests), and on the ticket the request was first asked from when you name one (taskId). Do not retry the GitHub call or ask again until it is decided — continue other work. awaiting_github means approved in Talaria and waiting for an owner of the GitHub account to accept the permission for the App; no token carries it until they do.",
+            "description": "Ask an admin for a GitHub permission your git token lacks — when GitHub refused something you did on a granted repo for want of one (a 403 \"Resource not accessible by integration\", an X-Accepted-GitHub-Permissions header naming what it needed, or a push refused with \"refusing to allow a GitHub App to create or update workflow `.github/workflows/<file>` without `workflows` permission\", which is workflows at write). That GitHub App form is your per-agent token, and this tool is the fix. The other form, \"refusing to allow a Personal Access Token (or an OAuth App) to create or update workflow … without `workflow` scope\", means your token was NOT the GitHub App's: a workspace secret answered git at that host first (list_repos' github.narrowing is workspaceSecret, naming the secret), or the host connects with a personal access token (hostWide). No request changes that token, so do not file one: tell an admin which secret or host it was, on the ticket. A `talaria:` line from git naming a permission your token goes without says why: an installation that has not accepted it waits on an owner of the GitHub account, and asking again changes nothing. Name the repo where it happened and each permission GitHub wanted, by GitHub's App permission name (contents, pull_requests, workflows, secrets, actions, administration, organization_secrets, …) at the level it wanted. Approval adds it to your permissions on that repo's git host, for every repo you hold there, and your next git credential for those repos carries it. Refused only for a name or level GitHub does not know, a repo you are not granted, or a host whose own token decides (no per-agent permissions there). Asking again while one is open adds your words to it. An admin decides in Agent policy → GitHub access; the outcome shows in list_repos (permissionRequests), and on the ticket the request was first asked from when you name one (taskId). Do not retry the GitHub call or ask again until it is decided — continue other work. awaiting_github means approved in Talaria and waiting for an owner of the GitHub account to accept the permission for the App; no token carries it until they do.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1968,7 +1968,10 @@ async fn call_tool(
                 }
             }
             for (asked, outcome) in [
-                (pending, "awaiting an admin's decision in Admin → Git hosts"),
+                (
+                    pending,
+                    "awaiting an admin's decision in Agent policy → GitHub access",
+                ),
                 (
                     waiting,
                     "already in its permissions there, and waiting on GitHub: an owner of the account accepts it for the App's installation",
@@ -3316,7 +3319,7 @@ fn filing_wire(filing: &hosts::requests::Filing, here: Option<&str>) -> Value {
         .collect();
     let mut note: Vec<String> = Vec::new();
     if open || waiting {
-        note.push("An admin decides in Admin → Git hosts.".into());
+        note.push("An admin decides in Agent policy → GitHub access.".into());
         note.push(match (tickets.is_empty(), untracked) {
             (true, _) => "The outcome shows only in list_repos (permissionRequests): no ticket was named.".into(),
             (false, false) => format!(
@@ -3854,6 +3857,12 @@ mod tests {
         let none = filing_wire(&filing(None, filed()), None);
         let note = none["note"].as_str().unwrap();
         assert!(note.contains("only in list_repos"), "{note}");
+        // Where it is decided: the agent's GitHub access, never Git hosts.
+        assert!(
+            note.contains("An admin decides in Agent policy → GitHub access.")
+                && !note.contains("Git hosts"),
+            "{note}"
+        );
         assert_eq!(none["requests"][0]["ticket"], Value::Null);
         // Its own ticket.
         let here = filing_wire(&filing(Some("1"), filed()), Some("1"));
@@ -4254,7 +4263,8 @@ mod tests {
         assert!(
             ask.contains("list_repos (permissionRequests)")
                 && ask.contains("Do not retry")
-                && ask.contains("Admin → Git hosts"),
+                && ask.contains("An admin decides in Agent policy → GitHub access")
+                && !ask.contains("Git hosts"),
             "{ask}"
         );
         // GitHub's two refusals of a workflow push, verbatim: the App's
