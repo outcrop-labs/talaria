@@ -115,7 +115,7 @@ same manage surface read-only.
   the git-host plane is admin-only and the set reaches every repo the agent holds on that host.
   An agent's managers see what it carries there, read-only, and still grant and remove its repos
   and set their branch rules; every grant change is audited. See
-  [WORKBENCH.md → Git hosts](./WORKBENCH.md#git-hosts-the-operators-choice).
+  [WORKBENCH.md → GitHub permissions per agent](./WORKBENCH.md#github-permissions-per-agent).
   An agent's own request for a permission (`request_git_permission`) is decided by an admin
   too (`/api/workbench/permission-requests`), and only by an admin who may read the board the
   request was raised on; the agent's managers are told the outcome, never what it said.

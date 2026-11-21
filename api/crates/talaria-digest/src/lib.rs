@@ -1009,7 +1009,7 @@ fn why_unreachable(approval: &PendingApproval) -> &'static str {
         // A GitHub permission's decide route asks the content half: only an
         // admin who may read what the agent wrote may decide it.
         Authority::Admin { on_board: Some(_) } if approval.kind == ApprovalKind::GitPermission => {
-            "Only an admin who is a member of the board it quotes can decide it, and none of this workspace\u{2019}s admins is. Add an admin to that board; they decide it in Admin \u{2192} Git hosts."
+            "Only an admin who is a member of the board it quotes can decide it, and none of this workspace\u{2019}s admins is. Add an admin to that board; they decide it in Agent policy \u{2192} GitHub access, on the agent that asked."
         }
         Authority::Admin { on_board: Some(_) } => {
             "Any admin can decide it, but it quotes work on a board none of this workspace\u{2019}s admins is a member of, so it cannot be shown to anybody as it stands. Add an admin to that board to read it, or decide it where its queue lives: Admin \u{2192} Git hosts for a repository, Manage \u{2192} Apps for an app."
@@ -1659,6 +1659,37 @@ mod tests {
             mail.html
                 .contains("One source could not be read when this was built")
         );
+    }
+
+    fn stalled(kind: ApprovalKind, on_board: Option<&str>) -> PendingApproval {
+        PendingApproval {
+            kind,
+            key: "k1".into(),
+            id: "a1".into(),
+            title: String::new(),
+            detail: String::new(),
+            href: String::new(),
+            waiting_since: "2026-08-28T00:00:00.000Z".into(),
+            owner_user_ids: Vec::new(),
+            authority: talaria_runs_define::Authority::Admin {
+                on_board: on_board.map(String::from),
+            },
+        }
+    }
+
+    #[test]
+    fn a_stalled_github_permission_points_at_the_agents_editor() {
+        // A GitHub permission is decided on the agent that asked, under Agent
+        // policy › GitHub access; Git hosts keeps only a pointer row. The stall
+        // report goes out with no link, so this sentence is the only
+        // directions the admins get.
+        let why = why_unreachable(&stalled(ApprovalKind::GitPermission, Some("b1")));
+        assert!(why.contains("Agent policy \u{2192} GitHub access"), "{why}");
+        assert!(!why.contains("Git hosts"), "{why}");
+
+        // A repository request is still decided on Git hosts.
+        let repo = why_unreachable(&stalled(ApprovalKind::RepoRequest, Some("b1")));
+        assert!(repo.contains("Admin \u{2192} Git hosts"), "{repo}");
     }
 
     #[test]
