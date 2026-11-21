@@ -62,7 +62,8 @@
   // A failed read of either queue is said here, never read as "nothing waiting".
   const requestsFailed = $derived(requests.isError && requests.data === undefined)
   const repoRequestsFailed = $derived(repoRequests.isError && repoRequests.data === undefined)
-  const showWaiting = $derived(isAdmin && (waiting.length > 0 || repoAsks.length > 0 || requestsFailed || repoRequestsFailed))
+  // Every flag is read before they are combined (query-state.ts).
+  const showWaiting = $derived(isAdmin && [waiting.length > 0, repoAsks.length > 0, requestsFailed, repoRequestsFailed].includes(true))
 
   // Check token, per host: the repo picked, the hosts with a check in
   // flight, and the last answer. Shared by the permission rows (a "Not

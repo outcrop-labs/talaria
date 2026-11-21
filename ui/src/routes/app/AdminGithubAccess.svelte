@@ -134,7 +134,7 @@
     </SettingsGroup>
   {/if}
 {:else}
-  {#if waiting.rows.length > 0 || waiting.repoLine || requestsFailed || repoRequestsFailed}
+  {#if [waiting.rows.length > 0, waiting.repoLine !== null, requestsFailed, repoRequestsFailed].includes(true)}
     <SettingsSection title="Waiting on you">
       <SettingsGroup data-testid="github-access-waiting">
         {#if requestsFailed}
