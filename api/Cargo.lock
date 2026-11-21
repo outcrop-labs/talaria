@@ -7090,6 +7090,7 @@ dependencies = [
  "talaria-chat-persist",
  "talaria-chips",
  "talaria-comms-decay",
+ "talaria-config",
  "talaria-conversation-layout",
  "talaria-conversations",
  "talaria-daily-brief",

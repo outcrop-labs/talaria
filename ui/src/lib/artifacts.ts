@@ -67,6 +67,31 @@ export const useArtifacts = () =>
     queryFn: (): Promise<Artifact[]> => getList<Artifact>('/api/artifacts', 'artifacts'),
   }))
 
+/** An artifact without its body: what `?fields=heads` answers. */
+export type ArtifactHead = Omit<Artifact, 'body' | 'canEdit'>
+
+/** The start of `now`'s local day, as the instant the server compares against. */
+export const startOfLocalDay = (now: number): string => {
+  const d = new Date(now)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString()
+}
+
+/** The artifacts updated since `since` (an instant, see startOfLocalDay), without
+ *  their bodies: the Inbox's Files cards, which show today's documents by title.
+ *  The whole list carries every body there is — megabytes, growing every day with
+ *  run transcripts and brief mirrors. The day is in the key, so a new day reads
+ *  afresh; keyed under ['artifacts'], so every invalidation of the list refreshes
+ *  it too. The Files browser and KB attachments keep `useArtifacts`. */
+export const useArtifactsSince = (since: MaybeGetter<string>) =>
+  createQuery(() => {
+    const s = resolve(since)
+    return {
+      queryKey: ['artifacts', 'heads', s],
+      queryFn: (): Promise<ArtifactHead[]> =>
+        getList<ArtifactHead>(`/api/artifacts?since=${encodeURIComponent(s)}&fields=heads`, 'artifacts'),
+    }
+  })
+
 export const useArtifact = (id: MaybeGetter<string | null>) =>
   createQuery(() => {
     const i = resolve(id)

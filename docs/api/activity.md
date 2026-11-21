@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-20 routes.
+21 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -20,6 +20,7 @@
 | [`/api/cost/unpriced/lookup`](#apicostunpricedlookup) | POST | `admin` |
 | [`/api/history`](#apihistory) | GET | `session` |
 | [`/api/home`](#apihome) | GET | `session` |
+| [`/api/home/queues`](#apihomequeues) | GET | `session` |
 | [`/api/host`](#apihost) | GET | `session` + `view:/observability` |
 | [`/api/notifications`](#apinotifications) | GET | `session` |
 | [`/api/notifications`](#apinotifications) | PUT | `session` |
@@ -167,14 +168,29 @@ Source: [`api/crates/talaria-routes-comms/src/activity/history.rs`](../../api/cr
 
 Source: [`api/crates/talaria-routes-comms/src/activity/home.rs`](../../api/crates/talaria-routes-comms/src/activity/home.rs)
 
-> /api/home. GET → the Home/Today summary for the signed-in user.
+> /api/home. GET → the Home/Today summary for the signed-in user: the
+> mobile app's landing read. The web Inbox polls /api/home/queues.
 >
 > The digest job registers in main.rs's scheduler table, not here — this
-> file is only the read.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200 | — |
+
+## `/api/home/queues`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/home_queues.rs`](../../api/crates/talaria-routes-comms/src/activity/home_queues.rs)
+
+> /api/home/queues. GET → `{ queues }`: the signed-in user's three human
+> queues (triage, review, blocked), and nothing else.
+>
+> The web Inbox's board reads only the queues, every 30 seconds. /api/home
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{queues}` | 200 | — |
 
 ## `/api/host`
 

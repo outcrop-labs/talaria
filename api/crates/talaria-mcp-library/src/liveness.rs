@@ -31,7 +31,8 @@ use talaria_safe_fetch::{ValidatingResolver, assert_fetchable_url};
 use talaria_scheduler::{JobName, JobSpec};
 
 /// Rows per run: at 8 in flight and a 6s ceiling each, the worst case is
-/// 300 / 8 × 6s ≈ 225s — inside the 4-minute `max_run_ms`.
+/// 300 / 8 × 6s ≈ 225s — inside the 4-minute `max_run_ms`. The verdicts are
+/// written `VERDICT_CHUNK` at a time, so a run commits at most six times.
 pub const LIVENESS_BATCH: i64 = 300;
 const LIVENESS_CONCURRENCY: usize = 8;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(6);
@@ -371,8 +372,9 @@ struct Tally {
 
 /// One batch: up to `LIVENESS_BATCH` hosted rows — never-checked first
 /// (stand-ins ahead of registry rows among those, so an operator's new entry
-/// is answered in seconds), then the oldest verdict. Each verdict is written
-/// as it lands, and only if the row still names the URL that was probed.
+/// is answered in seconds), then the oldest verdict. Verdicts are written as
+/// they land, `VERDICT_CHUNK` at a time, and each only if the row still names
+/// the URL that was probed.
 pub async fn liveness_once(pg: &PgPool) -> Result<String, String> {
     if IN_FLIGHT.swap(true, Ordering::AcqRel) {
         return Ok("liveness batch already running in this process".into());
@@ -393,6 +395,101 @@ impl Drop for InFlight {
     }
 }
 
+/// Verdicts per write. A chunk is one UPDATE in one transaction, so a full
+/// batch commits ceil(300 / 50) = 6 times where it used to commit once a row
+/// — 300 commits every five minutes, each a WAL flush that every other
+/// writer on the instance queued behind (a person's click included).
+pub const VERDICT_CHUNK: usize = 50;
+
+/// One probe's answer, waiting for its chunk's write.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Verdict {
+    pub name: String,
+    /// The URL that was probed: the write lands only if the row still names it.
+    pub url: String,
+    pub state: LiveState,
+    pub detail: String,
+}
+
+/// Collects verdicts as the probes land and hands back each full chunk; what
+/// is left at the end is the last, short one.
+#[derive(Default)]
+struct Chunker {
+    pending: Vec<Verdict>,
+}
+
+impl Chunker {
+    fn push(&mut self, v: Verdict) -> Option<Vec<Verdict>> {
+        self.pending.push(v);
+        (self.pending.len() >= VERDICT_CHUNK).then(|| std::mem::take(&mut self.pending))
+    }
+
+    fn finish(self) -> Option<Vec<Verdict>> {
+        (!self.pending.is_empty()).then_some(self.pending)
+    }
+}
+
+/// A chunk's rows, matched by name AND the probed URL — an entry the sync
+/// re-pointed while it was being probed keeps its row untouched.
+const WRITE_VERDICTS: &str = "update mcp_library_entries e \
+     set live_state = v.state, live_checked_at = now(), live_detail = v.detail \
+     from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as v(name, state, detail, url) \
+     where e.registry_name = v.name and e.entry->>'url' = v.url";
+
+/// One chunk: one UPDATE in one transaction that does not wait for its WAL
+/// flush (`synchronous_commit = off`, for this transaction only). A crash
+/// can lose the last fraction of a second of verdicts, and that costs
+/// nothing: every verdict is derived again on the row's next pass, and an
+/// unwritten one leaves the row first in line for it. Rows written.
+async fn write_chunk(pg: &PgPool, chunk: &[Verdict]) -> Result<u64, sqlx::Error> {
+    let mut names = Vec::with_capacity(chunk.len());
+    let mut states = Vec::with_capacity(chunk.len());
+    let mut details = Vec::with_capacity(chunk.len());
+    let mut urls = Vec::with_capacity(chunk.len());
+    for v in chunk {
+        names.push(v.name.as_str());
+        states.push(v.state.as_str());
+        details.push(v.detail.as_str());
+        urls.push(v.url.as_str());
+    }
+    let mut tx = pg.begin().await?;
+    sqlx::query("set local synchronous_commit = off")
+        .execute(&mut *tx)
+        .await?;
+    let written = sqlx::query(WRITE_VERDICTS)
+        .bind(&names)
+        .bind(&states)
+        .bind(&details)
+        .bind(&urls)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(written)
+}
+
+/// A chunk written, or its failure logged: one lost chunk never fails the
+/// batch, as one lost row never did. Rows written.
+async fn save_chunk(pg: &PgPool, chunk: &[Verdict]) -> u64 {
+    match write_chunk(pg, chunk).await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("[mcp/liveness] {} verdicts not saved: {e}", chunk.len());
+            0
+        }
+    }
+}
+
+/// `verdicts` written `VERDICT_CHUNK` at a time, one transaction each. Rows
+/// written.
+pub async fn write_verdicts(pg: &PgPool, verdicts: &[Verdict]) -> u64 {
+    let mut written = 0;
+    for chunk in verdicts.chunks(VERDICT_CHUNK) {
+        written += save_chunk(pg, chunk).await;
+    }
+    written
+}
+
 async fn run_batch(pg: &PgPool) -> Result<String, String> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "select registry_name, entry->>'url' from mcp_library_entries \
@@ -408,34 +505,44 @@ async fn run_batch(pg: &PgPool) -> Result<String, String> {
         return Ok("no hosted entries to check".into());
     }
     let n = rows.len();
-    let verdicts: Vec<LiveState> = stream::iter(rows)
-        .map(|(name, url)| async move {
-            let (state, detail) = classify_liveness(&probe(&url).await);
-            let write = sqlx::query(
-                "update mcp_library_entries set live_state = $2, live_checked_at = now(), live_detail = $3 \
-                 where registry_name = $1 and entry->>'url' = $4",
-            )
-            .bind(&name)
-            .bind(state.as_str())
-            .bind(&detail)
-            .bind(&url)
-            .execute(pg)
-            .await;
-            if let Err(e) = write {
-                tracing::warn!("[mcp/liveness] verdict for {name} not saved: {e}");
-            }
-            state
-        })
-        .buffer_unordered(LIVENESS_CONCURRENCY)
-        .collect()
-        .await;
+    let mut probes = std::pin::pin!(
+        stream::iter(rows)
+            .map(|(name, url)| async move {
+                let (state, detail) = classify_liveness(&probe(&url).await);
+                Verdict {
+                    name,
+                    url,
+                    state,
+                    detail,
+                }
+            })
+            .buffer_unordered(LIVENESS_CONCURRENCY)
+    );
     let mut t = Tally::default();
-    for v in verdicts {
-        match v {
+    let mut chunker = Chunker::default();
+    let mut writes = Vec::new();
+    while let Some(v) = probes.next().await {
+        match v.state {
             LiveState::Ok => t.ok += 1,
             LiveState::Auth => t.auth += 1,
             LiveState::Dead => t.dead += 1,
             LiveState::Unknown => t.unknown += 1,
+        }
+        // Each full chunk is written beside the probes, not between them: a
+        // probe is not polled while this loop awaits, and its 6s deadline
+        // keeps running, so a slow write here would turn live servers dead.
+        // A run cut off at `max_run_ms` keeps every chunk already handed off.
+        if let Some(chunk) = chunker.push(v) {
+            let pg = pg.clone();
+            writes.push(tokio::spawn(async move { save_chunk(&pg, &chunk).await }));
+        }
+    }
+    if let Some(rest) = chunker.finish() {
+        save_chunk(pg, &rest).await;
+    }
+    for w in writes {
+        if let Err(e) = w.await {
+            tracing::warn!("[mcp/liveness] a verdict write did not finish: {e}");
         }
     }
     Ok(format!(
@@ -787,6 +894,59 @@ mod tests {
         assert!(!detail.contains("error sending request"), "{detail}");
     }
 
+    fn verdict(i: usize) -> Verdict {
+        Verdict {
+            name: format!("entry-{i}"),
+            url: format!("https://entry-{i}.test/mcp"),
+            state: LiveState::Dead,
+            detail: format!("detail {i}"),
+        }
+    }
+
+    /// The chunks a run hands to the writer for `n` verdicts, in order.
+    fn chunks_of(n: usize) -> Vec<Vec<Verdict>> {
+        let mut c = Chunker::default();
+        let mut out: Vec<Vec<Verdict>> = (0..n).filter_map(|i| c.push(verdict(i))).collect();
+        out.extend(c.finish());
+        out
+    }
+
+    #[test]
+    fn verdicts_go_out_fifty_at_a_time_and_each_exactly_once() {
+        let sizes = |n| chunks_of(n).iter().map(Vec::len).collect::<Vec<_>>();
+        assert_eq!(sizes(0), Vec::<usize>::new());
+        assert_eq!(sizes(1), [1]);
+        assert_eq!(sizes(49), [49]);
+        assert_eq!(sizes(50), [50]);
+        assert_eq!(sizes(51), [50, 1]);
+        assert_eq!(sizes(300), [50; 6]);
+        assert_eq!(sizes(301), [50, 50, 50, 50, 50, 50, 1]);
+        // In landing order, none twice and none dropped.
+        let flat: Vec<Verdict> = chunks_of(137).into_iter().flatten().collect();
+        assert_eq!(flat, (0..137).map(verdict).collect::<Vec<_>>());
+        // A full batch commits at most six times, and the batch writer cuts
+        // at the same size the run does.
+        assert_eq!(VERDICT_CHUNK, 50);
+        assert_eq!(chunks_of(LIVENESS_BATCH as usize).len(), 6);
+        let sliced: Vec<usize> = (0..137)
+            .map(verdict)
+            .collect::<Vec<_>>()
+            .chunks(VERDICT_CHUNK)
+            .map(<[Verdict]>::len)
+            .collect();
+        assert_eq!(sliced, sizes(137));
+    }
+
+    #[test]
+    fn the_write_matches_name_and_probed_url_from_four_text_arrays() {
+        assert!(WRITE_VERDICTS.contains(
+            "from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as v(name, state, detail, url)"
+        ));
+        assert!(
+            WRITE_VERDICTS.contains("where e.registry_name = v.name and e.entry->>'url' = v.url")
+        );
+    }
+
     #[tokio::test]
     async fn the_job_spec_carries_the_declared_timings() {
         let pg = sqlx::postgres::PgPoolOptions::new()
@@ -798,5 +958,140 @@ mod tests {
         assert_eq!(spec.first_run_delay_ms, Some(3 * 60_000));
         assert_eq!(spec.max_run_ms, Some(4 * 60_000));
         assert!(!spec.per_instance, "verdicts are shared rows: leased");
+    }
+}
+
+// Live-DB proof that a batch's verdicts land in chunks: N verdicts leave at
+// most ceil(N / 50) distinct xmin values (one commit per chunk), each row the
+// verdict it was given, a row re-pointed since its probe untouched, and the
+// connection's synchronous_commit back to `on` after. `#[ignore]`d — it needs
+// a database — and CI's live-tests job runs it
+// (`cargo test --workspace --lib -- --ignored`):
+//
+//   DATABASE_URL=postgres://… cargo test -p talaria-mcp-library --lib -- --ignored liveness_live
+//
+// Like tests/catalog_live.rs, it builds its own schema (a copy of the
+// mirror's table) and points a one-connection pool at it alone, so the real
+// mirror is never read or written.
+#[cfg(test)]
+mod liveness_live {
+    use std::str::FromStr;
+
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+
+    const N: usize = 120;
+
+    #[tokio::test]
+    #[ignore]
+    async fn liveness_live_n_verdicts_commit_once_a_chunk() {
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (a migrated database) to run the ignored live tests");
+        let admin = PgPool::connect(&url).await.expect("the database");
+        let schema = format!("mcp_liveness_live_{}", std::process::id());
+        for sql in [
+            format!("drop schema if exists {schema} cascade"),
+            format!("create schema {schema}"),
+            format!(
+                "create table {schema}.mcp_library_entries \
+                 (like public.mcp_library_entries including all)"
+            ),
+        ] {
+            sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                .execute(&admin)
+                .await
+                .expect(&sql);
+        }
+        let opts = PgConnectOptions::from_str(&url)
+            .expect("DATABASE_URL parses")
+            .options([("search_path", schema.as_str())]);
+        // One connection: the synchronous_commit read at the end is the
+        // same session every chunk ran on.
+        let pg = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("scratch pool");
+        sqlx::query(
+            "insert into mcp_library_entries (registry_name, title, kind, entry) \
+             select 'live/' || g, 'Live ' || g, 'hosted', \
+                    jsonb_build_object('url', 'https://live-' || g || '.test/mcp') \
+             from generate_series(1, $1) g",
+        )
+        .bind(N as i32)
+        .execute(&pg)
+        .await
+        .unwrap();
+
+        let states = [
+            LiveState::Ok,
+            LiveState::Auth,
+            LiveState::Dead,
+            LiveState::Unknown,
+        ];
+        let verdicts: Vec<Verdict> = (1..=N)
+            .map(|i| Verdict {
+                name: format!("live/{i}"),
+                // Entry 7 was re-pointed while it was being probed.
+                url: if i == 7 {
+                    "https://moved.test/mcp".into()
+                } else {
+                    format!("https://live-{i}.test/mcp")
+                },
+                state: states[i % 4],
+                detail: format!("detail {i}"),
+            })
+            .collect();
+        let written = write_verdicts(&pg, &verdicts).await;
+        assert_eq!(written, (N - 1) as u64, "every row but the re-pointed one");
+
+        let commits: i64 = sqlx::query_scalar(
+            "select count(distinct xmin::text) from mcp_library_entries \
+             where live_checked_at is not null",
+        )
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert!(
+            commits as usize <= N.div_ceil(VERDICT_CHUNK),
+            "{commits} commits for {N} verdicts"
+        );
+        assert_eq!(commits, 3);
+
+        let rows: Vec<(String, Option<String>, Option<String>, bool)> = sqlx::query_as(
+            "select registry_name, live_state, live_detail, live_checked_at is not null \
+             from mcp_library_entries",
+        )
+        .fetch_all(&pg)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), N);
+        for (name, state, detail, checked) in rows {
+            let i: usize = name.trim_start_matches("live/").parse().unwrap();
+            if i == 7 {
+                assert_eq!((state, detail, checked), (None, None, false), "{name}");
+            } else {
+                assert_eq!(state.as_deref(), Some(states[i % 4].as_str()), "{name}");
+                assert_eq!(detail, Some(format!("detail {i}")), "{name}");
+                assert!(checked, "{name}");
+            }
+        }
+
+        let sync: String = sqlx::query_scalar("show synchronous_commit")
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+        assert_eq!(
+            sync, "on",
+            "synchronous_commit = off stayed inside the chunks"
+        );
+
+        pg.close().await;
+        let drop = format!("drop schema if exists {schema} cascade");
+        sqlx::query(sqlx::AssertSqlSafe(drop.as_str()))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }
