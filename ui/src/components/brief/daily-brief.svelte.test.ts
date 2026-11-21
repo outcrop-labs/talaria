@@ -372,3 +372,96 @@ test('two marks answering out of order keep the newer page', async () => {
   expect(lineOf(cached(), 'task:two').resolved).toBe(true)
   expect(gets()).toBe(0)
 })
+
+// ── The stale nudge ─────────────────────────────────────────────────────────
+//
+// mark_brief_stale (a notification landed, a thread moved, an approval was
+// decided) clears the sweep throttle and publishes the brief's UNCHANGED seq:
+// the page holds that seq already, and the re-read — which sweeps — is the
+// whole point of the event.
+
+test('a stale nudge at the cached page’s seq still refetches, once', async () => {
+  mount(page())
+  await settle()
+  send({ type: 'brief', briefId: 'brief-1', seq: 3, stale: true })
+  await settle()
+  expect(gets()).toBe(1)
+})
+
+test('a stale nudge heard during a mark refetches after the answer, whatever seq the answer reached', async () => {
+  const actions = mount(page())
+  await settle()
+  const post = deferredPost()
+  const done = actions.markItem('task:one', 'check')
+  // The nudge's seq is the page's; the mark's own echo follows it.
+  send({ type: 'brief', briefId: 'brief-1', seq: 3, stale: true })
+  send({ type: 'brief', briefId: 'brief-1', seq: 4 })
+  await settle()
+  expect(gets()).toBe(0)
+  post.resolve({ ok: true, brief: checkedPage() })
+  await done
+  await settle()
+  expect(gets()).toBe(1)
+})
+
+test('a click does not cancel the read a stale nudge started', async () => {
+  const actions = mount(page())
+  await settle()
+  // The swept page the nudge's read comes back with: the check-off, and a
+  // new line the sweep found.
+  const swept = checkedPage()
+  swept.lastSeq = 5
+  const three = entry({ id: 'e-5', seq: 5, sourceKey: 'task:three', sourceId: 'three', title: 'A third thing', priority: 'p2', badge: null })
+  swept.sections[0]!.lines = [line(three), ...swept.sections[0]!.lines]
+  let answerRead!: (v: unknown) => void
+  h.getJson.mockImplementationOnce(() => new Promise((resolve) => (answerRead = resolve)))
+  send({ type: 'brief', briefId: 'brief-1', seq: 3, stale: true })
+  await settle()
+  expect(gets()).toBe(1)
+
+  h.postJson.mockResolvedValueOnce({ ok: true, brief: checkedPage() })
+  await actions.markItem('task:one', 'check')
+  answerRead(swept)
+  await settle()
+  expect(gets()).toBe(1)
+  expect(lineOf(cached(), 'task:three')).toBeDefined()
+  expect(lineOf(cached(), 'task:one').resolved).toBe(true)
+})
+
+// ── A failure the server's page makes moot ──────────────────────────────────
+
+test('a POST that failed after its commit landed stops saying so once the refetch shows the mark', async () => {
+  const actions = mount(page())
+  await settle()
+  const post = deferredPost()
+  // The refetch reads the log with the check-off in it.
+  let answerRead!: (v: unknown) => void
+  h.getJson.mockImplementationOnce(() => new Promise((resolve) => (answerRead = resolve)))
+  const done = actions.markItem('task:one', 'check')
+  post.reject(new Error('The proxy timed out.'))
+  expect(await done).toBe(false)
+  expect(briefMarkFailed('task:one')).toBe(true)
+  await settle()
+  expect(gets()).toBe(1)
+  answerRead(checkedPage())
+  await settle()
+  expect(lineOf(cached(), 'task:one').resolved).toBe(true)
+  expect(briefMarkFailed('task:one')).toBe(false)
+})
+
+test('a failed mark a later click on the line has overtaken is not shown as failed', async () => {
+  const actions = mount(page())
+  await settle()
+  h.getJson.mockImplementation(() => new Promise(() => {}))
+  const first = deferredPost()
+  const second = deferredPost()
+  const check = actions.markItem('task:one', 'check')
+  const restore = actions.markItem('task:one', 'restore')
+  first.reject(new Error('Could not reach the server.'))
+  expect(await check).toBe(false)
+  expect(briefMarkFailed('task:one')).toBe(false)
+  second.resolve({ ok: true, brief: page() })
+  expect(await restore).toBe(true)
+  expect(briefMarkFailed('task:one')).toBe(false)
+  expect(lineOf(cached(), 'task:one').resolved).toBe(false)
+})

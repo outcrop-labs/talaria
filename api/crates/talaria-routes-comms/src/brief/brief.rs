@@ -31,6 +31,17 @@ use talaria_state::AppState;
 /// the rare path, not the ordinary one.
 const ON_READ_SWEEP_BUDGET: Duration = Duration::from_secs(2);
 
+/// How long a sweep a read started may run at all, detached or not.
+///
+/// The job's own bound: its `max_run_ms` is ten minutes, past which a pass is
+/// stuck rather than slow. A read-started sweep has no job around it, and
+/// while it runs it holds its brief (the in-process hold), so the job's pass
+/// skips that brief — a sweep stalled on a model call or the calendar door
+/// would keep it unswept for as long as it stalled, and nothing would say so.
+/// Past this it is dropped, which gives the hold back, and logged as an error.
+/// Its claim stays stamped, so the next tick sweeps it as it would any brief.
+const ON_READ_SWEEP_LIMIT: Duration = Duration::from_secs(10 * 60);
+
 /// `?tz=` — the reader's IANA zone, from their browser. The org config's zone
 /// is a server-side default; without this, a person's evening can read as the
 /// small hours of tomorrow in UTC and hide a brief that exists. Validated and
@@ -69,13 +80,18 @@ pub async fn get(
         let user = user.clone();
         tokio::spawn(async move {
             let started = Instant::now();
-            match sweep_if_due(&deps, &user).await {
-                Ok(Some(_)) => tracing::info!(
+            match tokio::time::timeout(ON_READ_SWEEP_LIMIT, sweep_if_due(&deps, &user)).await {
+                Ok(Ok(Some(_))) => tracing::info!(
                     "[brief] on-read sweep ran in {}ms",
                     started.elapsed().as_millis()
                 ),
-                Ok(None) => {}
-                Err(e) => tracing::error!("[brief] on-read sweep failed: {e}"),
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => tracing::error!("[brief] on-read sweep failed: {e}"),
+                Err(_) => tracing::error!(
+                    "[brief] on-read sweep for {} gave up after {}s; the next tick sweeps it",
+                    user.id,
+                    ON_READ_SWEEP_LIMIT.as_secs()
+                ),
             }
         })
     };

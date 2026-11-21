@@ -256,12 +256,28 @@ export function withLineFrom(page: BriefResponse, from: BriefResponse | undefine
   return changed ? { ...page, sections } : page
 }
 
+/** A realtime 'brief' event, as the brief's listeners read it. */
+export interface BriefEventSignal {
+  briefId: string
+  seq: number
+  /** The stale nudge, not an append: see `briefEventIsNews`. */
+  stale?: boolean
+}
+
 /** Whether a realtime 'brief' event says something the cached page has not
- *  seen. The event carries the brief's id and the seq its append reached;
- *  a page of that brief already at or past that seq has it — the echo of a
+ *  seen. An APPEND's event carries the brief's id and the seq it reached; a
+ *  page of that brief already at or past that seq has it — the echo of a
  *  read that swept, or of the reader's own check-off whose answer carried the
- *  page — and refetching it would be a GET for nothing. */
-export function briefEventIsNews(cached: BriefResponse | undefined, event: { briefId: string; seq: number }): boolean {
+ *  page — and refetching it would be a GET for nothing.
+ *
+ *  THE STALE NUDGE IS ALWAYS NEWS. `mark_brief_stale` (a notification landed,
+ *  a thread moved, an approval was decided) clears the sweep throttle and
+ *  publishes the brief's UNCHANGED seq: the page's lastSeq equals it by
+ *  construction, and the re-read is the point — the read sweeps on the way
+ *  through, which is how a new message's line appears and a replied one's
+ *  closes. */
+export function briefEventIsNews(cached: BriefResponse | undefined, event: BriefEventSignal): boolean {
+  if (event.stale === true) return true
   if (!cached || 'absent' in cached) return true
   return cached.id !== event.briefId || cached.lastSeq < event.seq
 }

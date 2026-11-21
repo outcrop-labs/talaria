@@ -37,7 +37,11 @@ pub async fn mark_brief_stale(deps: &NotifyDeps, user_ids: &[String]) -> Result<
         publish_user(
             &deps.realtime,
             &user_id,
-            &UserEvent::Brief { brief_id, seq },
+            &UserEvent::Brief {
+                brief_id,
+                seq,
+                stale: true,
+            },
         );
     }
     Ok(())

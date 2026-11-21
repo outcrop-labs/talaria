@@ -11,11 +11,11 @@
 // So the cursor advances on an explicit gesture (the "N new" control, or
 // scrolling the timeline to the top), never on load.
 import { createQuery, useQueryClient, type QueryClient } from '@tanstack/svelte-query'
-import { SvelteSet } from 'svelte/reactivity'
+import { SvelteMap } from 'svelte/reactivity'
 import { errorMessage, getJson, postJson } from '@/lib/fetch-json'
 import { onUserEvent } from '@/lib/user-events.svelte'
 import { briefEventIsNews, withLineFrom, withMark } from '@/lib/daily-brief-types'
-import type { BriefMarkAction, BriefMarkAnswer, BriefResponse, BriefView } from '@/lib/daily-brief-types'
+import type { BriefEventSignal, BriefMarkAction, BriefMarkAnswer, BriefResponse, BriefView } from '@/lib/daily-brief-types'
 
 export type { BriefResponse, BriefView }
 export type * from '@/lib/daily-brief-types'
@@ -59,21 +59,51 @@ const pending = new Map<string, PendingMark>()
 /** Each line's POSTs, one after another — the server applies a check and a
  *  quick put-back in the order they were clicked. */
 const chains = new Map<string, Promise<unknown>>()
-/** The newest 'brief' event heard while a mark was in flight: it is very
- *  likely the mark's own echo, which the POST's answer will already cover. */
-let held: { briefId: string; seq: number } | null = null
+/** The newest 'brief' event heard while a mark was in flight: an append's is
+ *  very likely the mark's own echo, which the POST's answer will already
+ *  cover. A stale nudge among them is remembered as such, because the
+ *  answer never covers one (`briefEventIsNews`). */
+let held: Required<BriefEventSignal> | null = null
 let tokens = 0
 
-/** Lines whose last mark did not go through, by source key. Reactive, so a
- *  row that remounted on its way back to its lane can still say so. */
-const failedMarks = new SvelteSet<string>()
+/** `held`, with one more event heard. */
+function holding(prev: Required<BriefEventSignal> | null, event: BriefEventSignal): Required<BriefEventSignal> {
+  const stale = event.stale === true
+  if (!prev || prev.briefId !== event.briefId) return { briefId: event.briefId, seq: event.seq, stale }
+  return { briefId: prev.briefId, seq: Math.max(prev.seq, event.seq), stale: prev.stale || stale }
+}
+
+/** Lines whose last mark did not go through, by source key, with the verdict
+ *  that failed. Reactive, so a row that remounted on its way back to its lane
+ *  can still say so. */
+const failedMarks = new SvelteMap<string, BriefMarkAction>()
 
 /** Whether the last mark on this line did not go through — the "That did not
  *  go through" a row shows, including a row that remounted since it was
  *  clicked (a marked card changes lanes at once, and a failed mark brings it
- *  back as a new row). Cleared by the next mark on the line. Reactive. */
+ *  back as a new row). Cleared by the next mark on the line, and by a page
+ *  from the server that shows the line where the failed verdict would have
+ *  put it (`settleFailures`). Reactive. */
 export function briefMarkFailed(sourceKey: string): boolean {
   return failedMarks.has(sourceKey)
+}
+
+/** Drop the failures a page from the server makes moot: the line is where
+ *  the failed verdict would have put it — closed for a check-off or a
+ *  dismissal, open for a put-back — or it is gone from the page.
+ *
+ *  A POST can fail at the proxy after its commit landed (a slow disk); the
+ *  refetch that follows then shows the mark done, and a card sitting in Done
+ *  today saying the click failed would be wrong for the life of the tab. A
+ *  mark that really failed leaves the line as it was, and the failure stays. */
+function settleFailures(page: BriefResponse): void {
+  if (failedMarks.size === 0 || 'absent' in page) return
+  const lines = new Map(page.sections.flatMap((s) => s.lines).map((l) => [l.key, l] as const))
+  const moot = [...failedMarks].filter(([key, action]) => {
+    const line = lines.get(key)
+    return !line || line.resolved === (action !== 'restore')
+  })
+  for (const [key] of moot) failedMarks.delete(key)
 }
 
 function withPendingMarks(page: BriefResponse): BriefResponse {
@@ -91,12 +121,19 @@ function newerPage(fresh: BriefResponse, cached: BriefResponse | undefined): Bri
   return fresh.id === cached.id && fresh.lastSeq < cached.lastSeq ? cached : fresh
 }
 
-/** A 'brief' event the cache has not seen refetches it — once: the second
- *  listener on the same event joins the fetch the first started rather than
- *  cancelling it. */
-function refetchIfNews(qc: QueryClient, event: { briefId: string; seq: number }): void {
+/** A 'brief' event the cache has not seen refetches it — once.
+ *
+ *  An append's echo joins a read already in flight rather than restarting
+ *  it: that read either has the append or the next event will say so. A
+ *  STALE NUDGE needs a read that starts after it — one that left before the
+ *  throttle cleared did not sweep, and the sweep is the point of the nudge
+ *  (a new message's line, a replied thread's or a decided approval's line
+ *  closing) — so it restarts the read in flight. Only this listener
+ *  refetches (the app-wide map marks stale with no refetch), so a nudge is
+ *  one GET, not two that cancel each other. */
+function refetchIfNews(qc: QueryClient, event: BriefEventSignal): void {
   if (!briefEventIsNews(qc.getQueryData<BriefResponse>(BRIEF_KEY), event)) return
-  void qc.invalidateQueries({ queryKey: BRIEF_KEY }, { cancelRefetch: false })
+  void qc.invalidateQueries({ queryKey: BRIEF_KEY }, { cancelRefetch: event.stale === true })
 }
 
 export function useBrief() {
@@ -105,7 +142,9 @@ export function useBrief() {
     queryKey: BRIEF_KEY,
     queryFn: async (): Promise<BriefResponse> => {
       const fresh = await getJson<BriefResponse>(`/api/brief?tz=${encodeURIComponent(browserZone())}`)
-      return withPendingMarks(newerPage(fresh, qc.getQueryData<BriefResponse>(BRIEF_KEY)))
+      const next = withPendingMarks(newerPage(fresh, qc.getQueryData<BriefResponse>(BRIEF_KEY)))
+      settleFailures(next)
+      return next
     },
     // A slow poll UNDER the realtime subscription, not instead of it. The
     // subscription is the fast path and covers everything that publishes; this
@@ -143,17 +182,19 @@ export function useBrief() {
  *  the old shape.
  *
  *  THE ONE LISTENER THAT REFETCHES. The app-wide map only marks the page
- *  stale for its next mount. An event the cached page already covers (its
- *  lastSeq is at or past the event's) is dropped, and one that arrives while
- *  a check-off is in flight waits for the POST's answer, which carries the
- *  page — that event is almost always the click's own echo. */
+ *  stale for its next mount. An append's event the cached page already
+ *  covers (its lastSeq is at or past the event's) is dropped, and one that
+ *  arrives while a check-off is in flight waits for the POST's answer, which
+ *  carries the page — that event is almost always the click's own echo. A
+ *  stale nudge is never dropped: held during a mark, it still refetches once
+ *  the mark answers, whatever seq the answer reached. */
 export function useBriefLive(): void {
   const qc = useQueryClient()
   $effect(() =>
     onUserEvent((event) => {
       if (event.type !== 'brief') return
       if (pending.size > 0) {
-        if (!held || held.briefId !== event.briefId || held.seq < event.seq) held = { briefId: event.briefId, seq: event.seq }
+        held = holding(held, event)
         return
       }
       refetchIfNews(qc, event)
@@ -210,9 +251,11 @@ export function useBriefActions() {
     async markItem(sourceKey: string, action: BriefMarkAction): Promise<boolean> {
       const mark: PendingMark = { token: ++tokens, action, at: new Date().toISOString() }
       failedMarks.delete(sourceKey)
-      // A read already in flight was made before this click; its answer must
-      // not land over the mark.
-      void qc.cancelQueries({ queryKey: BRIEF_KEY })
+      // A read already in flight is NOT cancelled. Its answer cannot land over
+      // the mark — the query lays every pending mark on whatever page lands,
+      // and keeps the newer of two pages — and it may be the one a stale
+      // nudge started, whose sweep the mark's own answer (read, no sweep)
+      // would never make up for.
       const before = qc.getQueryData<BriefResponse>(BRIEF_KEY)
       pending.set(sourceKey, mark)
       if (before) qc.setQueryData<BriefResponse>(BRIEF_KEY, withMark(before, sourceKey, action, mark.at))
@@ -229,17 +272,23 @@ export function useBriefActions() {
         ok = false
       }
       if (chains.get(sourceKey) === done) chains.delete(sourceKey)
-      if (pending.get(sourceKey)?.token === mark.token) pending.delete(sourceKey)
+      // The line's newest mark — not one a later click on it has overtaken.
+      const latest = pending.get(sourceKey)?.token === mark.token
+      if (latest) pending.delete(sourceKey)
 
       if (ok && answer?.brief) {
         // Through the same recency test as a GET: two marks on different
         // lines answer in either order, and the answer read before the other
         // mark committed must not land over the page that has both.
-        qc.setQueryData<BriefResponse>(BRIEF_KEY, withPendingMarks(newerPage(answer.brief, qc.getQueryData<BriefResponse>(BRIEF_KEY))))
+        const next = withPendingMarks(newerPage(answer.brief, qc.getQueryData<BriefResponse>(BRIEF_KEY)))
+        settleFailures(next)
+        qc.setQueryData<BriefResponse>(BRIEF_KEY, next)
       } else if (ok) {
         void refresh()
       } else {
-        failedMarks.add(sourceKey)
+        // A failure the line's later click has overtaken is not the line's
+        // state; that click's own answer is.
+        if (latest) failedMarks.set(sourceKey, action)
         const now = qc.getQueryData<BriefResponse>(BRIEF_KEY)
         const restored = now ? withLineFrom(now, before, sourceKey) : before
         if (restored) qc.setQueryData<BriefResponse>(BRIEF_KEY, withPendingMarks(restored))

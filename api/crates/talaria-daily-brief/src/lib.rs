@@ -842,6 +842,7 @@ pub async fn append_entries(
         &UserEvent::Brief {
             brief_id: brief_id.to_string(),
             seq: end,
+            stale: false,
         },
     );
     Ok(inserted)
@@ -1307,6 +1308,13 @@ async fn sweep_row_if_due(
     // across instances the stamp still serializes every sweep shorter than
     // the window, and the job's lease keeps the passes themselves apart.
     let Some(_held) = SweepHold::take(&row.id) else {
+        // Said out loud, because the pass counts this as neither swept nor
+        // failed: a brief held this way on tick after tick is a sweep stuck
+        // in this process, and this line is how that shows.
+        tracing::info!(
+            "[daily-brief] {by:?} sweep of brief {} skipped: a sweep of it is still running here",
+            row.id
+        );
         return Ok(None);
     };
     // CLAIMED BEFORE ANY WORK. See `claim_sweep`: one sweep at a time per
