@@ -39,7 +39,7 @@ use talaria_secretbox::SecretBox;
 
 use crate::holdings::{InstallationRow, installation_rows, tracked_installations};
 use crate::permissions::installation_for_repo;
-use crate::registry::{HostRow, host_rows};
+use crate::registry::HostRow;
 use crate::{AgentCredential, CredentialScope, credential_scope, grant_login, withheld_names};
 
 /// The sentence a non-Developer agent gets, at the door, at the push check
@@ -264,16 +264,6 @@ pub async fn workspace_secret_at(
     let withheld = withheld_names(rows, Some(row.id.as_str()));
     talaria_workspace_secrets::secret_answering_git_at(pg, agent_model, &row.authority(), &withheld)
         .await
-}
-
-/// [`workspace_secret_at`], reading the registered hosts itself.
-pub async fn workspace_secret_on(
-    pg: &PgPool,
-    agent_model: &str,
-    row: &HostRow,
-) -> Result<Option<String>, String> {
-    let rows = host_rows(pg).await?;
-    workspace_secret_at(pg, agent_model, row, &rows).await
 }
 
 // ── What the agent's git is told ─────────────────────────────────────────────

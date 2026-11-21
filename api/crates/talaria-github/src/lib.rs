@@ -679,7 +679,8 @@ fn install_tokens() -> &'static TokenCache {
 
 /// Tokens a fresh mint took the place of while they still had time left
 /// ([`Github::installation_token`]: the installation came to hold what one
-/// went without). Each is still live on GitHub until it expires, and every
+/// went without, or two mints for one key raced and the later one landed
+/// last). Each is still live on GitHub until it expires, and every
 /// revoke finds tokens only here and in the cache, so each revoke that
 /// sweeps the cache sweeps this list by the same rule: a narrowing reaches
 /// every token minted under the old grant, not only the one served last.
@@ -698,10 +699,29 @@ fn retire(cache: &mut HashMap<TokenKey, CachedToken>, key: &TokenKey, token: &st
         return;
     }
     if let Some(t) = cache.remove(key) {
-        let now = now_ms();
-        let mut retired = retired_tokens().lock().unwrap();
-        retired.retain(|(_, t)| t.expires_at > now);
-        retired.push((key.clone(), t));
+        shelve(key.clone(), t);
+    }
+}
+
+/// Put `t`, filed under `key`, on the retired list.
+fn shelve(key: TokenKey, t: CachedToken) {
+    let now = now_ms();
+    let mut retired = retired_tokens().lock().unwrap();
+    retired.retain(|(_, t)| t.expires_at > now);
+    retired.push((key, t));
+}
+
+/// Cache `t` under `key`. A token already there that is not `t` (a mint
+/// that raced this one for the same agent, repo and ask, and landed first)
+/// is retired, never orphaned: it stays live on GitHub until it expires, so
+/// a revoke must still reach it.
+fn keep(key: TokenKey, t: CachedToken) {
+    let mut cache = install_tokens().lock().unwrap();
+    let token = t.token.clone();
+    if let Some(prev) = cache.insert(key.clone(), t)
+        && prev.token != token
+    {
+        shelve(key, prev);
     }
 }
 
@@ -1903,7 +1923,7 @@ impl Github {
             (None, false) => Some(format!("GitHub did not put {omitted} on the token")),
             (Some(why), false) => Some(format!("{why}; GitHub did not put {omitted} on the token")),
         };
-        install_tokens().lock().unwrap().insert(
+        keep(
             key,
             CachedToken {
                 token: token.clone(),
@@ -5760,6 +5780,41 @@ mod tests {
         assert!(MintError::Other("x".into()).shortfall().is_empty());
         assert_eq!(MintError::Local("x".into()).kind(), "local");
         assert!(MintError::Local("x".into()).shortfall().is_empty());
+    }
+
+    /// Two mints for one agent, repo and ask raced: the token that landed
+    /// first is retired when the second takes its place in the cache, never
+    /// orphaned, so a revoke still finds it. The same token kept again
+    /// retires nothing.
+    #[test]
+    fn a_token_a_racing_mint_replaced_stays_where_a_revoke_reaches_it() {
+        let key = TokenKey {
+            host: "gh-test-keep-race".into(),
+            inst: "1".into(),
+            repo: Some("acme/widgets".into()),
+            agent: Some("a-keep-race".into()),
+            perms: default_set().canonical(),
+        };
+        let token = |t: &str| CachedToken {
+            token: t.into(),
+            expires_at: now_ms() + 3_600_000,
+            carried: default_set(),
+            shortfall: PermissionSet::new(),
+            shortfall_why: None,
+            unheld: PermissionSet::new(),
+            omitted: PermissionSet::new(),
+            api: "http://127.0.0.1:9".into(),
+        };
+        keep(key.clone(), token("first"));
+        keep(key.clone(), token("first"));
+        keep(key.clone(), token("second"));
+        let retired: Vec<String> = take_retired(|k, _| k == &key)
+            .into_iter()
+            .map(|t| t.token)
+            .collect();
+        assert_eq!(retired, ["first"]);
+        let cached = install_tokens().lock().unwrap().remove(&key);
+        assert_eq!(cached.map(|t| t.token).as_deref(), Some("second"));
     }
 
     // ── PR status: read-only, every call a GET ────────────────────────────────
