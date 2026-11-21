@@ -707,7 +707,7 @@ async fn a_session_with_no_attribution_keeps_the_unaddressed_rule() {
     let (model, key) = fleet_agent(&state, "unknown").await;
     let (_, row) = live_turn(&state, &owner, &model, "work").await;
     let unknown = format!("api-{}", hex(16));
-    let doc = |id: &str| json!({ "artifact": { "id": id, "kind": "doc", "title": "Brief", "updatedAt": "2026-11-20T22:30:00.000Z" } });
+    let doc = |id: &str| json!({ "artifact": { "id": id, "kind": "doc", "title": "Brief", "updatedAt": "2026-01-05T09:00:00.000Z" } });
 
     // One live turn: it lands there, as it always did.
     let one = uuid::Uuid::new_v4().to_string();
@@ -766,7 +766,7 @@ async fn another_agents_session_lands_nothing() {
 
     for session in [&their_session, &crossed] {
         let id = uuid::Uuid::new_v4().to_string();
-        let answer = json!({ "artifact": { "id": id, "kind": "doc", "title": "Brief", "updatedAt": "2026-11-20T22:30:00.000Z" } });
+        let answer = json!({ "artifact": { "id": id, "kind": "doc", "title": "Brief", "updatedAt": "2026-01-05T09:00:00.000Z" } });
         post_frame(
             &state,
             &key,
@@ -839,13 +839,19 @@ async fn a_session_names_only_the_agents_own_conversation() {
     assert_eq!(named(String::new()).await, None, "nothing");
 
     // The chips' reading of a frame: a uuid first, else the session, else
-    // the parent's session.
+    // the parent's session — each session asked in turn.
     let hint =
         |body: Value| async move { talaria_chips::session_hint(pg, m, &body).await.unwrap() };
     assert_eq!(hint(json!({ "sessionId": mine })).await, Some(conv.clone()));
     assert_eq!(
         hint(json!({ "parentSessionId": mine })).await,
         Some(conv.clone())
+    );
+    // A child session with no record of its own never hides the parent's.
+    assert_eq!(
+        hint(json!({ "sessionId": format!("api-{}", hex(16)), "parentSessionId": mine })).await,
+        Some(conv.clone()),
+        "an unrecorded own session falls through to the parent's"
     );
     assert_eq!(
         hint(json!({ "conversationId": their_conv, "sessionId": mine })).await,
@@ -931,7 +937,29 @@ async fn a_google_read_opens_no_tab_and_a_write_or_an_open_after_it_does() {
             &session,
         )
     };
+    // An edit to somebody else's file QUEUES: the answer is `{ pending,
+    // approver, message }` (integrations_google_agent_queue) and names no
+    // file, so the chip it lands is labelled "Google Doc".
+    let queued = |id: &str| {
+        frame(
+            "update_google_doc",
+            &json!({ "id": id, "body": "more" }),
+            &json!({
+                "pending": { "id": uuid::Uuid::new_v4().to_string(), "status": "pending",
+                             "ownerUserId": owner, "isOrg": false },
+                "approver": { "userId": owner, "queue": "owner" },
+                "message": "Waiting for the owner. Confirm with list_pending_sends before telling anyone it is ready.",
+            }),
+            &session,
+        )
+    };
     let listed = || async { keys(&files(&state, &cookie, &conv).await) };
+    let chip_for = |chips: &Value, id: &str| {
+        chips
+            .as_array()
+            .and_then(|all| all.iter().find(|c| c["href"] == json!(url(id))).cloned())
+            .unwrap_or(Value::Null)
+    };
     let marked = |chips: &Value, id: &str| {
         chips.as_array().and_then(|all| {
             all.iter()
@@ -955,6 +983,31 @@ async fn a_google_read_opens_no_tab_and_a_write_or_an_open_after_it_does() {
     assert_eq!(marked(&chips, "1liveReadWrite"), Some(false), "{chips}");
     assert_eq!(naming(&chips, &url("1liveReadWrite")), 1, "{chips}");
 
+    // Read, then a QUEUED write: the write takes the read's place and keeps
+    // the read's name, through the SQL merge — not "Google Doc".
+    post_frame(&state, &key, read("1liveReadQueued")).await;
+    post_frame(&state, &key, queued("1liveReadQueued")).await;
+    let chips = chips_of(&state.pg, &row).await;
+    assert_eq!(marked(&chips, "1liveReadQueued"), Some(false), "{chips}");
+    assert_eq!(naming(&chips, &url("1liveReadQueued")), 1, "{chips}");
+    let chip = chip_for(&chips, "1liveReadQueued");
+    assert_eq!(chip["title"], json!("Brief"), "{chip}");
+    assert_eq!(chip["label"], json!("Brief"), "{chip}");
+
+    // A QUEUED write, then a read: still the write, and the read names it.
+    post_frame(&state, &key, queued("1liveQueuedRead")).await;
+    assert_eq!(
+        chip_for(&chips_of(&state.pg, &row).await, "1liveQueuedRead")["label"],
+        json!("Google Doc")
+    );
+    post_frame(&state, &key, read("1liveQueuedRead")).await;
+    let chips = chips_of(&state.pg, &row).await;
+    assert_eq!(marked(&chips, "1liveQueuedRead"), Some(false), "{chips}");
+    assert_eq!(naming(&chips, &url("1liveQueuedRead")), 1, "{chips}");
+    let chip = chip_for(&chips, "1liveQueuedRead");
+    assert_eq!(chip["title"], json!("Brief"), "{chip}");
+    assert_eq!(chip["label"], json!("Brief"), "{chip}");
+
     // Write, then read: still the write.
     post_frame(&state, &key, write("1liveWriteRead")).await;
     post_frame(&state, &key, read("1liveWriteRead")).await;
@@ -967,9 +1020,20 @@ async fn a_google_read_opens_no_tab_and_a_write_or_an_open_after_it_does() {
         vec![
             "google:1liveLegacy".to_string(),
             "google:1liveReadWrite".to_string(),
+            "google:1liveReadQueued".to_string(),
+            "google:1liveQueuedRead".to_string(),
             "google:1liveWriteRead".to_string(),
         ]
     );
+    // Both queued writes' tabs carry the read's name, not "Google Doc".
+    let named = files(&state, &cookie, &conv).await;
+    for tab_key in ["google:1liveReadQueued", "google:1liveQueuedRead"] {
+        let tab = named
+            .iter()
+            .find(|f| f["key"] == json!(tab_key))
+            .expect("the queued write's tab");
+        assert_eq!(tab["title"], json!("Brief"), "{tab}");
+    }
 
     // Asked to open the one it only read: the open door lands the unmarked
     // chip, says it opened it, and the tab is there — named from the read.

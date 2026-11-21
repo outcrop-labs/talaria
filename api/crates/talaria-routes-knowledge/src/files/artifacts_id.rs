@@ -721,8 +721,8 @@ mod tests {
             google_file_url: None,
             created_by: Some("agent-model".into()),
             updated_by: Some("agent-model".into()),
-            created_at: "2026-11-20T22:30:00.000Z".into(),
-            updated_at: "2026-11-20T22:34:12.000Z".into(),
+            created_at: "2026-01-05T09:00:00.000Z".into(),
+            updated_at: "2026-01-05T09:04:12.000Z".into(),
         }
     }
 

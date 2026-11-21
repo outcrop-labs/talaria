@@ -1248,6 +1248,50 @@ fn replaces_a_read(existing: &Value, incoming: &Value) -> bool {
     is_read_mark(existing) && !is_read_mark(incoming)
 }
 
+/// `incoming` taking a read's place, KEEPING THE READ'S NAME when it knows
+/// none of its own. A write's answer often names no file — a queued edit to
+/// somebody else's file answers `{ pending, approver, message }`, so its chip
+/// is labelled with what the file is ("Google Doc") — and the read it
+/// replaces is then the only name the row has for the file: dropping it
+/// would leave the tab and the pill reading "Google Doc" for a file the
+/// agent had just read by name. A title the incoming chip does carry wins,
+/// since it is the newer one. `merge_chips_sql!`'s read arm is this, in SQL.
+fn keeping_the_read_name(read: &Value, incoming: &Value) -> Value {
+    if incoming.get("title").is_some_and(Value::is_string) {
+        return incoming.clone();
+    }
+    named_by(incoming, read)
+}
+
+/// `existing`, RENAMED BY A LATER READ of the same file that knew its name.
+/// A read never takes a chip's place — a read after a write is still a write,
+/// and the file stays listed — but what it read is the file as it is called
+/// now, and dropping that would leave a queued write's "Google Doc" (or a
+/// name from before a rename) on the row for the rest of the turn. Only the
+/// name moves: `title`, and `label` beside it; never the mark. A read that
+/// knew no name changes nothing. `merge_chips_sql!`'s rename arm is this, in
+/// SQL.
+fn renamed_by_read(existing: &Value, read: &Value) -> Value {
+    named_by(existing, read)
+}
+
+/// `chip` with `donor`'s name — its `title`, and its `label` beside it —
+/// when the donor has a title; `chip` unchanged otherwise. Nothing else
+/// moves (never `READ_MARK`).
+fn named_by(chip: &Value, donor: &Value) -> Value {
+    let mut chip = chip.clone();
+    let Some(title) = donor.get("title").filter(|t| t.is_string()) else {
+        return chip;
+    };
+    if let Some(obj) = chip.as_object_mut() {
+        obj.insert("title".into(), title.clone());
+        if let Some(label) = donor.get("label").filter(|l| l.is_string()) {
+            obj.insert("label".into(), label.clone());
+        }
+    }
+    chip
+}
+
 pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
     let mut out = match existing {
         Value::Array(items) => items.clone(),
@@ -1262,17 +1306,20 @@ pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
             .iter()
             .position(|c| c.get("id").and_then(Value::as_str) == Some(id));
         match at {
-            // A read never replaces what is there.
-            Some(_) if is_read_mark(chip) => {}
+            // A read never replaces what is there; it only renames it.
+            Some(i) if is_read_mark(chip) => out[i] = renamed_by_read(&out[i], chip),
             // Already there: a snapshot is overwritten in PLACE (so it keeps
             // its position in the row rather than jumping to the end), a
             // document chip carrying changes takes the place over with BOTH
-            // edits' rows, an unmarked chip takes a read's place, and any
-            // other event is left alone.
+            // edits' rows, an unmarked chip takes a read's place (keeping the
+            // read's name when it has none), and any other event is left
+            // alone.
             Some(i) => {
                 let kind = chip.get("kind").and_then(Value::as_str).unwrap_or("");
-                if snapshot_kind(kind) || replaces_a_read(&out[i], chip) {
+                if snapshot_kind(kind) {
                     out[i] = chip.clone();
+                } else if replaces_a_read(&out[i], chip) {
+                    out[i] = keeping_the_read_name(&out[i], chip);
                 } else if !changes_on(chip).is_empty() {
                     out[i] = merge_doc_changes(&out[i], chip);
                 }
@@ -1377,8 +1424,11 @@ pub fn conversation_hint(body: &Value) -> Option<String> {
 /// reply), with only a log line to say so. The chat transport records that
 /// key against its conversation when the stream opens (`usage_attributions`,
 /// source `chat`), and the failure-verdict path already reads it back; this
-/// is the same read for the chips. The parent's session is asked when the
-/// frame has no session of its own (a subagent hook's `parentSessionId`).
+/// is the same read for the chips. Every session the frame carries is asked
+/// in turn — its own, then its parent's (a subagent hook's
+/// `parentSessionId`) — and the first that names one of this agent's
+/// conversations is the address, so a child session with no record of its
+/// own never hides the parent's.
 ///
 /// A KEY THAT NAMES NOTHING IS NOT AN ADDRESS: no row, another agent's row,
 /// a row whose conversation is not this agent's. The answer is None and the
@@ -1392,15 +1442,20 @@ pub async fn session_hint(
     if let Some(id) = conversation_hint(body) {
         return Ok(Some(id));
     }
-    let session = ["sessionId", "parentSessionId"]
-        .iter()
-        .filter_map(|key| body.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .find(|s| !s.is_empty());
-    match session {
-        Some(session) => talaria_conversations::session_conversation(pg, agent, session).await,
-        None => Ok(None),
+    for key in ["sessionId", "parentSessionId"] {
+        let Some(session) = body
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        if let Some(id) = talaria_conversations::session_conversation(pg, agent, session).await? {
+            return Ok(Some(id));
+        }
     }
+    Ok(None)
 }
 
 /// The rule, pure: one candidate is the target, several are an ambiguity,
@@ -1673,7 +1728,17 @@ fn snapshot_chips(chips: &[Value]) -> Vec<Value> {
 /// same id that is not marked — a write or an open of the file the turn had
 /// read — taken from `$2`; an incoming marked chip never replaces anything,
 /// since it is neither in `$3` nor unmarked. Without it the read, landing
-/// first, would keep the file out of the pane for the rest of the turn.
+/// first, would keep the file out of the pane for the rest of the turn. The
+/// replacement keeps the read's `title` and `label` when it carries no
+/// title of its own (`keeping_the_read_name`): a queued write's answer names
+/// no file, and the read was the only name the row had.
+///
+/// THE RENAME ARM IS `renamed_by_read`, in SQL. An incoming chip marked as a
+/// read that carries a `title` replaces nothing, but sets the `title` (and
+/// `label`) of the chip already at its id — the read is the file's name as
+/// it is now. Neither the mark nor anything else moves. The arms are
+/// exclusive: the read arm wants an unmarked incoming chip, this one a
+/// marked one.
 ///
 /// A macro over the table name because the statement has to stay a LITERAL —
 /// sqlx refuses a built SQL string by type, and the two tables carrying chips
@@ -1706,10 +1771,29 @@ macro_rules! merge_chips_sql {
                             from jsonb_array_elements($3::jsonb) n(c) \
                            where n.c->>'id' = e.c->>'id' limit 1 \
                         ), ( \
-                          select n.c from jsonb_array_elements($2::jsonb) n(c) \
+                          select case \
+                                   when jsonb_typeof(n.c->'title') is distinct from 'string' \
+                                    and jsonb_typeof(e.c->'title') = 'string' \
+                                   then n.c || jsonb_strip_nulls(jsonb_build_object( \
+                                          'title', e.c->'title', \
+                                          'label', case when jsonb_typeof(e.c->'label') = 'string' \
+                                                        then e.c->'label' end)) \
+                                   else n.c \
+                                 end \
+                            from jsonb_array_elements($2::jsonb) n(c) \
                            where n.c->>'id' = e.c->>'id' \
                              and e.c->'read' = 'true'::jsonb \
                              and n.c->'read' is distinct from 'true'::jsonb \
+                           limit 1 \
+                        ), ( \
+                          select e.c || jsonb_strip_nulls(jsonb_build_object( \
+                                   'title', n.c->'title', \
+                                   'label', case when jsonb_typeof(n.c->'label') = 'string' \
+                                                 then n.c->'label' end)) \
+                            from jsonb_array_elements($2::jsonb) n(c) \
+                           where n.c->>'id' = e.c->>'id' \
+                             and n.c->'read' = 'true'::jsonb \
+                             and jsonb_typeof(n.c->'title') = 'string' \
                            limit 1 \
                         ), e.c) as c, e.ord \
                    from jsonb_array_elements(chips) with ordinality e(c, ord) \
@@ -4298,15 +4382,137 @@ mod tests {
         // Read only, twice: one read, still marked.
         let merged = merge_chips(&json!([read.clone()]), &[read.clone()]);
         assert_eq!(merged, json!([read.clone()]), "{merged}");
-        // A chip from before the mark is unmarked, and a read leaves it be.
-        let legacy = json!({ "id": read["id"], "kind": "source", "label": "Spec", "href": url });
+        // A chip from before the mark is unmarked, and a read leaves it
+        // unmarked: it only names it.
+        let legacy =
+            json!({ "id": read["id"], "kind": "source", "label": "Old name", "href": url });
         let merged = merge_chips(&json!([legacy.clone()]), &[read.clone()]);
-        assert_eq!(merged, json!([legacy]), "{merged}");
+        assert_eq!(
+            merged,
+            json!([{ "id": read["id"], "kind": "source", "label": "Spec", "title": "Spec", "href": url }]),
+            "{merged}"
+        );
+    }
+
+    /// A READ RENAMES WHAT IS THERE, AND ONLY THAT. A read after a write in
+    /// one turn does not take the write's place (the file stays listed), but
+    /// it read the file as it is called now: a queued write's "Google Doc",
+    /// or a name from before a rename, takes the read's name. A read that
+    /// knew no name changes nothing.
+    #[test]
+    fn a_read_after_a_write_names_the_write_and_never_marks_it() {
+        let url = "https://docs.google.com/document/d/1same/edit";
+        let queued = google_chips(&chips_from_tool(
+            "update_google_doc",
+            r#"{"id":"1same","body":"more"}"#,
+            r#"{"pending":{"id":"p1","status":"pending","ownerUserId":"u1","isOrg":false},"approver":{"userId":"u1","queue":"owner"},"message":"Waiting for the owner."}"#,
+        ))[0]
+            .clone();
+        assert!(queued.get("title").is_none(), "{queued}");
+        let read = google_chips(&chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","title":"Spec","url":"{url}"}}"#),
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([queued.clone()]), &[read.clone()]);
+        let chip = &merged[0];
+        assert_eq!(merged.as_array().map(Vec::len), Some(1), "{merged}");
+        assert!(!is_read_mark(chip), "still the write: {chip}");
+        assert_eq!(chip["title"], json!("Spec"), "{chip}");
+        assert_eq!(chip["label"], json!("Spec"), "{chip}");
+
+        // A read that knew no name: the write, untouched.
+        let unnamed_read = google_chips(&chips_from_tool(
+            "read_drive_file",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","url":"{url}","text":"…"}}"#),
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([queued.clone()]), &[unnamed_read]);
+        assert_eq!(merged, json!([queued]), "{merged}");
+
+        // Two reads, the second knowing a newer name: one read, renamed,
+        // still marked.
+        let renamed_read = google_chips(&chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","title":"Spec v2","url":"{url}"}}"#),
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([read.clone()]), &[renamed_read.clone()]);
+        assert_eq!(merged, json!([renamed_read]), "{merged}");
+    }
+
+    /// A WRITE THAT NAMES NO FILE KEEPS THE READ'S NAME. A queued edit to a
+    /// file the agent did not create answers `{ pending, approver, message }`
+    /// — no title, no name — so its chip is labelled "Google Doc"; taking the
+    /// read's place must not take the read's name with it, or the tab and
+    /// the pill read "Google Doc" for a file the agent just read by name. A
+    /// write that does name the file wins: its name is the newer one.
+    #[test]
+    fn a_write_that_names_no_file_keeps_the_name_of_the_read_it_replaces() {
+        let url = "https://docs.google.com/document/d/1same/edit";
+        let read = google_chips(&chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","title":"Spec","url":"{url}"}}"#),
+        ))[0]
+            .clone();
+        let queued_answer = r#"{"pending":{"id":"p1","status":"pending","ownerUserId":"u1","isOrg":false},"approver":{"userId":"u1","queue":"owner"},"message":"Waiting for the owner. Confirm with list_pending_sends before telling anyone it is ready."}"#;
+        for tool in ["update_google_doc", "append_google_doc"] {
+            let queued = google_chips(&chips_from_tool(
+                tool,
+                r#"{"id":"1same","body":"more"}"#,
+                queued_answer,
+            ))[0]
+                .clone();
+            assert_eq!(queued["label"], json!("Google Doc"), "{tool}: {queued}");
+            assert!(queued.get("title").is_none(), "{tool}: {queued}");
+
+            let merged = merge_chips(&json!([read.clone()]), &[queued.clone()]);
+            let chip = &merged[0];
+            assert_eq!(merged.as_array().map(Vec::len), Some(1), "{merged}");
+            assert!(
+                !is_read_mark(chip),
+                "the write took the read's place: {chip}"
+            );
+            assert_eq!(chip["title"], json!("Spec"), "{tool}: {chip}");
+            assert_eq!(chip["label"], json!("Spec"), "{tool}: {chip}");
+            assert_eq!(chip["href"], json!(url), "{tool}: {chip}");
+        }
+
+        // A write that names the file: its name, not the read's.
+        let renamed = google_chips(&chips_from_tool(
+            "update_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","url":"{url}","name":"Spec v2"}}"#),
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([read.clone()]), &[renamed.clone()]);
+        assert_eq!(merged, json!([renamed]), "{merged}");
+
+        // A read that knew no name has none to keep.
+        let unnamed_read = google_chips(&chips_from_tool(
+            "read_drive_file",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","url":"{url}","text":"…"}}"#),
+        ))[0]
+            .clone();
+        let queued = google_chips(&chips_from_tool(
+            "update_google_doc",
+            r#"{"id":"1same","body":"more"}"#,
+            queued_answer,
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([unnamed_read]), &[queued.clone()]);
+        assert_eq!(merged, json!([queued]), "{merged}");
     }
 
     /// AND THE SQL STATES THE SAME RULE. `merge_chips_sql!` has no Rust to run
     /// here (the live test drives it against Postgres); this pins that its
-    /// read arm exists and is keyed the way `replaces_a_read` is.
+    /// read arm exists and is keyed the way `replaces_a_read` is, and that
+    /// its name rules (`keeping_the_read_name`, `renamed_by_read`) are there.
     #[test]
     fn the_sql_merge_carries_the_read_arm() {
         for sql in [MERGE_ONTO_CONVERSATION, MERGE_ONTO_CHANNEL] {
@@ -4317,6 +4523,16 @@ mod tests {
             assert!(
                 sql.contains("n.c->'read' is distinct from 'true'::jsonb"),
                 "and the incoming chip must not be: {sql}"
+            );
+            assert!(
+                sql.contains("jsonb_typeof(n.c->'title') is distinct from 'string'")
+                    && sql.contains("'title', e.c->'title'"),
+                "and an untitled replacement keeps the read's name: {sql}"
+            );
+            assert!(
+                sql.contains("n.c->'read' = 'true'::jsonb")
+                    && sql.contains("'title', n.c->'title'"),
+                "and a read renames the chip already there: {sql}"
             );
         }
         assert_eq!(READ_MARK, "read", "the SQL spells the mark by name");
