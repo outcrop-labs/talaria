@@ -49,14 +49,22 @@
 
 <div role={label ? 'group' : undefined} aria-label={label} class={cn('relative inline-flex shrink-0 rounded-md border border-line p-0.5', className)}>
   {#each options as o (o.id)}
-    {@const off = disabled || o.disabled === true}
+    <!-- One option held (a level the set may not drop to) stays focusable,
+         `aria-disabled` rather than `disabled`, so a keyboard or screen-reader
+         user reaches its reason in `title`; the whole control off is a native
+         `disabled`, since nothing is to be read while a write is in flight. -->
+    {@const held = !disabled && o.disabled === true}
+    {@const off = disabled || held}
     <button
       {...o.data}
       type="button"
       title={o.title}
       aria-pressed={value === o.id}
-      disabled={off}
-      onclick={() => onChange(o.id)}
+      aria-disabled={held ? 'true' : undefined}
+      {disabled}
+      onclick={() => {
+        if (!held) onChange(o.id)
+      }}
       class={cn(
         'relative select-none rounded font-mono uppercase tracking-[0.05em] transition-colors',
         focusRing,

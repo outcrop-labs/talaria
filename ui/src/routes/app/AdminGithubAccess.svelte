@@ -78,6 +78,9 @@
     }),
   )
   const waiting = $derived(requestRows(requests.data ?? [], repoRequests.data ?? [], defs))
+  // A failed read of either queue is said, never read as "nothing waiting".
+  const requestsFailed = $derived(requests.isError && requests.data === undefined)
+  const repoRequestsFailed = $derived(repoRequests.isError && repoRequests.data === undefined)
   const pendingRow = (id: string) => {
     const i = live.findIndex((d) => d.id === id)
     return i !== -1 && permsQueries[i]?.isPending === true
@@ -131,12 +134,15 @@
     </SettingsGroup>
   {/if}
 {:else}
-  {#if waiting.rows.length > 0 || waiting.repoLine || (requests.isError && requests.data === undefined)}
+  {#if waiting.rows.length > 0 || waiting.repoLine || requestsFailed || repoRequestsFailed}
     <SettingsSection title="Waiting on you">
       <SettingsGroup data-testid="github-access-waiting">
-        {#if requests.isError && requests.data === undefined}
+        {#if requestsFailed}
           <!-- A failed poll must never read as "nothing waiting". -->
           <QueryError variant="compact" error={requests.error} title="Could not load the permission requests" onRetry={() => void requests.refetch()} />
+        {/if}
+        {#if repoRequestsFailed}
+          <QueryError variant="compact" error={repoRequests.error} title="Could not load the repository requests" onRetry={() => void repoRequests.refetch()} />
         {/if}
         {#each waiting.rows as r (r.id)}
           {#if r.kind === 'decide'}
@@ -159,7 +165,7 @@
   <SettingsSection
     title="Developer agents"
     description="Each agent's token carries only the permissions set here, as far as the App's installation holds them."
-    info="What an installation accepted on GitHub is the most an admin may grant an agent. No agent's token carries any of it until an admin grants it to that agent. Each word is read from the agent's own tokens, never from what the installation holds."
+    info="What an installation accepted on GitHub is the most an admin may grant an agent. Beyond the default set every Developer agent starts with (contents, pull requests, metadata), no agent's token carries any of it until an admin grants it to that agent. Each word is read from the agent's own tokens, never from what the installation holds."
   >
     <SettingsGroup data-testid="github-access-agents">
       {#if anyPending(defsQuery, hostsQuery)}

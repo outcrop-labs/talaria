@@ -449,6 +449,12 @@ describe('matrixRows', () => {
     ])
   })
 
+  it('narrows only its set for a reader (searchAll false): a key outside the set is never offered', () => {
+    expect(keys(matrixRows(host(), CATALOG, { view: 'set', filter: 'work', searchAll: false, nowMs: NOW }))).toEqual([])
+    expect(keys(matrixRows(host(), CATALOG, { view: 'set', filter: 'Pull REQ', searchAll: false, nowMs: NOW }))).toEqual(['pull_requests'])
+    expect(keys(matrixRows(host(), CATALOG, { view: 'set', filter: '', searchAll: false, nowMs: NOW }))).toEqual(['contents', 'metadata', 'pull_requests'])
+  })
+
   it('offers None and only the levels GitHub takes a key at; metadata has no None', () => {
     const rows = matrixRows(host(), CATALOG, { view: 'all', nowMs: NOW })
     const levels = (key: string) => row(rows, key).options.map((o) => o.label)

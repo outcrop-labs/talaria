@@ -56,7 +56,8 @@
     /** Check token, from a row that says its key is not checked yet. Absent:
      *  this viewer may not check, or no repo is held here. */
     onCheck?: () => void
-    /** A write landed: the last Check token answer measured another set. */
+    /** A write landed (a permission, or the secret's revoke): the last Check
+     *  token answer measured something else. */
     onWrote: () => void
   } = $props()
 
@@ -73,7 +74,8 @@
   let saving = $state(false)
 
   const rows = $derived(
-    matrixRows(block, data.catalog, { view: canEdit ? view : 'set', filter, requested, touched, nowMs: clock.now }),
+    // A reader is offered only its set, and the filter searches that alone.
+    matrixRows(block, data.catalog, { view: canEdit ? view : 'set', filter, searchAll: canEdit, requested, touched, nowMs: clock.now }),
   )
   const empty = $derived(rows.repository.length === 0 && rows.organization.length === 0)
 
@@ -123,6 +125,9 @@
   // through a folder, and spendable at this host. An admin revokes a direct
   // grant in place, with the same write the agent's Secrets section makes; a
   // folder grant is revoked from the folder, so this names it and links there.
+  // The read says `direct` whenever a direct grant exists, even beside a
+  // folder grant, and `folder` names the secret's folder whether or not the
+  // agent holds it: the revoke's words never promise the App's token.
   const secretName = $derived(block.workspaceSecret?.trim() || null)
   const handles = createQuery(() => ({
     queryKey: ['agent-held-handles', def.model],
@@ -134,9 +139,13 @@
   let revoking = $state(false)
   const revoke = async () => {
     if (!secretName) return
+    const who = def.displayName
+    const then = grant?.folder
+      ? `If ${who} also holds the folder ${grant.folder}, ${secretName} still reaches it from there and keeps answering git at ${block.name}. Otherwise its git there uses the App's token with the permissions below, unless another workspace secret answers at ${block.name}.`
+      : `Its git at ${block.name} then uses the App's token with the permissions below, unless another workspace secret answers there. Anything else ${who} used ${secretName} for stops too.`
     const ok = await confirm({
       title: `Revoke ${secretName}`,
-      message: `Revoke ${secretName} from ${def.displayName}? Its git at ${block.name} then uses the App's token with the permissions below. Anything else ${def.displayName} used ${secretName} for stops too.`,
+      message: `Revoke ${secretName} from ${who}? This removes the grant made to ${who} directly. ${then}`,
       confirmLabel: 'Revoke',
       danger: true,
     })
@@ -144,6 +153,7 @@
     revoking = true
     try {
       await postJson('/api/admin/workspace-secrets', { action: 'revoke', name: secretName, agentModel: def.model })
+      onWrote()
     } catch (e) {
       toastError(`Could not revoke ${secretName}`, e)
     }
@@ -177,10 +187,13 @@
       <SettingsGroup>
         {#if secretName}
           <NoticeRow status="warn" data-testid="github-access-secret">
-            {workspaceSecretNotice(block)}{#if grant?.via === 'folder'}{` It reaches the agent through the folder ${grant.folder ?? ''}.`} <a href="/admin/secrets" class="text-accent hover:underline">Secrets ›</a>{/if}
+            {workspaceSecretNotice(block)}{#if grant?.via === 'folder'}{` It reaches the agent through the folder ${grant.folder ?? ''}.`} <a href="/admin/secrets" class="text-accent hover:underline">Secrets ›</a>{:else if isAdmin && handles.isError && handles.data === undefined}{' '}<span class="text-warning">Could not read how it reaches the agent.</span>
+              <a href="/admin/secrets" class="text-accent hover:underline">Secrets ›</a>{/if}
             {#snippet action()}
               {#if isAdmin && grant?.via === 'direct'}
                 <DangerLink onClick={() => void revoke()} disabled={revoking}>Revoke from {def.displayName}</DangerLink>
+              {:else if isAdmin && handles.isError && handles.data === undefined}
+                <Button variant="link" size="sm" disabled={handles.isFetching} onclick={() => void handles.refetch()}>Retry</Button>
               {/if}
             {/snippet}
           </NoticeRow>

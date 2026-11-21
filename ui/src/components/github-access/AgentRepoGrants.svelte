@@ -14,6 +14,7 @@
   import { confirm } from '@/components/ui/confirm.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { getJson, putJson } from '@/lib/fetch-json'
+  import { useHasPerm } from '@/lib/session'
   import { slide } from '@/lib/motion'
   import { toastError } from '@/lib/toast.svelte'
   import ProjectVariablesModal from './ProjectVariablesModal.svelte'
@@ -33,7 +34,23 @@
   // edits alone gather under the save bar. Removing a grant revokes its
   // tokens and may withdraw the agent's requests on that host, so every write
   // re-reads the permissions and the requests too.
-  let { agentId, agentName, canManage }: { agentId: string; agentName: string; canManage: boolean } = $props()
+  let {
+    agentId,
+    agentName,
+    canManage,
+    onGranted,
+  }: {
+    agentId: string
+    agentName: string
+    canManage: boolean
+    /** A repo was granted or removed on these hosts: its tokens there changed. */
+    onGranted?: (hosts: string[]) => void
+  } = $props()
+
+  // Project variables belong to the repository and their routes require
+  // `agents.manage`, which a named manager need not hold: a door that would
+  // only 403 is not drawn.
+  const mayEditVariables = useHasPerm('agents.manage')
 
   interface HostRepo {
     host: string
@@ -84,6 +101,7 @@
       await putJson(`/api/workbench/repos/${agentId}`, { repos: granted.map((r) => ({ host: r.host, repo: r.repo })), rules })
       edits = {}
       ok = true
+      if (granted !== d.granted) onGranted?.([...new Set(touched.map((r) => r.host))])
     } catch (e) {
       // The toast is the only place a failed write can be said, and the
       // re-read below restores the truth.
@@ -116,8 +134,7 @@
 
   let variablesFor = $state<string | null>(null)
   const menu = (d: ReposBody, g: HostRepo): ContextMenuEntry[] => [
-    { label: 'Project variables', onSelect: () => (variablesFor = g.repo) },
-    'sep',
+    ...(mayEditVariables.current ? [{ label: 'Project variables', onSelect: () => (variablesFor = g.repo) }, 'sep' as const] : []),
     { label: 'Remove repository', danger: true, disabled: saving, onSelect: () => void remove(d, g) },
   ]
 

@@ -18,9 +18,12 @@
     def,
     canManage,
     context = 'summary',
+    onChanged,
   }: {
     def: AgentDef
     canManage: boolean
+    /** The switch moved: whether its git gets a credential changed. */
+    onChanged?: () => void
     /** `editor`: drawn above the repositories and permissions it decides
      *  about, so its hint speaks of them. */
     context?: 'summary' | 'editor'
@@ -38,6 +41,7 @@
       return
     }
     autosave.flash()
+    onChanged?.()
     await qc.invalidateQueries({ queryKey: ['fleet-defs'] })
     await qc.invalidateQueries({ queryKey: githubPermissionsKey(def.id) })
   }

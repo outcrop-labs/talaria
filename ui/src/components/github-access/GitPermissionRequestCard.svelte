@@ -24,7 +24,14 @@
    *  checked by default, since it is how the agent hears the decision. A
    *  decision sends the level shown, so an agent that asked for more since
    *  gets a 409, never a wider grant. Admins only, like the route. */
-  let { request: r }: { request: DecidablePermissionRequest } = $props()
+  let {
+    request: r,
+    onDecided,
+  }: {
+    request: DecidablePermissionRequest
+    /** A decision landed: what the agent's set names on the host changed. */
+    onDecided?: () => void
+  } = $props()
 
   const refresh = useGithubAccessRefresh()
   let note = $state('')
@@ -69,6 +76,7 @@
         }
       }
       note = ''
+      onDecided?.()
     } catch (e) {
       error = errorMessage(e)
     }

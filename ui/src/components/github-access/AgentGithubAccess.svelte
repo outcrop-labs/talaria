@@ -59,12 +59,18 @@
   const status = $derived(perms.data ? accessStatus(def, perms.data) : null)
   const waiting = $derived((requests.data ?? []).filter(isDecidable).filter((r) => r.agentId === def.id))
   const repoAsks = $derived((repoRequests.data ?? []).filter((r) => r.agentId === def.id))
-  const showWaiting = $derived(isAdmin && (waiting.length > 0 || repoAsks.length > 0 || (requests.isError && requests.data === undefined)))
+  // A failed read of either queue is said here, never read as "nothing waiting".
+  const requestsFailed = $derived(requests.isError && requests.data === undefined)
+  const repoRequestsFailed = $derived(repoRequests.isError && repoRequests.data === undefined)
+  const showWaiting = $derived(isAdmin && (waiting.length > 0 || repoAsks.length > 0 || requestsFailed || repoRequestsFailed))
 
-  // Check token, per host: the repo picked and the last answer. Shared by
-  // the permission rows (a "Not checked" row offers it) and the token card.
+  // Check token, per host: the repo picked, the hosts with a check in
+  // flight, and the last answer. Shared by the permission rows (a "Not
+  // checked" row offers it) and the token card. Any write that changes what
+  // an answer describes drops it: a permission, a decided request, a repo
+  // granted or removed, a revoked secret, the Developer switch.
   let picked = $state<Record<string, string>>({})
-  let checking = $state<string | null>(null)
+  let checking = $state<string[]>([])
   let checks = $state<Record<string, { repo: string; result: TokenCheck }>>({})
   const repoFor = (h: HostPermissions) => {
     const repos = checkRepos(h)
@@ -74,7 +80,7 @@
   const check = async (h: HostPermissions) => {
     const repo = repoFor(h)
     if (!repo) return
-    checking = h.host
+    checking = [...checking, h.host]
     let result: TokenCheck
     try {
       result = await postJson<TokenCheck>(`/api/workbench/github-permissions/${def.id}/check`, { host: h.host, repo })
@@ -85,10 +91,11 @@
     checks = { ...checks, [h.host]: { repo, result } }
     // A check that minted wrote the agent's credential row: read it back.
     await Promise.all([qc.invalidateQueries({ queryKey: githubPermissionsKey(def.id) }), qc.invalidateQueries({ queryKey: gitHostAgentsKey(h.host) })])
-    checking = null
+    checking = checking.filter((x) => x !== h.host)
   }
-  const dropCheck = (host: string) => {
-    checks = Object.fromEntries(Object.entries(checks).filter(([h]) => h !== host))
+  /** Drop the answers on these hosts, or on every host. */
+  const dropChecks = (hosts?: readonly string[]) => {
+    checks = hosts ? Object.fromEntries(Object.entries(checks).filter(([h]) => !hosts.includes(h))) : {}
   }
 
   const leave = () => {
@@ -125,12 +132,15 @@
   {#if showWaiting}
     <SettingsSection title="Waiting on you">
       <SettingsGroup>
-        {#if requests.isError && requests.data === undefined}
+        {#if requestsFailed}
           <!-- A failed poll must never read as "nothing waiting". -->
           <QueryError variant="compact" error={requests.error} title="Could not load the permission requests" onRetry={() => void requests.refetch()} />
         {/if}
+        {#if repoRequestsFailed}
+          <QueryError variant="compact" error={repoRequests.error} title="Could not load the repository requests" onRetry={() => void repoRequests.refetch()} />
+        {/if}
         {#each waiting as r (r.id)}
-          <GitPermissionRequestCard request={r} />
+          <GitPermissionRequestCard request={r} onDecided={() => dropChecks([r.host])} />
         {/each}
         {#each repoAsks as q (q.id)}
           <NoticeRow status="idle">
@@ -144,11 +154,11 @@
 
   <SettingsSection title="Developer">
     <SettingsGroup>
-      <DeveloperSwitchRow {def} canManage={def.canManage} context="editor" />
+      <DeveloperSwitchRow {def} canManage={def.canManage} context="editor" onChanged={() => dropChecks()} />
     </SettingsGroup>
   </SettingsSection>
 
-  <AgentRepoGrants agentId={def.id} agentName={def.displayName} canManage={def.canManage} />
+  <AgentRepoGrants agentId={def.id} agentName={def.displayName} canManage={def.canManage} onGranted={(hosts) => dropChecks(hosts)} />
 
   {#if perms.isPending}
     <SettingsSection title="Permissions">
@@ -179,14 +189,14 @@
           block={h}
           {isAdmin}
           requested={requestedKeys(requests.data ?? [], def.id, h.host)}
-          checking={checking === h.host}
+          checking={checking.includes(h.host)}
           onCheck={canCheck && h.repos.length > 0 ? () => void check(h) : undefined}
-          onWrote={() => dropCheck(h.host)}
+          onWrote={() => dropChecks([h.host])}
         />
         <HostTokenCard
           block={h}
           {canCheck}
-          checking={checking === h.host}
+          checking={checking.includes(h.host)}
           picked={repoFor(h)}
           result={checks[h.host]}
           onPick={(repo) => (picked = { ...picked, [h.host]: repo })}

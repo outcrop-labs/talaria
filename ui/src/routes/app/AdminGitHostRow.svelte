@@ -335,7 +335,12 @@
               {/if}
             </div>
           {/each}
-          <p class="font-sans text-[13px] leading-5 text-muted">No agent's token carries any of this until an admin grants it to that agent.</p>
+          <!-- The default set (contents, pull requests, metadata) is on every
+               Developer agent's token without a grant; nothing else is. -->
+          <p class="font-sans text-[13px] leading-5 text-muted">
+            Beyond the default set every Developer agent starts with (contents, pull requests, metadata), no agent's token carries any of this until an admin grants it to that
+            agent.
+          </p>
           {#if unclaimed}
             <p class="font-sans text-[13px] leading-5 text-warning" data-testid="git-host-unclaimed">{unclaimed}</p>
           {/if}

@@ -29,8 +29,10 @@
   // The panel renders NOTHING when the feature is off: its routes answer 404
   // in that state (a feature nobody enabled should look absent, not
   // forbidden), and `getJsonOr404` turns that into a null rather than an error
-  // banner on an agent's summary tab.
-  let { agentId }: { agentId: string } = $props()
+  // banner on an agent's summary tab. Nothing means nothing: the wrapper
+  // (and its `class`, the caller's padding) is drawn only while the feature
+  // may be on, so a settings group never shows an empty padded band.
+  let { agentId, class: className }: { agentId: string; class?: string } = $props()
 
   const qc = useQueryClient()
   const modelName = useModelNames()
@@ -109,114 +111,120 @@
   )
 </script>
 
-<QueryState query={accounts} errorTitle="Could not load coding accounts" errorVariant="inline">
-  {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
-  {#snippet children(d)}
-    {#if d}
-      <div class="space-y-2">
-        <div class="flex items-center gap-2">
-          <span class="font-sans text-[13px] font-medium leading-5 text-fg">Coding accounts</span>
-          <InfoTip
-            text="Sign this agent in to a coding subscription (Claude Pro or Max, ChatGPT Codex, Copilot, Gemini) and its harness runs on that account instead of the org's Talaria gateway. One account per service. The agent itself keeps the model its settings configure. Spend on a subscription lands on that provider's bill, not Talaria's ledger."
-          />
-        </div>
-
-        <div class="[&>*+*]:border-t [&>*+*]:border-line-subtle">
-          {#each [{ accountId: null as number | null, provider: 'talaria', label: 'Talaria gateway', gateway: true, roles: d.gatewayRoles ?? {}, account: null }, ...d.accounts.map((a) => ({ accountId: a.id as number | null, provider: a.provider, label: a.email ?? a.orgName ?? a.provider, gateway: false, roles: a.roles ?? {}, account: a }))] as plan (plan.accountId ?? 'gateway')}
-            {@const isDefault = plan.gateway
-              ? !d.accounts.some((a) => a.primary)
-              : (plan.account?.primary ?? false)}
-            {@const showModels = () => {
-              const k = String(plan.accountId)
-              expanded = expanded === k ? null : k
-              if (expanded) void loadModelsInto(models, plan.provider)
-            }}
-            <div class="py-2">
-              <div class="flex min-h-8 flex-wrap items-center gap-2">
-                <span class="min-w-0 truncate font-sans text-[13px] leading-5 text-fg">{plan.label}</span>
-                <Chip class="font-mono">{plan.provider}</Chip>
-                {#if isDefault}<Chip>Default</Chip>{/if}
-                <span class="flex-1"></span>
-                <!-- A state is a dot and a word, in the colour it has on every other page. -->
-                {#if plan.account?.disabledAt}
-                  <span class="flex shrink-0 items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="warn" />Needs sign-in</span>
-                {/if}
-                {#if plan.account && !plan.account.permitted}
-                  <span class="flex shrink-0 items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not permitted</span>
-                {/if}
-                <SettingsRowMenu
-                  label={`Actions for ${plan.label}`}
-                  items={[
-                    ...(isDefault ? [] : [{ label: 'Make default', disabled: busy, onSelect: () => void setDefault(plan.accountId) }]),
-                    { label: expanded === String(plan.accountId) ? 'Hide models' : 'Choose models', onSelect: showModels },
-                    ...(plan.account
-                      ? [{ label: 'Sign out', danger: true, disabled: busy, onSelect: () => void signOut(plan.account.id, plan.account.provider) }]
-                      : []),
-                  ]}
-                />
-              </div>
-
-              {#if plan.account?.disabledAt && plan.account.disabledCause}
-                <p class="font-sans text-[13px] leading-5 text-danger">{plan.account.disabledCause}</p>
-              {/if}
-
-              {#if expanded === String(plan.accountId)}
-                <div class="mt-2 space-y-2 pb-1" transition:slide={{ duration: 150 }}>
-                  <p class="font-sans text-[13px] leading-5 text-muted">
-                    The model for each harness role on this plan. Blank falls back to the plan's default, then to the org's Workbench roles.
-                  </p>
-                  {#each d.roles as role (role)}
-                    <label class="flex items-center gap-3">
-                      <span class="w-24 font-sans text-[13px] leading-5 text-muted">{roleLabel(role)}</span>
-                      <Select
-                        size="sm"
-                        class="w-[280px]"
-                        value={plan.roles[role] ?? ''}
-                        disabled={busy}
-                        onchange={(e) => {
-                          const v = (e.currentTarget as HTMLSelectElement).value
-                          void setRole(plan.accountId, { ...plan.roles, [role]: v === '' ? null : v })
-                        }}
-                      >
-                        <option value="">Falls back</option>
-                        {#each models[plan.provider] ?? [] as m (m.id)}
-                          <option value={m.id}>{m.name ?? m.id}</option>
-                        {/each}
-                      </Select>
-                    </label>
-                  {/each}
-                </div>
-              {/if}
+<!-- `null` is the route's 404 (the feature is off); loading and a failure
+     still draw, inside the wrapper. -->
+{#if accounts.data !== null}
+  <div class={className} transition:slide={{ duration: 150 }}>
+    <QueryState query={accounts} errorTitle="Could not load coding accounts" errorVariant="inline">
+      {#snippet skeleton()}<SkeletonRows rows={2} />{/snippet}
+      {#snippet children(d)}
+        {#if d}
+          <div class="space-y-2">
+            <div class="flex items-center gap-2">
+              <span class="font-sans text-[13px] font-medium leading-5 text-fg">Coding accounts</span>
+              <InfoTip
+                text="Sign this agent in to a coding subscription (Claude Pro or Max, ChatGPT Codex, Copilot, Gemini) and its harness runs on that account instead of the org's Talaria gateway. One account per service. The agent itself keeps the model its settings configure. Spend on a subscription lands on that provider's bill, not Talaria's ledger."
+              />
             </div>
-          {/each}
-        </div>
 
-        {#if d.resolved}
-          <p class="font-sans text-[13px] leading-5 text-muted">
-            Unless a ticket picks another account, coding jobs run on
-            <span class="text-fg">{d.resolved.gateway ? 'the Talaria gateway' : d.resolved.provider}</span>
-            {#if d.resolved.models?.default}
-              · {#if modelName(d.resolved.models.default)}{modelName(d.resolved.models.default)}{:else}<span class="font-mono text-xs">{d.resolved.models.default}</span>{/if}
+            <div class="[&>*+*]:border-t [&>*+*]:border-line-subtle">
+              {#each [{ accountId: null as number | null, provider: 'talaria', label: 'Talaria gateway', gateway: true, roles: d.gatewayRoles ?? {}, account: null }, ...d.accounts.map((a) => ({ accountId: a.id as number | null, provider: a.provider, label: a.email ?? a.orgName ?? a.provider, gateway: false, roles: a.roles ?? {}, account: a }))] as plan (plan.accountId ?? 'gateway')}
+                {@const isDefault = plan.gateway
+                  ? !d.accounts.some((a) => a.primary)
+                  : (plan.account?.primary ?? false)}
+                {@const showModels = () => {
+                  const k = String(plan.accountId)
+                  expanded = expanded === k ? null : k
+                  if (expanded) void loadModelsInto(models, plan.provider)
+                }}
+                <div class="py-2">
+                  <div class="flex min-h-8 flex-wrap items-center gap-2">
+                    <span class="min-w-0 truncate font-sans text-[13px] leading-5 text-fg">{plan.label}</span>
+                    <Chip class="font-mono">{plan.provider}</Chip>
+                    {#if isDefault}<Chip>Default</Chip>{/if}
+                    <span class="flex-1"></span>
+                    <!-- A state is a dot and a word, in the colour it has on every other page. -->
+                    {#if plan.account?.disabledAt}
+                      <span class="flex shrink-0 items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="warn" />Needs sign-in</span>
+                    {/if}
+                    {#if plan.account && !plan.account.permitted}
+                      <span class="flex shrink-0 items-center gap-2 font-sans text-[13px] leading-5 text-muted"><StatusDot status="idle" />Not permitted</span>
+                    {/if}
+                    <SettingsRowMenu
+                      label={`Actions for ${plan.label}`}
+                      items={[
+                        ...(isDefault ? [] : [{ label: 'Make default', disabled: busy, onSelect: () => void setDefault(plan.accountId) }]),
+                        { label: expanded === String(plan.accountId) ? 'Hide models' : 'Choose models', onSelect: showModels },
+                        ...(plan.account
+                          ? [{ label: 'Sign out', danger: true, disabled: busy, onSelect: () => void signOut(plan.account.id, plan.account.provider) }]
+                          : []),
+                      ]}
+                    />
+                  </div>
+
+                  {#if plan.account?.disabledAt && plan.account.disabledCause}
+                    <p class="font-sans text-[13px] leading-5 text-danger">{plan.account.disabledCause}</p>
+                  {/if}
+
+                  {#if expanded === String(plan.accountId)}
+                    <div class="mt-2 space-y-2 pb-1" transition:slide={{ duration: 150 }}>
+                      <p class="font-sans text-[13px] leading-5 text-muted">
+                        The model for each harness role on this plan. Blank falls back to the plan's default, then to the org's Workbench roles.
+                      </p>
+                      {#each d.roles as role (role)}
+                        <label class="flex items-center gap-3">
+                          <span class="w-24 font-sans text-[13px] leading-5 text-muted">{roleLabel(role)}</span>
+                          <Select
+                            size="sm"
+                            class="w-[280px]"
+                            value={plan.roles[role] ?? ''}
+                            disabled={busy}
+                            onchange={(e) => {
+                              const v = (e.currentTarget as HTMLSelectElement).value
+                              void setRole(plan.accountId, { ...plan.roles, [role]: v === '' ? null : v })
+                            }}
+                          >
+                            <option value="">Falls back</option>
+                            {#each models[plan.provider] ?? [] as m (m.id)}
+                              <option value={m.id}>{m.name ?? m.id}</option>
+                            {/each}
+                          </Select>
+                        </label>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+
+            {#if d.resolved}
+              <p class="font-sans text-[13px] leading-5 text-muted">
+                Unless a ticket picks another account, coding jobs run on
+                <span class="text-fg">{d.resolved.gateway ? 'the Talaria gateway' : d.resolved.provider}</span>
+                {#if d.resolved.models?.default}
+                  · {#if modelName(d.resolved.models.default)}{modelName(d.resolved.models.default)}{:else}<span class="font-mono text-xs">{d.resolved.models.default}</span>{/if}
+                {/if}
+              </p>
+            {:else}
+              <p class="font-sans text-[13px] leading-5 text-muted">Nothing configured, so the harness runs on the org's Workbench model roles.</p>
             {/if}
-          </p>
-        {:else}
-          <p class="font-sans text-[13px] leading-5 text-muted">Nothing configured, so the harness runs on the org's Workbench model roles.</p>
-        {/if}
 
-        {#if offerable.length > 0}
-          <div class="flex flex-wrap items-center gap-2 pt-1">
-            <span class="font-sans text-[13px] leading-5 text-muted">Sign in to</span>
-            {#each offerable as s (s.id)}
-              <Button size="sm" variant="outline" onclick={() => (signingIn = s)}>{s.name}</Button>
-            {/each}
+            {#if offerable.length > 0}
+              <div class="flex flex-wrap items-center gap-2 pt-1">
+                <span class="font-sans text-[13px] leading-5 text-muted">Sign in to</span>
+                {#each offerable as s (s.id)}
+                  <Button size="sm" variant="outline" onclick={() => (signingIn = s)}>{s.name}</Button>
+                {/each}
+              </div>
+            {:else if (services.data?.permitted?.length ?? 0) === 0}
+              <p class="font-sans text-[13px] leading-5 text-muted">No services permitted yet. An admin allows them under Agent policy, Oversight.</p>
+            {/if}
           </div>
-        {:else if (services.data?.permitted?.length ?? 0) === 0}
-          <p class="font-sans text-[13px] leading-5 text-muted">No services permitted yet. An admin allows them under Agent policy, Oversight.</p>
         {/if}
-      </div>
-    {/if}
-  {/snippet}
-</QueryState>
+      {/snippet}
+    </QueryState>
+  </div>
+{/if}
 
 {#if signingIn}
   <CodingLoginModal

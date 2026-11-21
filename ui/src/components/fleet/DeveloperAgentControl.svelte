@@ -32,10 +32,9 @@
   {#if canManage}
     <!-- Coding accounts answer the next question in the same breath: it may
          touch these repos, and it codes on this plan. The panel renders
-         nothing when the feature is off (its route 404s, which the panel
-         treats as "absent" rather than an error). -->
-    <div transition:slide={{ duration: 150 }} class="px-5 py-4">
-      <CodingAccounts agentId={def.id} />
-    </div>
+         nothing, its padded wrapper included, when the feature is off (its
+         route 404s, which the panel treats as "absent" rather than an
+         error), so the group draws no empty band. -->
+    <CodingAccounts agentId={def.id} class="px-5 py-4" />
   {/if}
 {/if}

@@ -457,12 +457,22 @@ function tokenWord(state: KeyState, nowMs: number): MatrixRow['token'] {
  *  and what it asked for. `view: 'set'` lists its set, what GitHub added,
  *  what it has an open request for, and every key changed this visit; `all`
  *  lists the whole catalog. A non-empty `filter` searches the whole catalog
- *  by key or name, whatever the view. Grouped Repository then Organization,
- *  each in the catalog's order, a key the catalog does not know after. */
+ *  by key or name, whatever the view, for a viewer who may set keys; with
+ *  `searchAll: false` (a reader, offered only its set) it narrows the set
+ *  view instead. Grouped Repository then Organization, each in the
+ *  catalog's order, a key the catalog does not know after. */
 export function matrixRows(
   block: HostPermissions,
   catalog: CatalogEntry[],
-  opts: { view: MatrixView; filter?: string; requested?: readonly string[]; touched?: ReadonlySet<string> | readonly string[]; nowMs: number },
+  opts: {
+    view: MatrixView
+    filter?: string
+    /** Default true. False: the filter searches only what the view lists. */
+    searchAll?: boolean
+    requested?: readonly string[]
+    touched?: ReadonlySet<string> | readonly string[]
+    nowMs: number
+  },
 ): Record<PermissionScope, MatrixRow[]> {
   const set = block.permissions ?? {}
   const added = new Map(addedKeys(block).map((a) => [a.key, a]))
@@ -479,10 +489,12 @@ export function matrixRows(
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, level]): CatalogEntry => ({ key, scope: scopeOf(catalog, key), levels: [level] })),
   ]
+  const listed = (key: string): boolean =>
+    opts.view === 'all' || key in set || added.has(key) || requested.has(key) || touched.has(key)
+  const matches = (key: string): boolean => key.toLowerCase().includes(q) || keyLabel(key).toLowerCase().includes(q)
   const shown = (key: string): boolean => {
-    if (q) return key.toLowerCase().includes(q) || keyLabel(key).toLowerCase().includes(q)
-    if (opts.view === 'all') return true
-    return key in set || added.has(key) || requested.has(key) || touched.has(key)
+    if (!q) return listed(key)
+    return matches(key) && (opts.searchAll !== false || listed(key))
   }
 
   const rows = entries.filter((e) => shown(e.key)).map((e): MatrixRow => {
