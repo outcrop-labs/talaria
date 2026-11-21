@@ -138,11 +138,23 @@ fn opened(ctx: &CheckCtx, names_it: impl Fn(&str) -> bool) -> bool {
     }
 }
 
-/// The ledger design notes, however a pane key or an argument spells them.
+/// The first Drive or Talaria id at the start of `s`: up to the first
+/// character an id never holds, so `doc-10` and `df-10` are other files.
+fn leading_id(s: &str) -> &str {
+    s.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .next()
+        .unwrap_or("")
+}
+
+/// The ledger design notes, however a pane key or an argument spells them
+/// (`doc-1`, `artifact:doc-1`, a `/artifacts?a=doc-1` link, bare or inside a
+/// markdown link).
 fn is_ledger_notes(k: &str) -> bool {
     k == LEDGER_NOTES
         || k.strip_prefix("artifact:") == Some(LEDGER_NOTES)
-        || k.contains(&format!("/artifacts?a={LEDGER_NOTES}"))
+        || k.split("/artifacts?a=")
+            .nth(1)
+            .is_some_and(|id| leading_id(id) == LEDGER_NOTES)
 }
 
 /// The ledger migration plan, the Google Doc behind `LEDGER_PLAN_LINK`,
@@ -155,11 +167,10 @@ fn is_ledger_plan(k: &str) -> bool {
         return true;
     }
     k.find("docs.google.com/document/").is_some_and(|at| {
-        k[at..].split("/d/").nth(1).is_some_and(|id| {
-            id.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-                .next()
-                == Some("df-1")
-        })
+        k[at..]
+            .split("/d/")
+            .nth(1)
+            .is_some_and(|id| leading_id(id) == "df-1")
     })
 }
 
@@ -919,6 +930,12 @@ mod tests {
         }
         assert!(is_ledger_plan("google:df-1"));
         assert!(!is_ledger_plan("google:df-10"));
+        // The same identity rule for the Talaria notes: another id that only
+        // starts with theirs is another file.
+        assert!(is_ledger_notes("/artifacts?a=doc-1"));
+        assert!(is_ledger_notes("[Ledger design notes](/artifacts?a=doc-1)"));
+        assert!(!is_ledger_notes("/artifacts?a=doc-10"));
+        assert!(!is_ledger_notes("artifact:doc-10"));
         assert!(!is_ledger_plan(
             "https://docs.google.com/document/d/df-10/edit"
         ));
