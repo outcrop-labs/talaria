@@ -6,6 +6,7 @@
   import SettingsRow from '@/components/settings/SettingsRow.svelte'
   import { errorMessage, getJsonOr404 } from '@/lib/fetch-json'
   import { gitHostAgentsKey, unclaimedKeys, type HostAgents } from '@/lib/git-host-agents'
+  import { isDecidable } from '@/lib/git-permission-requests'
   import { GITHUB_ACCESS_HREF } from '@/lib/github-access'
   import { useGitHosts } from './git-hosts'
 
@@ -25,7 +26,9 @@
     })),
   }))
 
-  const pending = $derived((requests.data ?? []).filter((r) => r.status === 'pending').length)
+  // Only what this admin can decide: a fact-only request (one raised on a
+  // board they are not on) is another admin's, so it never says "waiting".
+  const pending = $derived((requests.data ?? []).filter(isDecidable).filter((r) => r.status === 'pending').length)
   const unclaimed = $derived([...new Set(agents.flatMap((q) => unclaimedKeys(q.data)))])
   const pointer = $derived.by((): { word: string; title?: string } | null => {
     if (requests.isError && requests.data === undefined) return { word: 'Could not read requests', title: errorMessage(requests.error) }
