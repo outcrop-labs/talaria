@@ -1493,6 +1493,57 @@ async fn a_release_waiting_on_stable_writes_its_state_only_when_its_detail_chang
     w.done().await;
 }
 
+/// A state patch whose change changed nothing, with no effect asked for,
+/// leaves the row unwritten (its xmin stays; it is still locked for the
+/// turn-taking, so its xmax may move). One that asks for an effect writes
+/// it, and so does one that changes a field.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_state_patch_that_changes_nothing_leaves_the_row_unwritten() {
+    let w = World::new("nooppatch", 1).await;
+    // The fixture's row is a hand-written subset of the state; the first
+    // patch writes it out whole, as every row the engine has written is.
+    images::patch_state_at(&w.pg, &w.key, |_| Ok(()))
+        .await
+        .unwrap();
+    let written = row_version(&w).await;
+    let (_, out) = images::patch_state_at(&w.pg, &w.key, |s| Ok(s.current.clone()))
+        .await
+        .unwrap();
+    assert_eq!(out.as_deref(), Some(w.old.as_str()), "the closure ran");
+    assert_eq!(
+        row_version(&w).await.0,
+        written.0,
+        "a patch that changed nothing left the row as it was"
+    );
+    let old = w.old.clone();
+    images::patch_state_fx_at(&w.pg, &w.key, move |_, fx| {
+        fx.mark_good(&old);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let with_effect = row_version(&w).await;
+    assert_ne!(
+        with_effect.0, written.0,
+        "a patch asking for an effect writes the row"
+    );
+    let previous = w.old.clone();
+    images::patch_state_at(&w.pg, &w.key, move |s| {
+        s.previous = Some(previous);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_ne!(
+        row_version(&w).await.0,
+        with_effect.0,
+        "a patch changing a field writes the row"
+    );
+    assert_eq!(w.state().await.previous.as_deref(), Some(w.old.as_str()));
+    w.done().await;
+}
+
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn allow_again_lifts_a_ban_and_a_banned_version_cannot_be_pinned() {

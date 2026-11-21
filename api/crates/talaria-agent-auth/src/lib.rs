@@ -391,16 +391,27 @@ async fn resolve(pg: &PgPool, headers: &HeaderMap) -> Result<Option<AgentCaller>
 //   · in process, before anything else (`StampCoalescer`): inside the window
 //     the call spawns nothing and checks out no connection;
 //   · in the UPDATE's own WHERE, for the processes that share the database:
-//     a stamp still inside the window matches no row, and an UPDATE that
+//     a stamp younger than four minutes matches no row, and an UPDATE that
 //     matches nothing takes no transaction id and so commits nothing.
+// The guard is a minute shorter than the window because the two measure on
+// different clocks: the coalescer from the instant a call arrives, the guard
+// from the database's `now()` at the stamp's BEGIN, which comes after the
+// spawn and a pool checkout (up to the pool's acquire timeout, 15 s by
+// default). A guard as long as the window would turn away a due stamp
+// whenever the previous one waited longer for its connection, and the
+// coalescer, having recorded the attempt, would then hold the key for a
+// second whole window. With the minute's slack the coalescer alone paces a
+// process, and the guard only keeps two processes from both stamping.
 // The stamp that does land is telemetry, written in a transaction that does
 // not wait on its WAL flush (`stamp_async`). A crash can lose the last
 // fraction of a second of stamps; the next call writes one again. A key's
 // FIRST stamp still lands on its first call, so "ever used" reads exactly as
-// before; "used N ago" may lag the truth by up to the window.
+// before; "used N ago" may lag the truth by up to the window (plus the
+// moment the stamp waits for a connection).
 
-/// How far a last-used stamp may lag: one per key per window. The UPDATEs'
-/// `interval '5 minutes'` is this same number.
+/// How far a last-used stamp may lag: one per key per window in a process.
+/// The UPDATEs' guard, `interval '4 minutes'`, is deliberately a minute
+/// shorter (see above).
 pub const STAMP_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 /// Entries kept before the coalescer sweeps out the ones past their window
@@ -538,12 +549,13 @@ pub mod stamp_probe {
     }
 }
 
-/// The agent-key stamp: a row whose stamp is still inside the window is not
+/// The agent-key stamp: a row stamped less than four minutes ago (a minute
+/// inside `STAMP_WINDOW`, so a due attempt is never turned away) is not
 /// matched, so it is not written. `$1::uuid` against the uuid column keeps it
 /// on the primary key.
 const STAMP_AGENT_KEY: &str = "update agent_keys set last_used_at = now() \
      where agent_id = $1::uuid \
-       and (last_used_at is null or last_used_at < now() - interval '5 minutes')";
+       and (last_used_at is null or last_used_at < now() - interval '4 minutes')";
 
 static AGENT_KEY_STAMPS: LazyLock<StampCoalescer> =
     LazyLock::new(|| StampCoalescer::new(STAMP_WINDOW));
@@ -758,7 +770,7 @@ pub struct LegacyMigrationStatus {
 
 /// The migration answer, from the data rather than from memory:
 /// agent_keys.last_used_at is written on an agent's first per-agent
-/// authentication and then at most once per `STAMP_WINDOW`, so an agent
+/// authentication and then about once per `STAMP_WINDOW`, so an agent
 /// that has one has proved it is running on its own secret.
 /// Timestamps cross the wire as epoch millis (sqlx here carries no
 /// timestamptz decoder by design) and format through `epoch_ms_to_iso`.

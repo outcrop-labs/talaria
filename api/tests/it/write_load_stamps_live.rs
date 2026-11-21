@@ -573,7 +573,10 @@ async fn a_hundred_agent_authentications_in_the_window_stamp_once() {
 
 /// A stamp older than the window is refreshed on the next call, and a stamp
 /// inside it is not rewritten by another process (the UPDATE's own guard):
-/// it matches no row and leaves the row as it was.
+/// it matches no row and leaves the row as it was. A stamp the database sees
+/// as a little short of the window is still refreshed: the guard is a minute
+/// inside it, so a due attempt whose BEGIN came sooner after its call than
+/// the last one's did is never turned away.
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn an_agent_stamp_past_the_window_is_refreshed_and_one_inside_it_is_not() {
@@ -605,6 +608,19 @@ async fn an_agent_stamp_past_the_window_is_refreshed_and_one_inside_it_is_not() 
         "a second process's stamp inside the window matches nothing"
     );
     assert_eq!(row_version(&pg, AGENT_KEY_ROW, &id).await, stamped);
+    sqlx::query(
+        "update agent_keys set last_used_at = now() - interval '4 minutes 30 seconds' \
+         where agent_id = $1::uuid",
+    )
+    .bind(&id)
+    .execute(&pg)
+    .await
+    .unwrap();
+    assert_eq!(
+        talaria_agent_auth::stamp_agent_key(&pg, &id).await.unwrap(),
+        1,
+        "a due stamp the database sees as four and a half minutes old still lands"
+    );
     sweep_auth(&pg).await;
 }
 
@@ -670,8 +686,9 @@ async fn models_call(app: &axum::Router, secret: &str) -> u16 {
 
 /// The same three for an LLM key, through the models route: a hundred calls
 /// in the window stamp once and asynchronously, a stamp past the window is
-/// refreshed while one inside it is not rewritten, and a key never used is
-/// stamped on its first call.
+/// refreshed (and so is one a little short of it, the guard's slack) while
+/// one inside it is not rewritten, and a key never used is stamped on its
+/// first call.
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn an_llm_key_is_stamped_once_a_window_and_asynchronously() {
@@ -715,6 +732,21 @@ async fn an_llm_key_is_stamped_once_a_window_and_asynchronously() {
     .await
     .unwrap();
     assert!(fresh);
+    sqlx::query(
+        "update llm_api_keys set last_used_at = now() - interval '4 minutes 30 seconds' \
+         where id = $1::uuid",
+    )
+    .bind(&stale)
+    .execute(&pg)
+    .await
+    .unwrap();
+    assert_eq!(
+        talaria_routes_fleet::llm::llm_models::stamp_key(&pg, &stale)
+            .await
+            .unwrap(),
+        1,
+        "a due stamp the database sees as four and a half minutes old still lands"
+    );
 
     for tag in ["hundred", "stale"] {
         crate::support::sweep_user_rows(&pg, "wls-llm", tag).await;

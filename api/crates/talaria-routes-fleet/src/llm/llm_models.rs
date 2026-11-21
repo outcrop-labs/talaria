@@ -26,13 +26,14 @@ struct ModelsBody {
     data: Vec<ModelEntry>,
 }
 
-/// The LLM-key stamp: a key whose stamp is still inside the window is not
+/// The LLM-key stamp: a key stamped less than four minutes ago is not
 /// matched, so it is not written (talaria-agent-auth's last-used stamps say
-/// why that is enough for every reader). `$1::uuid` against the uuid column
-/// keeps it on the primary key.
+/// why that is enough for every reader, and why the guard is a minute inside
+/// `STAMP_WINDOW`). `$1::uuid` against the uuid column keeps it on the
+/// primary key.
 const STAMP_LLM_KEY: &str = "update llm_api_keys set last_used_at = now() \
      where id = $1::uuid \
-       and (last_used_at is null or last_used_at < now() - interval '5 minutes')";
+       and (last_used_at is null or last_used_at < now() - interval '4 minutes')";
 
 static KEY_STAMPS: std::sync::LazyLock<talaria_agent_auth::StampCoalescer> =
     std::sync::LazyLock::new(|| {
