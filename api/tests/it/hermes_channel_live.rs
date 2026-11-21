@@ -365,9 +365,9 @@ use talaria_hermes_channel::prepare::Room;
 use talaria_hermes_channel::{Engine, Fault, FleetOps, Snapshot, Tuning};
 use talaria_hermes_images::{ImageRecord, Phase, RolloutKind, Status, Window};
 
-const MIN: i64 = 60_000;
+pub(crate) const MIN: i64 = 60_000;
 
-struct Fake {
+pub(crate) struct Fake {
     pg: PgPool,
     now: AtomicI64,
     agents: Vec<ChannelAgent>,
@@ -503,7 +503,7 @@ impl Fake {
             serial: AtomicI64::new(1),
         }
     }
-    fn advance(&self, ms: i64) {
+    pub(crate) fn advance(&self, ms: i64) {
         self.now.fetch_add(ms, Ordering::SeqCst);
     }
     fn on(&self, slug: &str) -> String {
@@ -873,7 +873,7 @@ impl FleetOps for Fake {
     }
 }
 
-fn tuning() -> Tuning {
+pub(crate) fn tuning() -> Tuning {
     Tuning {
         min_stable_ms: 0,
         first_agent_soak_ms: 10 * MIN,
@@ -888,17 +888,17 @@ fn tuning() -> Tuning {
 
 /// A test's world: its state row, two digests (`old` good and current, `new`
 /// a prepared candidate stable names), and `n` agents on `old`.
-struct World {
-    pg: PgPool,
-    key: String,
+pub(crate) struct World {
+    pub(crate) pg: PgPool,
+    pub(crate) key: String,
     tag: String,
     old: String,
     new: String,
-    fake: Fake,
+    pub(crate) fake: Fake,
 }
 
 impl World {
-    async fn new(tag: &str, n: usize) -> World {
+    pub(crate) async fn new(tag: &str, n: usize) -> World {
         let pg = pg().await;
         cleanup(&pg, tag).await;
         let key = format!("hermes-test:{tag}");
@@ -961,13 +961,13 @@ impl World {
             fence: None,
         }
     }
-    async fn step(&self, t: &Tuning) -> Vec<String> {
+    pub(crate) async fn step(&self, t: &Tuning) -> Vec<String> {
         talaria_hermes_channel::step_with(&self.pg, &self.key, &self.fake, t)
             .await
             .unwrap()
             .expect("the test's own lock")
     }
-    async fn state(&self) -> talaria_hermes_images::ChannelState {
+    pub(crate) async fn state(&self) -> talaria_hermes_images::ChannelState {
         images::load_state_at(&self.pg, &self.key).await.unwrap()
     }
     async fn status_of(&self, d: &str) -> Status {
@@ -1081,7 +1081,7 @@ impl World {
             );
         }
     }
-    async fn done(self) {
+    pub(crate) async fn done(self) {
         sqlx::query("delete from app_settings where key = $1")
             .bind(&self.key)
             .execute(&self.pg)

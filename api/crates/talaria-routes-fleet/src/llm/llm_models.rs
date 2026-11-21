@@ -26,6 +26,43 @@ struct ModelsBody {
     data: Vec<ModelEntry>,
 }
 
+/// Stamp `llm_api_keys.last_used_at` for a key that just authenticated,
+/// detached, for this route and the chat relay alike: a bookkeeping write
+/// must never fail a request that already authenticated. `what` names the
+/// route in the log line. The handle is for a test to wait on; the routes
+/// drop it.
+pub fn note_key_used(
+    pg: &sqlx::PgPool,
+    key_id: &str,
+    what: &'static str,
+) -> Option<tokio::task::JoinHandle<()>> {
+    note_key_used_at(pg, key_id, what, std::time::Instant::now())
+}
+
+/// [`note_key_used`] at a given instant: the seam a test drives its clock
+/// through.
+pub fn note_key_used_at(
+    pg: &sqlx::PgPool,
+    key_id: &str,
+    what: &'static str,
+    _now: std::time::Instant,
+) -> Option<tokio::task::JoinHandle<()>> {
+    // `id::text = $1` because the bind is a String — sqlx types it as text,
+    // which has no implicit uuid comparison.
+    let pg = pg.clone();
+    let key_id = key_id.to_string();
+    Some(tokio::spawn(async move {
+        if let Err(e) =
+            sqlx::query("update llm_api_keys set last_used_at = now() where id::text = $1")
+                .bind(&key_id)
+                .execute(&pg)
+                .await
+        {
+            tracing::warn!("{what} last_used_at update failed for {key_id}: {e}");
+        }
+    }))
+}
+
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let auth = headers
         .get(header::AUTHORIZATION)
@@ -45,20 +82,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
 
     // Detached last_used_at: a bookkeeping write must never fail a request
-    // that already authenticated. `id::text = $1` because the bind is a
-    // String — sqlx types it as text, which has no implicit uuid comparison.
-    let pg = state.pg.clone();
-    let key_id = identity.key_id;
-    tokio::spawn(async move {
-        if let Err(e) =
-            sqlx::query("update llm_api_keys set last_used_at = now() where id::text = $1")
-                .bind(&key_id)
-                .execute(&pg)
-                .await
-        {
-            tracing::warn!("[llm/v1/models] last_used_at update failed for {key_id}: {e}");
-        }
-    });
+    // that already authenticated.
+    let _ = note_key_used(&state.pg, &identity.key_id, "[llm/v1/models]");
 
     // Local endpoints first, then name asc — first-seen order is what
     // owned_by's endpoint list preserves. `models` is a jsonb column: sqlx

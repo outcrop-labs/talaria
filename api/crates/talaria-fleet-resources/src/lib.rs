@@ -10,6 +10,7 @@
 // retention setting (`observability.transcriptRetentionDays` — days, null or
 // 0 = keep forever; some deployments want the permanent record).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use sqlx::PgPool;
@@ -64,11 +65,36 @@ pub async fn sample_agent_resources(pg: &PgPool) {
                 return;
             }
         };
-    let by_container: std::collections::HashMap<String, String> = agents
+    let by_container: HashMap<String, String> = agents
         .into_iter()
         .map(|(model, container)| (container, model))
         .collect();
-    for line in out.lines() {
+    if let Some(host) = talaria_fleet_budget::host_mem().await {
+        let reserve = talaria_fleet_budget::host_reserve().await;
+        match talaria_fleet_budget::host_pressure(host.available, reserve) {
+            talaria_fleet_budget::Pressure::Critical => tracing::error!(
+                "{LOG} host RAM critical: {} free, {} reserved for the platform — refusing new work",
+                talaria_fleet_budget::fmt_bytes(host.available),
+                talaria_fleet_budget::fmt_bytes(reserve)
+            ),
+            talaria_fleet_budget::Pressure::Tight => tracing::warn!(
+                "{LOG} host RAM tight: {} free",
+                talaria_fleet_budget::fmt_bytes(host.available)
+            ),
+            talaria_fleet_budget::Pressure::Ok => {}
+        }
+    }
+    record_tick(pg, &out, &by_container).await;
+}
+
+/// One sample per agent container `docker stats --format '{{json .}}'`
+/// answered in `stats` (one JSON object a line; `by_container` maps a
+/// container name to its agent's model, and a container it does not name is
+/// skipped), then the prune. Everything after the docker call, so a test can
+/// feed it the CLI's output. Fire-and-forget like the job: failures are
+/// logged or dropped, never thrown.
+pub async fn record_tick(pg: &PgPool, stats: &str, by_container: &HashMap<String, String>) {
+    for line in stats.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -115,21 +141,6 @@ pub async fn sample_agent_resources(pg: &PgPool) {
         .execute(pg)
         .await;
         warn_if_leaking(pg, model, mem).await;
-    }
-    if let Some(host) = talaria_fleet_budget::host_mem().await {
-        let reserve = talaria_fleet_budget::host_reserve().await;
-        match talaria_fleet_budget::host_pressure(host.available, reserve) {
-            talaria_fleet_budget::Pressure::Critical => tracing::error!(
-                "{LOG} host RAM critical: {} free, {} reserved for the platform — refusing new work",
-                talaria_fleet_budget::fmt_bytes(host.available),
-                talaria_fleet_budget::fmt_bytes(reserve)
-            ),
-            talaria_fleet_budget::Pressure::Tight => tracing::warn!(
-                "{LOG} host RAM tight: {} free",
-                talaria_fleet_budget::fmt_bytes(host.available)
-            ),
-            talaria_fleet_budget::Pressure::Ok => {}
-        }
     }
     prune(pg).await;
 }

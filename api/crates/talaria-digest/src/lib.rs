@@ -542,6 +542,27 @@ pub fn real_digest_deps(state: &AppState, realtime: talaria_realtime::RealtimeDe
     }
 }
 
+/// Write the digest's sent-on ledger, pruned to the people in `live`: the
+/// one writer of `digest_state`, called on every mark of a pass and once at
+/// its end.
+pub async fn persist_digest_state(
+    pg: &PgPool,
+    live: &HashSet<String>,
+    sent_on: &std::collections::BTreeMap<String, String>,
+) -> Result<(), sqlx::Error> {
+    let pruned: std::collections::BTreeMap<String, String> = sent_on
+        .iter()
+        .filter(|(id, _)| live.contains(*id))
+        .map(|(id, date)| (id.clone(), date.clone()))
+        .collect();
+    set_setting(
+        pg,
+        DIGEST_STATE_KEY,
+        &json!({ "sentOn": serde_json::to_value(&pruned).expect("dates serialize") }),
+    )
+    .await
+}
+
 /// One pass of the digest.
 ///
 /// THE LEDGER IS WRITTEN AS THE PASS GOES, NOT AFTER IT. `sent_on` is what
@@ -601,27 +622,6 @@ pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResul
     // final one does — two writers of one blob that disagreed about its shape
     // would be a way for the last write to resurrect a departed user's mark.
     let live: HashSet<String> = people.iter().map(|p| p.id.clone()).collect();
-    // A real fn, not a closure: a closure returning an `async` block that
-    // borrows its argument cannot prove the two lifetimes relate, and `async
-    // move` would walk off with `live` on the first call. This shape borrows
-    // everything per call and is awaited in place, on every mark.
-    async fn persist(
-        pg: &PgPool,
-        live: &HashSet<String>,
-        sent_on: &std::collections::BTreeMap<String, String>,
-    ) -> Result<(), sqlx::Error> {
-        let pruned: std::collections::BTreeMap<String, String> = sent_on
-            .iter()
-            .filter(|(id, _)| live.contains(*id))
-            .map(|(id, date)| (id.clone(), date.clone()))
-            .collect();
-        set_setting(
-            pg,
-            DIGEST_STATE_KEY,
-            &json!({ "sentOn": serde_json::to_value(&pruned).expect("dates serialize") }),
-        )
-        .await
-    }
 
     let base = instance_base_url(pg).await;
     // One census — and one audience resolution — for the whole pass. Every
@@ -695,7 +695,7 @@ pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResul
             sent_on.insert(person.id.clone(), moment.date.clone());
             // The mark is written NOW, before the next recipient is even
             // considered.
-            if let Err(e) = persist(pg, &live, &sent_on).await {
+            if let Err(e) = persist_digest_state(pg, &live, &sent_on).await {
                 // The mail went and we cannot record that it did. Everything
                 // already marked is on disk (that is the point of writing as
                 // we go), so the damage is bounded to this one person — and it
@@ -734,7 +734,7 @@ pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResul
     // already on disk; this is the cheap half, and losing it to a crash costs
     // a recomputation rather than a duplicate email — which is why it is the
     // half that is still allowed to wait until the end.
-    if let Err(e) = persist(pg, &live, &sent_on).await {
+    if let Err(e) = persist_digest_state(pg, &live, &sent_on).await {
         tracing::error!(
             "[digest] could not record the skips for this pass \u{2014} they will be recomputed on the next tick: {e}"
         );

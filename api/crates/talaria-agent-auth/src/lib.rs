@@ -296,18 +296,7 @@ async fn resolve(pg: &PgPool, headers: &HeaderMap) -> Result<Option<AgentCaller>
             ));
         }
         // Detached last_used_at — the migration-status answer keys off it.
-        let agent_id = id.clone();
-        let pool = pg.clone();
-        tokio::spawn(async move {
-            if let Err(e) =
-                sqlx::query("update agent_keys set last_used_at = now() where agent_id::text = $1")
-                    .bind(&agent_id)
-                    .execute(&pool)
-                    .await
-            {
-                tracing::warn!("[agent-auth] last_used_at update failed for {agent_id}: {e}");
-            }
-        });
+        let _ = note_key_used(pg, &id);
         return Ok(Some(AgentCaller {
             id: Some(id),
             model,
@@ -389,6 +378,36 @@ async fn resolve(pg: &PgPool, headers: &HeaderMap) -> Result<Option<AgentCaller>
         id: None,
         model,
         legacy: true,
+    }))
+}
+
+// ── The last-used stamp ──────────────────────────────────────────────────────
+
+/// Stamp `agent_keys.last_used_at` for an agent that just authenticated with
+/// its own key, detached: a bookkeeping write never holds up the call it rode
+/// in on. The handle is for a test to wait on; `resolve` drops it.
+pub fn note_key_used(pg: &PgPool, agent_id: &str) -> Option<tokio::task::JoinHandle<()>> {
+    note_key_used_at(pg, agent_id, Instant::now())
+}
+
+/// [`note_key_used`] at a given instant: the seam a test drives its clock
+/// through.
+pub fn note_key_used_at(
+    pg: &PgPool,
+    agent_id: &str,
+    _now: Instant,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let agent_id = agent_id.to_string();
+    let pool = pg.clone();
+    Some(tokio::spawn(async move {
+        if let Err(e) =
+            sqlx::query("update agent_keys set last_used_at = now() where agent_id::text = $1")
+                .bind(&agent_id)
+                .execute(&pool)
+                .await
+        {
+            tracing::warn!("[agent-auth] last_used_at update failed for {agent_id}: {e}");
+        }
     }))
 }
 
