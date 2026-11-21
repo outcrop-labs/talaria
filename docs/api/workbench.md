@@ -609,7 +609,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repos_agen
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `{hosts, available, granted, rules, branches}` | 200, 404 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | audit |
+| PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404, 409 | audit |
 
 ### PUT `/api/workbench/repos/{agentId}` body
 

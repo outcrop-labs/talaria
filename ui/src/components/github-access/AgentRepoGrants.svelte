@@ -13,10 +13,11 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
-  import { getJson, putJson } from '@/lib/fetch-json'
+  import { getJson } from '@/lib/fetch-json'
   import { useHasPerm } from '@/lib/session'
   import { slide } from '@/lib/motion'
-  import { toastError } from '@/lib/toast.svelte'
+  import { grantsWrite, repoKey as key, saveRepoGrants, sameRepo as same, type HostRepo, type ReposBody, type RepoRule } from '@/lib/repo-grants'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
   import ProjectVariablesModal from './ProjectVariablesModal.svelte'
   import { useGithubAccessRefresh } from './queries'
 
@@ -34,6 +35,13 @@
   // edits alone gather under the save bar. Removing a grant revokes its
   // tokens and may withdraw the agent's requests on that host, so every write
   // re-reads the permissions and the requests too.
+  //
+  // Each write is a compare-and-set from the read its body was built on
+  // (lib/repo-grants, grantsWrite): when another manager wrote meanwhile, or
+  // an approval added a repo, the server answers 409 with what is there now
+  // and writes nothing, and this re-reads and says what changed. Pending
+  // rule edits were made against the old read, so they go too: the toast
+  // asks for the change again.
   let {
     agentId,
     agentName,
@@ -52,27 +60,6 @@
   // only 403 is not drawn.
   const mayEditVariables = useHasPerm('agents.manage')
 
-  interface HostRepo {
-    host: string
-    repo: string
-  }
-  interface RepoRule extends HostRepo {
-    baseBranch: string | null
-    pushMode: 'branches_only' | 'free'
-    branchPrefix: string | null
-  }
-  interface ReposBody {
-    hosts: Array<{ id: string; name: string; kind: string; error: string | null }>
-    available: HostRepo[]
-    granted: HostRepo[]
-    rules?: RepoRule[]
-    /** Keyed `host:owner/name`. */
-    branches?: Record<string, string[]>
-  }
-
-  const key = (r: HostRepo) => `${r.host}:${r.repo}`
-  const same = (a: HostRepo, b: HostRepo) => a.host === b.host && a.repo === b.repo
-
   const refresh = useGithubAccessRefresh()
   // The route's only 404 is "unknown agent", and this renders for that very
   // agent: a 404 is an anomaly, so everything throws.
@@ -85,33 +72,57 @@
   // write that lands clears them, so the rule controls wait while one is in
   // flight: an edit made meanwhile would be wiped unsaved.
   let edits = $state<Record<string, RepoRule>>({})
+  // The read the first pending edit was made against. Every write while
+  // edits wait is `from` it, never from whatever the query holds by then: a
+  // refetch in between (a window focus, an approval re-reading the repos)
+  // would otherwise give a stale edit a fresh `from`, and it would pass the
+  // compare and put back what another manager just changed.
+  let editsBase: ReposBody | null = null
   let saving = $state(false)
   let saved = $state(false)
   const dirty = $derived(Object.keys(edits).length > 0)
   const ruleFor = (d: ReposBody, r: HostRepo): RepoRule =>
     edits[key(r)] ?? d.rules?.find((x) => same(x, r)) ?? { ...r, baseBranch: null, pushMode: 'branches_only', branchPrefix: null }
+  const edit = (d: ReposBody, r: HostRepo, next: RepoRule) => {
+    if (Object.keys(edits).length === 0) editsBase = d
+    edits[key(r)] = next
+  }
+  const clearEdits = () => {
+    edits = {}
+    editsBase = null
+  }
 
-  const write = async (granted: HostRepo[], touched: HostRepo[] = granted) => {
-    const d = query.data
-    if (!d) return
-    saving = true
+  /**
+   * Write from `d`, the read the action was built on (or the pending edits'
+   * own, which is older). `change` turns the granted set into the next one;
+   * without it this saves the rule edits alone.
+   */
+  const write = async (d: ReposBody, change?: (granted: HostRepo[]) => HostRepo[], touched: HostRepo[] = []) => {
     // Rules for every granted repo ride along, edited and untouched alike, so
     // the server's rows always match what this shows.
-    const rules = granted.map((r) => ruleFor(d, r))
+    const next = grantsWrite(d, { base: editsBase, edits }, change)
+    saving = true
     let ok = false
+    // A conflict's answer: hosts another write touched re-read too.
+    let current: HostRepo[] = []
     try {
-      await putJson(`/api/workbench/repos/${agentId}`, { repos: granted.map((r) => ({ host: r.host, repo: r.repo })), rules })
-      edits = {}
-      ok = true
-      if (granted !== d.granted) onGranted?.([...new Set(touched.map((r) => r.host))])
+      const res = await saveRepoGrants(agentId, next.from, next, (id) => hostName(d, id))
+      clearEdits()
+      if (res.kind === 'changed') {
+        current = res.current.repos
+        pushToast({ title: res.title, body: res.body })
+      } else {
+        ok = true
+        if (change) onGranted?.([...new Set(touched.map((r) => r.host))])
+      }
     } catch (e) {
       // The toast is the only place a failed write can be said, and the
       // re-read below restores the truth.
       toastError('Could not save the repositories', e)
     }
-    await refresh(agentId, [...new Set([...granted, ...touched, ...d.granted].map((r) => r.host))])
+    await refresh(agentId, [...new Set([...next.repos, ...touched, ...next.from.repos, ...d.granted, ...current].map((r) => r.host))])
     saving = false
-    if (ok && granted === d.granted) {
+    if (ok && !change) {
       saved = true
       setTimeout(() => (saved = false), 1800)
     }
@@ -119,8 +130,10 @@
 
   const add = (d: ReposBody, value: string) => {
     const r = d.available.find((x) => key(x) === value)
-    if (r) void write([...d.granted, r], [r])
+    if (r) void write(d, (granted) => (granted.some((g) => same(g, r)) ? granted : [...granted, r]), [r])
   }
+  // `d` is the read the confirm was opened on: another manager may write
+  // while it waits, and the removal is from what this one saw.
   const remove = async (d: ReposBody, r: HostRepo) => {
     const ok = await confirm({
       title: 'Remove repository',
@@ -128,10 +141,7 @@
       confirmLabel: 'Remove',
       danger: true,
     })
-    if (ok) void write(
-      d.granted.filter((g) => !same(g, r)),
-      [r],
-    )
+    if (ok) void write(d, (granted) => granted.filter((g) => !same(g, r)), [r])
   }
 
   let variablesFor = $state<string | null>(null)
@@ -175,7 +185,7 @@
                   aria-label={`Base branch for ${g.repo}`}
                   value={rule.baseBranch ?? ''}
                   disabled={saving}
-                  onchange={(e) => (edits[key(g)] = { ...rule, baseBranch: (e.currentTarget as HTMLSelectElement).value || null })}
+                  onchange={(e) => edit(d, g, { ...rule, baseBranch: (e.currentTarget as HTMLSelectElement).value || null })}
                 >
                   <option value="">Default branch</option>
                   {#each branches as b (b)}<option value={b}>{b}</option>{/each}
@@ -188,7 +198,7 @@
                   aria-label={`Branch prefix for ${g.repo}`}
                   value={rule.branchPrefix ?? ''}
                   disabled={saving}
-                  oninput={(e) => (edits[key(g)] = { ...rule, branchPrefix: e.currentTarget.value || null })}
+                  oninput={(e) => edit(d, g, { ...rule, branchPrefix: e.currentTarget.value || null })}
                 />
                 <Select
                   size="sm"
@@ -196,7 +206,7 @@
                   aria-label={`Push rule for ${g.repo}`}
                   value={rule.pushMode}
                   disabled={saving}
-                  onchange={(e) => (edits[key(g)] = { ...rule, pushMode: (e.currentTarget as HTMLSelectElement).value as RepoRule['pushMode'] })}
+                  onchange={(e) => edit(d, g, { ...rule, pushMode: (e.currentTarget as HTMLSelectElement).value as RepoRule['pushMode'] })}
                 >
                   <option value="branches_only">Branches only</option>
                   <option value="free">May push the base</option>
@@ -239,8 +249,8 @@
             {dirty}
             {saving}
             {saved}
-            onSave={() => void write(d.granted)}
-            onDiscard={() => (edits = {})}
+            onSave={() => void write(d)}
+            onDiscard={clearEdits}
           />
         {/if}
       {/if}

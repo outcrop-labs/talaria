@@ -72,9 +72,9 @@ use talaria_secretbox::SecretBox;
 
 pub use credential::{GrantError, HostRefusal};
 pub use grants::{
-    GrantChange, PROTECTED_BRANCHES, RepoFlow, RepoRef, RepoRule, add_grant, effective_base,
-    granted_repos, list_repo_flows, push_allowed, repo_flow, repo_rule, repo_rules, resolve_grant,
-    set_granted_repos, set_repo_flow, set_repo_rule,
+    GrantChange, GrantsCas, GrantsRead, PROTECTED_BRANCHES, RepoFlow, RepoRef, RepoRule, add_grant,
+    effective_base, granted_repos, list_repo_flows, push_allowed, repo_flow, repo_rule, repo_rules,
+    resolve_grant, set_granted_repos, set_grants_cas, set_repo_flow, set_repo_rule,
 };
 pub use holdings::{host_status, refresh_host};
 pub use registry::{HostRow, get_host, host_rows, list_hosts};
