@@ -1132,9 +1132,10 @@ mod tests {
             .collect()
         }
 
-        /// A token wider than asked is refused, as it always was: the door
-        /// now says so to the agent's git, in the mint's own sentence, and
-        /// records it once however often git asks.
+        /// A token wider than asked (an asked key above its asked level) is
+        /// refused, as it always was: the door says so to the agent's git,
+        /// in the mint's own sentence, and records it once however often git
+        /// asks.
         #[tokio::test]
         #[ignore = "needs a live database (DATABASE_URL)"]
         async fn a_token_wider_than_asked_is_a_502_with_the_reason_and_one_refused_row() {
@@ -1156,12 +1157,12 @@ mod tests {
                     })
                     .to_string(),
                 ),
-                // Checks never asked for, and on the token.
+                // Contents asked at write, and on the token at admin.
                 ("POST", "/app/installations/93101/access_tokens") => (
                     201,
                     github_201(
                         "ghs_too_wide",
-                        json!({ "contents": "write", "metadata": "read", "pull_requests": "write", "checks": "read" }),
+                        json!({ "contents": "admin", "metadata": "read", "pull_requests": "write" }),
                     ),
                 ),
                 ("DELETE", "/installation/token") => (204, String::new()),
@@ -1176,7 +1177,7 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
             let error = body["error"].as_str().expect("the sentence");
             assert!(
-                error.contains("it carries checks:read, which was not asked for"),
+                error.contains("it carries contents:admin, above the write asked for"),
                 "{error}"
             );
             assert!(body.get("password").is_none(), "{body}");
@@ -1203,6 +1204,84 @@ mod tests {
                 .filter(|(m, p, _)| m == "DELETE" && p == "/installation/token")
                 .count();
             assert_eq!(revoked, 2, "each too-wide token was revoked, never served");
+
+            cleanup(&state, &[&id], &host_id, None).await;
+        }
+
+        /// A key GitHub puts on the token unasked is GitHub's own doing: the
+        /// ask was the agent's set, so the token is handed to git, nothing is
+        /// revoked, and the `git.credential` row names the key as `added`.
+        #[tokio::test]
+        #[ignore = "needs a live database (DATABASE_URL)"]
+        async fn a_key_github_adds_unasked_is_served_and_recorded_as_added() {
+            let state = state().await;
+            let tag = tag();
+            let (id, _model, key) = agent(&state, &tag, true).await;
+            let (base, seen) = github_with(|method, path, _| match (method, path) {
+                ("GET", "/app/installations/93111") => (
+                    200,
+                    json!({
+                        "id": 93111,
+                        "account": { "login": "acme" },
+                        "permissions": {
+                            "contents": "write",
+                            "pull_requests": "write",
+                            "checks": "read",
+                            "metadata": "read",
+                        },
+                    })
+                    .to_string(),
+                ),
+                // Checks never asked for, and on the token.
+                ("POST", "/app/installations/93111/access_tokens") => (
+                    201,
+                    github_201(
+                        "ghs_added",
+                        json!({ "contents": "write", "metadata": "read", "pull_requests": "write", "checks": "read" }),
+                    ),
+                ),
+                ("DELETE", "/installation/token") => (204, String::new()),
+                _ => (500, r#"{"message":"unexpected in this test"}"#.to_string()),
+            })
+            .await;
+            let auth = app_auth(&state, "93111").await;
+            let (host_id, authority) = host(&state, &tag, Some(&base), auth).await;
+            grant(&state, &id, &host_id, "acme/widgets").await;
+
+            let (status, body) = ask(&state, &key, &authority, Some("acme/widgets.git")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["password"], "ghs_added");
+            assert!(body.get("note").is_none(), "nothing is short: {body}");
+            let posts: Vec<String> = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, p, _)| m == "POST" && p.ends_with("/access_tokens"))
+                .map(|(_, _, b)| b.clone())
+                .collect();
+            assert_eq!(posts.len(), 1, "{posts:?}");
+            assert!(
+                !posts[0].contains("checks"),
+                "never asked for: {}",
+                posts[0]
+            );
+            assert!(
+                !seen
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(m, p, _)| m == "DELETE" && p == "/installation/token"),
+                "kept, never revoked"
+            );
+            let rows = credential_rows(&state, &id).await;
+            assert_eq!(rows.len(), 1, "{rows:?}");
+            assert_eq!(
+                rows[0]["asked"],
+                json!({ "contents": "write", "metadata": "read", "pull_requests": "write" })
+            );
+            assert_eq!(rows[0]["carried"]["checks"], "read");
+            assert_eq!(rows[0]["added"], json!({ "checks": "read" }));
+            assert!(refused_rows(&state, &id).await.is_empty());
 
             cleanup(&state, &[&id], &host_id, None).await;
         }
