@@ -210,9 +210,12 @@ still running — it stalls for tens of seconds at a time, which is why the mirr
 
 **Liveness.** A good share of the registry's hosted entries no longer answer. The leased job
 `mcp-library-liveness` (every 5 minutes, first run 3 minutes after boot) takes up to 300 hosted
-rows — never-checked first, operator stand-ins ahead of registry rows, then the oldest verdict —
+rows — never-checked first, operator stand-ins ahead of registry rows, then the oldest check —
 and POSTs one JSON-RPC `initialize` to each (6 s, `Accept: application/json, text/event-stream`,
-at most 3 redirects, through the SSRF guard's resolver), recording `live_state` on the row:
+at most 3 redirects, through the SSRF guard's resolver). The time of each check goes to
+`mcp_library_liveness` (one narrow row per entry, re-stamped in place), and the verdict and its
+detail go on the entry row only when they changed, 50 verdicts to a transaction committed with
+`synchronous_commit = off`. The verdict, `live_state`, is:
 `ok` (a 2xx JSON-RPC result or SSE data), `auth` (401/403/407 — alive, wants credentials),
 `dead` (404/405/410, 5xx, DNS/connect/TLS failure, timeout, an address the guard refuses) or
 `unknown` (anything else). Search sorts dead rows last and leaves them out by default, answering

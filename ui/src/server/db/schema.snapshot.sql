@@ -1112,6 +1112,11 @@ CREATE TABLE public.mcp_library_entries (
     live_checked_at timestamp with time zone,
     live_detail text
 );
+CREATE TABLE public.mcp_library_liveness (
+    registry_name text NOT NULL,
+    checked_at timestamp with time zone NOT NULL
+)
+WITH (fillfactor='50');
 CREATE TABLE public.mcp_oauth_reconnect (
     server_id uuid NOT NULL,
     subject text NOT NULL,
@@ -2206,6 +2211,8 @@ ALTER TABLE ONLY public.llm_endpoints
     ADD CONSTRAINT llm_endpoints_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.mcp_library_entries
     ADD CONSTRAINT mcp_library_entries_pkey PRIMARY KEY (registry_name);
+ALTER TABLE ONLY public.mcp_library_liveness
+    ADD CONSTRAINT mcp_library_liveness_pkey PRIMARY KEY (registry_name);
 ALTER TABLE ONLY public.mcp_oauth_reconnect
     ADD CONSTRAINT mcp_oauth_reconnect_pkey PRIMARY KEY (server_id, subject);
 ALTER TABLE ONLY public.mcp_oauth_states
@@ -2462,7 +2469,6 @@ CREATE INDEX kb_docs_space_idx ON public.kb_docs USING btree (space_id, parent_i
 CREATE INDEX kb_editors_item_idx ON public.kb_editors USING btree (item_type, item_id);
 CREATE INDEX mcp_library_entries_dead_idx ON public.mcp_library_entries USING btree (tier) WHERE (live_state = 'dead'::text);
 CREATE INDEX mcp_library_entries_domains_idx ON public.mcp_library_entries USING gin (domains);
-CREATE INDEX mcp_library_entries_live_idx ON public.mcp_library_entries USING btree (live_checked_at NULLS FIRST);
 CREATE INDEX mcp_library_entries_search_idx ON public.mcp_library_entries USING gin (search);
 CREATE INDEX mcp_library_entries_tier_idx ON public.mcp_library_entries USING btree (tier, title);
 CREATE INDEX mcp_tool_calls_agent_idx ON public.mcp_tool_calls USING btree (agent, at DESC);
@@ -2518,6 +2524,7 @@ CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, 
 CREATE INDEX workbench_jobs_run_idx ON public.workbench_jobs USING btree (run_id) WHERE (run_id IS NOT NULL);
 CREATE UNIQUE INDEX workbench_permission_requests_one_open ON public.workbench_permission_requests USING btree (agent_id, host_id, permission) WHERE (status = ANY (ARRAY['pending'::text, 'awaiting_github'::text]));
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
+CREATE STATISTICS public.mcp_library_entries_url_stats ON (entry ->> 'url'::text) FROM public.mcp_library_entries;
 CREATE TRIGGER agent_coding_accounts_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_accounts FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
 CREATE TRIGGER agent_coding_blocks_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_account_blocks FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
 CREATE TRIGGER app_settings_github_mirror AFTER INSERT OR UPDATE ON public.app_settings FOR EACH ROW WHEN ((new.key = 'github_config'::text)) EXECUTE FUNCTION public.talaria_github_setting_to_host();

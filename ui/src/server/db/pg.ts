@@ -4062,7 +4062,10 @@ alter table tasks drop column if exists conversation_id`,
   // identifier is Hermes' own and the install's only input; path is the
   // skill directory inside repo (exact = false marks a skills.sh slug the
   // index never resolved, found by name at fetch time); rank is the index's
-  // own order, which lists Hermes' official skills first.
+  // own order, which lists Hermes' official skills first. (Since 2026-11-21
+  // rank is the row's position on the day it arrived, read only by older
+  // releases: the listing sorts by source and name, as Hermes builds the
+  // index, so a skill added mid-list rewrites no other row.)
   `create table if not exists skills_index_entries (
      identifier text primary key,
      name text not null,
@@ -5303,6 +5306,61 @@ alter table tasks drop column if exists conversation_id`,
   `-- contract: the board digest's ledger goes, unread since #771 was withdrawn —
    -- no release ever shipped it (v0.14.0, the latest, predates it).
    drop table if exists board_digest_state`,
+  // ── MCP catalog liveness: the probe's stamp in a table of its own (2026-11-21) ──
+  // The liveness job probes 300 hosted entries every 5 minutes and stamped
+  // \`live_checked_at = now()\` on each \`mcp_library_entries\` row, changed or
+  // not. That column was indexed, so every stamp was a non-HOT rewrite of a
+  // ~1.2 kB row on a random page of the heap plus an entry in each of the
+  // table's six indexes (two GIN): about 22 kB of WAL a verdict, nearly all
+  // full-page images, ~2.4 GB a day on a production instance's 215 MB
+  // database — the bulk of what its slow disk had to flush. The stamp now
+  // lives here: a narrow row, its primary key the only index, so a re-stamp
+  // is a HOT update in place. Fillfactor 50 leaves each page room for a new
+  // version of every row on it: a run's verdicts land roughly in the order
+  // it asked, so one 50-verdict chunk can re-stamp a whole page (at 70, a
+  // quarter of the stamps went non-HOT in the census, each one a new heap
+  // page and a primary-key entry). The entry row is written only when the
+  // verdict or its detail changes (talaria-mcp-library liveness.rs). No
+  // foreign key: its check takes a key-share lock on the entry row, which is
+  // WAL written on that very row; the run deletes orphans instead.
+  `create table if not exists mcp_library_liveness (
+     registry_name text primary key,
+     checked_at timestamptz not null
+   ) with (fillfactor = 50)`,
+  // Backfilled in the rotation's own order (the run's ORDER BY), so the 300
+  // rows a run stamps sit together on a handful of pages from its first run.
+  // live_checked_at stays on the entry for one release, unread. A deliberate
+  // exception to docs/UPDATES.md's rule that moved data keeps its old copy
+  // current while both releases can run: keeping the per-probe stamp current
+  // there (both writes, or a trigger) is exactly the six-index rewrite this
+  // removes. The catalog sync still nulls it when an entry changes — free,
+  // that upsert rewrites the row anyway — so a rolled-back release still asks
+  // a changed entry first. What a previous release run on this database
+  // shows: check times ("checked N ago") frozen at the upgrade until its own
+  // probes re-stamp them, oldest first, about 13 hours for the whole mirror.
+  // It is telemetry: verdicts, details, dead counts and the install gate
+  // read live_state and live_detail, which stay current. A later release
+  // drops the column.
+  `insert into mcp_library_liveness (registry_name, checked_at)
+     select registry_name, live_checked_at from mcp_library_entries
+      where live_checked_at is not null
+      order by live_checked_at, (source <> 'registry') desc, registry_name
+   on conflict do nothing`,
+  // Nothing reads live_checked_at any more, and the index never matched the
+  // run's ORDER BY. Without it a verdict that does change inserts into five
+  // indexes instead of six, and the previous release's stamps after a
+  // rollback can go HOT.
+  `drop index if exists mcp_library_entries_live_idx`,
+  // The run's selection joins the stamps to the probe-able entries (hosted,
+  // \`entry->>'url'\` an https URL). Postgres keeps no statistics on that
+  // expression and guessed ~100 of 45k rows match, so it probed the stamps'
+  // key once per entry (45k index lookups, 180k buffer hits) where one hash
+  // join of the two tables does. The expression's own statistics give it the
+  // real count; the analyze fills them now, because the mirror is rewritten
+  // too rarely for autoanalyze to get round to it soon.
+  `create statistics if not exists mcp_library_entries_url_stats
+     on (entry->>'url') from mcp_library_entries`,
+  `analyze mcp_library_entries`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum
