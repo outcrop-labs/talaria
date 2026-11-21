@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HttpError } from '@/lib/fetch-json'
-import { CHANGED_BODY, changedTitle, grantChanges, normalizedRule, readOf, saveRepoGrants, type GrantsRead, type RepoRule } from './repo-grants'
+import { CHANGED_BODY, changedTitle, grantChanges, grantsWrite, normalizedRule, readOf, saveRepoGrants, type GrantsRead, type RepoRule } from './repo-grants'
 
 // The repositories section's write is a compare-and-set: it sends back what
 // it read, and a 409 brings what is there now. These pin the request's
@@ -41,9 +41,11 @@ describe('saveRepoGrants', () => {
     const out = await saveRepoGrants('agent-1', read, { repos: [grant('acme/site')], rules: [rule('acme/site', { pushMode: 'free' })] })
     expect(out).toEqual({ kind: 'saved', granted: [grant('acme/site')] })
     expect(sent).toHaveLength(1)
-    expect(sent[0].url).toBe('/api/workbench/repos/agent-1')
-    expect(sent[0].init.method).toBe('PUT')
-    expect(JSON.parse(String(sent[0].init.body))).toEqual({
+    const [call] = sent
+    if (!call) throw new Error('no request was sent')
+    expect(call.url).toBe('/api/workbench/repos/agent-1')
+    expect(call.init.method).toBe('PUT')
+    expect(JSON.parse(String(call.init.body))).toEqual({
       repos: [grant('acme/site')],
       rules: [rule('acme/site', { pushMode: 'free' })],
       from: read,
@@ -81,6 +83,49 @@ describe('saveRepoGrants', () => {
     expect(err).toBeInstanceOf(HttpError)
     expect((err as HttpError).status).toBe(403)
     expect((err as HttpError).message).toBe("only this agent's managers can change it")
+  })
+})
+
+describe('the read a write is from', () => {
+  // The editor's first read, and the one a refetch brings after another
+  // manager set a prefix on acme/app and an approval granted acme/docs.
+  const first = { granted: read.repos, rules: read.rules }
+  const refetched = {
+    granted: [...read.repos, grant('acme/docs')],
+    rules: [rule('acme/site', { branchPrefix: 'agent' }), rule('acme/app', { branchPrefix: 'theirs' }), rule('acme/docs')],
+  }
+
+  it("is the action's own read when no rule edit waits", () => {
+    expect(grantsWrite(refetched, { base: null, edits: {} }, (g) => g.filter((r) => r.repo !== 'acme/docs'))).toEqual({
+      from: readOf(refetched),
+      repos: read.repos,
+      rules: [rule('acme/site', { branchPrefix: 'agent' }), rule('acme/app', { branchPrefix: 'theirs' })],
+    })
+  })
+
+  it('is the read an edit was made against, even after a refetch, so a stale save gets the 409', () => {
+    // The edit was made on the first read; the query refetched before Save.
+    const pending = { base: first, edits: { 'github:acme/site': rule('acme/site', { branchPrefix: 'agent', pushMode: 'free' }) } }
+    const next = grantsWrite(refetched, pending)
+    // `from` is the read the body came from, which the server finds stale
+    // (acme/app's prefix and acme/docs moved), so nothing of it lands.
+    expect(next.from).toEqual(read)
+    expect(grantChanges(next.from, readOf(refetched))).toEqual(['acme/docs was added', 'the branch rules of acme/app changed'])
+    // The body is that read with the edit: it never carries the fresh read's
+    // rules under the old `from`, nor the old rules under a fresh one.
+    expect(next.repos).toEqual(read.repos)
+    expect(next.rules).toEqual([rule('acme/site', { branchPrefix: 'agent', pushMode: 'free' }), rule('acme/app')])
+  })
+
+  it("carries pending edits into an add or remove, from the edits' read", () => {
+    const pending = { base: first, edits: { 'github:acme/app': rule('acme/app', { baseBranch: 'develop' }) } }
+    const added = grantsWrite(refetched, pending, (g) => [...g, grant('acme/new')])
+    expect(added.from).toEqual(read)
+    expect(added.repos).toEqual([...read.repos, grant('acme/new')])
+    expect(added.rules).toEqual([rule('acme/site', { branchPrefix: 'agent' }), rule('acme/app', { baseBranch: 'develop' }), rule('acme/new')])
+    // A remove confirmed after a refetch is still from the read it opened on.
+    const removed = grantsWrite(first, { base: null, edits: {} }, (g) => g.filter((r) => r.repo !== 'acme/app'))
+    expect(removed).toEqual({ from: read, repos: [grant('acme/site')], rules: [rule('acme/site', { branchPrefix: 'agent' })] })
   })
 })
 

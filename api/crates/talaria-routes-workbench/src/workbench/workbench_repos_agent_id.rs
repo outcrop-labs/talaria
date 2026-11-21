@@ -2,13 +2,15 @@
 // explicit, like MCP assignment, and per HOST: the same owner/name on two
 // git hosts is two repositories. GET → every registered host's reachable
 // pool + this agent's grants (and each grant's branch rules and live branch
-// list); PUT {repos, rules?, from?} → replace the grant set (validated
+// list); PUT {repos, rules?, from} → replace the grant set (validated
 // against the pool; a host whose reach could not be read keeps the grants
 // it has) and the rules of the repos still granted. A compare-and-set:
 // `from` is what the editor read, `{repos, rules}` (the GET's `granted` and
 // `rules`), and a write that finds the agent holding anything else answers
 // 409 with what is there now (`current`, the same shape) and writes
-// nothing; a write with no `from` is not compared. The agent's managers.
+// nothing. `from` is required: a write without it is a 400, so a caller
+// that never read (a tab opened before the compare-and-set) cannot put
+// back what another manager changed. The agent's managers.
 // Every grant added or removed is audited (`workbench.repo_grant`), a
 // removed grant's tokens are revoked in every api process, and the agent's
 // open GitHub permission requests on a host where it holds no repo any more
@@ -197,13 +199,19 @@ pub async fn put(
             Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
-    // What the editor read, when it says: the write lands only if the agent
-    // still holds exactly that. Absent, nothing is compared (a caller from
-    // before the compare-and-set).
+    // What the editor read: the write lands only if the agent still holds
+    // exactly that. Required, as the permissions write requires its own: a
+    // write that compared nothing would put back whatever another manager
+    // changed since the caller last looked.
     let from = match obj.get("from") {
-        None => None,
+        None => {
+            return Ok(house_error(
+                StatusCode::BAD_REQUEST,
+                "from is required: read the repositories first and send back what you read as {repos, rules}",
+            ));
+        }
         Some(v) => match read_of(v) {
-            Ok(r) => Some(r),
+            Ok(r) => r,
             Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
@@ -212,12 +220,9 @@ pub async fn put(
     };
     let sb = state.secretbox().await.unwrap_or_default();
     // What the agent holds, for the unreadable-host rule below: the read the
-    // compare-and-set will confirm under the lock when the editor sent one
-    // (a stale one is a 409 whatever this keeps), else the rows as they are.
-    let current = match &from {
-        Some(read) => read.repos.clone(),
-        None => hosts::granted_repos(&state.pg, &agent_id).await,
-    };
+    // compare-and-set will confirm under the lock (a stale one is a 409
+    // whatever this keeps).
+    let current = from.repos.clone();
     let mut pool: Vec<RepoRef> = Vec::new();
     let mut unread: Vec<String> = Vec::new();
     for (row, reached) in hosts::reachable_pool(&state.pg, &sb).await {
@@ -249,7 +254,7 @@ pub async fn put(
     // one transaction under the agent's lock, or not at all: a rule for a
     // repo the same write removed is a UI race, quietly dropped.
     let change =
-        match hosts::set_grants_cas(&state.pg, &agent_id, from.as_ref(), &repos, &rules).await {
+        match hosts::set_grants_cas(&state.pg, &agent_id, Some(&from), &repos, &rules).await {
             Ok(GrantsCas::Ok(c)) => c,
             Ok(GrantsCas::Changed(now)) => return Ok(changed_since(&now)),
             Err(e) => return Ok(internal("[workbench/repos] grant write failed", e)),
@@ -483,6 +488,18 @@ mod tests {
             .await
         }
 
+        /// A write from what the caller just read: the GET's grants and
+        /// rules ride along as `from`, the way the editor sends them.
+        async fn put_read(
+            state: &AppState,
+            headers: &HeaderMap,
+            agent: &str,
+            mut body: Value,
+        ) -> (StatusCode, Value) {
+            body["from"] = read_from(&get_as(state, headers, agent).await);
+            put_as(state, headers, agent, body).await
+        }
+
         #[tokio::test]
         #[ignore = "needs a live database and Redis (DATABASE_URL, REDIS_URL)"]
         async fn a_host_that_cannot_be_read_keeps_its_grants_and_every_change_is_audited() {
@@ -515,7 +532,7 @@ mod tests {
                 { "host": gh, "repo": "acme/widgets" },
                 { "host": forge, "repo": "acme/notes" },
             ] });
-            let (status, body) = put_as(&state, &as_manager, &a, both.clone()).await;
+            let (status, body) = put_read(&state, &as_manager, &a, both.clone()).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["granted"].as_array().map(Vec::len), Some(2), "{body}");
             let row: Value = sqlx::query_scalar(
@@ -544,7 +561,7 @@ mod tests {
             .unwrap();
             let mut free = both.clone();
             free["rules"] = json!([{ "host": gh, "repo": "acme/widgets", "pushMode": "free" }]);
-            let (status, body) = put_as(&state, &as_manager, &a, free).await;
+            let (status, body) = put_read(&state, &as_manager, &a, free).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             let rule = talaria_git_hosts::repo_rule(&state.pg, &a, &gh, "acme/widgets")
                 .await
@@ -564,7 +581,7 @@ mod tests {
                     .unwrap()
                     .expect("a credential");
             let only_forge = json!({ "repos": [{ "host": forge, "repo": "acme/notes" }] });
-            let (status, body) = put_as(&state, &as_manager, &a, only_forge).await;
+            let (status, body) = put_read(&state, &as_manager, &a, only_forge).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert!(
                 calls(&log, "DELETE", "/installation/token")
@@ -613,7 +630,7 @@ mod tests {
             );
 
             // The manager clears the rest: removed, and audited.
-            let (status, _) = put_as(&state, &as_manager, &a, json!({ "repos": [] })).await;
+            let (status, _) = put_read(&state, &as_manager, &a, json!({ "repos": [] })).await;
             assert_eq!(status, StatusCode::OK);
             assert!(hosts::granted_repos(&state.pg, &a).await.is_empty());
 
@@ -840,21 +857,26 @@ mod tests {
                 "{current}"
             );
 
-            // A caller from before the compare-and-set sends no `from`, and
-            // its write lands as it always did.
+            // A caller that never read sends no `from` (a tab opened before
+            // the compare-and-set): a 400 that writes nothing, never a write
+            // that puts back what the winner just stored.
             let (status, body) = put_as(
                 &state,
                 &as_manager,
                 &a,
-                json!({ "repos": both, "rules": widgets_rule("legacy") }),
+                json!({ "repos": both, "rules": widgets_rule("unread") }),
             )
             .await;
-            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(
+                body["error"].as_str().unwrap().contains("from is required"),
+                "{body}"
+            );
             assert_eq!(
                 talaria_git_hosts::repo_rule(&state.pg, &a, &gh, "acme/widgets")
                     .await
                     .and_then(|r| r.branch_prefix),
-                Some("legacy".into())
+                Some(winning.into())
             );
             // A `from` that is not a read is a 400, and writes nothing.
             let (status, body) = put_as(

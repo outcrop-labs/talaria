@@ -58,6 +58,35 @@ export const readOf = (d: Pick<ReposBody, 'granted' | 'rules'>): GrantsRead => (
   rules: d.rules ?? [],
 })
 
+/** Rule edits not saved yet, keyed `host:owner/name`, and the read the first
+ *  of them was made against (null while there are none). */
+export interface PendingRules {
+  base: Pick<ReposBody, 'granted' | 'rules'> | null
+  edits: Record<string, RepoRule>
+}
+
+/**
+ * One write: the whole grant set, every granted repo's rules, and the read
+ * it is `from`. `read` is the read the action was built on (an add or a
+ * remove carries its own, taken before any confirm). Pending rule edits were
+ * made against `pending.base`, which then wins, and the grants and untouched
+ * rules come from that same read: a write is from the oldest read anything
+ * in it came from. A refetch between an edit and its save (a window focus,
+ * an approval re-reading the repos) therefore never hands a stale body a
+ * fresh `from`, which would pass the compare and put back what another
+ * manager changed meanwhile; it gets the 409 instead.
+ */
+export function grantsWrite(
+  read: Pick<ReposBody, 'granted' | 'rules'>,
+  pending: PendingRules,
+  change: (granted: HostRepo[]) => HostRepo[] = (granted) => granted,
+): { from: GrantsRead; repos: HostRepo[]; rules: RepoRule[] } {
+  const base = pending.base ?? read
+  const repos = change(base.granted).map((r) => ({ host: r.host, repo: r.repo }))
+  const rules = repos.map((r) => pending.edits[repoKey(r)] ?? base.rules?.find((x) => sameRepo(x, r)) ?? defaultRule(r))
+  return { from: readOf(base), repos, rules }
+}
+
 /** A rule as the server stores it, so a prefix typed "agent/" and the stored
  *  "agent" are one rule: a blank base is the default, a mode that is not
  *  'free' is 'branches_only', a prefix is trimmed of spaces and '/'. */
