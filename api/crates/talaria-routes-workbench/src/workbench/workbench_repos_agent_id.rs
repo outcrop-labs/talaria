@@ -2,12 +2,17 @@
 // explicit, like MCP assignment, and per HOST: the same owner/name on two
 // git hosts is two repositories. GET → every registered host's reachable
 // pool + this agent's grants (and each grant's branch rules and live branch
-// list); PUT → replace the grant set (validated against the pool; a host
-// whose reach could not be read keeps the grants it has). The agent's
-// managers. Every grant added or removed is audited
-// (`workbench.repo_grant`), a removed grant's tokens are revoked in every
-// api process, and the agent's open GitHub permission requests on a host
-// where it holds no repo any more are withdrawn.
+// list); PUT {repos, rules?, from?} → replace the grant set (validated
+// against the pool; a host whose reach could not be read keeps the grants
+// it has) and the rules of the repos still granted. A compare-and-set:
+// `from` is what the editor read, `{repos, rules}` (the GET's `granted` and
+// `rules`), and a write that finds the agent holding anything else answers
+// 409 with what is there now (`current`, the same shape) and writes
+// nothing; a write with no `from` is not compared. The agent's managers.
+// Every grant added or removed is audited (`workbench.repo_grant`), a
+// removed grant's tokens are revoked in every api process, and the agent's
+// open GitHub permission requests on a host where it holds no repo any more
+// are withdrawn.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -20,7 +25,9 @@ use talaria_audit::{AuditEntry, log_audit};
 use talaria_body::{parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
 use talaria_git_hosts::permissions::{self, AgentHostPermissions};
-use talaria_git_hosts::{self as hosts, GitHost, GrantChange, RepoRef, RepoRule};
+use talaria_git_hosts::{
+    self as hosts, GitHost, GrantChange, GrantsCas, GrantsRead, RepoRef, RepoRule,
+};
 use talaria_realtime_watch::RealtimeDeps;
 use talaria_session::{actor_of, require_agent_manager, require_agent_reader};
 use talaria_state::AppState;
@@ -37,6 +44,50 @@ async fn agent_exists(pg: &sqlx::PgPool, id: &str) -> bool {
 /// The map key a grant's branches ride under: `host:owner/name`.
 fn key_of(host: &str, repo: &str) -> String {
     format!("{host}:{repo}")
+}
+
+/// The most entries `from` may list of either kind: what an editor read can
+/// hold more than the 100 a write keeps (an approval adds one grant past it).
+const FROM_CAP: usize = 1000;
+
+/// The `from` member: what the editor read, `{repos, rules}`, each entry in
+/// the write's own shape.
+fn read_of(v: &Value) -> Result<GrantsRead, String> {
+    let shape = "from is what you read: {repos: [{host, repo}], rules: [{host, repo, baseBranch, pushMode, branchPrefix}]}";
+    let Some(obj) = v.as_object() else {
+        return Err(shape.into());
+    };
+    let (Some(repos), Some(rules)) = (
+        obj.get("repos").and_then(Value::as_array),
+        obj.get("rules").filter(|r| r.is_array()),
+    ) else {
+        return Err(shape.into());
+    };
+    if repos.len() > FROM_CAP || rules.as_array().map_or(0, Vec::len) > FROM_CAP {
+        return Err(format!(
+            "from lists at most {FROM_CAP} repos and {FROM_CAP} rules"
+        ));
+    }
+    Ok(GrantsRead {
+        repos: repos
+            .iter()
+            .map(repo_ref)
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("from.repos: {e}"))?,
+        rules: rules_of(rules).map_err(|e| format!("from.rules: {e}"))?,
+    })
+}
+
+/// The 409 a write measured from a stale read gets, with what is there now.
+fn changed_since(now: &GrantsRead) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": "this agent's repositories or branch rules changed since you read them — read them again",
+            "current": now,
+        })),
+    )
+        .into_response()
 }
 
 /// One `{host, repo}` element of the body.
@@ -74,11 +125,19 @@ pub async fn get(
             "error": error,
         }));
     }
-    let granted = hosts::granted_repos(&state.pg, &agent_id).await;
-    // The rules live beside the grants, and each granted repo carries its
+    // The rules live beside the grants, one per granted repo, and the grants
+    // are read from the same rows, so the two always agree: an editor sends
+    // both back as the `from` of its write. Each granted repo carries its
     // live branch list for the pickers — the admin configures against what
     // actually exists, not a free-text guess.
     let rules = hosts::repo_rules(&state.pg, &agent_id).await;
+    let granted: Vec<RepoRef> = rules
+        .iter()
+        .map(|r| RepoRef {
+            host_id: r.host_id.clone(),
+            repo: r.repo.clone(),
+        })
+        .collect();
     let mut branches = Map::new();
     for rule in &rules {
         let list = match hosts::host(&state.pg, &sb, &rule.host_id).await {
@@ -138,11 +197,27 @@ pub async fn put(
             Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
         },
     };
+    // What the editor read, when it says: the write lands only if the agent
+    // still holds exactly that. Absent, nothing is compared (a caller from
+    // before the compare-and-set).
+    let from = match obj.get("from") {
+        None => None,
+        Some(v) => match read_of(v) {
+            Ok(r) => Some(r),
+            Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
+        },
+    };
     let Some(agent_label) = agent_name(&state.pg, &agent_id).await else {
         return Ok(house_error(StatusCode::NOT_FOUND, "unknown agent"));
     };
     let sb = state.secretbox().await.unwrap_or_default();
-    let current = hosts::granted_repos(&state.pg, &agent_id).await;
+    // What the agent holds, for the unreadable-host rule below: the read the
+    // compare-and-set will confirm under the lock when the editor sent one
+    // (a stale one is a 409 whatever this keeps), else the rows as they are.
+    let current = match &from {
+        Some(read) => read.repos.clone(),
+        None => hosts::granted_repos(&state.pg, &agent_id).await,
+    };
     let mut pool: Vec<RepoRef> = Vec::new();
     let mut unread: Vec<String> = Vec::new();
     for (row, reached) in hosts::reachable_pool(&state.pg, &sb).await {
@@ -170,29 +245,19 @@ pub async fn put(
             Ok(h) => h,
             Err(e) => return Ok(internal("[workbench/repos] permissions read failed", e)),
         };
-    let change = match hosts::set_granted_repos(&state.pg, &agent_id, &repos).await {
-        Ok(c) => c,
-        Err(e) => return Ok(internal("[workbench/repos] grant write failed", e)),
-    };
+    // The grants and the rules of the repos still granted land together, in
+    // one transaction under the agent's lock, or not at all: a rule for a
+    // repo the same write removed is a UI race, quietly dropped.
+    let change =
+        match hosts::set_grants_cas(&state.pg, &agent_id, from.as_ref(), &repos, &rules).await {
+            Ok(GrantsCas::Ok(c)) => c,
+            Ok(GrantsCas::Changed(now)) => return Ok(changed_since(&now)),
+            Err(e) => return Ok(internal("[workbench/repos] grant write failed", e)),
+        };
     // The grant write has landed: it is audited, and a removed grant's tokens
-    // taken back, before anything else can fail and answer early.
+    // taken back.
     if !change.is_empty() {
         record_grant_change(&state, &user, &agent_id, &agent_label, &change, &held).await;
-    }
-    // Only rules for STILL-GRANTED repos are honored — a rule for a repo the
-    // same request revoked is a UI race, and the quiet drop is the honest
-    // resolution.
-    for rule in &rules {
-        let target = RepoRef {
-            host_id: rule.host_id.clone(),
-            repo: rule.repo.clone(),
-        };
-        if !repos.contains(&target) {
-            continue;
-        }
-        if let Err(e) = hosts::set_repo_rule(&state.pg, &agent_id, rule).await {
-            return Ok(internal("[workbench/repos] rule write failed", e));
-        }
     }
     Ok(Json(json!({ "granted": repos })).into_response())
 }
@@ -352,6 +417,39 @@ mod tests {
             rules_of(&json!([{ "host": "github", "repo": "acme/site", "pushMode": "yolo" }]))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn from_is_what_the_editor_read_in_the_writes_own_shape() {
+        let read = read_of(&json!({
+            "repos": [{ "host": "github", "repo": "acme/site" }],
+            "rules": [{ "host": "github", "repo": "acme/site", "baseBranch": null, "pushMode": "free", "branchPrefix": "agent/" }],
+        }))
+        .unwrap();
+        assert_eq!(read.repos.len(), 1);
+        assert_eq!(read.rules[0].push_mode, "free");
+        assert_eq!(read.rules[0].branch_prefix.as_deref(), Some("agent"));
+        // An agent with nothing granted reads as two empty lists.
+        assert_eq!(
+            read_of(&json!({ "repos": [], "rules": [] })).unwrap(),
+            GrantsRead::default()
+        );
+        // Both members, always: a read that left one out compares nothing.
+        for bad in [
+            json!(null),
+            json!([]),
+            json!({ "repos": [] }),
+            json!({ "rules": [] }),
+            json!({ "repos": {}, "rules": [] }),
+            json!({ "repos": ["acme/site"], "rules": [] }),
+            json!({ "repos": [], "rules": [{ "host": "github", "repo": "acme/site", "pushMode": "yolo" }] }),
+        ] {
+            assert!(read_of(&bad).is_err(), "{bad}");
+        }
+        let many: Vec<Value> = (0..=FROM_CAP)
+            .map(|i| json!({ "host": "github", "repo": format!("acme/r{i}") }))
+            .collect();
+        assert!(read_of(&json!({ "repos": many, "rules": [] })).is_err());
     }
 
     // ── Live-DB: the grants editor end to end ────────────────────────────────
@@ -518,6 +616,256 @@ mod tests {
             let (status, _) = put_as(&state, &as_manager, &a, json!({ "repos": [] })).await;
             assert_eq!(status, StatusCode::OK);
             assert!(hosts::granted_repos(&state.pg, &a).await.is_empty());
+
+            cleanup(&state, &[&a], &[&admin, &manager], &[&gh, &forge]).await;
+        }
+
+        async fn get_as(state: &AppState, headers: &HeaderMap, agent: &str) -> Value {
+            let (status, body) = answer(
+                get(
+                    State(state.clone()),
+                    headers.clone(),
+                    Path(agent.to_string()),
+                )
+                .await,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body
+        }
+
+        /// What an editor sends back as `from`: the GET's grants and rules.
+        fn read_from(got: &Value) -> Value {
+            json!({ "repos": got["granted"], "rules": got["rules"] })
+        }
+
+        async fn audit_count(state: &AppState, agent: &str) -> i64 {
+            sqlx::query_scalar(
+                "select count(*) from audit_log where action = 'workbench.repo_grant' and target_id = $1",
+            )
+            .bind(agent)
+            .fetch_one(&state.pg)
+            .await
+            .unwrap()
+        }
+
+        #[tokio::test]
+        #[ignore = "needs a live database and Redis (DATABASE_URL, REDIS_URL)"]
+        async fn two_editors_writing_from_one_read_never_revert_each_other() {
+            let state = state().await;
+            let t = tag();
+            let (admin, as_admin) = person(&state, &t, "admin", "admin").await;
+            let (manager, as_manager) = person(&state, &t, "manager", "member").await;
+            let a = agent(&state, &t, &manager).await;
+            let (base, log) = github("95103").await;
+            let gh = github_host(&state, &t, &base, "95103").await;
+            // A Forgejo host whose reach cannot be read: the grant the agent
+            // holds there is kept by a write that keeps it.
+            let forge = format!("wb-live-forge-{t}");
+            sqlx::query(
+                "insert into git_hosts (id, kind, name, base_url, auth) \
+                 values ($1, 'forgejo', $1, $2, '{}'::jsonb)",
+            )
+            .bind(&forge)
+            .bind(format!("https://{forge}.example.invalid"))
+            .execute(&state.pg)
+            .await
+            .unwrap();
+            talaria_git_hosts::add_grant(&state.pg, &a, &gh, "acme/widgets")
+                .await
+                .unwrap();
+            talaria_git_hosts::add_grant(&state.pg, &a, &forge, "acme/notes")
+                .await
+                .unwrap();
+            let both = json!([
+                { "host": gh, "repo": "acme/widgets" },
+                { "host": forge, "repo": "acme/notes" },
+            ]);
+            let widgets_rule = |prefix: &str| json!([{ "host": gh, "repo": "acme/widgets", "pushMode": "branches_only", "branchPrefix": prefix }]);
+
+            // A single editor: the read it sends back lands, as before.
+            let read = read_from(&get_as(&state, &as_manager, &a).await);
+            let (status, body) = put_as(
+                &state,
+                &as_manager,
+                &a,
+                json!({ "repos": both, "rules": widgets_rule("first"), "from": read }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+
+            // Two editors read the same state; the manager writes a branch
+            // rule from it, then the admin, who manages too, removes the
+            // repo from the same, older read. The second write is refused
+            // with what is there now, and nothing of it lands: the repo and
+            // the manager's rule stay, no grant is audited, and the token
+            // stays unrevoked.
+            let stale = read_from(&get_as(&state, &as_admin, &a).await);
+            let fresh = read_from(&get_as(&state, &as_manager, &a).await);
+            assert_eq!(stale, fresh);
+            let (status, body) = put_as(
+                &state,
+                &as_manager,
+                &a,
+                json!({ "repos": both, "rules": widgets_rule("mine"), "from": fresh }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let audited = audit_count(&state, &a).await;
+            // The agent holds a token for the repo the stale write removes.
+            let sb = state.secretbox().await.unwrap();
+            let host_row = talaria_git_hosts::get_host(&state.pg, &gh)
+                .await
+                .unwrap()
+                .unwrap();
+            let token =
+                talaria_git_hosts::grant_login(&state.pg, &sb, &host_row, "acme/widgets", &a)
+                    .await
+                    .unwrap()
+                    .expect("a credential");
+            let revoked = |log: &crate::workbench::live_support::Log| {
+                calls(log, "DELETE", "/installation/token")
+                    .contains(&format!("Bearer {}", token.login.password))
+            };
+            let (status, body) = put_as(
+                &state,
+                &as_admin,
+                &a,
+                json!({ "repos": [{ "host": forge, "repo": "acme/notes" }], "rules": [], "from": stale }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("changed since you read them"),
+                "{body}"
+            );
+            let now = get_as(&state, &as_admin, &a).await;
+            assert_eq!(
+                body["current"],
+                read_from(&now),
+                "the 409 says what is there now"
+            );
+            assert_eq!(
+                body["current"]["rules"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r["repo"] == "acme/widgets")
+                    .map(|r| r["branchPrefix"].clone()),
+                Some(json!("mine")),
+                "{body}"
+            );
+            assert_eq!(hosts::granted_repos(&state.pg, &a).await.len(), 2);
+            assert_eq!(
+                audit_count(&state, &a).await,
+                audited,
+                "nothing was written"
+            );
+            assert!(!revoked(&log), "a refused write revokes nothing");
+
+            // Read again, the admin's removal lands, and the manager's rule
+            // on the repo it keeps is what the admin read.
+            let (status, body) = put_as(
+                &state,
+                &as_admin,
+                &a,
+                json!({ "repos": [{ "host": forge, "repo": "acme/notes" }], "rules": [], "from": read_from(&now) }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(
+                hosts::granted_repos(&state.pg, &a).await,
+                [RepoRef {
+                    host_id: forge.clone(),
+                    repo: "acme/notes".into()
+                }]
+            );
+            assert!(revoked(&log), "the removal that landed revoked the token");
+
+            // An approval's grant between an editor's read and its write is
+            // never dropped by the write: the editor is answered with it.
+            let before = read_from(&get_as(&state, &as_manager, &a).await);
+            talaria_git_hosts::add_grant(&state.pg, &a, &gh, "acme/widgets")
+                .await
+                .unwrap();
+            let (status, body) = put_as(
+                &state,
+                &as_manager,
+                &a,
+                json!({ "repos": [{ "host": forge, "repo": "acme/notes" }], "rules": [], "from": before }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(
+                body["current"]["repos"].as_array().map(Vec::len),
+                Some(2),
+                "{body}"
+            );
+            assert_eq!(hosts::granted_repos(&state.pg, &a).await.len(), 2);
+
+            // A true race: two writes from one read at once, each setting
+            // its own prefix. Exactly one lands; the other gets 409 with the
+            // winner's rule, and the winner's rule is what is stored.
+            let read = read_from(&get_as(&state, &as_manager, &a).await);
+            let writes = ["left", "right"].map(|prefix| {
+                let (state, headers, a) = (state.clone(), as_manager.clone(), a.clone());
+                let body = json!({ "repos": both, "rules": widgets_rule(prefix), "from": read });
+                tokio::spawn(async move { put_as(&state, &headers, &a, body).await })
+            });
+            let mut answers = Vec::new();
+            for w in writes {
+                answers.push(w.await.unwrap());
+            }
+            let won: Vec<usize> = (0..2).filter(|i| answers[*i].0 == StatusCode::OK).collect();
+            assert_eq!(won.len(), 1, "{answers:?}");
+            let (winner, loser) = (won[0], 1 - won[0]);
+            assert_eq!(answers[loser].0, StatusCode::CONFLICT, "{answers:?}");
+            let stored = talaria_git_hosts::repo_rule(&state.pg, &a, &gh, "acme/widgets")
+                .await
+                .expect("granted");
+            let winning = ["left", "right"][winner];
+            assert_eq!(stored.branch_prefix.as_deref(), Some(winning));
+            let current = &answers[loser].1["current"];
+            assert_eq!(
+                current["rules"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r["repo"] == "acme/widgets")
+                    .map(|r| r["branchPrefix"].clone()),
+                Some(json!(winning)),
+                "{current}"
+            );
+
+            // A caller from before the compare-and-set sends no `from`, and
+            // its write lands as it always did.
+            let (status, body) = put_as(
+                &state,
+                &as_manager,
+                &a,
+                json!({ "repos": both, "rules": widgets_rule("legacy") }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(
+                talaria_git_hosts::repo_rule(&state.pg, &a, &gh, "acme/widgets")
+                    .await
+                    .and_then(|r| r.branch_prefix),
+                Some("legacy".into())
+            );
+            // A `from` that is not a read is a 400, and writes nothing.
+            let (status, body) = put_as(
+                &state,
+                &as_manager,
+                &a,
+                json!({ "repos": [], "from": { "repos": [] } }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(hosts::granted_repos(&state.pg, &a).await.len(), 2);
 
             cleanup(&state, &[&a], &[&admin, &manager], &[&gh, &forge]).await;
         }

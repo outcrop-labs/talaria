@@ -13,10 +13,11 @@
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
-  import { getJson, putJson } from '@/lib/fetch-json'
+  import { getJson } from '@/lib/fetch-json'
   import { useHasPerm } from '@/lib/session'
   import { slide } from '@/lib/motion'
-  import { toastError } from '@/lib/toast.svelte'
+  import { readOf, repoKey as key, saveRepoGrants, sameRepo as same, type HostRepo, type ReposBody, type RepoRule } from '@/lib/repo-grants'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
   import ProjectVariablesModal from './ProjectVariablesModal.svelte'
   import { useGithubAccessRefresh } from './queries'
 
@@ -34,6 +35,12 @@
   // edits alone gather under the save bar. Removing a grant revokes its
   // tokens and may withdraw the agent's requests on that host, so every write
   // re-reads the permissions and the requests too.
+  //
+  // Each write is a compare-and-set from what this read (lib/repo-grants):
+  // when another manager wrote meanwhile, or an approval added a repo, the
+  // server answers 409 with what is there now and writes nothing, and this
+  // re-reads and says what changed. Pending rule edits were made against the
+  // old read, so they go too: the toast asks for the change again.
   let {
     agentId,
     agentName,
@@ -51,27 +58,6 @@
   // `agents.manage`, which a named manager need not hold: a door that would
   // only 403 is not drawn.
   const mayEditVariables = useHasPerm('agents.manage')
-
-  interface HostRepo {
-    host: string
-    repo: string
-  }
-  interface RepoRule extends HostRepo {
-    baseBranch: string | null
-    pushMode: 'branches_only' | 'free'
-    branchPrefix: string | null
-  }
-  interface ReposBody {
-    hosts: Array<{ id: string; name: string; kind: string; error: string | null }>
-    available: HostRepo[]
-    granted: HostRepo[]
-    rules?: RepoRule[]
-    /** Keyed `host:owner/name`. */
-    branches?: Record<string, string[]>
-  }
-
-  const key = (r: HostRepo) => `${r.host}:${r.repo}`
-  const same = (a: HostRepo, b: HostRepo) => a.host === b.host && a.repo === b.repo
 
   const refresh = useGithubAccessRefresh()
   // The route's only 404 is "unknown agent", and this renders for that very
@@ -99,17 +85,24 @@
     // the server's rows always match what this shows.
     const rules = granted.map((r) => ruleFor(d, r))
     let ok = false
+    // A conflict's answer: hosts another write touched re-read too.
+    let current: HostRepo[] = []
     try {
-      await putJson(`/api/workbench/repos/${agentId}`, { repos: granted.map((r) => ({ host: r.host, repo: r.repo })), rules })
+      const res = await saveRepoGrants(agentId, readOf(d), { repos: granted, rules }, (id) => hostName(d, id))
       edits = {}
-      ok = true
-      if (granted !== d.granted) onGranted?.([...new Set(touched.map((r) => r.host))])
+      if (res.kind === 'changed') {
+        current = res.current.repos
+        pushToast({ title: res.title, body: res.body })
+      } else {
+        ok = true
+        if (granted !== d.granted) onGranted?.([...new Set(touched.map((r) => r.host))])
+      }
     } catch (e) {
       // The toast is the only place a failed write can be said, and the
       // re-read below restores the truth.
       toastError('Could not save the repositories', e)
     }
-    await refresh(agentId, [...new Set([...granted, ...touched, ...d.granted].map((r) => r.host))])
+    await refresh(agentId, [...new Set([...granted, ...touched, ...d.granted, ...current].map((r) => r.host))])
     saving = false
     if (ok && granted === d.granted) {
       saved = true
