@@ -658,6 +658,11 @@ where
     P: Fn(String, String) -> F,
     F: std::future::Future<Output = (LiveState, String)>,
 {
+    // First, so a run with nothing to ask still sweeps: a mirror the sync
+    // emptied of probe-able entries leaves the most stamps orphaned.
+    if let Err(e) = sweep_orphans(pg).await {
+        tracing::warn!("[mcp/liveness] orphan stamps not swept: {e}");
+    }
     let rows: Vec<(String, String)> = sqlx::query_as(SELECT_BATCH)
         .bind(LIVENESS_BATCH)
         .fetch_all(pg)
@@ -689,9 +694,6 @@ where
         LiveState::Unknown => t.unknown += 1,
     })
     .await;
-    if let Err(e) = sweep_orphans(pg).await {
-        tracing::warn!("[mcp/liveness] orphan stamps not swept: {e}");
-    }
     Ok(format!(
         "checked {n}: {} ok, {} auth, {} dead, {} unknown",
         t.ok, t.auth, t.dead, t.unknown
@@ -1587,6 +1589,21 @@ mod liveness_live {
             0,
             "nothing left to sweep"
         );
+
+        // Nothing left to ask: the run still sweeps what the sync orphaned.
+        sqlx::query("delete from mcp_library_entries")
+            .execute(&pg)
+            .await
+            .unwrap();
+        let report = run_batch_with(&pg, |_name, _url| async { (LiveState::Ok, String::new()) })
+            .await
+            .unwrap();
+        assert_eq!(report, "no hosted entries to check");
+        let left: i64 = sqlx::query_scalar("select count(*) from mcp_library_liveness")
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "an empty run sweeps the orphans too");
         taken(&schema);
         drop_scratch(&admin, pg, &schema).await;
     }
