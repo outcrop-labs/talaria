@@ -87,13 +87,21 @@ pub async fn sample_agent_resources(pg: &PgPool) {
     record_tick(pg, &out, &by_container).await;
 }
 
-/// One sample per agent container `docker stats --format '{{json .}}'`
-/// answered in `stats` (one JSON object a line; `by_container` maps a
-/// container name to its agent's model, and a container it does not name is
-/// skipped), then the prune. Everything after the docker call, so a test can
-/// feed it the CLI's output. Fire-and-forget like the job: failures are
-/// logged or dropped, never thrown.
-pub async fn record_tick(pg: &PgPool, stats: &str, by_container: &HashMap<String, String>) {
+/// One agent container's sample, as `docker stats` reported it.
+#[derive(Debug, Clone, PartialEq)]
+struct Sample {
+    model: String,
+    container: String,
+    cpu: f64,
+    mem: i64,
+    pids: i64,
+}
+
+/// The samples in `stats` (`docker stats --format '{{json .}}'`: one JSON
+/// object a line), one per container `by_container` names (container name →
+/// its agent's model); anything else is skipped.
+fn parse_tick(stats: &str, by_container: &HashMap<String, String>) -> Vec<Sample> {
+    let mut out = Vec::new();
     for line in stats.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -129,20 +137,137 @@ pub async fn record_tick(pg: &PgPool, stats: &str, by_container: &HashMap<String
             .and_then(|p| p.as_str())
             .and_then(|p| p.parse::<i64>().ok())
             .unwrap_or(0);
-        let _ = sqlx::query(
-            "insert into agent_resource_samples (agent_model, container, cpu_percent, mem_bytes, pids) \
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(model)
-        .bind(name)
-        .bind(cpu)
-        .bind(mem)
-        .bind(pids)
-        .execute(pg)
-        .await;
-        warn_if_leaking(pg, model, mem).await;
+        out.push(Sample {
+            model: model.clone(),
+            container: name.to_string(),
+            cpu,
+            mem,
+            pids,
+        });
     }
-    prune(pg).await;
+    out
+}
+
+/// One tick of samples (`stats` is what `docker stats --format '{{json .}}'`
+/// answered; `by_container` maps a container name to its agent's model, and
+/// a container it does not name is skipped), then the prunes. Everything
+/// after the docker call, so a test can feed it the CLI's output.
+/// Fire-and-forget like the job: failures are logged, never thrown.
+pub async fn record_tick(pg: &PgPool, stats: &str, by_container: &HashMap<String, String>) {
+    let samples = parse_tick(stats, by_container);
+    if let Err(e) = write_tick(pg, &samples).await {
+        tracing::warn!(
+            "{LOG} this tick's {} samples were not written: {e}",
+            samples.len()
+        );
+    }
+    for s in &samples {
+        warn_if_leaking(pg, &s.model, s.mem).await;
+    }
+    prune_transcripts(pg).await;
+}
+
+/// The tick's samples and the week's prune, in one transaction that does
+/// not wait for its WAL flush (`synchronous_commit = off`, for this
+/// transaction only). Samples are telemetry: a crash can lose the last
+/// fraction of a second of them — one tick at most — and the next tick
+/// samples again; a prune lost with it runs again a minute later. One
+/// commit a tick, where each sample and the prune used to be one each.
+/// (rows written, rows pruned).
+async fn write_tick(pg: &PgPool, samples: &[Sample]) -> Result<(u64, u64), sqlx::Error> {
+    let mut tx = pg.begin().await?;
+    sqlx::query("set local synchronous_commit = off")
+        .execute(&mut *tx)
+        .await?;
+    let seen = tick_probe::read(&mut tx).await?;
+    let written = if samples.is_empty() {
+        0
+    } else {
+        let models: Vec<&str> = samples.iter().map(|s| s.model.as_str()).collect();
+        let containers: Vec<&str> = samples.iter().map(|s| s.container.as_str()).collect();
+        let cpus: Vec<f64> = samples.iter().map(|s| s.cpu).collect();
+        let mems: Vec<i64> = samples.iter().map(|s| s.mem).collect();
+        let pids: Vec<i64> = samples.iter().map(|s| s.pids).collect();
+        sqlx::query(
+            "insert into agent_resource_samples (agent_model, container, cpu_percent, mem_bytes, pids) \
+             select * from unnest($1::text[], $2::text[], $3::float8[], $4::int8[], $5::int8[])",
+        )
+        .bind(&models)
+        .bind(&containers)
+        .bind(&cpus)
+        .bind(&mems)
+        .bind(&pids)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+    };
+    let pruned = sqlx::query(
+        "delete from agent_resource_samples where taken_at < now() - ($1::int * interval '1 day')",
+    )
+    .bind(SAMPLE_RETENTION_DAYS as i32)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    tick_probe::record(seen, written, pruned);
+    Ok((written, pruned))
+}
+
+/// What each tick's transaction did, for a test that asks. Off unless a test
+/// turns it on: then the tick reads `synchronous_commit` back inside its own
+/// transaction and records it with its rows. Production pays one atomic load
+/// per tick.
+pub mod tick_probe {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+    static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+
+    /// One tick's transaction, as it committed.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Seen {
+        /// `synchronous_commit`, read inside the transaction.
+        pub synchronous_commit: String,
+        pub written: u64,
+        pub pruned: u64,
+    }
+
+    /// Record every tick from here on.
+    pub fn start() {
+        ON.store(true, Ordering::SeqCst);
+    }
+
+    /// Every tick recorded since `start`.
+    pub fn seen() -> Vec<Seen> {
+        SEEN.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) async fn read(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Option<String>, sqlx::Error> {
+        if !ON.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        sqlx::query_scalar("show synchronous_commit")
+            .fetch_one(&mut **tx)
+            .await
+            .map(Some)
+    }
+
+    pub(crate) fn record(seen: Option<String>, written: u64, pruned: u64) {
+        if let Some(synchronous_commit) = seen {
+            SEEN.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(Seen {
+                    synchronous_commit,
+                    written,
+                    pruned,
+                });
+        }
+    }
 }
 
 /// Climbing RSS over ~8 minutes, never giving memory back, past 2 GiB.
@@ -242,13 +367,10 @@ fn cpu_of(v: &serde_json::Value) -> f64 {
         .unwrap_or(0.0)
 }
 
-async fn prune(pg: &PgPool) {
-    let _ = sqlx::query(
-        "delete from agent_resource_samples where taken_at < now() - ($1::int * interval '1 day')",
-    )
-    .bind(SAMPLE_RETENTION_DAYS as i32)
-    .execute(pg)
-    .await;
+/// Run transcripts past the admin's retention. They are user data, so this
+/// stays its own statement, committed synchronously; it matches nothing on
+/// almost every tick, and a DELETE that matches nothing commits nothing.
+async fn prune_transcripts(pg: &PgPool) {
     if let Some(days) = transcript_retention_days(pg).await {
         let _ = sqlx::query(
             "delete from artifacts where kind = 'run-transcript' and updated_at < now() - ($1::int * interval '1 day')",
@@ -281,8 +403,35 @@ pub fn resource_job_spec(pg: PgPool) -> JobSpec {
 
 #[cfg(test)]
 mod tests {
-    use super::{cpu_of, mem_is_leaking, parse_docker_size};
+    use super::{Sample, cpu_of, mem_is_leaking, parse_docker_size, parse_tick};
     use serde_json::json;
+    use std::collections::HashMap;
+
+    /// A tick's samples are the lines of containers the roster names, read
+    /// the way the per-line insert read them; anything else is skipped.
+    #[test]
+    fn a_tick_parses_the_rosters_containers_and_skips_the_rest() {
+        let by_container: HashMap<String, String> =
+            [("eng-c".to_string(), "eng-model".to_string())].into();
+        let stats = [
+            r#"{"Name":"eng-c","CPUPerc":"12.50%","MemUsage":"946MiB / 4GiB","PIDs":"42"}"#,
+            "",
+            "not json",
+            r#"{"Name":"stranger","CPUPerc":"1%","MemUsage":"1MiB / 1GiB","PIDs":"1"}"#,
+            r#"{"CPUPerc":"1%"}"#,
+        ]
+        .join("\n");
+        assert_eq!(
+            parse_tick(&stats, &by_container),
+            vec![Sample {
+                model: "eng-model".into(),
+                container: "eng-c".into(),
+                cpu: 12.5,
+                mem: 946 << 20,
+                pids: 42,
+            }]
+        );
+    }
 
     #[test]
     fn docker_sizes_parse_to_bytes() {

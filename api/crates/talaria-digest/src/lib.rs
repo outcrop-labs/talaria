@@ -52,7 +52,7 @@ use talaria_approvals::{
 };
 use talaria_daily_brief::config::zone_for;
 use talaria_email::{email_button, email_escape, email_shell};
-use talaria_gateway::settings::{get_setting, set_setting};
+use talaria_gateway::settings::{get_setting, set_setting_if_changed};
 use talaria_home::{WorkItem, home_queues};
 use talaria_notify::{
     GatedMail, NOTIFY_SETTINGS_PATH, NotificationInput, NotifyDeps, add_notification_with,
@@ -544,7 +544,8 @@ pub fn real_digest_deps(state: &AppState, realtime: talaria_realtime::RealtimeDe
 
 /// Write the digest's sent-on ledger, pruned to the people in `live`: the
 /// one writer of `digest_state`, called on every mark of a pass and once at
-/// its end.
+/// its end. A ledger that did not change (most passes: nobody in their send
+/// window) is not written at all.
 pub async fn persist_digest_state(
     pg: &PgPool,
     live: &HashSet<String>,
@@ -555,12 +556,13 @@ pub async fn persist_digest_state(
         .filter(|(id, _)| live.contains(*id))
         .map(|(id, date)| (id.clone(), date.clone()))
         .collect();
-    set_setting(
+    set_setting_if_changed(
         pg,
         DIGEST_STATE_KEY,
         &json!({ "sentOn": serde_json::to_value(&pruned).expect("dates serialize") }),
     )
     .await
+    .map(|_| ())
 }
 
 /// One pass of the digest.
@@ -1329,7 +1331,9 @@ pub async fn run_approval_escalation(
             seen
         },
     };
-    if let Err(e) = set_setting(
+    // Unchanged on most passes (nothing new pending, nothing decided), and
+    // then not written.
+    if let Err(e) = set_setting_if_changed(
         &pg,
         ESCALATION_STATE_KEY,
         &serde_json::to_value(&next).expect("escalation state serializes"),

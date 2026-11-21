@@ -17,10 +17,18 @@
 //
 // The counters are cluster-wide: run it alone, on a database nothing else is
 // connected to, and read the table it prints. It asserts nothing about the
-// counts, which go in the pull request, not in CI.
+// counts, which go in the pull request, not in CI. Its approval-SLA passes
+// are the job's own, so on a dev database they do what the job's next pass
+// would.
 //
 //   DATABASE_URL=postgres://… cargo test -p talaria-api --test it \
 //     write_load_stamps_live::write_load_stamps_live_census -- --ignored --nocapture
+//
+// Below it, the regression guards for the same writers, each on its own rows:
+// a stamp lands once a window and asynchronously, a tick is one asynchronous
+// transaction, and the job state is written only when it changes. The tests
+// in this file take turns (`SERIAL`): the census's sample ticks prune every
+// aged sample, and its counters would count the others' writes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -28,6 +36,10 @@ use std::time::{Duration, Instant};
 use sqlx::PgPool;
 
 use crate::support::pg;
+
+/// One test of this file at a time.
+static SERIAL: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 const PREFIX: &str = "wls-census";
 const AGENTS: usize = 6;
@@ -116,15 +128,24 @@ async fn agents(pg: &PgPool) -> Vec<(String, String, String)> {
     out
 }
 
-/// The writers' probes: how many write transactions committed with
-/// `synchronous_commit = off` since `mark`. None of this build's writers
-/// commits asynchronously.
-fn asyncs_since(_mark: usize) -> i64 {
-    0
+/// Write transactions the stamp probe saw for `ids` in `what`'s table that
+/// committed with `synchronous_commit` off: each stamp that wrote a row. (A
+/// stamp that matched none took no transaction id and wrote nothing.)
+fn stamp_asyncs(what: &str, ids: &[String]) -> i64 {
+    talaria_agent_auth::stamp_probe::seen()
+        .iter()
+        .filter(|s| {
+            s.what == what && ids.contains(&s.id) && s.rows > 0 && s.synchronous_commit == "off"
+        })
+        .count() as i64
 }
 
-fn probe_mark() -> usize {
-    0
+/// The same for the sample ticks recorded after the first `from`.
+fn tick_asyncs(from: usize) -> i64 {
+    talaria_fleet_resources::tick_probe::seen()[from..]
+        .iter()
+        .filter(|s| s.written + s.pruned > 0 && s.synchronous_commit == "off")
+        .count() as i64
 }
 
 /// One hour of per-agent credential checks: 267 across six agents, in twelve
@@ -134,7 +155,6 @@ async fn keys(pg: &PgPool, agents: &[(String, String, String)], cp: &mut bool) -
     let mut t = Tally::default();
     let t0 = Instant::now();
     let ids: Vec<String> = agents.iter().map(|a| a.0.clone()).collect();
-    let mark = probe_mark();
     let mut k = 0;
     for w in 0..12 {
         checkpoint(pg, cp).await;
@@ -163,7 +183,7 @@ async fn keys(pg: &PgPool, agents: &[(String, String, String)], cp: &mut bool) -
         .await
         .unwrap();
     }
-    t.asyncs = asyncs_since(mark);
+    t.asyncs = stamp_asyncs("agent_keys", &ids);
     t
 }
 
@@ -182,7 +202,6 @@ async fn llm_key(pg: &PgPool, cp: &mut bool) -> Tally {
     .await
     .unwrap();
     let t0 = Instant::now();
-    let mark = probe_mark();
     for c in 0..LLM_CALLS {
         checkpoint(pg, cp).await;
         let before = counters(pg).await;
@@ -202,7 +221,7 @@ async fn llm_key(pg: &PgPool, cp: &mut bool) -> Tally {
         .await
         .unwrap();
     }
-    t.asyncs = asyncs_since(mark);
+    t.asyncs = stamp_asyncs("llm_api_keys", &[key]);
     t
 }
 
@@ -236,7 +255,7 @@ async fn samples(pg: &PgPool, agents: &[(String, String, String)], cp: &mut bool
         .collect();
     let models: Vec<String> = agents.iter().map(|a| a.1.clone()).collect();
     let containers: Vec<String> = agents.iter().map(|a| a.2.clone()).collect();
-    let mark = probe_mark();
+    let from = talaria_fleet_resources::tick_probe::seen().len();
     for tick in 0..SAMPLE_TICKS {
         if tick % 5 == 0 {
             checkpoint(pg, cp).await;
@@ -256,7 +275,7 @@ async fn samples(pg: &PgPool, agents: &[(String, String, String)], cp: &mut bool
         talaria_fleet_resources::record_tick(pg, &stats_json(agents, tick), &by_container).await;
         t.add(before, counters(pg).await);
     }
-    t.asyncs = asyncs_since(mark);
+    t.asyncs = tick_asyncs(from);
     t
 }
 
@@ -360,6 +379,9 @@ async fn hermes(pg: &PgPool, cp: &mut bool) -> Tally {
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL); a measurement, run alone"]
 async fn write_load_stamps_live_census() {
+    let _turn = SERIAL.lock().await;
+    talaria_agent_auth::stamp_probe::start();
+    talaria_fleet_resources::tick_probe::start();
     let pg = pg().await;
     sweep(&pg).await;
     let agents = agents(&pg).await;
@@ -425,4 +447,469 @@ async fn write_load_stamps_live_census() {
         total.asyncs,
         total.wal
     );
+}
+
+// ── Regression guards ────────────────────────────────────────────────────────
+
+/// (xmin, xmax) of one row, as text.
+async fn row_version(pg: &PgPool, sql: &'static str, id: &str) -> (String, String) {
+    sqlx::query_as(sql)
+        .bind(id)
+        .fetch_one(pg)
+        .await
+        .expect("the row")
+}
+
+const AGENT_KEY_ROW: &str =
+    "select xmin::text, xmax::text from agent_keys where agent_id = $1::uuid";
+const LLM_KEY_ROW: &str = "select xmin::text, xmax::text from llm_api_keys where id = $1::uuid";
+const SETTING_ROW: &str = "select xmin::text, xmax::text from app_settings where key = $1";
+
+/// The stamp probe's records for `id`, once the first has landed (the stamps
+/// are detached; up to ten seconds) and a moment more for any straggler.
+async fn stamps_for(id: &str) -> Vec<talaria_agent_auth::stamp_probe::Seen> {
+    let mine = || {
+        talaria_agent_auth::stamp_probe::seen()
+            .into_iter()
+            .filter(|s| s.id == id)
+            .collect::<Vec<_>>()
+    };
+    for _ in 0..100 {
+        if !mine().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    mine()
+}
+
+/// An agent of this file's own, with a credential: (agent id, secret).
+async fn keyed_agent(pg: &PgPool, name: &str, last_used: Option<&str>) -> (String, String) {
+    let slug = format!("wls-auth-{name}");
+    let id: String = sqlx::query_scalar(
+        "insert into agent_defs (slug, department, model, display_name, managed) \
+         values ($1, $1, $1 || '-model', $1, true) returning id::text",
+    )
+    .bind(&slug)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    let secret = format!("tak_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(
+        "insert into agent_keys (agent_id, key_hash, key_enc, last_used_at) \
+         values ($1::uuid, $2, 'test', now() - $3::interval)",
+    )
+    .bind(&id)
+    .bind(talaria_auth::sha256_hex(&secret))
+    .bind(last_used)
+    .execute(pg)
+    .await
+    .unwrap();
+    (id, secret)
+}
+
+fn agent_headers(secret: &str) -> axum::http::HeaderMap {
+    let mut h = axum::http::HeaderMap::new();
+    h.insert("x-api-key", secret.parse().unwrap());
+    h
+}
+
+async fn sweep_auth(pg: &PgPool) {
+    sqlx::query("delete from agent_defs where slug like 'wls-auth-%'")
+        .execute(pg)
+        .await
+        .unwrap();
+}
+
+/// A hundred authentications of one agent inside the window, at once, write
+/// its agent_keys row once: one stamp, asynchronously committed, and none
+/// after it.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_hundred_agent_authentications_in_the_window_stamp_once() {
+    let _turn = SERIAL.lock().await;
+    talaria_agent_auth::stamp_probe::start();
+    let pg = pg().await;
+    sweep_auth(&pg).await;
+    let (id, secret) = keyed_agent(&pg, "hundred", None).await;
+    let before = row_version(&pg, AGENT_KEY_ROW, &id).await;
+    let headers = agent_headers(&secret);
+    let calls = (0..100).map(|_| talaria_agent_auth::agent_caller(&pg, &headers));
+    for caller in futures_util::future::join_all(calls).await {
+        let caller = caller.expect("authenticated").expect("an agent");
+        assert_eq!(caller.id.as_deref(), Some(id.as_str()));
+    }
+    let stamps = stamps_for(&id).await;
+    assert_eq!(stamps.len(), 1, "one stamp for a hundred calls: {stamps:?}");
+    assert_eq!(stamps[0].rows, 1);
+    assert_eq!(
+        stamps[0].synchronous_commit, "off",
+        "committed asynchronously"
+    );
+    let stamped = row_version(&pg, AGENT_KEY_ROW, &id).await;
+    assert_ne!(stamped.0, before.0, "the row was written");
+    for _ in 0..100 {
+        talaria_agent_auth::agent_caller(&pg, &headers)
+            .await
+            .expect("authenticated");
+    }
+    assert_eq!(
+        stamps_for(&id).await.len(),
+        1,
+        "and never again inside the window"
+    );
+    assert_eq!(row_version(&pg, AGENT_KEY_ROW, &id).await, stamped);
+    let migrated: bool = sqlx::query_scalar(
+        "select last_used_at is not null from agent_keys where agent_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(migrated);
+    sweep_auth(&pg).await;
+}
+
+/// A stamp older than the window is refreshed on the next call, and a stamp
+/// inside it is not rewritten by another process (the UPDATE's own guard):
+/// it matches no row and leaves the row as it was.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_agent_stamp_past_the_window_is_refreshed_and_one_inside_it_is_not() {
+    let _turn = SERIAL.lock().await;
+    talaria_agent_auth::stamp_probe::start();
+    let pg = pg().await;
+    sweep_auth(&pg).await;
+    let (id, secret) = keyed_agent(&pg, "stale", Some("6 minutes")).await;
+    talaria_agent_auth::agent_caller(&pg, &agent_headers(&secret))
+        .await
+        .expect("authenticated")
+        .expect("an agent");
+    let stamps = stamps_for(&id).await;
+    assert_eq!(stamps.len(), 1, "{stamps:?}");
+    assert_eq!(stamps[0].rows, 1, "a six-minute-old stamp is refreshed");
+    let fresh: bool = sqlx::query_scalar(
+        "select last_used_at > now() - interval '1 minute' from agent_keys \
+         where agent_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(fresh);
+    let stamped = row_version(&pg, AGENT_KEY_ROW, &id).await;
+    assert_eq!(
+        talaria_agent_auth::stamp_agent_key(&pg, &id).await.unwrap(),
+        0,
+        "a second process's stamp inside the window matches nothing"
+    );
+    assert_eq!(row_version(&pg, AGENT_KEY_ROW, &id).await, stamped);
+    sweep_auth(&pg).await;
+}
+
+/// A key never used is stamped on its first call, so the legacy migration
+/// status counts the agent as moved over at once, exactly as before.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_never_used_agent_key_is_stamped_on_its_first_call() {
+    let _turn = SERIAL.lock().await;
+    talaria_agent_auth::stamp_probe::start();
+    let pg = pg().await;
+    sweep_auth(&pg).await;
+    let (id, secret) = keyed_agent(&pg, "first", None).await;
+    let pending = |s: &talaria_agent_auth::LegacyMigrationStatus| {
+        s.pending.iter().any(|m| m == "wls-auth-first-model")
+    };
+    let status = talaria_agent_auth::legacy_migration_status(&pg)
+        .await
+        .unwrap();
+    assert!(pending(&status), "never used: still pending");
+    talaria_agent_auth::agent_caller(&pg, &agent_headers(&secret))
+        .await
+        .expect("authenticated")
+        .expect("an agent");
+    let stamps = stamps_for(&id).await;
+    assert_eq!(stamps.len(), 1, "{stamps:?}");
+    assert_eq!(stamps[0].rows, 1);
+    let status = talaria_agent_auth::legacy_migration_status(&pg)
+        .await
+        .unwrap();
+    assert!(!pending(&status), "migrated on its first call");
+    sweep_auth(&pg).await;
+}
+
+/// An LLM key of this test's own, on a user of its own: (key id, secret).
+async fn llm_key_of(pg: &PgPool, tag: &str, last_used: Option<&str>) -> (String, String) {
+    crate::support::sweep_user_rows(pg, "wls-llm", tag).await;
+    let user = crate::support::fabricate_user(pg, "wls-llm", tag).await;
+    let secret = format!("tlk_{}", uuid::Uuid::new_v4().simple());
+    let id: String = sqlx::query_scalar(
+        "insert into llm_api_keys (user_id, name, key_hash, prefix, last_used_at) \
+         values ($1::uuid, 'wls-llm', $2, 'tlk_wls', now() - $3::interval) returning id::text",
+    )
+    .bind(&user)
+    .bind(talaria_auth::sha256_hex(&secret))
+    .bind(last_used)
+    .fetch_one(pg)
+    .await
+    .unwrap();
+    (id, secret)
+}
+
+/// GET /api/llm/v1/models with the key, through the real router.
+async fn models_call(app: &axum::Router, secret: &str) -> u16 {
+    use tower::ServiceExt;
+    let req = axum::http::Request::builder()
+        .uri("/api/llm/v1/models")
+        .header("authorization", format!("Bearer {secret}"))
+        .body(axum::body::Body::empty())
+        .unwrap();
+    app.clone().oneshot(req).await.unwrap().status().as_u16()
+}
+
+/// The same three for an LLM key, through the models route: a hundred calls
+/// in the window stamp once and asynchronously, a stamp past the window is
+/// refreshed while one inside it is not rewritten, and a key never used is
+/// stamped on its first call.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_llm_key_is_stamped_once_a_window_and_asynchronously() {
+    let _turn = SERIAL.lock().await;
+    talaria_agent_auth::stamp_probe::start();
+    let pg = pg().await;
+    let app = talaria_api::routes::router(crate::support::app_state().await);
+
+    // A hundred calls, the first ever among them.
+    let (id, secret) = llm_key_of(&pg, "hundred", None).await;
+    let before = row_version(&pg, LLM_KEY_ROW, &id).await;
+    for _ in 0..100 {
+        assert_eq!(models_call(&app, &secret).await, 200);
+    }
+    let stamps = stamps_for(&id).await;
+    assert_eq!(stamps.len(), 1, "one stamp for a hundred calls: {stamps:?}");
+    assert_eq!((stamps[0].what, stamps[0].rows), ("llm_api_keys", 1));
+    assert_eq!(stamps[0].synchronous_commit, "off");
+    let stamped = row_version(&pg, LLM_KEY_ROW, &id).await;
+    assert_ne!(stamped.0, before.0, "the first call stamped the key");
+    assert_eq!(
+        talaria_routes_fleet::llm::llm_models::stamp_key(&pg, &id)
+            .await
+            .unwrap(),
+        0,
+        "a second process's stamp inside the window matches nothing"
+    );
+    assert_eq!(row_version(&pg, LLM_KEY_ROW, &id).await, stamped);
+
+    // Past the window.
+    let (stale, stale_secret) = llm_key_of(&pg, "stale", Some("6 minutes")).await;
+    assert_eq!(models_call(&app, &stale_secret).await, 200);
+    let stamps = stamps_for(&stale).await;
+    assert_eq!(stamps.len(), 1, "{stamps:?}");
+    assert_eq!(stamps[0].rows, 1, "a six-minute-old stamp is refreshed");
+    let fresh: bool = sqlx::query_scalar(
+        "select last_used_at > now() - interval '1 minute' from llm_api_keys where id = $1::uuid",
+    )
+    .bind(&stale)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(fresh);
+
+    for tag in ["hundred", "stale"] {
+        crate::support::sweep_user_rows(&pg, "wls-llm", tag).await;
+    }
+}
+
+/// One tick of six agents is one transaction: six rows sharing one xmin,
+/// `synchronous_commit` off inside it and on again after, and the aged
+/// samples pruned in that same transaction.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_sample_tick_is_one_asynchronous_transaction_with_its_prune() {
+    use std::str::FromStr;
+    let _turn = SERIAL.lock().await;
+    talaria_fleet_resources::tick_probe::start();
+    let url = std::env::var("DATABASE_URL").expect(crate::support::DATABASE_URL_EXPECT);
+    // One connection: the read after the tick is the session the tick ran on.
+    let pg = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(sqlx::postgres::PgConnectOptions::from_str(&url).unwrap())
+        .await
+        .unwrap();
+    sqlx::query("delete from agent_resource_samples where agent_model like 'wls-samples-%'")
+        .execute(&pg)
+        .await
+        .unwrap();
+    let agents: Vec<(String, String, String)> = (0..AGENTS)
+        .map(|i| {
+            (
+                String::new(),
+                format!("wls-samples-a{i}-model"),
+                format!("wls-samples-a{i}-container"),
+            )
+        })
+        .collect();
+    let by_container: HashMap<String, String> = agents
+        .iter()
+        .map(|(_, m, c)| (c.clone(), m.clone()))
+        .collect();
+    // Two aged samples an agent: past the week the prune keeps.
+    sqlx::query(
+        "insert into agent_resource_samples (agent_model, container, taken_at) \
+         select m, m, now() - interval '8 days' \
+         from unnest($1::text[]) as u(m), generate_series(1, 2)",
+    )
+    .bind(agents.iter().map(|a| a.1.clone()).collect::<Vec<_>>())
+    .execute(&pg)
+    .await
+    .unwrap();
+    let from = talaria_fleet_resources::tick_probe::seen().len();
+    talaria_fleet_resources::record_tick(&pg, &stats_json(&agents, 0), &by_container).await;
+    let ticks = talaria_fleet_resources::tick_probe::seen()[from..].to_vec();
+    assert_eq!(ticks.len(), 1, "{ticks:?}");
+    assert_eq!(
+        ticks[0].synchronous_commit, "off",
+        "committed asynchronously"
+    );
+    assert_eq!(ticks[0].written, AGENTS as u64);
+    assert!(
+        ticks[0].pruned >= 2 * AGENTS as u64,
+        "the aged samples went in the tick's own transaction: {ticks:?}"
+    );
+    let (rows, xmins, aged): (i64, i64, i64) = sqlx::query_as(
+        "select count(*) filter (where taken_at > now() - interval '1 day'), \
+                count(distinct xmin::text) filter (where taken_at > now() - interval '1 day'), \
+                count(*) filter (where taken_at < now() - interval '7 days') \
+         from agent_resource_samples where agent_model like 'wls-samples-%'",
+    )
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert_eq!((rows, xmins, aged), (AGENTS as i64, 1, 0));
+    let sync: String = sqlx::query_scalar("show synchronous_commit")
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+    assert_eq!(
+        sync, "on",
+        "synchronous_commit = off stayed inside the tick"
+    );
+    sqlx::query("delete from agent_resource_samples where agent_model like 'wls-samples-%'")
+        .execute(&pg)
+        .await
+        .unwrap();
+}
+
+/// A job-state save of an equal value — the same jsonb in another key
+/// order — is not written: no new row version, no lock. A different value
+/// is; and `set_setting`, an admin's save, still writes every time.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_setting_saved_unchanged_is_not_written() {
+    use serde_json::json;
+    use talaria_settings::{set_setting, set_setting_if_changed};
+    let _turn = SERIAL.lock().await;
+    let pg = pg().await;
+    let key = format!("wls-settings-test:{}", uuid::Uuid::new_v4());
+    assert!(
+        set_setting_if_changed(&pg, &key, &json!({"a": {"x": 1, "y": [1, 2]}, "b": "two"}))
+            .await
+            .unwrap(),
+        "an absent key is written"
+    );
+    let first = row_version(&pg, SETTING_ROW, &key).await;
+    assert!(
+        !set_setting_if_changed(&pg, &key, &json!({"b": "two", "a": {"y": [1, 2], "x": 1}}))
+            .await
+            .unwrap(),
+        "the same jsonb in another key order is not a change"
+    );
+    assert_eq!(row_version(&pg, SETTING_ROW, &key).await, first);
+    assert!(
+        set_setting_if_changed(&pg, &key, &json!({"a": {"x": 1, "y": [2, 1]}, "b": "two"}))
+            .await
+            .unwrap(),
+        "a different value is written"
+    );
+    let changed = row_version(&pg, SETTING_ROW, &key).await;
+    assert_ne!(changed.0, first.0);
+    let stored = talaria_settings::try_get_setting(&pg, &key).await.unwrap();
+    assert_eq!(
+        stored,
+        Some(json!({"a": {"x": 1, "y": [2, 1]}, "b": "two"}))
+    );
+    set_setting(&pg, &key, &json!({"a": {"x": 1, "y": [2, 1]}, "b": "two"}))
+        .await
+        .unwrap();
+    assert_ne!(
+        row_version(&pg, SETTING_ROW, &key).await.0,
+        changed.0,
+        "an admin's save always writes"
+    );
+    sqlx::query("delete from app_settings where key = $1")
+        .bind(&key)
+        .execute(&pg)
+        .await
+        .unwrap();
+}
+
+/// A prune of the announce marks that drops nothing leaves the row as it
+/// was; one that drops a decided approval's mark writes. Every mark already
+/// there is passed as live, so a dev database's marks are kept.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn an_announce_prune_that_drops_nothing_is_not_written() {
+    let _turn = SERIAL.lock().await;
+    let pg = pg().await;
+    let key = "approval_announce_state";
+    sqlx::query(
+        "insert into app_settings (key, value) values ($1, '{\"announced\": {}}'::jsonb) \
+         on conflict (key) do nothing",
+    )
+    .bind(key)
+    .execute(&pg)
+    .await
+    .unwrap();
+    // A decided approval's mark, from long ago.
+    sqlx::query(
+        "update app_settings set value = jsonb_build_object('announced', \
+           coalesce(value -> 'announced', '{}'::jsonb) \
+             || '{\"wls-decided\": \"2001-01-01T00:00:00.000Z\"}'::jsonb) \
+         where key = $1",
+    )
+    .bind(key)
+    .execute(&pg)
+    .await
+    .unwrap();
+    let marks: Vec<String> = sqlx::query_scalar(
+        "select jsonb_object_keys(value -> 'announced') from app_settings where key = $1",
+    )
+    .bind(key)
+    .fetch_all(&pg)
+    .await
+    .unwrap();
+    let now = talaria_agent_auth::now_iso();
+    let before = row_version(&pg, SETTING_ROW, key).await;
+    talaria_approvals::prune_announced(&pg, &marks, &now)
+        .await
+        .unwrap();
+    assert_eq!(
+        row_version(&pg, SETTING_ROW, key).await,
+        before,
+        "nothing dropped, nothing written, no lock"
+    );
+    let live: Vec<String> = marks.into_iter().filter(|m| m != "wls-decided").collect();
+    talaria_approvals::prune_announced(&pg, &live, &now)
+        .await
+        .unwrap();
+    assert_ne!(row_version(&pg, SETTING_ROW, key).await.0, before.0);
+    let left: bool = sqlx::query_scalar(
+        "select value -> 'announced' ? 'wls-decided' from app_settings where key = $1",
+    )
+    .bind(key)
+    .fetch_one(&pg)
+    .await
+    .unwrap();
+    assert!(!left, "the decided approval's mark was dropped");
 }

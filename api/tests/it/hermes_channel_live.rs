@@ -1446,6 +1446,53 @@ async fn a_release_waits_its_minimum_time_on_stable_unless_rolled_now() {
     w.done().await;
 }
 
+/// The state row's (xmin, xmax): a new version when it is written, a new
+/// xmax when it is locked.
+async fn row_version(w: &World) -> (String, String) {
+    sqlx::query_as("select xmin::text, xmax::text from app_settings where key = $1")
+        .bind(&w.key)
+        .fetch_one(&w.pg)
+        .await
+        .unwrap()
+}
+
+/// The quiet two days after a release: a step of an Upgrade waiting out its
+/// time on stable says what it said a minute ago, and neither writes the
+/// state row nor locks it (its xmin and xmax stay as they were); the step
+/// whose detail does change writes it.
+#[tokio::test]
+#[ignore = "needs a live dev database (DATABASE_URL)"]
+async fn a_release_waiting_on_stable_writes_its_state_only_when_its_detail_changes() {
+    let w = World::new("quiet", 1).await;
+    let mut t = tuning();
+    t.min_stable_ms = 48 * 60 * MIN;
+    w.step(&t).await;
+    let opened = row_version(&w).await;
+    let said = w.state().await.rollout.unwrap().detail.unwrap();
+    assert!(said.contains("for 0 h"), "{said}");
+    for _ in 0..2 {
+        w.fake.advance(MIN);
+        w.step(&t).await;
+    }
+    assert_eq!(
+        row_version(&w).await,
+        opened,
+        "two quiet steps neither wrote the state row nor locked it"
+    );
+    assert_eq!(w.state().await.rollout.unwrap().detail.unwrap(), said);
+    w.fake.advance(60 * MIN);
+    w.step(&t).await;
+    let r = w.state().await.rollout.unwrap();
+    assert!(r.detail.as_deref().unwrap().contains("for 1 h"), "{r:?}");
+    assert_ne!(
+        row_version(&w).await.0,
+        opened.0,
+        "a changed detail is written"
+    );
+    assert!(w.fake.rolled().is_empty(), "and nothing moved");
+    w.done().await;
+}
+
 #[tokio::test]
 #[ignore = "needs a live dev database (DATABASE_URL)"]
 async fn allow_again_lifts_a_ban_and_a_banned_version_cannot_be_pinned() {

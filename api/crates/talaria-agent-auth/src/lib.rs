@@ -381,11 +381,184 @@ async fn resolve(pg: &PgPool, headers: &HeaderMap) -> Result<Option<AgentCaller>
     }))
 }
 
-// ── The last-used stamp ──────────────────────────────────────────────────────
+// ── The last-used stamps ─────────────────────────────────────────────────────
+//
+// A credential's `last_used_at` is written on the call path of every agent
+// and every LLM-key call, and nothing that reads it needs it to the second:
+// the legacy migration status asks "ever used?", secret-health and Settings →
+// API keys show "used N ago". So a stamp lands at most once per key per
+// window, decided twice:
+//   · in process, before anything else (`StampCoalescer`): inside the window
+//     the call spawns nothing and checks out no connection;
+//   · in the UPDATE's own WHERE, for the processes that share the database:
+//     a stamp still inside the window matches no row, and an UPDATE that
+//     matches nothing takes no transaction id and so commits nothing.
+// The stamp that does land is telemetry, written in a transaction that does
+// not wait on its WAL flush (`stamp_async`). A crash can lose the last
+// fraction of a second of stamps; the next call writes one again. A key's
+// FIRST stamp still lands on its first call, so "ever used" reads exactly as
+// before; "used N ago" may lag the truth by up to the window.
+
+/// How far a last-used stamp may lag: one per key per window. The UPDATEs'
+/// `interval '5 minutes'` is this same number.
+pub const STAMP_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// Entries kept before the coalescer sweeps out the ones past their window
+/// (keys this process saw once and not since).
+const STAMP_SWEEP_AT: usize = 4_096;
+
+/// At most one stamp attempt per key per window, decided in process with no
+/// database round trip.
+pub struct StampCoalescer {
+    window: Duration,
+    last: Mutex<HashMap<String, Instant>>,
+}
+
+impl StampCoalescer {
+    pub fn new(window: Duration) -> StampCoalescer {
+        StampCoalescer {
+            window,
+            last: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Whether a stamp for `key` is due at `now`; a due one is recorded as
+    /// the key's attempt. A key's first call is due, then none until a
+    /// whole window has passed since its last due one.
+    pub fn due_at(&self, key: &str, now: Instant) -> bool {
+        let mut last = self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last
+            .get(key)
+            .is_some_and(|at| now.saturating_duration_since(*at) < self.window)
+        {
+            return false;
+        }
+        if last.len() >= STAMP_SWEEP_AT {
+            let window = self.window;
+            last.retain(|_, at| now.saturating_duration_since(*at) < window);
+        }
+        last.insert(key.to_string(), now);
+        true
+    }
+
+    /// The attempt for `key` did not land: its next call is due again.
+    pub fn forget(&self, key: &str) {
+        self.last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(key);
+    }
+}
+
+/// A loss-tolerant stamp: `sql`, with `id` its one bind, in a transaction
+/// that does not wait for its WAL flush (`synchronous_commit = off`, for
+/// this transaction only). For last-used stamps and nothing else: never
+/// user data, secrets or anything a person would miss. `what` names the
+/// table, for the probe. Rows written.
+pub async fn stamp_async(
+    pg: &PgPool,
+    what: &'static str,
+    sql: &'static str,
+    id: &str,
+) -> Result<u64, sqlx::Error> {
+    let mut tx = pg.begin().await?;
+    sqlx::query("set local synchronous_commit = off")
+        .execute(&mut *tx)
+        .await?;
+    let seen = stamp_probe::read(&mut tx).await?;
+    let rows = sqlx::query(sql)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    stamp_probe::record(seen, what, id, rows);
+    Ok(rows)
+}
+
+/// What each async stamp did, for a test that asks. Off unless a test turns
+/// it on: then each stamp reads `synchronous_commit` back inside its own
+/// transaction and records it with its rows. Production pays one atomic
+/// load per stamp.
+pub mod stamp_probe {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+    static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+
+    /// One stamp's transaction, as it committed.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Seen {
+        pub what: &'static str,
+        pub id: String,
+        /// `synchronous_commit`, read inside the transaction.
+        pub synchronous_commit: String,
+        pub rows: u64,
+    }
+
+    /// Record every stamp from here on.
+    pub fn start() {
+        ON.store(true, Ordering::SeqCst);
+    }
+
+    /// Every stamp recorded since `start`.
+    pub fn seen() -> Vec<Seen> {
+        SEEN.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) async fn read(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Option<String>, sqlx::Error> {
+        if !ON.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        sqlx::query_scalar("show synchronous_commit")
+            .fetch_one(&mut **tx)
+            .await
+            .map(Some)
+    }
+
+    pub(crate) fn record(seen: Option<String>, what: &'static str, id: &str, rows: u64) {
+        if let Some(synchronous_commit) = seen {
+            SEEN.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(Seen {
+                    what,
+                    id: id.to_string(),
+                    synchronous_commit,
+                    rows,
+                });
+        }
+    }
+}
+
+/// The agent-key stamp: a row whose stamp is still inside the window is not
+/// matched, so it is not written. `$1::uuid` against the uuid column keeps it
+/// on the primary key.
+const STAMP_AGENT_KEY: &str = "update agent_keys set last_used_at = now() \
+     where agent_id = $1::uuid \
+       and (last_used_at is null or last_used_at < now() - interval '5 minutes')";
+
+static AGENT_KEY_STAMPS: LazyLock<StampCoalescer> =
+    LazyLock::new(|| StampCoalescer::new(STAMP_WINDOW));
 
 /// Stamp `agent_keys.last_used_at` for an agent that just authenticated with
-/// its own key, detached: a bookkeeping write never holds up the call it rode
-/// in on. The handle is for a test to wait on; `resolve` drops it.
+/// its own key — the database half alone, asynchronously committed. Rows
+/// written: 0 when the stamp is still inside the window.
+pub async fn stamp_agent_key(pg: &PgPool, agent_id: &str) -> Result<u64, sqlx::Error> {
+    stamp_async(pg, "agent_keys", STAMP_AGENT_KEY, agent_id).await
+}
+
+/// Note that an agent just authenticated with its own key: at most once a
+/// window, a detached stamp, so a bookkeeping write never holds up the call
+/// it rode in on. None when this process stamped the agent within the
+/// window. The handle is for a test to wait on; `resolve` drops it.
 pub fn note_key_used(pg: &PgPool, agent_id: &str) -> Option<tokio::task::JoinHandle<()>> {
     note_key_used_at(pg, agent_id, Instant::now())
 }
@@ -395,17 +568,16 @@ pub fn note_key_used(pg: &PgPool, agent_id: &str) -> Option<tokio::task::JoinHan
 pub fn note_key_used_at(
     pg: &PgPool,
     agent_id: &str,
-    _now: Instant,
+    now: Instant,
 ) -> Option<tokio::task::JoinHandle<()>> {
+    if !AGENT_KEY_STAMPS.due_at(agent_id, now) {
+        return None;
+    }
     let agent_id = agent_id.to_string();
     let pool = pg.clone();
     Some(tokio::spawn(async move {
-        if let Err(e) =
-            sqlx::query("update agent_keys set last_used_at = now() where agent_id::text = $1")
-                .bind(&agent_id)
-                .execute(&pool)
-                .await
-        {
+        if let Err(e) = stamp_agent_key(&pool, &agent_id).await {
+            AGENT_KEY_STAMPS.forget(&agent_id);
             tracing::warn!("[agent-auth] last_used_at update failed for {agent_id}: {e}");
         }
     }))
@@ -585,8 +757,9 @@ pub struct LegacyMigrationStatus {
 }
 
 /// The migration answer, from the data rather than from memory:
-/// agent_keys.last_used_at is written on every per-agent authentication,
-/// so an agent that has one has proved it is running on its own secret.
+/// agent_keys.last_used_at is written on an agent's first per-agent
+/// authentication and then at most once per `STAMP_WINDOW`, so an agent
+/// that has one has proved it is running on its own secret.
 /// Timestamps cross the wire as epoch millis (sqlx here carries no
 /// timestamptz decoder by design) and format through `epoch_ms_to_iso`.
 pub async fn legacy_migration_status(pg: &PgPool) -> Result<LegacyMigrationStatus, sqlx::Error> {
@@ -666,6 +839,51 @@ pub fn now_iso() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One stamp per key per window, on an injected clock: the first call is
+    /// due, every call inside the window is not (each key on its own), the
+    /// first call a whole window after the last due one is due again, and a
+    /// forgotten attempt is due at once.
+    #[test]
+    fn the_coalescer_lets_one_stamp_a_window_through_per_key() {
+        let c = StampCoalescer::new(STAMP_WINDOW);
+        let t0 = Instant::now();
+        let secs = |s: u64| t0 + Duration::from_secs(s);
+        assert!(c.due_at("a", t0), "a key's first call stamps");
+        assert!(c.due_at("b", t0), "every key has its own window");
+        for s in [0, 1, 60, 299] {
+            assert!(!c.due_at("a", secs(s)), "inside the window at {s}s");
+        }
+        assert!(c.due_at("a", secs(300)), "a whole window on");
+        assert!(
+            !c.due_at("a", secs(599)),
+            "the window restarts at the due call"
+        );
+        assert!(c.due_at("a", secs(600)));
+        // An instant before the recorded one (two threads racing their
+        // clocks) is inside the window, never a wrap-around.
+        assert!(!c.due_at("a", secs(10)));
+        assert!(!c.due_at("b", secs(299)));
+        c.forget("b");
+        assert!(c.due_at("b", secs(299)), "a failed stamp is tried again");
+    }
+
+    /// The sweep keeps the map bounded without forgetting a key still inside
+    /// its window.
+    #[test]
+    fn the_coalescer_sweeps_only_keys_past_their_window() {
+        let c = StampCoalescer::new(STAMP_WINDOW);
+        let t0 = Instant::now();
+        assert!(c.due_at("fresh", t0 + Duration::from_secs(400)));
+        for i in 0..STAMP_SWEEP_AT {
+            assert!(c.due_at(&format!("old-{i}"), t0));
+        }
+        let late = t0 + Duration::from_secs(450);
+        assert!(c.due_at("trigger", late), "the sweep runs on this insert");
+        let len = c.last.lock().unwrap().len();
+        assert_eq!(len, 2, "only the keys inside their window are left");
+        assert!(!c.due_at("fresh", late), "a key inside its window is kept");
+    }
 
     /// Only the caller's own key proves who it is: the shared key's caller
     /// (legacy, no id) never does, and neither does a row missing its id.

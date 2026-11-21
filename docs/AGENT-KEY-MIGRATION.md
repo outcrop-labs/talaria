@@ -213,9 +213,10 @@ psql "$DATABASE_URL" -c "
 
 ## Step 4 — Wait for every agent to be seen
 
-`last_used_at` is written on every per-agent authentication (the fire-and-forget
-`update agent_keys set last_used_at = now()` in `resolve()`, `agent-auth.ts`). A `null` means that
-agent has minted a key but has never presented it — the flag would lock it out. Re-render and read the
+`last_used_at` is written on an agent's first per-agent authentication, then at most once every five
+minutes (the fire-and-forget stamp in `resolve()`, `agent-auth.ts`: an asynchronously committed
+`update agent_keys set last_used_at = now()` that skips a stamp younger than five minutes). A `null`
+means that agent has minted a key but has never presented it — the flag would lock it out. Re-render and read the
 warning if you'd rather have it in one line:
 
 ```sh

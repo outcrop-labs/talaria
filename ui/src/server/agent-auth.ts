@@ -222,8 +222,9 @@ export interface LegacyMigrationStatus {
 }
 
 /** The migration answer, from the data rather than from memory: agent_keys
- *  .last_used_at is written on every per-agent authentication, so an agent that
- *  has one has proved it is running on its own secret. */
+ *  .last_used_at is written on an agent's first per-agent authentication and
+ *  then at most once per five minutes, so an agent that has one has proved it
+ *  is running on its own secret. */
 export async function legacyMigrationStatus(): Promise<LegacyMigrationStatus> {
   const sql = await db()
   const rows = (await sql`
@@ -302,7 +303,14 @@ async function resolve(request: Request): Promise<AgentCaller | Response | null>
     if (claimed && claimed !== row.model) {
       return json({ error: `x-agent-name "${claimed}" does not match the presenting agent` }, { status: 403 })
     }
-    void sql`update agent_keys set last_used_at = now() where agent_id = ${row.id}`.catch(() => {})
+    // At most once per five minutes a key: a stamp still inside the window
+    // matches no row, so it takes no transaction id and commits nothing (the
+    // Rust twin, talaria-agent-auth, says why that is enough for every reader).
+    void sql`
+      update agent_keys set last_used_at = now()
+      where agent_id = ${row.id}
+        and (last_used_at is null or last_used_at < now() - interval '5 minutes')
+    `.catch(() => {})
     return { id: row.id, model: row.model, legacy: false }
   }
 

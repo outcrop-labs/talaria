@@ -101,6 +101,43 @@ pub async fn set_setting(
     Ok(())
 }
 
+/// [`set_setting`] for a writer that saves the same value over and over (a
+/// job's state, at the end of every pass): written only when it differs from
+/// the stored one, as jsonb compares (key order never counts). An equal
+/// value takes no row lock and no transaction id, so it commits nothing and
+/// waits on no WAL flush; `updated_at` then keeps meaning "last changed".
+/// True when it wrote. Not for an admin's save: `set_setting` bumps
+/// `updated_at` on every save, and secret-health shows that as "set at".
+pub async fn set_setting_if_changed(
+    pg: &PgPool,
+    key: &str,
+    value: &serde_json::Value,
+) -> Result<bool, sqlx::Error> {
+    // A plain UPDATE whose WHERE fails takes no lock (an `ON CONFLICT ...
+    // WHERE` would lock the row it skips); the INSERT runs only for a key
+    // that is not there yet, and its ON CONFLICT covers a writer that
+    // inserted the key in between.
+    let wrote: i64 = sqlx::query_scalar(
+        "with upd as ( \
+           update app_settings set value = $2, updated_at = now() \
+            where key = $1 and value is distinct from $2 \
+           returning 1 \
+         ), ins as ( \
+           insert into app_settings (key, value) \
+           select $1, $2 where not exists (select 1 from app_settings where key = $1) \
+           on conflict (key) do update set value = excluded.value, updated_at = now() \
+           returning 1 \
+         ) \
+         select (select count(*) from upd) + (select count(*) from ins)",
+    )
+    .bind(key)
+    .bind(value)
+    .fetch_one(pg)
+    .await?;
+    hot_cache().lock().expect("hot settings cache").remove(key);
+    Ok(wrote > 0)
+}
+
 // ── The redacted view of a row that holds a sealed secret ────────────────────
 
 /// A settings row as a CLIENT may see it: the row's own keys in their own
