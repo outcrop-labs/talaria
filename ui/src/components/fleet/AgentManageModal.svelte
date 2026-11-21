@@ -13,6 +13,7 @@
   import McpTab from '@/components/fleet/McpTab.svelte'
   import MemoryEditor from '@/components/memory/MemoryEditor.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
+  import AgentGithubAccess from '@/components/github-access/AgentGithubAccess.svelte'
   import ReadOnlyConfig from '@/components/fleet/ReadOnlyConfig.svelte'
   import SecretsTab from '@/components/fleet/SecretsTab.svelte'
   import SkillsLibrary from '@/components/skills/SkillsLibrary.svelte'
@@ -24,8 +25,8 @@
   import { cn } from '@/lib/cn'
   import { sansFill, setUiVoice } from '@/lib/ui-voice'
 
-  type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'secrets' | 'mcp' | 'versions' | 'managers'
-  // Nine sections are a list, not a strip: what the agent is, what it has
+  type Tab = 'summary' | 'config' | 'skills' | 'memory' | 'crons' | 'secrets' | 'mcp' | 'github' | 'versions' | 'managers'
+  // Ten sections are a list, not a strip: what the agent is, what it has
   // been given, and who answers for it. Managers is last on purpose: who owns
   // the agent is read far less often than what it is, and it is the one
   // section that changes who can open the rest.
@@ -45,6 +46,10 @@
         { id: 'crons', label: 'Schedules' },
         { id: 'secrets', label: 'Secrets' },
         { id: 'mcp', label: 'Tools' },
+        // Its repositories and what its GitHub token carries, the same editor
+        // Agent policy › GitHub access shows. For an agent that is not a
+        // Developer agent it opens on the switch.
+        { id: 'github', label: 'GitHub access' },
       ],
     },
     {
@@ -68,19 +73,24 @@
     def,
     endpoints,
     canManage,
+    initialTab = 'summary',
   }: {
     open: boolean
     onClose: () => void
     def: AgentDef
     endpoints: LlmEndpoint[]
     canManage: boolean
+    /** The section it opens on: the roster menu's "GitHub access" opens it
+     *  on that section. */
+    initialTab?: Tab
   } = $props()
 
   // The agent's settings are one surface with one look, wherever they open
   // from: the roster, or an agent's row in the chat sidebar.
   setUiVoice('sans')
 
-  let tab = $state<Tab>('summary')
+  // svelte-ignore state_referenced_locally -- reason: the section it opens on; the person moves from there
+  let tab = $state<Tab>(initialTab)
   // The library sections are editors that own their scroll; every other
   // section is a form or a report that scrolls in the frame.
   const fills = $derived(tab === 'skills' || tab === 'memory')
@@ -216,7 +226,7 @@
         <div in:fly={{ y: 6, duration: 200 }} class={cn(fills && 'h-full')}>
           {#if tab === 'summary'}
             <div class="space-y-8">
-              <SummaryTab {def} {canManage} />
+              <SummaryTab {def} {canManage} onGithub={() => (tab = 'github')} />
               {#if canManage}
                 <!-- Last on the page: a credential action is read rarely and
                      must not compete with the agent's identity above it. -->
@@ -296,6 +306,7 @@
             {/if}
           {/if}
           {#if tab === 'mcp'}<McpTab {def} {canManage} />{/if}
+          {#if tab === 'github'}<AgentGithubAccess {def} place="modal" onLeave={onClose} />{/if}
           {#if tab === 'versions'}<VersionsTab {def} {canManage} />{/if}
           {#if tab === 'managers'}<ManagersTab {def} {canManage} />{/if}
         </div>

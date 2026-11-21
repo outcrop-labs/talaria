@@ -444,7 +444,7 @@ describe('keyState: the token decides', () => {
 describe('the workspace-secret notice', () => {
   it('names the host and the secret', () => {
     expect(workspaceSecretNotice(block({ workspaceSecret: 'deploy-pat' }))).toBe(
-      "Git at GitHub answers from the workspace secret deploy-pat for this agent; these permissions don't apply to it.",
+      "Git at GitHub answers from the workspace secret deploy-pat for this agent, ahead of the App, so these permissions don't apply to it.",
     )
   })
 })
@@ -519,6 +519,46 @@ describe('Check token', () => {
     const gap = checkLines(reply({ reasons: [...outside, { key: 'pull_requests', level: 'write', why: 'githubOmitted', detail: null }] }), 'acme/widgets', 'GitHub')
     expect(gap.map((l) => l.tone)).toEqual(['neutral', 'warn', 'neutral'])
     expect(gap[1]?.text).toBe('pull_requests: write: GitHub minted the token without it.')
+  })
+
+  it('says what GitHub added unasked on its own line, warn above read, naming a key the catalog does not know', () => {
+    // An api that sends `added`: GitHub put checks: read on the token.
+    const read = checkLines(reply({ carried: { ...CARRIED, checks: 'read' }, added: { checks: 'read' } }), 'acme/widgets', 'GitHub', 'acme')
+    expect(read).toEqual([
+      { text: 'The token for acme/widgets carries checks: read, contents: write, metadata: read, pull requests: write (minted now).', tone: 'success' },
+      { text: "GitHub added checks: read, which this agent's set does not name. Talaria kept it and recorded it.", tone: 'neutral' },
+    ])
+    // Above read is said in the warning tone, and a key outside the catalog
+    // is named all the same: the permission list draws catalog rows only.
+    const wide = checkLines(
+      reply({ carried: { ...CARRIED, administration: 'write', copilot_requests: 'write' }, added: { administration: 'write', copilot_requests: 'write' } }),
+      'acme/widgets',
+      'GitHub',
+    )
+    expect(wide[1]).toEqual({
+      text: "GitHub added administration: write, copilot_requests: write, which this agent's set does not name. Talaria kept it and recorded it.",
+      tone: 'warn',
+    })
+    // An api without the field: derived from what was carried beyond the ask.
+    const derived = checkSentences(reply({ carried: { ...CARRIED, checks: 'read' } }), 'acme/widgets', 'GitHub')
+    expect(derived[1]).toBe("GitHub added checks: read, which this agent's set does not name. Talaria kept it and recorded it.")
+    // Nothing added, no line; and none for a refusal or a workspace secret.
+    expect(checkSentences(reply(), 'acme/widgets', 'GitHub').some((l) => l.includes('GitHub added'))).toBe(false)
+    expect(checkSentences(reply({ ok: false, error: 'no', added: { checks: 'read' } }), 'acme/widgets', 'GitHub').some((l) => l.includes('GitHub added'))).toBe(false)
+  })
+
+  it('drops the not-in-set reason for a key GitHub added: it is on the token', () => {
+    const reasons = [
+      { key: 'checks', level: 'read' as const, why: 'notInSet', detail: null },
+      { key: 'actions', level: 'write' as const, why: 'notInSet', detail: null },
+    ]
+    const lines = checkSentences(reply({ carried: { ...CARRIED, checks: 'read' }, added: { checks: 'read' }, reasons }), 'acme/widgets', 'GitHub', 'acme')
+    expect(lines).toEqual([
+      'The token for acme/widgets carries checks: read, contents: write, metadata: read, pull requests: write (minted now).',
+      "GitHub added checks: read, which this agent's set does not name. Talaria kept it and recorded it.",
+      "actions: write is not in this agent's set, though the installation holds it. Add it here to put it on the token.",
+    ])
+    expect(lines.some((l) => l.startsWith('checks: read is not'))).toBe(false)
   })
 
   it('names the workspace secret that answers instead of the App', () => {

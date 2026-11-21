@@ -21,7 +21,7 @@
   import PinnedSessionsControl from './PinnedSessionsControl.svelte'
   import TemplateBindings from './TemplateBindings.svelte'
 
-  let { def, canManage }: { def: AgentDef; canManage: boolean } = $props()
+  let { def, canManage, onGithub }: { def: AgentDef; canManage: boolean; onGithub?: () => void } = $props()
 
   const qc = useQueryClient()
   const autosave = useAutosave()
@@ -293,7 +293,7 @@
   <SettingsSection title="Behavior">
     <SettingsGroup>
       <!-- Developer agent: one switch for sandbox, Oh My Pi, Workbench tools. -->
-      <DeveloperAgentControl {def} {canManage} />
+      <DeveloperAgentControl {def} {canManage} {onGithub} />
       <!-- Pinned sessions: the conversation is the Hermes session. -->
       <PinnedSessionsControl {def} {canManage} />
       <!-- The subagent cap: how many helpers this agent may run at once. -->

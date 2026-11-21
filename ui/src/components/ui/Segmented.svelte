@@ -17,6 +17,8 @@
     size = 'sm',
     variant: variantProp,
     voice: voiceProp,
+    disabled = false,
+    label,
     class: className,
   }: {
     options: ReadonlyArray<SegmentedOption<T>>
@@ -24,6 +26,11 @@
     onChange: (id: T) => void
     /** `md` is as tall as a `sm` Input or Select, for a filter row that holds both. */
     size?: 'xs' | 'sm' | 'md'
+    /** No option can be picked: a write the choice depends on is in flight. */
+    disabled?: boolean
+    /** Names the group for a screen reader ("Workflows permission level"):
+     *  the root becomes a `role="group"` with this label. */
+    label?: string
     variant?: 'dither' | 'solid'
     /** Wins over the voice the surrounding area set (`lib/ui-voice`). */
     voice?: ButtonVoice
@@ -40,13 +47,15 @@
   const [sendMark, receiveMark] = markCrossfade()
 </script>
 
-<div class={cn('relative inline-flex shrink-0 rounded-md border border-line p-0.5', className)}>
+<div role={label ? 'group' : undefined} aria-label={label} class={cn('relative inline-flex shrink-0 rounded-md border border-line p-0.5', className)}>
   {#each options as o (o.id)}
+    {@const off = disabled || o.disabled === true}
     <button
       {...o.data}
       type="button"
       title={o.title}
       aria-pressed={value === o.id}
+      disabled={off}
       onclick={() => onChange(o.id)}
       class={cn(
         'relative select-none rounded font-mono uppercase tracking-[0.05em] transition-colors',
@@ -61,7 +70,9 @@
             size === 'xs' ? 'px-2 py-[3px] text-xs leading-4' : size === 'md' ? 'px-3 py-[5px] leading-5' : 'px-2.5 py-[3px] leading-5',
           ),
         variant === 'dither' && 'dither-fill',
-        value === o.id ? 'text-fg' : 'text-muted hover:text-fg',
+        // Disabled keeps its shape and its thumb: no hover, a not-allowed
+        // cursor, and the label in the quiet ink.
+        off ? 'cursor-not-allowed text-muted' : value === o.id ? 'text-fg' : 'text-muted hover:text-fg',
       )}
     >
       {#if value === o.id}

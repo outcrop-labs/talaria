@@ -285,6 +285,10 @@ export function useAgentMenu(
    *  restart is offered but disabled, the same answer the control route gives
    *  (409). */
   rolling: () => boolean = () => false,
+  /** Opens the agent's settings on its GitHub access section. Offered to its
+   *  managers on a live Developer agent: a door that would only show a
+   *  viewer what it cannot change is not drawn. */
+  onGithub?: () => void,
 ): AgentMenu {
   const controls = useAgentControls(def)
   const menu = useContextMenu()
@@ -319,6 +323,9 @@ export function useAgentMenu(
     return [
       // Opens the agent's settings (read-only for a viewer): the settings gear.
       { label: canManage ? 'Manage' : 'View', icon: cogMenuIcon, onSelect: onManage },
+      // Its repositories and what its GitHub token carries, one click from the
+      // roster: a settings door, so the same gear.
+      ...(canManage && d.developer && onGithub ? ([{ label: 'GitHub access', icon: cogMenuIcon, onSelect: onGithub }] as ContextMenuEntry[]) : []),
       { label: 'Duplicate', icon: [Copy, { size: 14 }], onSelect: onDuplicate },
       ...(canManage
         ? ([

@@ -51,10 +51,20 @@
   } = $props()
 
   let manage = $state(false)
-  const openManage = () => (manage = true)
+  // The section the dialog opens on: Manage opens its Overview, the menu's
+  // "GitHub access" opens that section.
+  let manageTab = $state<'summary' | 'github'>('summary')
+  const openManage = () => {
+    manageTab = 'summary'
+    manage = true
+  }
+  const openGithub = () => {
+    manageTab = 'github'
+    manage = true
+  }
   const running = $derived(healthOf(d, containers).running)
   const rolling = $derived(rollInProgress(roll))
-  const am = useAgentMenu(() => d, () => running, openManage, () => onDuplicate(), () => rolling)
+  const am = useAgentMenu(() => d, () => running, openManage, () => onDuplicate(), () => rolling, openGithub)
 </script>
 
 {@render frame({ running, openManage, onContextMenu: am.onContextMenu, menuItems: am.entries, act: am.act, pending: am.pending })}
@@ -66,5 +76,5 @@
      `agents.manage` over but does NOT manage, and those open read-only —
      which is the mode this modal always had and never reached. -->
 {#if manage}
-  <AgentManageModal open={manage} onClose={() => (manage = false)} def={d} {endpoints} canManage={d.canManage} />
+  <AgentManageModal open={manage} onClose={() => (manage = false)} def={d} {endpoints} canManage={d.canManage} initialTab={manageTab} />
 {/if}
