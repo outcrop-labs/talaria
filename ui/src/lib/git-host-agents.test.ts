@@ -1,10 +1,12 @@
-// Admin → Git hosts' "Agents' tokens", pinned: what an installation accepted
-// that no agent's set names is said as unclaimed, never as carried; each
-// agent's last token says what GitHub put on it and what it did not; and a
-// token minted for an earlier set is never drawn as this set's.
+// The agents route as Agent policy › GitHub access and the Git hosts dialog
+// read it, pinned: what an installation accepted that no agent's set names
+// is said as granted to no agent, never as carried, with where an admin
+// grants it; each agent's last token says what GitHub put on it, what it did
+// not, and what it added unasked; and a token minted for an earlier set is
+// never drawn as this set's.
 import { describe, expect, it } from 'vitest'
 import type { LastToken } from './agent-github-permissions'
-import { hostAgentRow, hostAgentRows, lastTokenLine, unclaimedKeys, unclaimedSentence, type HostAgent, type HostAgents } from './git-host-agents'
+import { lastTokenLine, unclaimedKeys, unclaimedSentence, type HostAgent, type HostAgents } from './git-host-agents'
 
 const NOW = Date.parse('2026-11-20T12:00:00Z')
 // The wire: `carried` is exactly a GitHub mint reply's `permissions` block
@@ -43,17 +45,21 @@ const wire: HostAgents = JSON.parse(JSON.stringify({ agents: [developer], unclai
 
 describe('unclaimed', () => {
   // The server computes `unclaimed` (the agents route); this pins that the
-  // dialog draws it as unclaimed and never as carried.
-  it('draws a key the installation holds that no agent set names as unclaimed, and on no agent as carried', () => {
+  // readers say it as granted to no agent, and where an admin grants it.
+  it('says a key the installation holds that no agent set names is granted to no agent, and names Agent policy › GitHub access', () => {
     const keys = unclaimedKeys(wire)
     expect(keys).toEqual(['actions', 'workflows'])
-    for (const row of hostAgentRows(wire, NOW)) {
-      expect(row.carries?.map((e) => e.key)).not.toContain('workflows')
-      expect(row.set.map((e) => e.key)).not.toContain('workflows')
-    }
+    expect(wire.agents[0]?.carries).not.toHaveProperty('workflows')
     expect(unclaimedSentence(keys)).toBe(
-      'Accepted by the installation, carried by no agent: actions, workflows. An admin grants them per agent (Fleet → agent → Workbench → GitHub permissions).',
+      'Accepted by the installation, granted to no agent: actions, workflows. An admin grants them per agent in Agent policy › GitHub access.',
     )
+  })
+
+  it("names the host in the overview's form, where several hosts may each have some", () => {
+    expect(unclaimedSentence(['actions', 'workflows'], 'GitHub')).toBe(
+      'Accepted by the installation on GitHub, granted to no agent: actions, workflows. Open an agent to grant them.',
+    )
+    expect(unclaimedSentence([], 'GitHub')).toBeNull()
   })
 
   it('reads a key list too, keeps the server order, and never names metadata', () => {
@@ -96,6 +102,19 @@ describe('lastTokenLine', () => {
     expect(line.tone).toBe('neutral')
   })
 
+  it('says what GitHub added unasked, from the server field or derived from carried beyond asked, metadata aside', () => {
+    // An api that sends `added`.
+    const sent = lastTokenLine(token({ carried: { ...CARRIED, checks: 'read' }, added: { checks: 'read' } }), NOW)
+    expect(sent.text).toBe(
+      'Last token (acme/widgets, 12 min ago): carried checks: read, contents: write, metadata: read, pull requests: write; GitHub added checks: read',
+    )
+    // An api that does not: what was carried and never asked for.
+    const derived = lastTokenLine(token({ carried: { ...CARRIED, checks: 'read', issues: 'write' } }), NOW)
+    expect(derived.text.endsWith('; GitHub added checks: read, issues: write')).toBe(true)
+    // metadata: read rides on every token, asked or not; nothing added.
+    expect(lastTokenLine(token({ asked: { contents: 'write', pull_requests: 'write' } }), NOW).text).not.toContain('GitHub added')
+  })
+
   it("says a refusal in the door's words, a workspace secret by name, and none at all", () => {
     expect(lastTokenLine(token({ ok: false, carried: null, error: 'GitHub refused the token: 422' }), NOW)).toEqual({
       text: 'Refused (acme/widgets, 12 min ago): GitHub refused the token: 422',
@@ -105,46 +124,5 @@ describe('lastTokenLine', () => {
       'A workspace secret answered (acme/widgets, 12 min ago): deploy-pat',
     )
     expect(lastTokenLine(null, NOW)).toEqual({ text: 'No token yet', tone: 'neutral' })
-  })
-})
-
-describe('hostAgentRow', () => {
-  it('says what a custom set names that the installation cannot carry', () => {
-    const row = hostAgentRow(
-      { ...developer, isDefault: false, set: { ...DEFAULT, workflows: 'write', members: 'read' }, carries: { ...DEFAULT, workflows: 'write' } },
-      NOW,
-    )
-    expect(row.beyond).toEqual([{ key: 'members', level: 'read' }])
-    expect(row.isDefault).toBe(false)
-  })
-
-  it('claims nothing about carries when the record does not say', () => {
-    const row = hostAgentRow({ ...developer, carries: null }, NOW)
-    expect(row.carries).toBeNull()
-    expect(row.beyond).toEqual([])
-  })
-
-  it('claims nothing carried for an agent the door gives no credential', () => {
-    const row = hostAgentRow({ ...developer, developer: false, isDefault: false, set: { ...DEFAULT, members: 'read' } }, NOW)
-    expect(row.developer).toBe(false)
-    expect(row.carries).toBeNull()
-    expect(row.beyond).toEqual([])
-    expect(row.set.map((e) => e.key)).toContain('members')
-    // An older server that does not say is read as a Developer agent.
-    expect(hostAgentRow({ ...developer, developer: undefined }, NOW).developer).toBe(true)
-  })
-
-  it('lists Developer agents first, then by name', () => {
-    const rows = hostAgentRows(
-      {
-        agents: [
-          { ...developer, agentId: 'c', name: 'Zed' },
-          { ...developer, agentId: 'b', name: 'Ops', developer: false },
-          { ...developer, agentId: 'a', name: 'Ada' },
-        ],
-      },
-      NOW,
-    )
-    expect(rows.map((r) => r.name)).toEqual(['Ada', 'Zed', 'Ops'])
   })
 })

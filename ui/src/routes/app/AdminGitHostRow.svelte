@@ -22,7 +22,8 @@
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { useClock } from '@/lib/clock.svelte'
   import { delJson, errorMessage, getJsonOr404, postJson, putJson } from '@/lib/fetch-json'
-  import { gitHostAgentsKey, hostAgentRows, unclaimedKeys, unclaimedSentence, type HostAgents } from '@/lib/git-host-agents'
+  import { gitHostAgentsKey, unclaimedKeys, unclaimedSentence, type HostAgents } from '@/lib/git-host-agents'
+  import { GITHUB_ACCESS_HREF } from '@/lib/github-access'
   import { checkedAgo, installationDiff, permissionLabel, type PermissionEntry } from '@/lib/git-permissions'
   import { slide } from '@/lib/motion'
   import { useWorkspaceSecrets } from '@/lib/workspace-secrets'
@@ -49,9 +50,11 @@
    *  host's dialog also lists, per installation, what the App asks for, what
    *  the installation has accepted, and what is still waiting for an org
    *  owner on GitHub — the row's status turns gold while anything is. What an
-   *  installation accepted is the most any token can carry; beside it, each
-   *  agent's set and its last token say what its token does carry, and what
-   *  the installation accepted that no agent carries is said as such. */
+   *  installation accepted is a fact, drawn neutral, never as a grant: it is
+   *  the most an admin may grant an agent, and no agent's token carries any
+   *  of it until an admin does, in Agent policy › GitHub access (linked
+   *  here). What the installation accepted that no agent's set names is said
+   *  as such. */
   let { host }: { host: GitHost } = $props()
 
   const live = useGitHost(() => host.id)
@@ -95,14 +98,13 @@
   }
 
   let open = $state(false)
-  // Each agent's token on this host, read while the dialog is open. A server
-  // without the route answers 404: nothing is drawn, as before.
+  // What the installation accepted that no agent's set names, read while the
+  // dialog is open. A server without the route answers 404: nothing is said.
   const agents = createQuery(() => ({
     queryKey: gitHostAgentsKey(host.id),
     queryFn: () => getJsonOr404<HostAgents>(`${url}/agents`),
     enabled: open && current.kind === 'github',
   }))
-  const agentRows = $derived(hostAgentRows(agents.data, clock.now))
   const unclaimed = $derived(unclaimedSentence(unclaimedKeys(agents.data)))
   let connecting = $state(false)
   let busy = $state(false)
@@ -303,8 +305,8 @@
           </div>
           {#if permissionsNote}<p class="font-sans text-[13px] font-medium leading-5 text-fg">{permissionsNote[0]?.toUpperCase()}{permissionsNote.slice(1)}.</p>{/if}
           <p class="font-sans text-[13px] leading-5 text-muted">
-            What this host's GitHub App holds is the most any token can carry. Talaria hands each agent only what an admin grants it on this
-            host. Read again every ten minutes, and whenever GitHub refuses a token.
+            What this host's GitHub App holds is the most an admin may grant an agent. Talaria hands each agent only what an admin grants it on
+            this host. Read again every ten minutes, and whenever GitHub refuses a token.
           </p>
           {#each installations as { inst, diff } (inst.id)}
             <div class="space-y-2 rounded-md border border-line-subtle px-3 py-2.5 font-sans text-[13px] leading-5">
@@ -318,7 +320,8 @@
               {#if inst.error}<p class="text-warning">The last check failed: {inst.error}</p>{/if}
               {#if diff.known}
                 {@render permissionRow('App asks for', diff.asked, 'neutral')}
-                {@render permissionRow('Installation accepted (the most any token can carry)', diff.accepted, 'success')}
+                <!-- A fact, never a grant: neutral, not the success tone. -->
+                {@render permissionRow('Installation accepted (what an admin may grant an agent)', diff.accepted, 'neutral')}
                 {#if diff.waiting.length > 0}
                   {#snippet review()}
                     {#if inst.url}
@@ -332,6 +335,12 @@
               {/if}
             </div>
           {/each}
+          <!-- The default set (contents, pull requests, metadata) is on every
+               Developer agent's token without a grant; nothing else is. -->
+          <p class="font-sans text-[13px] leading-5 text-muted">
+            Beyond the default set every Developer agent starts with (contents, pull requests, metadata), no agent's token carries any of this until an admin grants it to that
+            agent.
+          </p>
           {#if unclaimed}
             <p class="font-sans text-[13px] leading-5 text-warning" data-testid="git-host-unclaimed">{unclaimed}</p>
           {/if}
@@ -340,46 +349,12 @@
                  other failure is said, never silent. -->
             <p class="flex items-start gap-2 font-sans text-[13px] leading-5 text-muted" data-testid="git-host-agents-error">
               <StatusDot status="warn" class="mt-[7px]" />
-              <span class="min-w-0">Could not read the agents' tokens: {errorMessage(agents.error)}</span>
+              <span class="min-w-0">Could not read which agents are granted these: {errorMessage(agents.error)}</span>
             </p>
           {/if}
-          {#if agentRows.length > 0}
-            <div class="space-y-2" data-testid="git-host-agents">
-              <div class="flex items-center gap-2">
-                <h4 class="font-sans text-[13px] font-medium leading-5 text-fg">Agents' tokens</h4>
-                <InfoTip
-                  text="Each agent's token carries its own set (or the default) as far as the installation holds it. Its last token is what GitHub actually put on one. An admin changes a set in Fleet → agent → Workbench → GitHub permissions."
-                />
-              </div>
-              {#each agentRows as a (a.agentId)}
-                <div class="space-y-1 rounded-md border border-line-subtle px-3 py-2.5 font-sans text-[13px] leading-5">
-                  <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span class="font-medium text-fg">{a.name}</span>
-                    {#if a.isDefault}<Chip>default</Chip>{/if}
-                    {#if !a.developer}
-                      <Chip title="Its Developer switch is off, or it is disabled: it gets no git credential, whatever its set.">no git credential</Chip>
-                    {/if}
-                  </div>
-                  {#if !a.isDefault}
-                    {@render permissionRow('Set', a.set, 'neutral')}
-                  {/if}
-                  <!-- An agent with no credential at all carries nothing. -->
-                  {#if a.developer && a.carries}
-                    {@render permissionRow('Carries', a.carries, 'neutral')}
-                  {:else if a.developer}
-                    <p class="text-muted">What it carries is not known until the installation is read.</p>
-                  {/if}
-                  {#if a.beyond.length > 0}
-                    {@render permissionRow('In its set, not accepted by the installation', a.beyond, 'warn')}
-                  {/if}
-                  <p class="flex items-start gap-2 text-muted">
-                    <StatusDot status={a.tone === 'success' ? 'ok' : a.tone === 'warn' ? 'warn' : 'idle'} class="mt-[7px]" />
-                    <span class="min-w-0">{a.token}</span>
-                  </p>
-                </div>
-              {/each}
-            </div>
-          {/if}
+          <p class="font-sans text-[13px] leading-5 text-muted" data-testid="git-host-access-link">
+            Each agent's GitHub access: <a href={GITHUB_ACCESS_HREF} class="text-accent hover:underline" onclick={() => (open = false)}>Agent policy › GitHub access ›</a>
+          </p>
         </section>
       {/if}
       <div class="space-y-5 border-t border-line-subtle pt-5">

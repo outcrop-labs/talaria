@@ -1,17 +1,15 @@
-// Each agent's GitHub token on one git host, as Admin → Git hosts' Permissions
-// dialog lists them (GET /api/workbench/git-hosts/{id}/agents). The
-// installation's accepted set beside it is the most any token can carry; this
-// is what each agent's token does carry: its set (or the default) as far as
-// the installation holds it, and its last token, from GitHub's own mint reply.
-// `unclaimed` is what the installation accepted that no agent's set names: no
-// token carries it, however green the installation's chips are. PURE, so the
-// node-env tests pin it.
+// Each agent's GitHub token on one git host (GET
+// /api/workbench/git-hosts/{id}/agents), as Agent policy › GitHub access and
+// the Git hosts dialog read it. The installation's accepted set is the most
+// an admin may grant an agent, never what any token carries. `unclaimed` is
+// what the installation accepted that no agent's set names: no token carries
+// it until an admin grants it to an agent. PURE, so the node-env tests pin it.
 //
-// The route is newer than this dialog's other reads. A server without it
-// answers 404, and the dialog draws what it always did.
+// The route is newer than the dialog's other reads. A server without it
+// answers 404, and the readers draw no unclaimed notice.
 
-import { since, type LastToken } from './agent-github-permissions'
-import { pendingPermissions, permissionEntries, permissionSummary, type PermissionEntry, type PermissionMap } from './git-permissions'
+import { addedOf, since, type LastToken } from './agent-github-permissions'
+import { permissionEntries, permissionSummary, type PermissionMap } from './git-permissions'
 
 /** The read's query key: under the host's own, so refreshing the host
  *  re-reads it too. */
@@ -53,37 +51,22 @@ export function unclaimedKeys(body: HostAgents | null | undefined): string[] {
   return keys.filter((k) => typeof k === 'string' && k !== '' && k !== 'metadata')
 }
 
-/** The line the dialog says when the installation accepted something no
- *  agent carries. Null when there is nothing. */
-export function unclaimedSentence(keys: string[]): string | null {
+/** What the installation accepted that no agent's set names, said where an
+ *  admin grants it. With `host`, the overview's form, which names the host
+ *  among several; without, the host dialog's own. Null when there is
+ *  nothing. */
+export function unclaimedSentence(keys: string[], host?: string): string | null {
   if (keys.length === 0) return null
-  return `Accepted by the installation, carried by no agent: ${keys.join(', ')}. An admin grants them per agent (Fleet → agent → Workbench → GitHub permissions).`
+  if (host) return `Accepted by the installation on ${host}, granted to no agent: ${keys.join(', ')}. Open an agent to grant them.`
+  return `Accepted by the installation, granted to no agent: ${keys.join(', ')}. An admin grants them per agent in Agent policy › GitHub access.`
 }
 
 export type TokenTone = 'success' | 'warn' | 'neutral'
 
-/** One agent, ready to draw. */
-export interface HostAgentRow {
-  agentId: string
-  name: string
-  isDefault: boolean
-  /** False when its Developer switch is off or it is disabled: the door
-   *  gives it no git credential at all, whatever its set. */
-  developer: boolean
-  /** Its set, by key. */
-  set: PermissionEntry[]
-  /** What its tokens can carry, by key; null when not known. */
-  carries: PermissionEntry[] | null
-  /** What its set names that its tokens cannot carry. */
-  beyond: PermissionEntry[]
-  /** Its last token in one line. */
-  token: string
-  tone: TokenTone
-}
-
 /** The last token in one line: where, when, and what it carried or why it
- *  was refused. A token minted for an earlier set says so; a row from before
- *  rows said what was asked says that instead, since its set is unknown. */
+ *  was refused, and what GitHub added to it unasked. A token minted for an
+ *  earlier set says so; a row from before rows said what was asked says that
+ *  instead, since its set is unknown. */
 export function lastTokenLine(t: LastToken | null | undefined, nowMs: number): { text: string; tone: TokenTone } {
   if (!t) return { text: 'No token yet', tone: 'neutral' }
   const where = `${t.repo ? `${t.repo}, ` : ''}${since(t.at, nowMs)}`
@@ -93,34 +76,8 @@ export function lastTokenLine(t: LastToken | null | undefined, nowMs: number): {
   const stale = t.current !== false ? '' : t.asked == null ? ', recorded before Talaria noted what it asked for' : ', minted for an earlier set'
   const carried = t.carried ? `carried ${permissionSummary(t.carried)}` : 'carried what is not on record'
   const lacks = short.length > 0 ? `; not ${permissionSummary(t.shortfall)}` : ''
+  const extra = permissionEntries(addedOf(t))
+  const added = extra.length > 0 ? `; GitHub added ${extra.map((e) => `${e.key}: ${e.level}`).join(', ')}` : ''
   const tone: TokenTone = short.length > 0 ? 'warn' : t.current === true ? 'success' : 'neutral'
-  return { text: `Last token (${where}${stale}): ${carried}${lacks}`, tone }
-}
-
-export function hostAgentRow(a: HostAgent, nowMs: number): HostAgentRow {
-  const set = permissionEntries(a.set)
-  const carries = a.carries == null ? null : permissionEntries(a.carries)
-  const beyond = a.carries == null ? [] : permissionEntries(pendingPermissions(a.set, a.carries))
-  const { text, tone } = lastTokenLine(a.lastToken, nowMs)
-  const developer = a.developer !== false
-  return {
-    agentId: a.agentId,
-    name: a.name || a.agentId,
-    isDefault: a.isDefault === true,
-    developer,
-    set,
-    // No credential at all: nothing is carried, and nothing falls short.
-    carries: developer ? carries : null,
-    beyond: developer ? beyond : [],
-    token: text,
-    tone,
-  }
-}
-
-/** The agents in the order the dialog lists them: Developer agents first,
- *  then by name. */
-export function hostAgentRows(body: HostAgents | null | undefined, nowMs: number): HostAgentRow[] {
-  return [...(body?.agents ?? [])]
-    .sort((a, b) => Number(b.developer !== false) - Number(a.developer !== false) || (a.name || '').localeCompare(b.name || ''))
-    .map((a) => hostAgentRow(a, nowMs))
+  return { text: `Last token (${where}${stale}): ${carried}${lacks}${added}`, tone }
 }

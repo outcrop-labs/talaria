@@ -148,4 +148,17 @@ describe('Segmented', () => {
     const body = render(Segmented, { props: { options: [{ id: 'a', label: 'A' }], value: 'a', onChange: () => {} } }).body
     expect(body).toMatch(/<button[^>]*class="[^"]*\bmin-h-6\b/)
   })
+
+  it('holds one option with aria-disabled, still focusable for its reason; the whole control off is a native disabled', () => {
+    const options = [
+      { id: 'none', label: 'None', disabled: true, title: 'An agent keeps at least one permission.' },
+      { id: 'read', label: 'Read' },
+    ]
+    const held = render(Segmented, { props: { options, value: 'read', onChange: () => {} } }).body
+    expect(held).toMatch(/<button[^>]*title="An agent keeps at least one permission\."[^>]*aria-disabled="true"/)
+    expect(held).not.toMatch(/<button[^>]*\sdisabled(=""|\s|>)/)
+    const off = render(Segmented, { props: { options, value: 'read', onChange: () => {}, disabled: true } }).body
+    expect(off.match(/<button[^>]*\sdisabled/g)).toHaveLength(2)
+    expect(off).not.toContain('aria-disabled')
+  })
 })

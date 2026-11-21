@@ -71,6 +71,10 @@ export interface LastToken {
   secret?: string | null
   /** The host route's newest-across-repos only: which repo. */
   repo?: string | null
+  /** What GitHub put on the token that was never asked for, metadata: read
+   *  aside (it is on every token). Absent on an api that predates it, which
+   *  refused such a token instead: `addedOf` derives it then. */
+  added?: PermissionMap | null
 }
 
 /** One granted repo on the host, with the installation that mints its token. */
@@ -336,7 +340,9 @@ export function keySentence(state: KeyState, nowMs: number): string {
   }
 }
 
-function offTokenWhy(state: Extract<KeyState, { kind: 'offToken' }>): string {
+/** Why a key of the set is off the token, as the clause after "Not on the
+ *  token". */
+export function offTokenWhy(state: Extract<KeyState, { kind: 'offToken' }>): string {
   switch (state.why) {
     case 'notAccepted':
       if (state.acceptedSince) return 'the installation had not accepted it when this token was minted; it has since, so the next token can carry it'
@@ -397,7 +403,7 @@ export function keyTone(state: KeyState): 'success' | 'warn' | 'neutral' {
  *  none of these permissions apply to it. Null when the App answers. */
 export function workspaceSecretNotice(block: HostPermissions): string | null {
   const name = block.workspaceSecret?.trim()
-  return name ? `Git at ${block.name} answers from the workspace secret ${name} for this agent; these permissions don't apply to it.` : null
+  return name ? `Git at ${block.name} answers from the workspace secret ${name} for this agent, ahead of the App, so these permissions don't apply to it.` : null
 }
 
 // ── Check token ─────────────────────────────────────────────────────────────
@@ -428,6 +434,85 @@ export interface TokenCheck {
   error?: string | null
   reasons?: CheckReason[] | null
   at?: string | null
+  /** What GitHub put on the token unasked (see `LastToken.added`). */
+  added?: PermissionMap | null
+}
+
+// ── What GitHub added unasked ───────────────────────────────────────────────
+//
+// GitHub may put a permission on a token that Talaria never asked for.
+// Talaria never ASKS wider than the agent's set; a key GitHub adds on its
+// own is kept, recorded and said. An api that sends `added` says it; one
+// that predates it refused such tokens, so deriving it from what was
+// carried and what was asked finds nothing there, and the view is the same.
+
+/** What GitHub added to one token or check: the server's `added` when it
+ *  sends one, else every key carried that was not asked for, metadata aside
+ *  (GitHub puts metadata: read on every token). Empty when either side is
+ *  not on record. */
+export function addedOf(t: Pick<LastToken, 'added' | 'asked' | 'carried'> | null | undefined): PermissionMap {
+  if (!t) return {}
+  if (t.added != null) return { ...t.added }
+  if (t.asked == null || t.carried == null) return {}
+  const out: PermissionMap = {}
+  for (const [key, level] of Object.entries(t.carried)) {
+    if (key !== 'metadata' && !(key in t.asked)) out[key] = level
+  }
+  return out
+}
+
+/** One key GitHub added, as the editor draws it beside the key. */
+export interface AddedKey {
+  key: string
+  level: PermissionLevel
+  /** The repo whose token carried it. */
+  repo: string
+  at: string
+}
+
+/** Whether a repo's last token is the App's, minted for the set the agent
+ *  has now and served: the only kind whose extra keys say anything about the
+ *  agent's next token. */
+const speaksClean = (t: LastToken | null | undefined): t is LastToken =>
+  t != null && t.ok && (t.source ?? 'git_host') === 'git_host' && t.current === true
+
+/** The keys GitHub added on the agent's current tokens on this host that its
+ *  set does not name, in key order; a key on several tokens is cited from
+ *  the newest. A key the set names is the set's, and `keyState` says it. */
+export function addedKeys(block: HostPermissions): AddedKey[] {
+  const set = block.permissions ?? {}
+  const found = new Map<string, AddedKey>()
+  const minted = block.repos
+    .flatMap((r) => (speaksClean(r.lastToken) ? [{ repo: r.lastToken.repo ?? r.repo, token: r.lastToken }] : []))
+    .sort((a, b) => (Date.parse(b.token.at) || 0) - (Date.parse(a.token.at) || 0))
+  for (const { repo, token } of minted) {
+    for (const [key, level] of Object.entries(addedOf(token))) {
+      if (key in set || found.has(key)) continue
+      found.set(key, { key, level, repo, at: token.at })
+    }
+  }
+  return [...found.values()].sort((a, b) => a.key.localeCompare(b.key))
+}
+
+/** Whether any of these levels is above read: GitHub added something that
+ *  writes, which the editor says in the warning tone. */
+export const addsAboveRead = (added: PermissionMap): boolean => Object.values(added).some((l) => l !== 'read')
+
+/** `checks: read, issues: write`: GitHub's keys as it names them. */
+const keyList = (set: PermissionMap): string =>
+  Object.entries(set)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, level]) => `${key}: ${level}`)
+    .join(', ')
+
+/** The line that says what GitHub added, or null when it added nothing.
+ *  Names every key, the catalog's or not. */
+export function addedLine(added: PermissionMap): CheckLine | null {
+  if (Object.keys(added).length === 0) return null
+  return {
+    text: `GitHub added ${keyList(added)}, which this agent's set does not name. Talaria kept it and recorded it.`,
+    tone: addsAboveRead(added) ? 'warn' : 'neutral',
+  }
 }
 
 /** The repos Check token offers, in the order the editor lists them. */
@@ -470,13 +555,17 @@ export interface CheckLine {
 
 /** What a check says, as lines, never none: the error verbatim when it
  *  failed, the workspace secret when one answers, else what the token
- *  carries and each reason a key of the set is off it. What the
- *  installation holds outside the set is said once, as information. */
+ *  carries, what GitHub added to it unasked, and each reason a key of the
+ *  set is off it. What the installation holds outside the set is said once,
+ *  as information, and never names a key GitHub added: that one rides. */
 export function checkLines(c: TokenCheck, repo: string, host: string, account?: string | null): CheckLine[] {
   const out: CheckLine[] = []
   const reasons = c.reasons ?? []
   const faults = reasons.filter((r) => !isNotInSet(r))
-  const outside = reasons.filter(isNotInSet)
+  // A key GitHub added is on the token: never say it is not in the set
+  // "though the installation holds it", beside the line that says it rides.
+  const added = c.ok && c.source !== 'workspace_secret' ? addedOf(c) : {}
+  const outside = reasons.filter((r) => isNotInSet(r) && !(r.key in added))
   if (c.error?.trim()) out.push({ text: c.error.trim(), tone: 'warn' })
   if (c.source === 'workspace_secret') {
     out.push({ text: `Git at ${host} answers from the workspace secret ${c.secret || '(unnamed)'} for this agent; these permissions don't apply to it.`, tone: 'warn' })
@@ -485,6 +574,8 @@ export function checkLines(c: TokenCheck, repo: string, host: string, account?: 
       text: `The token for ${repo} carries ${permissionSummary(c.carried)}${c.minted ? ' (minted now)' : ' (served from the cache)'}.`,
       tone: checkClean(c) ? 'success' : 'neutral',
     })
+    const extra = addedLine(added)
+    if (extra) out.push(extra)
   }
   for (const r of faults) out.push({ text: reasonSentence(r, account), tone: 'warn' })
   if (outside.length === 1) out.push({ text: reasonSentence(outside[0]!, account), tone: 'neutral' })

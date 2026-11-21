@@ -88,9 +88,12 @@ instead of styling its own panels:
   under App settings with the app's own glyph, and search results keep the
   groups. The Apps page itself is a row of Workspace.
 - Instance holds three pages, for admins only: Organization (General, People),
-  Agent policy (Oversight, Git hosts, Web search, Knowledge search) and Data &
-  security (Storage, Secrets, Security). They are one route, and every tab
-  keeps the address it had as one of nine under `/admin`. `INSTANCE_PAGES` in
+  Agent policy (Oversight, Git hosts, GitHub access, Web search, Knowledge
+  search) and Data & security (Storage, Secrets, Security). They are one route,
+  and every tab keeps the address it had as one of nine under `/admin`;
+  GitHub access, the tenth, is `/admin/github`, and `?agent=<id>` on it is one
+  agent's editor. A tab can carry its own search words (`TAB_KEYWORDS`), so
+  "workflows" or "token" lands on the tab itself, not on its page's first. `INSTANCE_PAGES` in
   `lib/settings-nav.ts` says which page holds which tab, and the page and the
   sidebar's lit row both read it through `instanceAt`. "Admin" is not a page
   name: copy names the page and the tab, and search still finds the three
@@ -177,6 +180,10 @@ instead of styling its own panels:
 - A state is a `StatusDot` and a word, never a chip, and the same state has
   the same word on every page: Connected, Not connected, Needs sign-in,
   Reachable, Unreachable, Running, Stopped, Idle, Not set.
+- What a GitHub installation holds is never drawn in the success tone: it is
+  the most an admin may grant an agent, not what any token carries. Its
+  chips are neutral, and green belongs to a token that was read carrying the
+  key (`accessStatus`, `keyState` in `lib/`).
 - A row whose open action is navigation takes `openHref`, not `onOpen`, so
   it opens in a new tab like any other link.
 - A dialog step that shows something once (a new key) is `dismissible={false}`
@@ -352,6 +359,9 @@ re-rolls them (each replaced 5-20 hand-rolled copies):
   control).
 - **`<Segmented>`** — small exclusive mode switches (read/edit). Tabs for page sections; Segmented
   for modes inside a surface.
+  `disabled` holds every option (a write the choice depends on is in flight), an option's own
+  `disabled` holds that one (the None a set's last key cannot take), and `label` names the group
+  (`role="group"`) for a screen reader: "Workflows permission level".
 - **`<DropdownMenu trigger items>`** — anchored menus sharing the context-menu shell/grammar.
   Ad-hoc `absolute top-full` panels with hand-rolled outside-click are banned for action lists
   (search/typeahead popovers remain bespoke).
