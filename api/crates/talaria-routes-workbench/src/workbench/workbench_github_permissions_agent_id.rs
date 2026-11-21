@@ -13,9 +13,16 @@
 // each installation the host uses (what it holds, what it has not accepted
 // yet, its page on GitHub), and each granted repo with the installation that
 // mints its token, what that installation accepted and the shortfall; plus
-// the default and the catalog of every key GitHub knows. The agent's
-// managers and fleet readers read it, and `canEdit` says whether this caller
-// writes.
+// the default and the catalog of every key GitHub knows. What the record
+// says the installation holds is not what a token carried: each host also
+// names the workspace secret that answers git there before the host's own
+// login (`workspaceSecret`, by name, never opened), and each repo its
+// agent's last token (`lastToken`: the newest `git.credential` or
+// `git.credential_refused` row — what GitHub put on it, what it went
+// without and why, or why there was none — and `current`, whether it was
+// asked for the set the agent holds now). The agent's managers and fleet
+// readers read it; `canEdit` says whether this caller writes, and
+// `canCheck` whether it may press "Check token" (POST …/check, admins).
 //
 // PUT {host, from, to} → ADMIN ONLY: an agent's managers see these read-only
 // (docs/PERMISSIONS.md, "Agent managers"). A compare-and-set: `from` is what
@@ -38,6 +45,7 @@ use serde_json::{Map, Value, json};
 use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_body::{parse, string_member};
 use talaria_error::{house_error, internal, object_or_400};
+use talaria_git_hosts::credential::{self, LastToken};
 use talaria_git_hosts::holdings::{
     InstallationRow, installation_rows, installation_statuses, tracked_installations,
 };
@@ -53,7 +61,16 @@ use talaria_state::AppState;
 
 /// The agent's display name, or None when there is no such agent.
 async fn agent_name(pg: &sqlx::PgPool, id: &str) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar("select display_name from agent_defs where id = $1::uuid")
+    Ok(agent_row(pg, id).await?.map(|(name, _)| name))
+}
+
+/// The agent's display name and model (what the workspace store grants by),
+/// or None when there is no such agent.
+pub(crate) async fn agent_row(
+    pg: &sqlx::PgPool,
+    id: &str,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    sqlx::query_as("select display_name, model from agent_defs where id = $1::uuid")
         .bind(id)
         .fetch_optional(pg)
         .await
@@ -129,8 +146,8 @@ pub async fn get(
     if let Some(gate) = talaria_params::uuid_gate_404(&agent_id) {
         return Ok(gate);
     }
-    match agent_name(&state.pg, &agent_id).await {
-        Ok(Some(_)) => {}
+    let model = match agent_row(&state.pg, &agent_id).await {
+        Ok(Some((_, model))) => model,
         Ok(None) => return Ok(house_error(StatusCode::NOT_FOUND, "unknown agent")),
         Err(e) => {
             return Ok(internal(
@@ -138,7 +155,7 @@ pub async fn get(
                 e,
             ));
         }
-    }
+    };
     let sets = match permissions::agent_permissions(&state.pg, &agent_id).await {
         Ok(h) => h,
         Err(e) => return Ok(internal("[workbench/github-permissions] read failed", e)),
@@ -153,6 +170,14 @@ pub async fn get(
         }
     };
     let grants = hosts::granted_repos(&state.pg, &agent_id).await;
+    // What each repo's last token carried, from the trail: a read failing
+    // leaves it unsaid, never the editor.
+    let last = credential::last_tokens(&state.pg, std::slice::from_ref(&agent_id))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("[workbench/github-permissions] {e}");
+            Vec::new()
+        });
     let mut out: Vec<Value> = Vec::new();
     for row in &rows {
         let repos: Vec<String> = grants
@@ -164,11 +189,18 @@ pub async fn get(
         if repos.is_empty() && mine.is_none() {
             continue;
         }
-        out.push(host_wire(&state.pg, row, &repos, mine).await);
+        let secret = credential::workspace_secret_at(&state.pg, &model, row, &rows)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("[workbench/github-permissions] {e}");
+                None
+            });
+        out.push(host_wire(&state.pg, row, &repos, mine, secret, &last).await);
     }
     Ok(Json(json!({
         "agentId": agent_id,
         "canEdit": user.role == "admin",
+        "canCheck": user.role == "admin",
         "default": default_set().to_json(),
         "catalog": CATALOG.iter().map(|e| e.wire()).collect::<Vec<_>>(),
         "hosts": out,
@@ -176,12 +208,23 @@ pub async fn get(
     .into_response())
 }
 
-/// One host's block of the GET.
+/// The newest token row of `repo` on `host_id` among `last`, if any.
+fn last_token<'a>(last: &'a [LastToken], host_id: &str, repo: &str) -> Option<&'a LastToken> {
+    last.iter()
+        .filter(|t| t.host_id == host_id && t.repo.eq_ignore_ascii_case(repo))
+        .max_by_key(|t| t.at_ms)
+}
+
+/// One host's block of the GET. `secret` is the workspace secret that
+/// answers git at the host before its own login; `last` every last token of
+/// the agent.
 async fn host_wire(
     pg: &sqlx::PgPool,
     row: &HostRow,
     repos: &[String],
     mine: Option<&AgentHostPermissions>,
+    secret: Option<String>,
+    last: &[LastToken],
 ) -> Value {
     let narrowing = hosts::narrowing_of(row);
     let base = json!({
@@ -189,6 +232,7 @@ async fn host_wire(
         "name": row.name,
         "kind": row.kind.as_str(),
         "narrowing": narrowing.wire(),
+        "workspaceSecret": secret,
     });
     // A host whose own token decides carries no per-agent set: nothing is
     // claimed about what it carries.
@@ -200,7 +244,10 @@ async fn host_wire(
         block["repos"] = json!(
             repos
                 .iter()
-                .map(|r| json!({ "repo": r }))
+                .map(|r| json!({
+                    "repo": r,
+                    "lastToken": last_token(last, &row.id, r).map(|t| t.wire(None)),
+                }))
                 .collect::<Vec<_>>()
         );
         return block;
@@ -221,6 +268,7 @@ async fn host_wire(
                 "installation": on.map(|r| r.installation_id.clone()),
                 "held": held.map(PermissionSet::to_json),
                 "shortfall": held.map(|h| set.missing_from(h).to_json()),
+                "lastToken": last_token(last, &row.id, repo).map(|t| t.wire(Some(&set))),
             })
         })
         .collect();
@@ -593,6 +641,7 @@ mod tests {
                 answer(get(State(state.clone()), as_manager.clone(), Path(a.clone())).await).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             assert_eq!(body["canEdit"], false);
+            assert_eq!(body["canCheck"], false, "a check is an admin's");
             assert_eq!(
                 body["default"],
                 json!({ "contents": "write", "metadata": "read", "pull_requests": "write" })
@@ -612,6 +661,12 @@ mod tests {
             assert_eq!(block["repos"][0]["installation"], "95001");
             assert_eq!(block["installations"][0]["id"], "95001", "{block}");
             assert_eq!(block["repos"][0]["shortfall"], json!({}));
+            assert_eq!(block["workspaceSecret"], Value::Null);
+            assert_eq!(
+                block["repos"][0]["lastToken"],
+                Value::Null,
+                "no token yet: nothing claimed"
+            );
             let key = |k: &str| {
                 block["keys"]
                     .as_array()

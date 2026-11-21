@@ -39,8 +39,16 @@ token. A permission it does not carry is an ask, not a workaround: request it
 with `request_git_permission`.
 
 When GitHub refuses something on a granted repo because your credential lacks
-a permission (`Resource not accessible by integration`, a push refused
-`without workflows permission`), do not create a token and do not report it
-as broken: ask for it with the workbench's `request_git_permission` (the repo,
-each permission by GitHub's name and level, what GitHub said). An admin
-decides, and `list_repos` shows the outcome.
+a permission (`Resource not accessible by integration`, or a push refused
+``refusing to allow a GitHub App to create or update workflow
+`.github/workflows/<file>` without `workflows` permission``), do not create a token
+and do not report it as broken: ask for it with the workbench's
+`request_git_permission` (the repo, each permission by GitHub's name and level,
+what GitHub said). An admin decides, and `list_repos` shows the outcome.
+
+The same push refused ``refusing to allow a Personal Access Token to create or
+update workflow `.github/workflows/<file>` without `workflow` scope`` is a different case: the token git
+used was not the GitHub App's, but a workspace secret (`list_repos` shows
+`github.narrowing: workspaceSecret` and its name) or the host's own personal
+access token (`hostWide`). A request cannot change it; tell an admin which one,
+on the ticket.

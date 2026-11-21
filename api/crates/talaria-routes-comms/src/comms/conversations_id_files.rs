@@ -1,12 +1,14 @@
 // GET /api/conversations/{id}/files — the session's files, for the Work pane.
 //
 // WHAT THE PANE SHOWS. A work session's pane is the files the session has
-// touched: every Talaria document and Google file a chip on one of its
-// messages names (the agent created, read or edited it), then what the
-// teammate opened there themselves (`pinned_files`), then — for a work session
-// from before this — the living document it was created with. Derived from
-// the rows on every read (`talaria_chips::session_files`), so nothing has to
-// be kept in step: a file is in the session because the session says so.
+// touched: every Talaria document and Google file the agent created, edited
+// or opened, as the chips on the session's messages name them (a Google file
+// it only read is not listed — its chip is a read, `READ_MARK`), then what
+// the teammate opened there themselves (`pinned_files`), then — for a work
+// session from before this — the living document it was created with.
+// Derived from the rows on every read (`talaria_chips::session_files`), so
+// nothing has to be kept in step: a file is in the session because the
+// session says so.
 //
 // THE CONVERSATION'S OWN GATE, and each artifact's own. Access is
 // `accessible_conversation` — the predicate every conversation route asks —
@@ -112,7 +114,8 @@ pub(crate) async fn session_files_for(
 }
 
 // doc: The session's files, oldest first appearance first: every Talaria
-// doc: document and Google file the conversation's chips name (`touched`, with
+// doc: document and Google file the agent created, edited or opened (a Google
+// doc: file it only read is not listed) (`touched`, with
 // doc: `lastTouchedAt` the newest message naming it and `touchedFor` the person
 // doc: that turn was for), then the teammate's pins (`pinned`), then a legacy
 // doc: work session's living document (`living`). Artifacts the caller cannot

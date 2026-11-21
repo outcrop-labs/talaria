@@ -255,6 +255,165 @@ pub async fn list_artifacts(pg: &PgPool) -> Result<Vec<Artifact>, sqlx::Error> {
     Ok(rows.into_iter().map(Artifact::from).collect())
 }
 
+/// An artifact without its body: every other column of the row, under the
+/// same wire names. The body is the one column that grows without bound (a
+/// run transcript, a brief mirror, a pasted document), and a list that shows
+/// titles never needed it.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactMeta {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub icon: Option<String>,
+    pub content_type: Option<String>,
+    pub storage_ref: Option<String>,
+    pub visibility: String,
+    pub edit_policy: String,
+    pub public_slug: Option<String>,
+    pub official: bool,
+    pub kb_doc_id: Option<String>,
+    pub folder_id: Option<String>,
+    pub owner_user_id: Option<String>,
+    pub rag_routing: String,
+    pub google_file_id: Option<String>,
+    pub google_file_url: Option<String>,
+    pub created_by: Option<String>,
+    pub updated_by: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// COLS without `body`, in the same order — pinned to COLS by a test, so a
+/// column added to the row reaches the heads too.
+const META_COLS: &str = "id::text, kind, title, icon, content_type, storage_ref, \
+                         visibility, edit_policy, public_slug, official, kb_doc_id::text, folder_id::text, \
+                         owner_user_id::text, rag_routing, google_file_id, google_file_url, \
+                         created_by::text, updated_by::text, \
+                         (trunc(extract(epoch from created_at) * 1000))::bigint as created_ms, \
+                         (trunc(extract(epoch from updated_at) * 1000))::bigint as updated_ms";
+
+#[derive(sqlx::FromRow)]
+struct ArtifactMetaRow {
+    id: String,
+    kind: String,
+    title: String,
+    icon: Option<String>,
+    content_type: Option<String>,
+    storage_ref: Option<String>,
+    visibility: String,
+    edit_policy: String,
+    public_slug: Option<String>,
+    official: bool,
+    kb_doc_id: Option<String>,
+    folder_id: Option<String>,
+    owner_user_id: Option<String>,
+    rag_routing: String,
+    google_file_id: Option<String>,
+    google_file_url: Option<String>,
+    created_by: Option<String>,
+    updated_by: Option<String>,
+    created_ms: i64,
+    updated_ms: i64,
+}
+
+impl From<ArtifactMetaRow> for ArtifactMeta {
+    fn from(r: ArtifactMetaRow) -> Self {
+        ArtifactMeta {
+            id: r.id,
+            kind: r.kind,
+            title: r.title,
+            icon: r.icon,
+            content_type: r.content_type,
+            storage_ref: r.storage_ref,
+            visibility: r.visibility,
+            edit_policy: r.edit_policy,
+            public_slug: r.public_slug,
+            official: r.official,
+            kb_doc_id: r.kb_doc_id,
+            folder_id: r.folder_id,
+            owner_user_id: r.owner_user_id,
+            rag_routing: r.rag_routing,
+            google_file_id: r.google_file_id,
+            google_file_url: r.google_file_url,
+            created_by: r.created_by,
+            updated_by: r.updated_by,
+            created_at: epoch_ms_to_iso(r.created_ms),
+            updated_at: epoch_ms_to_iso(r.updated_ms),
+        }
+    }
+}
+
+impl ArtifactMeta {
+    /// The Guarded view a permission check needs — `guarded`'s, for a row
+    /// without its body.
+    pub fn guarded(&self) -> Guarded {
+        Guarded {
+            owner_user_id: self.owner_user_id.clone(),
+            created_by: self.created_by.clone(),
+            visibility: self.visibility.clone(),
+            edit_policy: self.edit_policy.clone(),
+        }
+    }
+
+    /// The head the agent read check (`agent_access::agent_readable`) takes.
+    pub fn head(&self) -> ArtifactHead {
+        ArtifactHead {
+            id: self.id.clone(),
+            kind: self.kind.clone(),
+            title: self.title.clone(),
+            guarded: self.guarded(),
+        }
+    }
+}
+
+/// The list's SQL: `cols` from every artifact, or from those updated at or
+/// after the `$1` epoch-ms bind, newest first.
+fn list_sql(cols: &str, since: bool) -> String {
+    let filter = if since {
+        " where updated_at >= to_timestamp($1::float8 / 1000)"
+    } else {
+        ""
+    };
+    format!("select {cols} from artifacts{filter} order by updated_at desc")
+}
+
+/// Every artifact without its body — or, with `since_ms`, those updated at
+/// or after it — newest first. The raw list, like `list_artifacts`: every
+/// caller filters to what its viewer can read.
+pub async fn list_artifact_meta(
+    pg: &PgPool,
+    since_ms: Option<i64>,
+) -> Result<Vec<ArtifactMeta>, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's META_COLS column list
+    // and a fixed WHERE clause over the bind.
+    let sql = list_sql(META_COLS, since_ms.is_some());
+    let mut q = sqlx::query_as::<_, ArtifactMetaRow>(sqlx::AssertSqlSafe(sql.as_str()));
+    if let Some(ms) = since_ms {
+        q = q.bind(ms);
+    }
+    Ok(q.fetch_all(pg)
+        .await?
+        .into_iter()
+        .map(ArtifactMeta::from)
+        .collect())
+}
+
+/// Every artifact updated at or after `since_ms`, whole, newest first.
+pub async fn list_artifacts_since(
+    pg: &PgPool,
+    since_ms: i64,
+) -> Result<Vec<Artifact>, sqlx::Error> {
+    // AssertSqlSafe: the interpolation is this crate's COLS column list and
+    // a fixed WHERE clause over the bind.
+    let sql = list_sql(COLS, true);
+    let rows: Vec<ArtifactRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(since_ms)
+        .fetch_all(pg)
+        .await?;
+    Ok(rows.into_iter().map(Artifact::from).collect())
+}
+
 /// The public-artifact read behind /api/artifacts/public/{slug} — only
 /// artifacts set to 'public' resolve, by slug.
 pub async fn get_public_artifact(pg: &PgPool, slug: &str) -> Result<Option<Artifact>, sqlx::Error> {
@@ -1462,6 +1621,103 @@ mod tests {
             run_transcript_title("11111111-1111-4111-8111-111111111111"),
             "Run 11111111-1111-4111-8111-111111111111 transcript"
         );
+    }
+
+    /// The column list split at its top-level commas (the casts and the
+    /// epoch expressions keep theirs inside parentheses).
+    fn columns(cols: &str) -> Vec<String> {
+        let (mut out, mut cur, mut depth) = (Vec::new(), String::new(), 0i32);
+        for c in cols.chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                ',' if depth == 0 => {
+                    out.push(cur.trim().to_string());
+                    cur.clear();
+                    continue;
+                }
+                _ => {}
+            }
+            cur.push(c);
+        }
+        out.push(cur.trim().to_string());
+        out
+    }
+
+    #[test]
+    fn the_heads_select_every_column_but_the_body() {
+        let meta = columns(META_COLS);
+        assert!(
+            meta.iter().all(|c| c != "body" && !c.starts_with("body ")),
+            "{meta:?}"
+        );
+        // ...and the body is all they leave out: a column added to the row
+        // reaches the heads too.
+        let mut whole = columns(COLS);
+        whole.retain(|c| c != "body");
+        assert_eq!(meta, whole);
+        assert_eq!(meta.len(), 20, "{meta:?}");
+    }
+
+    #[test]
+    fn the_list_sql_filters_by_since_only_when_asked() {
+        let all = list_sql(META_COLS, false);
+        assert!(!all.contains("where"), "{all}");
+        assert!(
+            all.ends_with("from artifacts order by updated_at desc"),
+            "{all}"
+        );
+        let since = list_sql(META_COLS, true);
+        assert!(
+            since.contains(
+                " where updated_at >= to_timestamp($1::float8 / 1000) order by updated_at desc"
+            ),
+            "{since}"
+        );
+        assert!(!columns(&since).iter().any(|c| c == "body"), "{since}");
+        // The whole-row list keeps its body.
+        assert!(columns(&list_sql(COLS, true)).iter().any(|c| c == "body"));
+    }
+
+    #[test]
+    fn a_meta_row_guards_like_the_whole_row() {
+        let a = Artifact {
+            owner_user_id: Some("u-owner".into()),
+            created_by: Some("u-maker".into()),
+            visibility: "private".into(),
+            updated_at: "2026-11-20T09:00:00.000Z".into(),
+            ..artifact("doc", "the body")
+        };
+        let m = ArtifactMeta {
+            id: a.id.clone(),
+            kind: a.kind.clone(),
+            title: a.title.clone(),
+            icon: None,
+            content_type: None,
+            storage_ref: None,
+            visibility: a.visibility.clone(),
+            edit_policy: a.edit_policy.clone(),
+            public_slug: None,
+            official: false,
+            kb_doc_id: None,
+            folder_id: None,
+            owner_user_id: a.owner_user_id.clone(),
+            rag_routing: a.rag_routing.clone(),
+            google_file_id: None,
+            google_file_url: None,
+            created_by: a.created_by.clone(),
+            updated_by: None,
+            created_at: a.created_at.clone(),
+            updated_at: a.updated_at.clone(),
+        };
+        let (g, w) = (m.guarded(), guarded(&a));
+        assert_eq!(
+            (g.owner_user_id, g.created_by, g.visibility, g.edit_policy),
+            (w.owner_user_id, w.created_by, w.visibility, w.edit_policy)
+        );
+        let wire = serde_json::to_value(&m).unwrap();
+        assert!(wire.get("body").is_none(), "{wire}");
+        assert_eq!(wire["updatedAt"], a.updated_at.as_str());
     }
 
     #[test]

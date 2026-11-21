@@ -340,7 +340,7 @@ pub fn workbench_tools() -> Vec<Value> {
         }),
         json!({
             "name": "request_git_permission",
-            "description": "Ask an admin for a GitHub permission your git token lacks — when GitHub refused something you did on a granted repo for want of one (a 403 \"Resource not accessible by integration\", a push refused \"without workflows permission\", an X-Accepted-GitHub-Permissions header naming what it needed). Name the repo where it happened and each permission GitHub wanted, by GitHub's App permission name (contents, pull_requests, workflows, secrets, actions, administration, organization_secrets, …) at the level it wanted. Approval adds it to your permissions on that repo's git host, for every repo you hold there, and your next git credential for those repos carries it. Refused only for a name or level GitHub does not know, a repo you are not granted, or a host whose own token decides (no per-agent permissions there). Asking again while one is open adds your words to it. An admin decides in Admin → Git hosts; the outcome shows in list_repos (permissionRequests), and on the ticket the request was first asked from when you name one (taskId). Do not retry the GitHub call or ask again until it is decided — continue other work. awaiting_github means approved in Talaria and waiting for an owner of the GitHub account to accept the permission for the App; no token carries it until they do.",
+            "description": "Ask an admin for a GitHub permission your git token lacks — when GitHub refused something you did on a granted repo for want of one (a 403 \"Resource not accessible by integration\", an X-Accepted-GitHub-Permissions header naming what it needed, or a push refused with \"refusing to allow a GitHub App to create or update workflow `.github/workflows/<file>` without `workflows` permission\", which is workflows at write). That GitHub App form is your per-agent token, and this tool is the fix. The other form, \"refusing to allow a Personal Access Token (or an OAuth App) to create or update workflow … without `workflow` scope\", means your token was NOT the GitHub App's: a workspace secret answered git at that host first (list_repos' github.narrowing is workspaceSecret, naming the secret), or the host connects with a personal access token (hostWide). No request changes that token, so do not file one: tell an admin which secret or host it was, on the ticket. A `talaria:` line from git naming a permission your token goes without says why: an installation that has not accepted it waits on an owner of the GitHub account, and asking again changes nothing. Name the repo where it happened and each permission GitHub wanted, by GitHub's App permission name (contents, pull_requests, workflows, secrets, actions, administration, organization_secrets, …) at the level it wanted. Approval adds it to your permissions on that repo's git host, for every repo you hold there, and your next git credential for those repos carries it. Refused only for a name or level GitHub does not know, a repo you are not granted, or a host whose own token decides (no per-agent permissions there). Asking again while one is open adds your words to it. An admin decides in Admin → Git hosts; the outcome shows in list_repos (permissionRequests), and on the ticket the request was first asked from when you name one (taskId). Do not retry the GitHub call or ask again until it is decided — continue other work. awaiting_github means approved in Talaria and waiting for an owner of the GitHub account to accept the permission for the App; no token carries it until they do.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -4255,6 +4255,14 @@ mod tests {
             ask.contains("list_repos (permissionRequests)")
                 && ask.contains("Do not retry")
                 && ask.contains("Admin → Git hosts"),
+            "{ask}"
+        );
+        // GitHub's two refusals of a workflow push, verbatim: the App's
+        // (this tool) and the personal access token's (not this tool).
+        assert!(
+            ask.contains("refusing to allow a GitHub App to create or update workflow `.github/workflows/<file>` without `workflows` permission")
+                && ask.contains("without `workflow` scope")
+                && ask.contains("workspaceSecret"),
             "{ask}"
         );
         assert_eq!(

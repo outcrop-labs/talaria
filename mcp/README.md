@@ -59,7 +59,7 @@ guardrail prose rules below are checked against.
 | `edit_document` | Change part of a markdown document or page: exact-text replacements (omit `newString` to delete) or a section rewrite, applied atomically |
 | `list_documents` | The documents the agent can access |
 | `get_document` | One document's full content plus metadata |
-| `open_in_pane` | Put an existing document or Google file in the person's pane beside a Work, Plan or Research session (with neither argument: list the session's files) |
+| `open_in_pane` | Put an existing document or Google file in the person's pane beside a Work, Plan or Research session (with neither argument: list the session's files). A file the agent creates or changes opens there by itself; one it only reads (`get_document`, a Google read) does not |
 | `save_image_artifact` | Save an image from the agent's workspace (`/opt/data/…`) as a file artifact |
 | `export_to_google_doc` | Export a document into the Drive the agent acts for as a native Google Doc / Sheet |
 

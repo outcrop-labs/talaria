@@ -147,8 +147,10 @@ Source: [`api/crates/talaria-routes-knowledge/src/files/artifacts.rs`](../../api
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `dual` | — | `{artifacts}` | 200 | — |
+| GET | `dual` | — | `{artifacts}` | 200, 400 | — |
 | POST | `dual` | [body](#post-apiartifacts-body) | `{artifact}` | 200, 400 | audit |
+
+**GET** — The artifacts the caller may read, newest first. Two optional narrowings, neither of which widens what a caller sees: `?since=<ISO instant>` keeps those updated at or after it, and `?fields=heads` drops the body. A malformed value is a 400.
 
 ### POST `/api/artifacts` body
 
