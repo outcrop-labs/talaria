@@ -43,12 +43,15 @@
   const narrow = new MediaQuery('max-width: 639px')
   const TONE: Record<'success' | 'warn' | 'neutral', DotStatus> = { success: 'ok', warn: 'warn', neutral: 'idle' }
 
-  /** A repo's last token in one word: whether it speaks for the set now. */
+  /** A repo's last token in one word: whether it speaks for the set now.
+   *  A server that does not say (`current` absent or null) gets no claim
+   *  either way: the token was served, nothing more is known. */
   function tokenState(t: LastToken | null | undefined): { word: string; status: DotStatus } {
     if (t == null) return { word: 'None', status: 'idle' }
     if (!t.ok) return { word: 'Refused', status: 'warn' }
     if (t.source === 'workspace_secret') return { word: 'Workspace secret', status: 'idle' }
-    return t.current === true ? { word: 'Current', status: 'ok' } : { word: 'Earlier set', status: 'idle' }
+    if (t.current === true) return { word: 'Current', status: 'ok' }
+    return t.current === false ? { word: 'Earlier set', status: 'idle' } : { word: 'Served', status: 'idle' }
   }
   const account = $derived(result ? (block.installations ?? []).find((i) => i.id === result.result.installation)?.account : undefined)
 </script>

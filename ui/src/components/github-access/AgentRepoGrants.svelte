@@ -81,7 +81,9 @@
     queryFn: (): Promise<ReposBody> => getJson<ReposBody>(`/api/workbench/repos/${agentId}`),
   }))
 
-  // Rule edits, keyed host:repo: they ride the next PUT with the grants.
+  // Rule edits, keyed host:repo: they ride the next PUT with the grants. A
+  // write that lands clears them, so the rule controls wait while one is in
+  // flight: an edit made meanwhile would be wiped unsaved.
   let edits = $state<Record<string, RepoRule>>({})
   let saving = $state(false)
   let saved = $state(false)
@@ -172,6 +174,7 @@
                   class="w-full lg:w-40"
                   aria-label={`Base branch for ${g.repo}`}
                   value={rule.baseBranch ?? ''}
+                  disabled={saving}
                   onchange={(e) => (edits[key(g)] = { ...rule, baseBranch: (e.currentTarget as HTMLSelectElement).value || null })}
                 >
                   <option value="">Default branch</option>
@@ -184,6 +187,7 @@
                   placeholder="branch prefix"
                   aria-label={`Branch prefix for ${g.repo}`}
                   value={rule.branchPrefix ?? ''}
+                  disabled={saving}
                   oninput={(e) => (edits[key(g)] = { ...rule, branchPrefix: e.currentTarget.value || null })}
                 />
                 <Select
@@ -191,6 +195,7 @@
                   class="w-full lg:w-44"
                   aria-label={`Push rule for ${g.repo}`}
                   value={rule.pushMode}
+                  disabled={saving}
                   onchange={(e) => (edits[key(g)] = { ...rule, pushMode: (e.currentTarget as HTMLSelectElement).value as RepoRule['pushMode'] })}
                 >
                   <option value="branches_only">Branches only</option>
