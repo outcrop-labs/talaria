@@ -50,7 +50,7 @@ export type UserEvent =
       resync?: boolean
     }
   /** `seq`: the log's last seq. `stale`: the nudge (a notification, a
-   *  thread, a decided approval cleared the sweep throttle) — re-read even
+   *  thread, a decided run cleared the sweep throttle) — re-read even
    *  at that seq, because the read is what sweeps. Absent on an append. */
   | { type: 'brief'; briefId: string; seq: number; stale?: boolean }
   | { type: 'channel'; channelId: string }

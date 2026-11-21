@@ -754,7 +754,7 @@ pub enum UserEvent {
     /// Two publishers, and the client must tell them apart. An APPEND
     /// publishes the seq it reached, and a page already at that seq has it,
     /// so the client drops the echo. The STALE NUDGE (`mark_brief_stale`:
-    /// a notification landed, a thread moved, an approval was decided)
+    /// a notification landed, a thread moved, a run was decided)
     /// clears the sweep throttle and publishes the UNCHANGED seq, and its
     /// whole point is a re-read that sweeps on the way through. `stale` marks
     /// it, so the client refetches whatever seq its page holds. Absent on an

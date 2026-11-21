@@ -270,8 +270,8 @@ export interface BriefEventSignal {
  *  read that swept, or of the reader's own check-off whose answer carried the
  *  page — and refetching it would be a GET for nothing.
  *
- *  THE STALE NUDGE IS ALWAYS NEWS. `mark_brief_stale` (a notification landed,
- *  a thread moved, an approval was decided) clears the sweep throttle and
+ *  THE STALE NUDGE IS ALWAYS NEWS. `mark_brief_stale` (a notification landed
+ *  or was read, a thread moved, a run was decided) clears the sweep throttle and
  *  publishes the brief's UNCHANGED seq: the page's lastSeq equals it by
  *  construction, and the re-read is the point — the read sweeps on the way
  *  through, which is how a new message's line appears and a replied one's

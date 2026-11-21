@@ -127,7 +127,7 @@ function newerPage(fresh: BriefResponse, cached: BriefResponse | undefined): Bri
  *  it: that read either has the append or the next event will say so. A
  *  STALE NUDGE needs a read that starts after it — one that left before the
  *  throttle cleared did not sweep, and the sweep is the point of the nudge
- *  (a new message's line, a replied thread's or a decided approval's line
+ *  (a new message's line, a replied thread's or a decided run's line
  *  closing) — so it restarts the read in flight. Only this listener
  *  refetches (the app-wide map marks stale with no refetch), so a nudge is
  *  one GET, not two that cancel each other. */
