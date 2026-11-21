@@ -465,3 +465,22 @@ test('a failed mark a later click on the line has overtaken is not shown as fail
   expect(briefMarkFailed('task:one')).toBe(false)
   expect(lineOf(cached(), 'task:one').resolved).toBe(false)
 })
+
+test('a check and a quick put-back in flight on one line leave stand-ins with their own ids and seqs', async () => {
+  const actions = mount(page())
+  await settle()
+  const first = deferredPost()
+  const second = deferredPost()
+  const check = actions.markItem('task:one', 'check')
+  const restore = actions.markItem('task:one', 'restore')
+  const history = lineOf(cached(), 'task:one').history
+  expect(history.map((e) => e.kind)).toEqual(['item', 'checked', 'change'])
+  expect(new Set(history.map((e) => e.id)).size).toBe(3)
+  expect(history.map((e) => e.seq)).toEqual([2, 4, 5])
+  // The put-back copies the server's live row, not the check's stand-in.
+  expect(history[2]).toMatchObject({ priority: 'p1', statusLabel: 'BLOCKED', supersedes: history[1]!.id })
+  first.resolve({ ok: true, brief: checkedPage() })
+  await check
+  second.resolve({ ok: true, brief: page({ lastSeq: 5 }) })
+  await restore
+})

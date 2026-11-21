@@ -167,6 +167,9 @@ export interface BriefMarkAnswer {
   brief?: BriefResponse
 }
 
+/** The id prefix of a row the browser laid on optimistically (`markedLine`). */
+const STAND_IN = 'pending:'
+
 /** The kinds that close a line: the source saying it is done, or the owner
  *  checking it off or dismissing it (the engine's `is_terminal`). */
 const TERMINAL_KINDS: ReadonlySet<string> = new Set(['resolved', 'checked', 'dismissed'])
@@ -193,14 +196,21 @@ function byDocumentOrder(a: BriefLine, b: BriefLine): number {
  *  body, no evidence, the fingerprint carried forward. A restore is a
  *  `change` carrying the last LIVE row in the line's history. Only the id,
  *  seq and time are the browser's stand-ins until the server's row replaces
- *  them. */
+ *  them.
+ *
+ *  `seq` is the page's next one; a line that already carries a stand-in (a
+ *  check and a quick put-back both in flight) takes the one after it, so a
+ *  line's history never holds two rows with one id or seq. A put-back copies
+ *  the last live row the SERVER wrote, never an earlier stand-in. */
 export function markedLine(line: BriefLine, action: BriefMarkAction, at: string, seq: number): BriefLine | null {
   const current = line.current
-  const stand = { id: `pending:${line.key}:${seq}`, seq, batch: null, supersedes: current.id, createdAt: at }
+  const last = line.history[line.history.length - 1]
+  const next = Math.max(seq, (last?.seq ?? 0) + 1)
+  const stand = { id: `${STAND_IN}${line.key}:${next}`, seq: next, batch: null, supersedes: current.id, createdAt: at }
   let entry: BriefEntry
   if (action === 'restore') {
     if (!line.resolved) return null
-    const live = [...line.history].reverse().find((e) => !TERMINAL_KINDS.has(e.kind))
+    const live = [...line.history].reverse().find((e) => !TERMINAL_KINDS.has(e.kind) && !e.id.startsWith(STAND_IN))
     if (!live) return null
     entry = { ...live, ...stand, kind: 'change', sourceKey: live.sourceKey ?? '' }
   } else {
