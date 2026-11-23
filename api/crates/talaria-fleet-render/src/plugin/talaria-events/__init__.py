@@ -139,6 +139,9 @@ _STATE_DIR = "/opt/data/talaria-events/checkouts"
 # a measured 24 ms per MB of fresh content.
 _UNTRACKED_BUDGET = 16 * 1024 * 1024
 _GIT_TIMEOUT = 10.0
+# How many times an object's move into the store is tried while a `git gc`
+# beside it keeps removing the fan-out directory it lands in (_adopt_objects).
+_ADOPT_TRIES = 5
 _SNAPSHOT_IDENTITY = {
     "GIT_AUTHOR_NAME": "Talaria checkpoint",
     "GIT_AUTHOR_EMAIL": "checkpoint@talaria.invalid",
@@ -734,17 +737,29 @@ def _alternates(root: str) -> str:
 
 def _adopt_objects(quarantine: str, root: str) -> None:
     """Move the snapshot's new objects into the real store. An object the
-    store already has is left as it is; git's objects are immutable."""
+    store already has is left as it is; git's objects are immutable.
+
+    A `git gc` the agent runs beside it removes a loose-object fan-out
+    directory the moment it is empty (prune-packed), so the directory can
+    vanish between its makedirs and the rename, and the rename then fails
+    ENOENT. The directory is made again and the move retried, as git's own
+    loose-object writer does when its directory is missing."""
     store = os.path.join(root, ".git", "objects")
     for fan in os.listdir(quarantine):
         if len(fan) != 2:
             continue
-        os.makedirs(os.path.join(store, fan), exist_ok=True)
         for name in os.listdir(os.path.join(quarantine, fan)):
             dest = os.path.join(store, fan, name)
-            if os.path.exists(dest):
-                continue
-            os.rename(os.path.join(quarantine, fan, name), dest)
+            for attempt in range(_ADOPT_TRIES):
+                if os.path.exists(dest):
+                    break
+                os.makedirs(os.path.join(store, fan), exist_ok=True)
+                try:
+                    os.rename(os.path.join(quarantine, fan, name), dest)
+                    break
+                except FileNotFoundError:
+                    if attempt == _ADOPT_TRIES - 1:
+                        raise
 
 
 def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:

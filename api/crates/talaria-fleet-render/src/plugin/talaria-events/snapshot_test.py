@@ -352,6 +352,53 @@ ok = snapshots()[-1]
 assert "commit" in ok, ok
 assert git(w3, "cat-file", "-t", ok["commit"]) == "commit", "a successful snapshot's objects reach the store"
 assert objects_in(w3) > before
+
+# A gc beside the snapshot removes a fan-out directory the moment it is empty
+# (prune-packed), so one can vanish between the adoption's makedirs and its
+# rename, which then meets ENOENT. Here it vanishes before the first two moves:
+# the snapshot makes it again and lands. A directory that keeps vanishing
+# fails the snapshot after _ADOPT_TRIES moves, never a loop, and its ref goes.
+real_rename = os.rename
+pruned = []
+
+
+def rename_beside_prune(limit):
+    def rename(src, dst, *a, **kw):
+        if "talaria-ckpt-objects-" in src and len(pruned) < limit:
+            pruned.append(dst)
+            try:
+                os.rmdir(os.path.dirname(dst))
+            except OSError:
+                pass
+            raise FileNotFoundError(2, "No such file or directory", dst)
+        return real_rename(src, dst, *a, **kw)
+
+    return rename
+
+
+open(os.path.join(w3, "fresh.txt"), "w").write("beside a prune\n")
+mod._last_boundary.pop(fifth, None)
+os.rename = rename_beside_prune(2)
+try:
+    pre([{"role": "tool", "tool_call_id": "p1", "tool_name": "terminal"}], sid=fifth)
+finally:
+    os.rename = real_rename
+e = snapshots()[-1]
+assert "commit" in e, e
+assert len(pruned) == 2, pruned
+assert git(w3, "cat-file", "-t", e["commit"]) == "commit", "a retried move reaches the store"
+pruned.clear()
+open(os.path.join(w3, "fresh.txt"), "w").write("beside a prune that never stops\n")
+mod._last_boundary.pop(fifth, None)
+refs_before = git(w3, "for-each-ref", "refs/talaria/ckpt/")
+os.rename = rename_beside_prune(10**6)
+try:
+    pre([{"role": "tool", "tool_call_id": "p2", "tool_name": "terminal"}], sid=fifth)
+finally:
+    os.rename = real_rename
+assert snapshots()[-1]["reason"] == "snapshot failed: the checkout's object store could not be written", snapshots()[-1]
+assert len(pruned) == mod._ADOPT_TRIES, pruned
+assert git(w3, "for-each-ref", "refs/talaria/ckpt/") == refs_before, "a failed adoption leaves no ref"
 stop = threading.Event()
 
 
