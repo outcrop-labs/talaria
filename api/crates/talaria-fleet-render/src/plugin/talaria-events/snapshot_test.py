@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 spec = importlib.util.spec_from_file_location("talaria_events", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
@@ -352,6 +353,74 @@ ok = snapshots()[-1]
 assert "commit" in ok, ok
 assert git(w3, "cat-file", "-t", ok["commit"]) == "commit", "a successful snapshot's objects reach the store"
 assert objects_in(w3) > before
+
+# A gc beside the snapshot removes a fan-out directory the moment it is empty
+# (prune-packed), so one can vanish between the adoption's makedirs and its
+# move, which then meets ENOENT. Here it vanishes before the first two moves:
+# the snapshot makes it again and lands. A directory that keeps vanishing
+# fails the snapshot after _ADOPT_TRIES moves, never a loop, and its ref goes.
+real_replace = os.replace
+pruned = []
+
+
+def replace_beside_prune(limit):
+    def replace(src, dst, *a, **kw):
+        if "talaria-ckpt-objects-" in src and len(pruned) < limit:
+            pruned.append(dst)
+            try:
+                os.rmdir(os.path.dirname(dst))
+            except OSError:
+                pass
+            raise FileNotFoundError(2, "No such file or directory", dst)
+        return real_replace(src, dst, *a, **kw)
+
+    return replace
+
+
+open(os.path.join(w3, "fresh.txt"), "w").write("beside a prune\n")
+mod._last_boundary.pop(fifth, None)
+os.replace = replace_beside_prune(2)
+try:
+    pre([{"role": "tool", "tool_call_id": "p1", "tool_name": "terminal"}], sid=fifth)
+finally:
+    os.replace = real_replace
+e = snapshots()[-1]
+assert "commit" in e, e
+assert len(pruned) == 2, pruned
+assert git(w3, "cat-file", "-t", e["commit"]) == "commit", "a retried move reaches the store"
+pruned.clear()
+open(os.path.join(w3, "fresh.txt"), "w").write("beside a prune that never stops\n")
+mod._last_boundary.pop(fifth, None)
+refs_before = git(w3, "for-each-ref", "refs/talaria/ckpt/")
+os.replace = replace_beside_prune(10**6)
+try:
+    pre([{"role": "tool", "tool_call_id": "p2", "tool_name": "terminal"}], sid=fifth)
+finally:
+    os.replace = real_replace
+assert snapshots()[-1]["reason"] == "snapshot failed: the checkout's object store could not be written", snapshots()[-1]
+assert len(pruned) == mod._ADOPT_TRIES, pruned
+assert git(w3, "for-each-ref", "refs/talaria/ckpt/") == refs_before, "a failed adoption leaves no ref"
+
+# A gc whose walk read the refs before a snapshot's ref existed still deletes
+# the loose objects it finds no newer than its expiry, set at its own start.
+# Played here: a prune started in the snapshot's second (the clock is first
+# brought to the top of a second, so the snapshot fits in it), its walk the
+# refs without the snapshot's. The snapshot's objects are dated ahead of it,
+# so it keeps them; git's own dates, which a plain move keeps, would not be.
+time.sleep(1.02 - time.time() % 1)
+expire = int(time.time())
+open(os.path.join(w3, "fresh.txt"), "w").write("beside a prune that read the refs first\n")
+mod._last_boundary.pop(fifth, None)
+pre([{"role": "tool", "tool_call_id": "p3", "tool_name": "terminal"}], sid=fifth)
+e = snapshots()[-1]
+assert "commit" in e, e
+ref = git(w3, "for-each-ref", "--format=%(refname)", "--points-at", e["commit"], "refs/talaria/ckpt/")
+assert ref, e
+git(w3, "update-ref", "-d", ref)
+git(w3, "prune", "--expire", time.strftime("%Y-%m-%d %H:%M:%S +0000", time.gmtime(expire)))
+kept = subprocess.run(["git", "-C", w3, "rev-list", "--objects", e["commit"]], capture_output=True, text=True)
+assert kept.returncode == 0, f"a snapshot's objects outlive a prune that read the refs first: {kept.stderr}"
+git(w3, "update-ref", ref, e["commit"])
 stop = threading.Event()
 
 

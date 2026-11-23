@@ -139,6 +139,12 @@ _STATE_DIR = "/opt/data/talaria-events/checkouts"
 # a measured 24 ms per MB of fresh content.
 _UNTRACKED_BUDGET = 16 * 1024 * 1024
 _GIT_TIMEOUT = 10.0
+# How many times an object's move into the store is tried while a `git gc`
+# beside it keeps removing the fan-out directory it lands in (_adopt_objects).
+_ADOPT_TRIES = 5
+# How far ahead of its adoption a snapshot's object is dated, in seconds: past
+# the expiry of any `git prune` already running (_adopt_objects).
+_FRESH_AHEAD = 2
 _SNAPSHOT_IDENTITY = {
     "GIT_AUTHOR_NAME": "Talaria checkpoint",
     "GIT_AUTHOR_EMAIL": "checkpoint@talaria.invalid",
@@ -733,18 +739,42 @@ def _alternates(root: str) -> str:
 
 
 def _adopt_objects(quarantine: str, root: str) -> None:
-    """Move the snapshot's new objects into the real store. An object the
-    store already has is left as it is; git's objects are immutable."""
+    """Move the snapshot's new objects into the real store, each dated
+    _FRESH_AHEAD seconds ahead. An object the store already has is replaced
+    by this copy; git's objects are immutable, so only the date changes.
+
+    The date is what keeps them. A `git gc` that read the refs before this
+    snapshot's ref existed still deletes every loose object it finds that is
+    no newer than its expiry, which it set before that read (`--prune=now`
+    makes the expiry its own start). A rename keeps the date git wrote the
+    object with, from before the ref, so such a gc could take a commit the
+    snapshot had already reported. Dated ahead, an object outlives any gc
+    that started before it landed; one that starts after reads the ref, and
+    stops at a ref whose objects are not all in yet rather than prune. git
+    freshens an object it would write again for the same reason.
+
+    That gc also removes a loose-object fan-out directory the moment it is
+    empty (prune-packed), so the directory can vanish between its makedirs
+    and the move, which then fails ENOENT. The directory is made again and
+    the move retried, as git's own loose-object writer does when its
+    directory is missing."""
     store = os.path.join(root, ".git", "objects")
+    fresh = int(time.time()) + _FRESH_AHEAD
     for fan in os.listdir(quarantine):
         if len(fan) != 2:
             continue
-        os.makedirs(os.path.join(store, fan), exist_ok=True)
         for name in os.listdir(os.path.join(quarantine, fan)):
+            src = os.path.join(quarantine, fan, name)
             dest = os.path.join(store, fan, name)
-            if os.path.exists(dest):
-                continue
-            os.rename(os.path.join(quarantine, fan, name), dest)
+            os.utime(src, (fresh, fresh))
+            for attempt in range(_ADOPT_TRIES):
+                os.makedirs(os.path.join(store, fan), exist_ok=True)
+                try:
+                    os.replace(src, dest)
+                    break
+                except FileNotFoundError:
+                    if attempt == _ADOPT_TRIES - 1:
+                        raise
 
 
 def _snapshot(session_id: str, root: str, ref_name: str) -> tuple[str, str]:
