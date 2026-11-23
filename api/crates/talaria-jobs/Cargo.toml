@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+talaria-board-sync = { workspace = true }
 axum = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }

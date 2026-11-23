@@ -39,6 +39,10 @@ export interface SessionFile {
   /** When a message last named this file (ISO); null for pins and the legacy
    *  living document, which nobody "touched" in a turn. */
   lastTouchedAt: string | null
+  /** The person that newest touching turn was for (a user id) — the one whose
+   *  pane follows the agent to it (`takesFocus`). Absent for pins and the
+   *  living document. */
+  touchedFor?: string
 }
 
 export interface SessionFilesAnswer {
@@ -72,6 +76,7 @@ export function parseSessionFiles(raw: unknown): SessionFilesAnswer {
       ...(typeof r.url === 'string' ? { url: r.url } : {}),
       source: r.source === 'pinned' || r.source === 'living' ? r.source : 'touched',
       lastTouchedAt: typeof r.lastTouchedAt === 'string' ? r.lastTouchedAt : null,
+      ...(typeof r.touchedFor === 'string' && r.touchedFor !== '' ? { touchedFor: r.touchedFor } : {}),
     })
   }
   return { kind, files }
@@ -241,6 +246,21 @@ export function changedFiles(prev: readonly SessionFile[] | null, next: readonly
  *  hand) wins only when nothing was touched. */
 export const focusTarget = (changed: readonly SessionFile[]): SessionFile | null =>
   newestTouched(changed) ?? changed.at(-1) ?? null
+
+/** WHOSE PANE A CHANGE MAY MOVE. The list refetches in every member's open
+ *  tab now (the conversation event), so following the agent can no longer
+ *  mean "every pane jumps": a teammate typing in another file of a shared
+ *  session would have it pulled out from under them because the agent opened
+ *  something for somebody else. A change takes this viewer's pane only when
+ *  the turn that touched it was for them (`touchedFor`), or when they opened
+ *  the file here themselves a moment ago (`openedHere` — a pin carries no
+ *  author, so the tab that pinned it says so). Everyone else gets the tab on
+ *  the strip, without focus. */
+export const takesFocus = (
+  f: Pick<SessionFile, 'key' | 'touchedFor'>,
+  viewerId: string | null | undefined,
+  openedHere: ReadonlySet<string> = new Set(),
+): boolean => openedHere.has(f.key) || (!!viewerId && f.touchedFor === viewerId)
 
 // ── CLOSED TABS, PER VIEWER ─────────────────────────────────────────────────
 //

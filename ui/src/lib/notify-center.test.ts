@@ -115,6 +115,7 @@ describe('labels', () => {
   it('count: by kind, only past one', () => {
     expect(countLabel({ kind: 'dm', count: 3 })).toBe('3 messages')
     expect(countLabel({ kind: 'task-status', count: 4 })).toBe('Moved 4 times')
+    expect(countLabel({ kind: 'task-due', count: 2 })).toBe('2 reminders')
     expect(countLabel({ kind: 'mention', count: 2 })).toBe('2 updates')
     expect(countLabel({ kind: 'dm', count: 1 })).toBeNull()
     expect(countLabel({ kind: 'dm' })).toBeNull()

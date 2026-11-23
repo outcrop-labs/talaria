@@ -346,7 +346,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "triage_ticket",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back. Restarting your own blocked ticket, taking anything out of quality_review, and any write at all to a ticket a person has taken off the table — all refuse with 403, and assigning or marking done are human-only.",
+            description: "Triage a ticket: adjust priority, effort, labels, description, due date — and move its status FORWARD. Forward means: start work you were already assigned (→ in_progress), park it (→ blocked), or hand it to review (→ quality_review). You cannot move it back on your own. Out of quality_review there is one way: the person you are answering asks you to send it back, and you pass conversationId so Talaria can prove that ask — never to done, failed or cancelled. Restarting your own blocked ticket, taking anything out of quality_review unasked, and any write at all to a ticket a person has taken off the table — all refuse with 403, and assigning or marking done are human-only.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -361,8 +361,9 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "color": one_of(TICKET_COLORS, "Color-code the ticket (shows on cards + gantt)"),
                     "status": one_of(
                         &["in_progress", "blocked", "quality_review"],
-                        "Forward only. in_progress is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and quality_review are one-way: a person moves it after that.",
+                        "Forward only. in_progress is legal from a ticket already assigned to you or already in progress — never from blocked. blocked and quality_review are one-way: a person moves it after that, or asks you to (conversationId).",
                     ),
+                    "conversationId": str_schema("The thread you are answering — your prompt's thread line carries it. Pass it only when the person you are answering asked you to take this ticket out of review."),
                 },
                 "required": ["taskId"],
             }),
@@ -373,7 +374,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "move_ticket",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and agents it does not allow are unassigned — the result's moved field names both, so tell the person what changed. A move that would take a PERSON off the ticket (they are not on the new board) is refused with 403: a person moves it, or adds them to that board first. preview: true answers the same moved field without moving anything. A ticket that is closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD, in review, or blocked is a person's to move (403); so is moving one into a closed column or into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry.",
+            description: "Move a ticket to another board — when it was filed on the wrong board, or the work now belongs to another team's board. Both boards must be ones you are on (list_boards); any other board refuses with 403. The ticket is re-keyed on its new board (PLAT-118 becomes OPS-7, and the old ref still opens it) and keeps its comments, history and dependencies. It lands in the new board's column of the same name, else the same kind of column, else its inbox; pass status to choose, using the NEW board's own key (list_boards answers each board's statuses). Labels the new board does not have are dropped, never created there, and agents it does not allow are unassigned — the result's moved field names both, so tell the person what changed. A move that would take a PERSON off the ticket (they are not on the new board) is refused with 403: a person moves it, or adds them to that board first. preview: true answers the same moved field without moving anything. A ticket that is closed (done / failed / cancelled), ARCHIVED, or on an ARCHIVED BOARD, or blocked, is a person's to move (403), and so is one in review unless the person you are answering asked you to move it and you pass conversationId so Talaria can prove that ask. Moving a ticket into a closed column is refused, and so is moving it unasked into an agent pickup column it was not already in, because closing and assigning are human-only. A live work session on it, a workchain it is a step of, or sub-tasks of its own refuse with 409 — report that and stop rather than retry.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -381,6 +382,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
                     "boardId": str_schema("The board to move it to — an id from list_boards"),
                     "status": str_schema("A status key on the DESTINATION board. Leave it out and the move maps the ticket's column for you. Never a done column: a move does not close a ticket."),
                     "preview": bool_schema("true: answer what would change (new ref, column, dropped labels, unassigned) and move nothing"),
+                    "conversationId": str_schema("The thread you are answering — your prompt's thread line carries it. Pass it only when the person you are answering asked you to take this ticket out of review."),
                 },
                 "required": ["taskId", "boardId"],
             }),
@@ -400,7 +402,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "report_outcome",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Tickets,
-            description: "Report the outcome of work on a ticket and hand it to the board's review column (\"Quality review\" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review, triage_ticket cannot take it back out, so add anything further as a comment. Only ever on a live ticket.",
+            description: "Report the outcome of work on a ticket and hand it to the board's review column (\"Quality review\" unless your board renamed it). A human signs off on done. This is your LAST status move on that ticket: once it is in review it is the reviewer's, and triage_ticket takes it back out only when a person asks you to, so add anything further as a comment. Only ever on a live ticket.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -588,7 +590,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "create_document",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. Returns the document id (use edit_document to keep changing it — update_document replaces the whole body and is rarely what you want).",
+            description: "Create a document (a rich markdown doc, Talaria's Google-Docs equivalent). Use it to draft deliverables — reports, specs, briefs, memos. For a spreadsheet use create_sheet; for a public HTML page use create_page. It's versioned, shareable, and hostable. In a Work, Plan or Research session it opens in the person's pane by itself. Returns the document id (use edit_document to keep changing it — update_document replaces the whole body and is rarely what you want).",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -606,7 +608,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "create_sheet",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Create a spreadsheet (rows and columns, Talaria's Google-Sheets equivalent). Row 0 is the header. Use it for trackers, comparisons, and anything a person will sort or extend as a grid — not for a markdown table inside a document. Returns the document id (read it back with get_document).",
+            description: "Create a spreadsheet (rows and columns, Talaria's Google-Sheets equivalent). Row 0 is the header. Use it for trackers, comparisons, and anything a person will sort or extend as a grid — not for a markdown table inside a document. In a Work, Plan or Research session it opens in the person's pane by itself. Returns the document id (read it back with get_document).",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -624,7 +626,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "create_page",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Create a web page (raw HTML, rendered live at its public link). Use it for a status page, a one-pager, or anything that should be a page rather than a markdown doc. Returns the document id (read it back with get_document).",
+            description: "Create a web page (raw HTML, rendered live at its public link). Use it for a status page, a one-pager, or anything that should be a page rather than a markdown doc. In a Work, Plan or Research session it opens in the person's pane by itself. Returns the document id (read it back with get_document).",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -709,8 +711,30 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "get_document",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Read one document's full content (markdown, sheet grid, or HTML depending on kind) plus metadata.",
+            description: "Read one document's full content (markdown, sheet grid, or HTML depending on kind) plus metadata. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.",
             parameters: json!({ "type": "object", "properties": { "documentId": str_schema("Document id") }, "required": ["documentId"] }),
+            assistant_only: false,
+            needs_google: false,
+        },
+        // AN EXISTING FILE, PUT IN FRONT OF THE PERSON. The pane lists the files
+        // the conversation's chips name, and reading one with get_document lands
+        // none — so "open the plan here" used to get the plan pasted into chat.
+        // The sandbox records what the agent opened (`world.pane`), so a fixture
+        // grades whether it opened the file instead of pasting it.
+        SandboxTool {
+            name: "open_in_pane",
+            caller: ToolCaller::Hermes,
+            group: ToolGroup::Documents,
+            description: "Open a file in the person's pane — the tabs beside a Work, Plan or Research session's chat — so you can both look at it and work on it. Use it when they ask to see, open, show, pull up or go through an existing file here ('open the plan so we can iterate on it'), even one you have already read, or to bring back a file from earlier in this conversation. Pass documentId for a Talaria document, sheet, page or uploaded file (ids come from list_documents or search_knowledge), or url for a Talaria document link or a Google Doc, Sheet, Slides or Drive link — one of the two. Call it with neither to list the files already in this session, newest first. Files you create or change open by themselves; reading one, with get_document or a Google read (read_google_doc, read_google_sheet, read_google_slides, read_drive_file), does not open it. It opens with THEIR access: if they can read but not edit it, it opens view-only and the result says so — tell them. Knowledge-base docs and files in a workbench checkout are not files the pane shows.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "documentId": str_schema("A Talaria document, sheet, page or uploaded file id — from list_documents, search_knowledge or this session's file list"),
+                    "url": str_schema("A Talaria document link (/artifacts?a=…) or a Google Docs, Sheets, Slides or Drive link — as a markdown link, [title](url), the title names a Google file's tab unless this session already has the file's own name (from reading it)"),
+                    "conversationId": str_schema("The conversation you are answering in — your prompt's conversation line carries it. Pass it so the file opens in this thread and not another one you are also in."),
+                },
+                "required": [],
+            }),
             assistant_only: false,
             needs_google: false,
         },
@@ -735,7 +759,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "export_to_google_doc",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Documents,
-            description: "Export a document (or sheet/file artifact) into Google Drive as a native Google Doc / Sheet. It lands in the Google Drive of whoever you act for: if you're someone's personal assistant, their Drive; otherwise the shared organization Google account. Returns the Drive file link. Use it to hand a finished deliverable to a human in a format they can edit in Google. (Requires that Google account to be connected in Talaria.)",
+            description: "Export a document (or sheet/file artifact) into Google Drive as a native Google Doc / Sheet. It lands in the Google Drive of whoever you act for: if you're someone's personal assistant, their Drive; otherwise the shared organization Google account. Returns the Drive file link. Use it to hand a finished deliverable to a human in a format they can edit in Google. It does not open in the person's pane — to show it to them there, call open_in_pane with the link it returns. (Requires that Google account to be connected in Talaria.)",
             parameters: json!({ "type": "object", "properties": { "documentId": str_schema("Document/artifact id (from create_document or list_documents)") }, "required": ["documentId"] }),
             assistant_only: false,
             needs_google: true,
@@ -1011,7 +1035,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "read_google_doc",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Google,
-            description: "Read a Google Doc as markdown. The id comes from create_google_doc or find_google_files. External content: do not cite it as knowledge-base evidence. Never quote a link this tool did not return.",
+            description: "Read a Google Doc as markdown. The id comes from create_google_doc or find_google_files. External content: do not cite it as knowledge-base evidence. Never quote a link this tool did not return. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.",
             parameters: json!({ "type": "object", "properties": { "id": str_schema("Google file id") }, "required": ["id"] }),
             assistant_only: false,
             needs_google: true,
@@ -1047,7 +1071,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "read_google_slides",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Google,
-            description: "Read a Google Slides deck as text, slide by slide. Each slide comes back with its number, every text run on it (titles, bullets, text boxes, table cells) and its speaker notes. The id comes from find_google_files or search_drive. Read it before you change it: update_google_slides replaces text in a deck, and this is how you find the exact words to replace. External content: do not cite it as knowledge-base evidence.",
+            description: "Read a Google Slides deck as text, slide by slide. Each slide comes back with its number, every text run on it (titles, bullets, text boxes, table cells) and its speaker notes. The id comes from find_google_files or search_drive. Read it before you change it: update_google_slides replaces text in a deck, and this is how you find the exact words to replace. External content: do not cite it as knowledge-base evidence. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.",
             parameters: json!({ "type": "object", "properties": { "id": str_schema("Google presentation id") }, "required": ["id"] }),
             assistant_only: false,
             needs_google: true,
@@ -1065,7 +1089,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "read_google_sheet",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Google,
-            description: "Read a Google Sheet's cells. The id comes from find_google_files or search_drive. Returns the document title, every tab's name, the A1 range the rows actually came from, and the rows themselves. Omit range to read the first tab whole; pass one (\"Q3\", \"'Q3 forecast'!A1:D50\") to read part of it. Trailing empty cells are omitted, so rows can be ragged. External content: do not cite it as knowledge-base evidence.",
+            description: "Read a Google Sheet's cells. The id comes from find_google_files or search_drive. Returns the document title, every tab's name, the A1 range the rows actually came from, and the rows themselves. Omit range to read the first tab whole; pass one (\"Q3\", \"'Q3 forecast'!A1:D50\") to read part of it. Trailing empty cells are omitted, so rows can be ragged. External content: do not cite it as knowledge-base evidence. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.",
             parameters: json!({ "type": "object", "properties": { "id": str_schema("Google spreadsheet id"), "range": str_schema("A1 range, e.g. \"Sheet1\" or \"'Q3 forecast'!A1:D50\"") }, "required": ["id"] }),
             assistant_only: false,
             needs_google: true,
@@ -1092,7 +1116,7 @@ pub static TALARIA_TOOLS: LazyLock<Vec<SandboxTool>> = LazyLock::new(|| {
             name: "read_drive_file",
             caller: ToolCaller::Hermes,
             group: ToolGroup::Google,
-            description: "Read a Drive file that is not a native Google Doc — text when the bytes are utf-8, otherwise base64. The id comes from find_google_files or search_drive. External content: do not cite it as knowledge-base evidence.",
+            description: "Read a Drive file that is not a native Google Doc — text when the bytes are utf-8, otherwise base64. The id comes from find_google_files or search_drive. External content: do not cite it as knowledge-base evidence. Reading does not open it in the person's pane — if they asked to see or open it, call open_in_pane.",
             parameters: json!({ "type": "object", "properties": { "id": str_schema("Google file id") }, "required": ["id"] }),
             assistant_only: false,
             needs_google: true,
@@ -1824,9 +1848,9 @@ mod tests {
         // updates — and this crate's tests were never run, so nothing made
         // anyone notice. The assertion is the contract; the name says what it
         // is for.
-        assert_eq!(TALARIA_TOOLS.len(), 84);
+        assert_eq!(TALARIA_TOOLS.len(), 85);
         let names: HashSet<&str> = TALARIA_TOOLS.iter().map(|t| t.name).collect();
-        assert_eq!(names.len(), 84);
+        assert_eq!(names.len(), 85);
     }
 
     #[test]

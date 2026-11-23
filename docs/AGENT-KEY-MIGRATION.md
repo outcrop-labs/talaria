@@ -213,9 +213,11 @@ psql "$DATABASE_URL" -c "
 
 ## Step 4 — Wait for every agent to be seen
 
-`last_used_at` is written on every per-agent authentication (the fire-and-forget
-`update agent_keys set last_used_at = now()` in `resolve()`, `agent-auth.ts`). A `null` means that
-agent has minted a key but has never presented it — the flag would lock it out. Re-render and read the
+`last_used_at` is written on an agent's first per-agent authentication, then about once every five
+minutes (the fire-and-forget stamp in `talaria-agent-auth`, asynchronously committed and sent at most
+once a key every five minutes per api process, and its twin in `resolve()`, `agent-auth.ts`; both run
+`update agent_keys set last_used_at = now()` guarded to skip a stamp younger than four minutes). A `null`
+means that agent has minted a key but has never presented it — the flag would lock it out. Re-render and read the
 warning if you'd rather have it in one line:
 
 ```sh

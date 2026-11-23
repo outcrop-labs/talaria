@@ -182,7 +182,7 @@ compose view.
 |---|---|
 | [`Dockerfile`](../Dockerfile) (repo root) | Multi-stage build: toolchain → pruned prod deps → a bun + docker-cli + git runtime. No config inside. |
 | [`docker/compose.yml`](../docker/compose.yml) | The instance: the app, the one-shot state-dir init, and the wiring (networks, state mounts, sidecar env) — the sidecars themselves are the shared plane below, layered in front of it. |
-| [`docker/sidecars.compose.yml`](../docker/sidecars.compose.yml) | The shared sidecar plane: postgres, redis, qdrant, embeddings (TEI), storage — images, healthchecks, data volumes and env defaults, defined once and layered in front of every stack (`docker/compose.yml`, `docker/dev-compose.yml`, a devbox). |
+| [`docker/sidecars.compose.yml`](../docker/sidecars.compose.yml) | The shared sidecar plane: postgres, redis, qdrant, embeddings (TEI), storage — images, healthchecks, data volumes and env defaults, defined once and layered in front of every stack (`docker/compose.yml`, `docker/dev-compose.yml`, a devbox). Postgres's startup flags live here too: `max_connections` and the WAL settings in the table below. |
 | [`docker/entrypoint.sh`](../docker/entrypoint.sh) | Secrets bootstrap, fleet config seeds, dependency gate — the container's first boot. |
 | [`docker/await-deps.mjs`](../docker/await-deps.mjs) | Waits for postgres + redis before the server starts. |
 
@@ -215,6 +215,7 @@ Set through compose interpolation (`${VAR:-default}` — override by exporting
 | `TALARIA_FLEET_NETWORK` | `talaria` | Shared fleet network name (per-instance on shared hosts) |
 | `TALARIA_DNS_1` / `TALARIA_DNS_2` | `1.1.1.1` / `1.0.0.1` | The app's and TEI's upstream resolvers |
 | `TALARIA_PG_POOL_MAX` | `64` | The api's postgres pool ceiling. Sidecar `max_connections=200` (restart to apply; image default is 100). 64+20+1 also fits the old 100, so a partial restart cannot exhaust postgres. Raise toward 120 on a busy fleet after postgres is at 200 |
+| Postgres WAL flags (not env: the sidecar's `command`) | `wal_compression=lz4`, `checkpoint_timeout=15min`, `max_wal_size=1GB` | Fewer bytes for a slow disk to flush. Full-page images were 94% of a production instance's WAL: lz4 compresses them (built into `postgres:16-alpine`, microseconds of CPU each), and a 15-minute checkpoint makes a page touched again and again pay one image per 15 minutes instead of per 5. `max_wal_size=1GB` is the default, spelled out so pg_wal's ceiling stays what it was; crash recovery replays at most 15 minutes of WAL. `synchronous_commit`, `fsync` and `full_page_writes` stay on. A container recreate applies them: `talaria deploy up` does, the in-app updater (which rolls only the app) does not, so each instance picks them up at its next `deploy up`, with a few seconds of postgres restart |
 | `TALARIA_PG_ACQUIRE_TIMEOUT_MS` | `15000` | How long a db-bound request queues before failing — bursts wait instead of 500ing |
 | `TALARIA_UI_PG_POOL_MAX` | `20` | The UI's own postgres pool ceiling |
 

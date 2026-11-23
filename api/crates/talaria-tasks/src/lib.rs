@@ -18,6 +18,7 @@ use talaria_boards::{board_allows_agent, board_info, board_role};
 use talaria_gateway::usage::task_usage;
 use talaria_judge::list_judge_reviews;
 use talaria_labels::ensure_labels;
+use talaria_notify::boards::{self as board_prefs, Candidate, ChannelOverride, Delivery};
 use talaria_notify::{
     ActorKind, Coalesce, Filed, NotificationInput, NotifyActor, NotifyDeps, NotifyEntity,
     NotifyMeta, add_notification_with, entity, group_key,
@@ -30,6 +31,9 @@ use talaria_retrieval::{embed, qdrant};
 use talaria_statuses::{OFF_BOARD_STATUSES, StatusMeta, status_meta};
 use talaria_tasks_types::DispatchTicket;
 
+mod asked;
+pub use asked::{AskPlace, Asker, Unproven, choose_ask, names_ticket};
+pub mod due;
 mod moving;
 pub use moving::{
     MoveError, MoveOutcome, MoveRequest, MoveSummary, Mover, PickRefusal, StatusHow, StatusPick,
@@ -37,8 +41,8 @@ pub use moving::{
 };
 
 pub use talaria_tasks_types::{
-    Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult, agent_assignees,
-    human_assignee_ids, is_human_assignee, json_strings,
+    AskClaim, Task, TaskActor, TaskActorKind, TaskDeps, TaskError, TaskPatch, TaskResult,
+    agent_assignees, human_assignee_ids, is_human_assignee, json_strings,
 };
 
 // ── The row and its select ───────────────────────────────────────────────────
@@ -61,7 +65,8 @@ const TASK_SELECT: &str = "select t.id::text as id, t.board_id::text as board_id
   (trunc(extract(epoch from t.updated_at) * 1000))::bigint as updated_at_ms, \
   (trunc(extract(epoch from t.completed_at) * 1000))::bigint as completed_at_ms, \
   (trunc(extract(epoch from t.approved_at) * 1000))::bigint as approved_at_ms, \
-  (trunc(extract(epoch from t.archived_at) * 1000))::bigint as archived_at_ms \
+  (trunc(extract(epoch from t.archived_at) * 1000))::bigint as archived_at_ms, \
+  t.external_key \
   from tasks t join boards b on b.id = t.board_id";
 
 /// The wide row exactly as selected. jsonb lands as `Value` and is typed
@@ -97,6 +102,7 @@ struct TaskRow {
     completed_at_ms: Option<i64>,
     approved_at_ms: Option<i64>,
     archived_at_ms: Option<i64>,
+    external_key: Option<String>,
 }
 
 impl From<TaskRow> for Task {
@@ -129,6 +135,7 @@ impl From<TaskRow> for Task {
             completed_at: r.completed_at_ms.map(epoch_ms_to_iso),
             approved_at: r.approved_at_ms.map(epoch_ms_to_iso),
             archived_at: r.archived_at_ms.map(epoch_ms_to_iso),
+            external_key: r.external_key,
         }
     }
 }
@@ -307,6 +314,9 @@ pub struct TaskFull {
     pub comments: Vec<TaskComment>,
     pub activity: Vec<TaskActivity>,
     pub watchers: Vec<String>,
+    /// Who added each of `watchers`, when it was someone else (the ticket
+    /// panel's "Added by …" and its "Watch it myself").
+    pub watcher_origins: Vec<WatcherOrigin>,
     pub reviews: Vec<QualityReview>,
     pub judge_reviews: Vec<talaria_judge::JudgeReview>,
     pub blocked_by: Vec<TaskLink>,
@@ -318,11 +328,19 @@ pub async fn get_task_full(pg: &PgPool, id: &str) -> Result<Option<TaskFull>, sq
     let Some(task) = get_task(pg, id).await? else {
         return Ok(None);
     };
-    let ((blocked_by, blocks), comments, activity, watchers, reviews, judge_reviews, usage) = tokio::try_join!(
+    let (
+        (blocked_by, blocks),
+        comments,
+        activity,
+        (watchers, watcher_origins),
+        reviews,
+        judge_reviews,
+        usage,
+    ) = tokio::try_join!(
         list_dependencies(pg, id),
         list_comments(pg, id),
         list_activity(pg, id),
-        list_watchers(pg, id),
+        list_watchers_with_origins(pg, id),
         list_reviews(pg, id),
         list_judge_reviews(pg, id),
         task_usage(pg, id),
@@ -332,6 +350,7 @@ pub async fn get_task_full(pg: &PgPool, id: &str) -> Result<Option<TaskFull>, sq
         comments,
         activity,
         watchers,
+        watcher_origins,
         reviews,
         judge_reviews,
         blocked_by,
@@ -357,6 +376,10 @@ struct TaskNotification {
     /// later one in the window updates the count and the body ("Moved 4 times
     /// — now in review") without ringing again. Past the window: a fresh row.
     status_burst: Option<String>,
+    /// One open row per person under this key, re-alerting with the newest
+    /// words (`Coalesce::Realert`): a ticket's due-date reminders
+    /// (`group_key::task_due`), so "overdue" takes over an unread "due soon".
+    group_key: Option<String>,
 }
 
 /// How long a ticket's status moves keep coalescing into one row: ten
@@ -422,8 +445,8 @@ async fn reword_status_row(
 }
 
 /// Who a ticket row says caused it (I-11): a person by their users.id when the
-/// actor string names one, the judge as the system, otherwise an agent by its
-/// model id.
+/// actor string names one, the judge or the due-date scan as the system,
+/// otherwise an agent by its model id.
 fn task_actor(actor: &str, self_id: Option<&str>) -> NotifyActor {
     match self_id {
         Some(id) => NotifyActor {
@@ -435,6 +458,11 @@ fn task_actor(actor: &str, self_id: Option<&str>) -> NotifyActor {
             kind: ActorKind::System,
             id: actor.to_string(),
             label: "Judge".to_string(),
+        },
+        None if actor == due::ACTOR => NotifyActor {
+            kind: ActorKind::System,
+            id: actor.to_string(),
+            label: due::ACTOR_LABEL.to_string(),
         },
         None => NotifyActor {
             kind: ActorKind::Agent,
@@ -460,32 +488,220 @@ async fn actor_user_id(pg: &PgPool, actor: &str) -> Option<String> {
     }
 }
 
-async fn notify_task_users(
+/// One ticket event, told to each candidate as their setting for `board_id`
+/// says (talaria_notify::boards): the producer's own per-ticket row (`n`),
+/// one counting `board-activity` row worded `line`, or nothing — each filed
+/// on the channels that setting gives the board's rows. The actor is never
+/// told. With nobody's setting stored, every candidate in the event's own
+/// audience gets `n` on the matrix's channels and nobody else gets anything
+/// — the fan-out as it was before boards had a setting. Answers who got the
+/// per-ticket row.
+///
+/// `n` is None for a fan-out over bystanders only (a new ticket, one that
+/// arrived or left, the rest of a board): the resolver never gives a
+/// bystander a per-ticket row, and if a later caller hands one an involved
+/// candidate anyway, the row it would get is skipped and logged rather than
+/// filed under another event's kind.
+async fn notify_ticket_event(
     notify: &NotifyDeps,
-    user_ids: &[String],
+    board_id: &str,
+    ev: board_prefs::BoardEvent,
+    candidates: &[Candidate],
     actor: &str,
-    n: &TaskNotification,
-) {
-    if user_ids.is_empty() {
-        return;
+    n: Option<&TaskNotification>,
+    line: &str,
+) -> HashSet<String> {
+    if candidates.is_empty() {
+        return HashSet::new();
     }
+    let decided = board_prefs::listeners(&notify.pg, board_id, ev, candidates).await;
+    file_decided(notify, board_id, ev, decided, actor, n, line).await
+}
+
+/// `notify_ticket_event`'s filing, from decisions already made — the due
+/// scan decides with `board_prefs::try_listeners`, so a settings read that
+/// fails keeps its ticket for the next pass instead of telling nobody.
+async fn file_decided(
+    notify: &NotifyDeps,
+    board_id: &str,
+    ev: board_prefs::BoardEvent,
+    decided: Vec<(Candidate, Delivery, ChannelOverride)>,
+    actor: &str,
+    n: Option<&TaskNotification>,
+    line: &str,
+) -> HashSet<String> {
+    if decided.is_empty() {
+        return HashSet::new();
+    }
+    let (mut ticket, activity) = split(decided);
     // Self-exclusion by actor EMAIL: the actor id is an email for humans, a
     // model id for agents and `judge:<model>` for the platform, and only the
     // email names a row in users.
     let self_id = actor_user_id(&notify.pg, actor).await;
     let who = task_actor(actor, self_id.as_deref());
+    match n {
+        Some(n) => file_ticket_rows(notify, &ticket, self_id.as_deref(), &who, n).await,
+        None if !ticket.is_empty() => {
+            tracing::error!(
+                "tasks: {} per-ticket row(s) for a {ev:?} fan-out with none to file — skipped",
+                ticket.len()
+            );
+            ticket.clear();
+        }
+        None => {}
+    }
+    file_board_activity(notify, board_id, &activity, self_id.as_deref(), &who, line).await;
+    ticket
+        .into_iter()
+        .map(|(u, _)| u)
+        .filter(|u| Some(u.as_str()) != self_id.as_deref())
+        .collect()
+}
+
+/// One person a board event files a row for, and the channels their setting
+/// for the board gives it (`NotifyMeta::channels`; all None: the matrix).
+type Recipient = (String, ChannelOverride);
+
+/// The decisions, as (per-ticket rows, board-activity rows), each person with
+/// their board's channels. Skipped people and people held for a digest (no
+/// producer serves one, and a stored digest reads as instant) are in neither.
+fn split(decided: Vec<(Candidate, Delivery, ChannelOverride)>) -> (Vec<Recipient>, Vec<Recipient>) {
+    let (mut ticket, mut activity) = (Vec::new(), Vec::new());
+    for (c, d, channels) in decided {
+        match d {
+            Delivery::Ticket => ticket.push((c.user_id, channels)),
+            Delivery::BoardActivity => activity.push((c.user_id, channels)),
+            Delivery::Skip | Delivery::Digest => {}
+        }
+    }
+    (ticket, activity)
+}
+
+/// The rest of a board, for the people who chose to hear all of it: every
+/// member on either leg (`talaria_boards::board_audience`) who is not already
+/// a candidate and not in `skip`, as a bystander. Read only when somebody's
+/// setting could hear a whole board (`board_prefs::board_wide_possible`), so
+/// a workspace where nobody chose one pays one cheap query and no more.
+async fn bystanders(
+    pg: &PgPool,
+    board_id: &str,
+    have: &[Candidate],
+    skip: &HashSet<String>,
+) -> Vec<Candidate> {
+    try_bystanders(pg, board_id, have, skip)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("tasks: board audience read failed: {e}");
+            Vec::new()
+        })
+}
+
+/// `bystanders`, with a membership read that fails answered as the caller's
+/// error: the due scan retries the ticket rather than leave out the people
+/// who chose to hear the whole board.
+async fn try_bystanders(
+    pg: &PgPool,
+    board_id: &str,
+    have: &[Candidate],
+    skip: &HashSet<String>,
+) -> Result<Vec<Candidate>, sqlx::Error> {
+    if !board_prefs::board_wide_possible(pg, board_id).await {
+        return Ok(Vec::new());
+    }
+    Ok(talaria_boards::board_audience(pg, board_id)
+        .await?
+        .into_iter()
+        .filter(|u| !skip.contains(u) && !have.iter().any(|c| &c.user_id == u))
+        .map(Candidate::bystander)
+        .collect())
+}
+
+/// ONE counting row per board per person for the events on tickets they are
+/// not in (`group_key::board_activity`, `Coalesce::Quiet`): the first one
+/// lands, the rest update the count and the newest line without ringing
+/// again, until they read it — a channel at level All, for a board. Its class
+/// (`board_activity`) is quiet by default, like the status rows of the
+/// tickets a person is in, and a board's own channels apply to it as to
+/// them.
+async fn file_board_activity(
+    notify: &NotifyDeps,
+    board_id: &str,
+    user_ids: &[Recipient],
+    self_id: Option<&str>,
+    who: &NotifyActor,
+    line: &str,
+) {
+    if user_ids.is_empty() {
+        return;
+    }
+    let name: Option<String> =
+        sqlx::query_scalar::<_, Option<String>>("select name from boards where id = $1::uuid")
+            .bind(board_id)
+            .fetch_optional(&notify.pg)
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+            .filter(|n| !n.trim().is_empty());
+    let title = match name {
+        Some(n) => format!("Activity on {n}"),
+        None => "Activity on a board".to_string(),
+    };
+    let href = format!("/boards/{board_id}");
+    let input = NotificationInput {
+        kind: "board-activity",
+        title: &title,
+        body: Some(line),
+        href: Some(&href),
+    };
+    let meta = NotifyMeta {
+        group_key: Some(group_key::board_activity(board_id)),
+        coalesce: Coalesce::Quiet,
+        entity: Some(NotifyEntity::new(entity::BOARD, board_id)),
+        actor: Some(who.clone()),
+        ..Default::default()
+    };
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (user_id, channels) in user_ids {
+        if !seen.insert(user_id.as_str()) || Some(user_id.as_str()) == self_id {
+            continue;
+        }
+        let meta = NotifyMeta {
+            channels: *channels,
+            ..meta.clone()
+        };
+        if let Err(e) = add_notification_with(notify, user_id, &input, &meta).await {
+            tracing::error!("tasks: board-activity row for {user_id} failed: {e}");
+        }
+    }
+}
+
+/// The per-ticket rows: `n` to each of `user_ids` but the actor, each on
+/// the channels their setting for the board gives it.
+async fn file_ticket_rows(
+    notify: &NotifyDeps,
+    user_ids: &[Recipient],
+    self_id: Option<&str>,
+    who: &NotifyActor,
+    n: &TaskNotification,
+) {
+    if user_ids.is_empty() {
+        return;
+    }
     let window = status_window_secs();
     let mut seen: HashSet<String> = HashSet::new();
-    for user_id in user_ids {
+    for (user_id, channels) in user_ids {
         if !seen.insert(user_id.clone()) {
             continue;
         }
-        if Some(user_id.as_str()) == self_id.as_deref() {
+        if Some(user_id.as_str()) == self_id {
             continue;
         }
         let mut meta = NotifyMeta {
             entity: Some(NotifyEntity::new(entity::TASK, n.task_id.as_str())),
             actor: Some(who.clone()),
+            group_key: n.group_key.clone(),
+            channels: *channels,
             ..Default::default()
         };
         let mut body = n.body.clone();
@@ -533,30 +749,61 @@ async fn notify_task_users(
 
 /// Who hears about a ticket's moves: its watchers, its assigned humans and
 /// its creator (SE-9) — each re-checked against the board at THIS moment, so
-/// someone removed from the board since stops hearing about it.
+/// someone removed from the board since stops hearing about it. Each is a
+/// `Candidate` in the event's own audience; a watcher's says whether the
+/// watch is their own (a deliberate watch reaches them on a board they set to
+/// Off — talaria_notify::boards).
 async fn ticket_audience(
     pg: &PgPool,
     task_id: &str,
     board_id: &str,
     assignees: &[String],
     created_by: &str,
-) -> Result<Vec<String>, sqlx::Error> {
-    let mut audience: Vec<String> = resolve_watchers(pg, task_id, Some(board_id))
+) -> Result<Vec<Candidate>, sqlx::Error> {
+    let mut audience: Vec<Candidate> = resolve_watchers(pg, task_id, Some(board_id))
         .await?
         .into_iter()
-        .map(|w| w.user_id)
+        .map(|w| Candidate {
+            deliberate_watch: w.deliberate,
+            ..Candidate::involved(w.user_id)
+        })
         .collect();
     for user_id in human_assignee_ids(assignees) {
         if board_role(pg, &user_id, board_id).await?.is_some() {
-            audience.push(user_id);
+            audience.push(Candidate::involved(user_id));
         }
     }
     if let Some(creator) = author_user_id(pg, created_by).await?
         && board_role(pg, &creator, board_id).await?.is_some()
     {
-        audience.push(creator);
+        audience.push(Candidate::involved(creator));
     }
     Ok(audience)
+}
+
+/// Which event a column move is for a board: a move into one of its done
+/// columns completes the ticket; any other move is a status change.
+fn move_event(done_keys: &[String], next_status: &str) -> board_prefs::BoardEvent {
+    if done_keys.iter().any(|k| k == next_status) {
+        board_prefs::BoardEvent::Completed
+    } else {
+        board_prefs::BoardEvent::Status
+    }
+}
+
+/// The people a patch newly assigns, as the candidates of their
+/// `task-assigned` row: addressed, with their own watch flag when the
+/// ticket's audience knows one.
+fn assigned_candidates(newly: &[String], audience: &[Candidate]) -> Vec<Candidate> {
+    newly
+        .iter()
+        .map(|u| Candidate {
+            deliberate_watch: audience
+                .iter()
+                .any(|c| &c.user_id == u && c.deliberate_watch),
+            ..Candidate::addressed(u.as_str())
+        })
+        .collect()
 }
 
 /// What an update owes people once its write has committed: the status move
@@ -569,7 +816,11 @@ struct UpdateNotices {
     assignees_patched: bool,
     archived_now: bool,
     review_keys: Vec<String>,
+    done_keys: Vec<String>,
     actor: String,
+    /// A mirrored write: the workchain hand-off and the review resolution
+    /// run, and no person is told.
+    quiet: bool,
 }
 
 /// Spawn everything `update_task` tells people, in one detached task — see
@@ -584,7 +835,9 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             assignees_patched,
             archived_now,
             review_keys,
+            done_keys,
             actor,
+            quiet,
         } = n;
         let id = cur.id.clone();
         let href = format!("/boards/{}/{}", cur.board_id, id);
@@ -597,6 +850,51 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             Vec::new()
         };
         let moved = next_status != cur.status;
+        // The ticket's audience, read once: the move's recipients, and the
+        // newly assigned people's own watch flags. A MIRRORED write (a tracker
+        // sync, `quiet`) tells nobody — no per-ticket row, no board-activity
+        // row: the tracker it came from already told its people. Only the
+        // workchain hand-off and the review resolution below still run.
+        let audience = if quiet {
+            None
+        } else if moved || !newly.is_empty() {
+            match ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    tracing::error!("tasks: status audience read failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // NEWLY added humans get an inbox nudge — filed first, so the move's
+        // fan-out below knows whose `task-assigned` row landed. Not on a
+        // mirrored write.
+        let assigned_told: HashSet<String> = if newly.is_empty() || quiet {
+            HashSet::new()
+        } else {
+            let assigned = TaskNotification {
+                kind: "task-assigned".into(),
+                title: format!("Assigned: {}", cur.title),
+                body: cur.ticket_ref.clone(),
+                href: Some(href.clone()),
+                task_id: id.clone(),
+                status_burst: None,
+                group_key: None,
+            };
+            let line = assigned.title.clone();
+            notify_ticket_event(
+                &deps.notify,
+                &cur.board_id,
+                board_prefs::BoardEvent::Assigned,
+                &assigned_candidates(&newly, audience.as_deref().unwrap_or(&[])),
+                &actor,
+                Some(&assigned),
+                &line,
+            )
+            .await
+        };
         if moved {
             // THE WORKCHAIN ENGINE. A status write is the one trigger the
             // workchain handoff engine has (TALA-30): a step's ticket landing
@@ -604,10 +902,12 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             // re-derives from the DB inside the call, so a retried write
             // re-derives the same answer and files nothing new, and a
             // notification failure never costs the ticket write it rode in
-            // on. Human sign-off is the only trigger by construction: agents
-            // cannot land a terminal column (agent_safe_patch), so the chain
-            // advances only when a person moves the column. The successors it
-            // made ready are offered to work dispatch.
+            // on. Agents cannot land a terminal column (agent_safe_patch), so
+            // the chain advances when a person moves the column — or when a
+            // tracker sync mirrors a close a person made over there into the
+            // done column a board owner mapped it to (a quiet write,
+            // talaria-board-sync; docs/BOARD-SYNC.md says so). The successors
+            // it made ready are offered to work dispatch, either way.
             let chain = deps.clone();
             let board_id = cur.board_id.clone();
             let task_id = id.clone();
@@ -629,52 +929,43 @@ fn spawn_update_notices(deps: &TaskDeps, n: UpdateNotices) {
             // Watchers, assigned humans and the creator hear about status
             // moves (never the actor), and `ticket_audience` re-reads board
             // membership at this moment — the write-time checks are not
-            // enough, access changes after a watch is stored.
-            match ticket_audience(&deps.pg, &id, &cur.board_id, &assignees, &cur.created_by).await {
-                Ok(mut audience) => {
-                    // ONE ACTION, ONE ROW. A person this same patch assigns is
-                    // told by the `task-assigned` row below, so they leave
-                    // this audience — every other watcher still hears the
-                    // move.
-                    audience.retain(|uid| !newly.contains(uid));
-                    let now = next_status.replacen('_', " ", 1);
-                    notify_task_users(
-                        &deps.notify,
-                        &audience,
-                        &actor,
-                        &TaskNotification {
-                            kind: "task-status".into(),
-                            title: format!(
-                                "{}: {now}",
-                                cur.ticket_ref.clone().unwrap_or_else(|| cur.title.clone()),
-                            ),
-                            body: Some(cur.title.clone()),
-                            href: Some(href.clone()),
-                            task_id: id.clone(),
-                            status_burst: Some(now),
-                        },
-                    )
-                    .await;
-                }
-                Err(e) => tracing::error!("tasks: status audience read failed: {e}"),
-            }
-        }
-        // NEWLY added humans get an inbox nudge.
-        if !newly.is_empty() {
-            notify_task_users(
-                &deps.notify,
-                &newly,
-                &actor,
-                &TaskNotification {
-                    kind: "task-assigned".into(),
-                    title: format!("Assigned: {}", cur.title),
-                    body: cur.ticket_ref.clone(),
+            // enough, access changes after a watch is stored. Each one's
+            // setting for the board decides (talaria_notify::boards), and the
+            // people who hear the whole board get the board's activity row.
+            if let Some(mut audience) = audience {
+                // ONE ACTION, ONE ROW. A person this same patch assigns is
+                // told by their `task-assigned` row above, so they leave this
+                // audience — but only when that row landed: someone whose
+                // setting drops assignments still hears the move if their
+                // setting says so.
+                audience.retain(|c| !assigned_told.contains(&c.user_id));
+                let rest = bystanders(&deps.pg, &cur.board_id, &audience, &assigned_told).await;
+                audience.extend(rest);
+                let now = next_status.replacen('_', " ", 1);
+                let status = TaskNotification {
+                    kind: "task-status".into(),
+                    title: format!(
+                        "{}: {now}",
+                        cur.ticket_ref.clone().unwrap_or_else(|| cur.title.clone()),
+                    ),
+                    body: Some(cur.title.clone()),
                     href: Some(href.clone()),
                     task_id: id.clone(),
-                    status_burst: None,
-                },
-            )
-            .await;
+                    status_burst: Some(now),
+                    group_key: None,
+                };
+                let line = status.title.clone();
+                notify_ticket_event(
+                    &deps.notify,
+                    &cur.board_id,
+                    move_event(&done_keys, &next_status),
+                    &audience,
+                    &actor,
+                    Some(&status),
+                    &line,
+                )
+                .await;
+            }
         }
         // Left review — moved out, or archived: the sign-off is decided, and
         // every recipient's approval row for it reads (SE-10).
@@ -703,6 +994,48 @@ async fn mentioned_among(pg: &PgPool, ids: &[String], content: &str) -> HashSet<
             talaria_notify::answers_to_tokens(name.as_deref(), email.as_deref(), &tokens)
         })
         .map(|(id, _, _)| id)
+        .collect()
+}
+
+/// Of `ids`, the people a ticket's text @mentions whose mention row lands —
+/// the question its mention door asks: on the door's roster, named by the
+/// text (the mention producers' token rules), kept by their setting for the
+/// board (`mention_listeners`). The roster is the board's direct members
+/// (`talaria_boards::list_members`): the comment route's and the create
+/// door's, and the task room's too whenever the board has a direct member
+/// (its roster falls back to the team only when nobody is). So a team-leg
+/// member is told by no mention row and stays in the caller's fan-out — a
+/// row too many in that one corner, never none. A roster read that fails
+/// answers nobody, for the same reason.
+async fn ticket_mentions_land(
+    pg: &PgPool,
+    board_id: &str,
+    task_id: &str,
+    ids: &[String],
+    text: &str,
+) -> HashSet<String> {
+    if ids.is_empty() || !text.contains('@') {
+        return HashSet::new();
+    }
+    let roster: HashSet<String> = match talaria_boards::list_members(pg, board_id).await {
+        Ok(m) => m.into_iter().map(|m| m.user_id).collect(),
+        Err(e) => {
+            tracing::error!("tasks: ticket mention roster read failed: {e}");
+            return HashSet::new();
+        }
+    };
+    let on_roster: Vec<String> = ids
+        .iter()
+        .filter(|u| roster.contains(*u))
+        .cloned()
+        .collect();
+    let named: Vec<String> = mentioned_among(pg, &on_roster, text)
+        .await
+        .into_iter()
+        .collect();
+    board_prefs::mention_listeners(pg, board_id, task_id, &named)
+        .await
+        .into_keys()
         .collect()
 }
 
@@ -737,11 +1070,13 @@ fn resolve_review_approval(notify: &NotifyDeps, task_id: &str) {
 
 /// A comment landed on a ticket: tell the people taking part (SE-9) — its
 /// assigned humans, its creator, its watchers and everyone who commented
-/// before — minus the author, and minus anyone the comment @mentions (their
-/// `mention` row is the louder one). ONE open `task-comment` row per ticket
-/// per person (`group_key::task_comments`), re-alerting with the newest
-/// comment. Every recipient's board access is re-checked now (C24): someone
-/// removed from the board since gets nothing.
+/// before — minus the author, and minus anyone the comment @mentions whose
+/// `mention` row lands (that row is the louder one). ONE open `task-comment`
+/// row per ticket per person (`group_key::task_comments`), re-alerting with
+/// the newest comment. Every recipient's board access is re-checked now
+/// (C24): someone removed from the board since gets nothing. Each person's
+/// setting for the board decides (talaria_notify::boards); the people who
+/// hear the whole board get its activity row for a ticket they are not in.
 pub async fn notify_comment_participants(
     notify: &NotifyDeps,
     meta: &talaria_ticket_chat::TicketMeta,
@@ -765,7 +1100,7 @@ pub async fn notify_comment_participants(
     .fetch_all(pg)
     .await
     .unwrap_or_default();
-    let mut people: Vec<String> = match ticket_audience(
+    let mut people: Vec<Candidate> = match ticket_audience(
         pg,
         &meta.task_id,
         &meta.board_id,
@@ -780,11 +1115,28 @@ pub async fn notify_comment_participants(
             return;
         }
     };
-    people.extend(commenters.into_iter().map(|(id,)| id));
+    people.extend(commenters.into_iter().map(|(id,)| Candidate::involved(id)));
+    // The people who hear the whole board, beyond the ticket's own.
+    let rest = bystanders(pg, &meta.board_id, &people, &HashSet::new()).await;
+    people.extend(rest);
     // Whoever the comment @mentions is told by the mention producer; their
-    // mention row is the louder one, so they are left out here — asked with
-    // the mention producers' own token rules.
-    let mentioned = mentioned_among(pg, &people, content).await;
+    // mention row is the louder one, so they are left out here — only when
+    // that row lands (`ticket_mentions_land`): someone whose setting drops
+    // @mentions but keeps comments, or who is on no mention door's roster (a
+    // team-leg member), hears the comment here instead of nothing.
+    let ids: Vec<String> = people.iter().map(|c| c.user_id.clone()).collect();
+    let mention_lands =
+        ticket_mentions_land(pg, &meta.board_id, &meta.task_id, &ids, content).await;
+    people.retain(|c| !mention_lands.contains(&c.user_id));
+    let (ticket, activity) = split(
+        board_prefs::listeners(
+            pg,
+            &meta.board_id,
+            board_prefs::BoardEvent::Comment,
+            &people,
+        )
+        .await,
+    );
     let mut seen: HashSet<String> = HashSet::new();
     let title = format!(
         "{} commented on {}",
@@ -813,11 +1165,8 @@ pub async fn notify_comment_participants(
         actor: Some(task_actor(author, author_id.as_deref())),
         ..Default::default()
     };
-    for user in people {
-        if !seen.insert(user.clone())
-            || Some(user.as_str()) == author_id.as_deref()
-            || mentioned.contains(&user)
-        {
+    for (user, channels) in ticket {
+        if !seen.insert(user.clone()) || Some(user.as_str()) == author_id.as_deref() {
             continue;
         }
         match board_role(pg, &user, &meta.board_id).await {
@@ -828,10 +1177,27 @@ pub async fn notify_comment_participants(
                 continue;
             }
         }
+        let row_meta = NotifyMeta {
+            channels,
+            ..row_meta.clone()
+        };
         if let Err(e) = add_notification_with(notify, &user, &input, &row_meta).await {
             tracing::error!("tasks: task-comment row for {user} failed: {e}");
         }
     }
+    // The rest of the board, for the people who hear all of it: their
+    // activity row (they come from the board's own audience, so their access
+    // is the board's).
+    let who = task_actor(author, author_id.as_deref());
+    file_board_activity(
+        notify,
+        &meta.board_id,
+        &activity,
+        author_id.as_deref(),
+        &who,
+        &title,
+    )
+    .await;
 }
 
 // ── Sub-task structure ───────────────────────────────────────────────────────
@@ -902,6 +1268,21 @@ pub struct NewTask<'a> {
     /// The column the creator put it in (a person's "add card" in a column);
     /// None is the board's intake. Never chosen by its assignees.
     pub status: Option<&'a str>,
+    /// The text the create door files @mentions from (the route's RAW
+    /// description, before template seeding), so a person its mention row
+    /// tells is not told again by the board's new-ticket activity row. None
+    /// for a creator that files no mentions — its text, @ or not, keeps
+    /// nobody out.
+    pub mention_text: Option<&'a str>,
+    /// The other tracker's id for this ticket (`clickup:<task id>`), written in
+    /// the same insert so the unique index makes a re-run update, never
+    /// duplicate. None for every ticket made in Talaria.
+    pub external_key: Option<&'a str>,
+    /// A MIRRORED create (a tracker sync): no `task-assigned` notice, no
+    /// per-ticket board event (the writer publishes one per batch), and no
+    /// TicketCreated to apps — the writer emits that itself when the
+    /// connection says apps should hear imported tickets.
+    pub quiet: bool,
 }
 
 /// The board's pickup column — `StatusMeta::assigned_key`, the first usable
@@ -999,9 +1380,9 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     let (id,): (String,) = sqlx::query_as(
         "insert into tasks (board_id, ticket_no, title, description, priority, effort, \
          assignees, due_date, start_date, color, estimated_hours, parent_id, tags, \
-         created_by, status) \
+         created_by, status, external_key) \
          values ($1::uuid, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz, $10, \
-         $11::numeric, $12::uuid, $13, $14, $15) returning id::text",
+         $11::numeric, $12::uuid, $13, $14, $15, $16) returning id::text",
     )
     .bind(input.board_id)
     .bind(ticket_no)
@@ -1018,6 +1399,7 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     .bind(serde_json::json!(input.tags))
     .bind(input.created_by)
     .bind(&status)
+    .bind(input.external_key)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1041,6 +1423,11 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
     // starts nothing. Detached: the row is the record, the push is a
     // delivery.
     spawn_dispatch(deps, task.clone(), None);
+    // A mirrored create stops here: its people were told by the tracker it
+    // came from, and the sync publishes one board event per batch.
+    if input.quiet {
+        return Ok(task);
+    }
     // Apps whose triggers name it hear that a ticket exists — its id and its
     // board, never its text (talaria-platform-events).
     talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketCreated {
@@ -1054,19 +1441,61 @@ pub async fn create_task(deps: &TaskDeps, input: &NewTask<'_>) -> TaskResult<Tas
         let board_id = input.board_id.to_string();
         let title_for_note = title.clone();
         let id_for_href = id.clone();
+        let mention_text = input
+            .mention_text
+            .filter(|t| t.contains('@'))
+            .map(str::to_string);
         tokio::spawn(async move {
-            notify_task_users(
+            let created_line = match &ticket_ref {
+                Some(r) => format!("New ticket: {r} — {title_for_note}"),
+                None => format!("New ticket: {title_for_note}"),
+            };
+            let assigned = TaskNotification {
+                kind: "task-assigned".into(),
+                title: format!("Assigned: {title_for_note}"),
+                body: ticket_ref,
+                href: Some(format!("/boards/{board_id}/{id_for_href}")),
+                task_id: id_for_href.clone(),
+                status_burst: None,
+                group_key: None,
+            };
+            let line = assigned.title.clone();
+            let candidates: Vec<Candidate> = human_assignee_ids(&assignees)
+                .into_iter()
+                .map(Candidate::addressed)
+                .collect();
+            let told = notify_ticket_event(
                 &notify,
-                &human_assignee_ids(&assignees),
+                &board_id,
+                board_prefs::BoardEvent::Assigned,
+                &candidates,
                 &actor,
-                &TaskNotification {
-                    kind: "task-assigned".into(),
-                    title: format!("Assigned: {title_for_note}"),
-                    body: ticket_ref,
-                    href: Some(format!("/boards/{board_id}/{id_for_href}")),
-                    task_id: id_for_href.clone(),
-                    status_burst: None,
-                },
+                Some(&assigned),
+                &line,
+            )
+            .await;
+            // A NEW TICKET is news only to the people who hear this whole
+            // board — nobody is in a ticket before it exists — and ONE
+            // ACTION, ONE ROW: whoever its `task-assigned` row reached is
+            // not told twice, nor whoever the description @mentions and
+            // the create door's mention row reaches.
+            let mut fresh = bystanders(&notify.pg, &board_id, &[], &told).await;
+            if let Some(text) = &mention_text
+                && !fresh.is_empty()
+            {
+                let ids: Vec<String> = fresh.iter().map(|c| c.user_id.clone()).collect();
+                let lands =
+                    ticket_mentions_land(&notify.pg, &board_id, &id_for_href, &ids, text).await;
+                fresh.retain(|c| !lands.contains(&c.user_id));
+            }
+            notify_ticket_event(
+                &notify,
+                &board_id,
+                board_prefs::BoardEvent::Created,
+                &fresh,
+                &actor,
+                None,
+                &created_line,
             )
             .await;
         });
@@ -1343,13 +1772,15 @@ fn pick<T: Clone>(v: &Option<Option<T>>, fallback: Option<T>) -> Option<T> {
     }
 }
 
+/// An agent's patch, made safe — and, when it takes the ticket out of review
+/// on a person's proven ask, that asker (`asked`), whom the write records.
 async fn agent_safe_patch(
     pg: &PgPool,
     cur: &Task,
     mut patch: TaskPatch,
     agent: &AgentSubject,
     meta: &StatusMeta,
-) -> TaskResult<TaskPatch> {
+) -> TaskResult<(TaskPatch, Option<Asker>)> {
     // ── PRESENCE, NOT TRUTHINESS ───────────────────────────────────────────
     // Every guard below asks `patch.status.is_some()`, never the string's
     // truth. `status: ''` is a legal JSON value and a falsy one, and a guard
@@ -1376,10 +1807,36 @@ async fn agent_safe_patch(
     // back — takes it out again. Otherwise the agent pulls its own work off
     // the reviewer's board and mints itself a fresh work session on every
     // lap.
+    //
+    // THE ONE EXCEPTION IS A PERSON'S ASK, PROVEN (`asked`): a teammate who
+    // can edit the board, in the message this agent's live turn answers,
+    // named the ticket (or said it in the ticket's own room). One exit per
+    // message (claimed at the write), never to a closed column — closing is
+    // the person's own move, asked or not — and never with the stops below
+    // lifted: an ask does not unblock, place a stranded ticket or jump a
+    // workchain. `patch.ask` is server-only (the route sets it from the
+    // call's `conversationId`), so this is the only place it means anything.
+    let mut asker: Option<Asker> = None;
     if meta.review_keys.contains(&cur.status) && status_present_and_moving(&patch) {
-        return Err(TaskError::ApprovalRequired(
-            "agents cannot take a ticket out of review — a person signs it off".into(),
-        ));
+        let dest = patch.status.clone().unwrap_or_default();
+        let Some(claim) = patch.ask.clone() else {
+            return Err(TaskError::ApprovalRequired(asked::NO_ASK.into()));
+        };
+        if meta.terminal(&dest) {
+            return Err(TaskError::ApprovalRequired(asked::NEVER_CLOSES.into()));
+        }
+        match asked::person_asked(
+            pg,
+            subject_model(agent),
+            cur,
+            &[cur.board_id.as_str()],
+            &claim,
+        )
+        .await?
+        {
+            Ok(who) => asker = Some(who),
+            Err(why) => return Err(TaskError::ApprovalRequired(why.refusal())),
+        }
     }
     // Blocked is a STOP SIGNAL raised for a person, and the dispatch prompt
     // sells it as one ("set status blocked … ends the session"). An agent
@@ -1432,7 +1889,18 @@ async fn agent_safe_patch(
     patch.parent_id = None;
     patch.archived = None;
     if patch.status.is_none() {
-        return Ok(patch);
+        return Ok((patch, None));
+    }
+    // A PROVEN ASK GOES WHERE THE PERSON ASKED. The coercion and the
+    // assignment gate below are about the agent's OWN moves; this one is the
+    // person's choice of column — "back to In progress" on a board whose
+    // working column is a pickup queue included, which then offers the
+    // ticket to dispatch exactly as the person dragging it there would.
+    // Terminal destinations never got this far (refused above). The record
+    // names who asked: status_note is server-only, so the line is ours.
+    if let Some(who) = asker {
+        patch.status_note = Some(who.note());
+        return Ok((patch, Some(who)));
     }
     // Every terminal move lands in review instead — the board's done columns
     // AND the off-board keys. Reporting a result is the agent's job, closing
@@ -1461,7 +1929,7 @@ async fn agent_safe_patch(
             "agents cannot assign tickets".into(),
         ));
     }
-    Ok(patch)
+    Ok((patch, None))
 }
 
 /// THE write path: one UPDATE, then the activity cascade, then the
@@ -1497,12 +1965,16 @@ pub async fn update_task(
             "\"{s}\" is not a status on this board"
         )));
     }
+    // The person an agent's review exit was asked by (`asked`), if any.
+    let mut asker: Option<Asker> = None;
     if who.kind == TaskActorKind::Agent {
         // `who.id` IS the agent's fleet model id (TaskActor documents it as
         // such), so the board-policy half of the invariant is answered from
         // the same actor every other clause is answered from.
-        patch =
+        let (safe, asked_by) =
             agent_safe_patch(pg, &cur, patch, &AgentSubject::Model(who.id.clone()), &meta).await?;
+        patch = safe;
+        asker = asked_by;
         // Post-condition on the REWRITTEN patch (terminal moves land in the
         // review catch): whatever an agent write is about to store names a
         // column this board actually has. handoff_target guarantees the
@@ -1586,7 +2058,16 @@ pub async fn update_task(
     let next_error_message = pick(&patch.error_message, cur.error_message.clone());
     let next_status = patch.status.clone().unwrap_or_else(|| cur.status.clone());
     let completed_at = completed_at_for(&meta, &next_status, cur.completed_at.as_deref());
-    let approved_at = approved_at_for(&meta, &next_status, &cur.status, cur.approved_at.as_deref());
+    let mut approved_at =
+        approved_at_for(&meta, &next_status, &cur.status, cur.approved_at.as_deref());
+    // A person's ask sending signed-off work back to be worked on retires the
+    // sign-off, as the reviewer's "request changes" does: the mark would
+    // otherwise ride a ticket in rework. Into Blocked or another review
+    // column it stays — neither is more work on it.
+    if asker.is_some() && !meta.review_keys.contains(&next_status) && next_status != BLOCKED_STATUS
+    {
+        approved_at = None;
+    }
     let archived_at = match patch.archived {
         None => cur.archived_at.clone(),
         Some(true) => Some(
@@ -1598,14 +2079,23 @@ pub async fn update_task(
     };
     let add_seconds = patch.add_time_spent_seconds.unwrap_or(0.0).round().max(0.0) as i64;
 
-    sqlx::query(
+    // ONE ASK, ONE EXIT: the claim is a unique key on (ticket, message), taken
+    // before the write, so two calls citing one message cannot both land.
+    // Given back below if the write itself fails.
+    if let Some(asked_by) = &asker
+        && !asked::claim_exit(pg, id, &who.id, asked_by).await?
+    {
+        return Err(TaskError::ApprovalRequired(Unproven::Spent.refusal()));
+    }
+
+    let written = sqlx::query(
         "update tasks set title=$2, description=$3, status=$4, priority=$5, effort=$6, \
          assignees=$7, due_date=$8::timestamptz, start_date=$9::timestamptz, color=$10, \
          estimated_hours=$11::numeric, parent_id=$12::uuid, tags=$13, attachments=$14, \
          outcome=$15, resolution=$16, error_message=$17, completed_at=$18::timestamptz, \
          archived_at=$19::timestamptz, approved_at=$21::timestamptz, \
          time_spent_seconds=time_spent_seconds + $20, updated_at=now() \
-         where id=$1::uuid",
+         where id=$1::uuid and ($22::text is null or status = $22)",
     )
     .bind(id)
     .bind(&next_title)
@@ -1628,8 +2118,27 @@ pub async fn update_task(
     .bind(&archived_at)
     .bind(add_seconds)
     .bind(&approved_at)
+    // An asked exit lands only on the column its proof was checked against:
+    // a person who moved the ticket meanwhile (a reviewer signing it off,
+    // say) is never overwritten by the agent. Every other write binds null.
+    .bind(asker.as_ref().map(|_| cur.status.as_str()))
     .execute(pg)
-    .await?;
+    .await;
+    let written = match written {
+        Ok(done) => done,
+        Err(e) => {
+            if let Some(asked_by) = &asker {
+                asked::release_exit(pg, id, asked_by).await;
+            }
+            return Err(e.into());
+        }
+    };
+    if written.rows_affected() == 0
+        && let Some(asked_by) = &asker
+    {
+        asked::release_exit(pg, id, asked_by).await;
+        return Err(TaskError::Refusal(asked::MOVED_MEANWHILE.into()));
+    }
 
     // ── THE NOTIFY WORK GOES OUT NOW (C30) ──────────────────────────────────
     // The write above has committed. Everything a person is told about it is
@@ -1647,7 +2156,9 @@ pub async fn update_task(
             assignees_patched: patch.assignees.is_some(),
             archived_now: patch.archived == Some(true) && cur.archived_at.is_none(),
             review_keys: meta.review_keys.clone(),
+            done_keys: meta.done_keys.clone(),
             actor: who.id.clone(),
+            quiet: patch.quiet,
         },
     );
 
@@ -1676,15 +2187,38 @@ pub async fn update_task(
             format!("moved to {next_status} ({why})")
         };
         log_activity(pg, id, &who.id, "status", &moved).await?;
+        // An agent's move on a person's word is governance: the audit row
+        // names the asker, the message and the thread it was proven against.
+        if let Some(asked_by) = &asker {
+            let mut after = asked_by.audit();
+            after["status"] = serde_json::json!(next_status);
+            talaria_audit::log_audit(
+                pg,
+                talaria_audit::AuditEntry {
+                    actor: &who.id,
+                    action: "task.review_exit",
+                    target_type: "task",
+                    target_id: Some(id),
+                    target_label: Some(next_title.as_str()),
+                    before: Some(serde_json::json!({ "status": cur.status })),
+                    after: Some(after),
+                },
+            )
+            .await;
+        }
         // Apps whose triggers name the move hear it: ids and column keys,
-        // never the ticket's text (talaria-platform-events).
-        talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {
-            ticket_id: id.to_string(),
-            board_id: cur.board_id.clone(),
-            from: cur.status.clone(),
-            to: next_status.clone(),
-            closed: meta.terminal(&next_status),
-        });
+        // never the ticket's text (talaria-platform-events). A mirrored
+        // write's writer emits it itself, when its connection says apps
+        // should hear the sync's moves.
+        if !patch.quiet {
+            talaria_platform_events::emit(talaria_platform_events::PlatformEvent::TicketMoved {
+                ticket_id: id.to_string(),
+                board_id: cur.board_id.clone(),
+                from: cur.status.clone(),
+                to: next_status.clone(),
+                closed: meta.terminal(&next_status),
+            });
+        }
         // The watchers' notice and the workchain hand-off went out with the
         // commit (`spawn_update_notices`).
     }
@@ -1846,15 +2380,18 @@ pub async fn update_task(
         };
         log_activity(pg, id, &who.id, "attachments", &what).await?;
     }
-    publish_board(
-        &deps.realtime,
-        &cur.board_id,
-        &BoardEvent {
-            kind_tag: "task",
-            task_id: Some(id.to_string()),
-            deleted: None,
-        },
-    );
+    // A mirrored write's board event is the writer's, one per batch.
+    if !patch.quiet {
+        publish_board(
+            &deps.realtime,
+            &cur.board_id,
+            &BoardEvent {
+                kind_tag: "task",
+                task_id: Some(id.to_string()),
+                deleted: None,
+            },
+        );
+    }
     get_task(pg, id).await.map_err(TaskError::Db)
 }
 
@@ -2250,7 +2787,11 @@ pub async fn add_comment(
 // So: ONE resolution of "who is watching this ticket", below, and every
 // reader goes through it — `list_watchers` (the UI, the API response) and
 // `ticket_audience` (the notifications). There is no path that reads
-// `task_watchers` without asking it.
+// `task_watchers` without asking it — but one, which can only narrow:
+// `talaria_notify::boards::mention_listeners` reads whether a watch is the
+// person's own (`added_by`) for people a mention door already resolved, so a
+// watch can keep their mention through a board set to Off and never names a
+// recipient of its own.
 //
 // WHAT HAPPENS TO A STORED WATCHER WHO NO LONGER QUALIFIES — the rows
 // written before this check existed, and anyone whose board access is later
@@ -2303,6 +2844,14 @@ async fn watcher_accounts(
 struct ResolvedWatcher {
     watcher: String,
     user_id: String,
+    /// The watch is the watcher's own: they added it (`added_by` is them), or
+    /// it predates the record of who added one (`added_by` null — the only
+    /// Watch the product offered then was a person's own). A watch an editor
+    /// added for someone is involvement, not a choice: it does not wake a
+    /// board they set to Off (talaria_notify::boards).
+    deliberate: bool,
+    /// Who added it (`task_watchers.added_by`, a users.id), as stored.
+    added_by: Option<String>,
 }
 
 async fn resolve_watchers(
@@ -2310,8 +2859,8 @@ async fn resolve_watchers(
     task_id: &str,
     board_id: Option<&str>,
 ) -> Result<Vec<ResolvedWatcher>, sqlx::Error> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "select watcher from task_watchers where task_id = $1::uuid order by created_at asc",
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "select watcher, added_by from task_watchers where task_id = $1::uuid order by created_at asc",
     )
     .bind(task_id)
     .fetch_all(pg)
@@ -2326,10 +2875,10 @@ async fn resolve_watchers(
     let Some(board) = board else {
         return Ok(Vec::new());
     };
-    let stored: Vec<String> = rows.into_iter().map(|(w,)| w).collect();
+    let stored: Vec<String> = rows.iter().map(|(w, _)| w.clone()).collect();
     let accounts = watcher_accounts(pg, &stored).await?;
     let mut out = Vec::new();
-    for w in stored {
+    for (w, added_by) in rows {
         let Some((user_id, _)) = accounts.get(&w) else {
             continue;
         };
@@ -2337,8 +2886,10 @@ async fn resolve_watchers(
             continue;
         }
         out.push(ResolvedWatcher {
+            deliberate: added_by.as_deref().is_none_or(|by| by == user_id),
             watcher: w,
             user_id: user_id.clone(),
+            added_by,
         });
     }
     Ok(out)
@@ -2352,6 +2903,89 @@ pub async fn list_watchers(pg: &PgPool, task_id: &str) -> Result<Vec<String>, sq
         .into_iter()
         .map(|w| w.watcher)
         .collect())
+}
+
+/// Where one of a ticket's watches came from, as the ticket panel shows it.
+/// A watch someone else added is not the watcher's choice, so it does not
+/// carry the ticket through a board they set to Off
+/// (talaria_notify::boards); the panel says who added it and offers "Watch
+/// it myself", which makes it theirs (`add_watcher`).
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WatcherOrigin {
+    /// The watcher, as `TaskFull::watchers` lists them.
+    pub watcher: String,
+    /// Who added it, when that was someone other than the watcher. None for
+    /// a watch the watcher made themselves, and for one from before anyone
+    /// recorded who added a watch — both count as their own.
+    pub added_by: Option<WatchAdder>,
+}
+
+/// The person who added someone else's watch.
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct WatchAdder {
+    pub id: String,
+    /// Their name, else their email; "a former member" once the account is
+    /// gone.
+    pub name: String,
+}
+
+/// The origins of resolved watches, from the adders' names. Pure.
+fn watcher_origins(
+    resolved: &[ResolvedWatcher],
+    names: &HashMap<String, String>,
+) -> Vec<WatcherOrigin> {
+    resolved
+        .iter()
+        .map(|w| WatcherOrigin {
+            watcher: w.watcher.clone(),
+            added_by: if w.deliberate {
+                None
+            } else {
+                w.added_by.as_ref().map(|id| WatchAdder {
+                    id: id.clone(),
+                    name: names
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| "a former member".into()),
+                })
+            },
+        })
+        .collect()
+}
+
+/// The ticket's watchers (`list_watchers`) and where each watch came from,
+/// from one resolution.
+pub async fn list_watchers_with_origins(
+    pg: &PgPool,
+    task_id: &str,
+) -> Result<(Vec<String>, Vec<WatcherOrigin>), sqlx::Error> {
+    let resolved = resolve_watchers(pg, task_id, None).await?;
+    let mut adders: Vec<String> = resolved
+        .iter()
+        .filter(|w| !w.deliberate)
+        .filter_map(|w| w.added_by.clone())
+        .collect();
+    adders.sort();
+    adders.dedup();
+    let mut names: HashMap<String, String> = HashMap::new();
+    if !adders.is_empty() {
+        let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "select id::text, name, email from users where id::text = any($1::text[])",
+        )
+        .bind(&adders)
+        .fetch_all(pg)
+        .await?;
+        for (id, name, email) in rows {
+            let shown = name
+                .filter(|n| !n.trim().is_empty())
+                .or(email.filter(|e| !e.trim().is_empty()))
+                .unwrap_or_else(|| "a former member".into());
+            names.insert(id, shown);
+        }
+    }
+    let origins = watcher_origins(&resolved, &names);
+    Ok((resolved.into_iter().map(|w| w.watcher).collect(), origins))
 }
 
 /// addWatcher's two answers: followed, or refused with the reason the
@@ -2368,10 +3002,16 @@ pub enum WatchOutcome {
 /// Stores the account's OWN email rather than the string that was typed, so
 /// case variants cannot become two rows for one person and the stored value
 /// is always something `watcher_accounts` can resolve.
+///
+/// `added_by` is the users.id of whoever asked. A person watching for
+/// themselves makes the watch theirs — even one an editor added first, so a
+/// person can always turn a watch into a deliberate one by pressing Watch.
+/// An editor's add never overwrites a watch the person already holds.
 pub async fn add_watcher(
     pg: &PgPool,
     task_id: &str,
     watcher: &str,
+    added_by: &str,
 ) -> Result<WatchOutcome, sqlx::Error> {
     let Some(board_id) = task_board_id(pg, task_id).await? else {
         return Ok(WatchOutcome::Refused("no such ticket".into()));
@@ -2392,11 +3032,14 @@ pub async fn add_watcher(
         ));
     }
     sqlx::query(
-        "insert into task_watchers (task_id, watcher) values ($1::uuid, $2) \
-         on conflict do nothing",
+        "insert into task_watchers (task_id, watcher, added_by) values ($1::uuid, $2, $3) \
+         on conflict (task_id, watcher) do update set added_by = excluded.added_by \
+         where $4::boolean",
     )
     .bind(task_id)
     .bind(&email)
+    .bind(added_by)
+    .bind(added_by == user_id)
     .execute(pg)
     .await?;
     Ok(WatchOutcome::Added)
@@ -2703,8 +3346,8 @@ pub async fn complete_quality_review(
         resolve_review_approval(&deps.notify, task_id);
     }
     // Same audience question as the status move in update_task, same one
-    // answer.
-    let audience = ticket_audience(
+    // answer — and the same per-person board settings decide.
+    let mut audience = ticket_audience(
         pg,
         task_id,
         &current.board_id,
@@ -2727,19 +3370,28 @@ pub async fn complete_quality_review(
         let href = format!("/boards/{}/{}", current.board_id, task_id);
         let id = task_id.to_string();
         let now = next_status.replacen('_', " ", 1);
+        let board_id = current.board_id.clone();
+        let ev = move_event(&meta.done_keys, next_status);
         tokio::spawn(async move {
-            notify_task_users(
+            let rest = bystanders(&notify.pg, &board_id, &audience, &HashSet::new()).await;
+            audience.extend(rest);
+            let line = title.clone();
+            notify_ticket_event(
                 &notify,
+                &board_id,
+                ev,
                 &audience,
                 &actor,
-                &TaskNotification {
+                Some(&TaskNotification {
                     kind: "task-status".into(),
                     title,
                     body: Some(body),
                     href: Some(href),
                     task_id: id,
                     status_burst: Some(now),
-                },
+                    group_key: None,
+                }),
+                &line,
             )
             .await;
         });
@@ -3183,5 +3835,207 @@ mod tests {
         // both.
         assert_eq!("needs_info_now".replacen('_', " ", 1), "needs info_now");
         assert_eq!("in_progress".replacen('_', " ", 1), "in progress");
+    }
+
+    // ── Board settings at the fan-out (talaria_notify::boards) ──────────────
+
+    use super::board_prefs::{BoardEvent as Ev, BoardPref, Cadence, Preset, Scope};
+
+    #[test]
+    fn a_move_into_a_done_column_completes_and_any_other_is_a_status() {
+        let done = ["done".to_string(), "shipped".to_string()];
+        assert_eq!(move_event(&done, "shipped"), Ev::Completed);
+        assert_eq!(move_event(&done, "done"), Ev::Completed);
+        assert_eq!(move_event(&done, "in_progress"), Ev::Status);
+        // A board with no done column has no completion to hear.
+        assert_eq!(move_event(&[], "done"), Ev::Status);
+    }
+
+    #[test]
+    fn the_newly_assigned_are_addressed_and_keep_only_their_own_watch() {
+        let audience = [
+            Candidate {
+                deliberate_watch: true,
+                ..Candidate::involved("w")
+            },
+            // An editor-added watch, or plain involvement: not deliberate.
+            Candidate::involved("a"),
+            // Someone else's deliberate watch never lends itself to "n".
+            Candidate {
+                deliberate_watch: true,
+                ..Candidate::involved("other")
+            },
+        ];
+        let got = assigned_candidates(&["w".into(), "a".into(), "n".into()], &audience);
+        assert_eq!(
+            got.iter().map(|c| c.user_id.as_str()).collect::<Vec<_>>(),
+            ["w", "a", "n"]
+        );
+        assert!(got.iter().all(|c| c.addressed && c.involved));
+        assert_eq!(
+            got.iter().map(|c| c.deliberate_watch).collect::<Vec<_>>(),
+            [true, false, false]
+        );
+    }
+
+    fn ids(rs: &[Recipient]) -> Vec<&str> {
+        rs.iter().map(|(u, _)| u.as_str()).collect()
+    }
+
+    #[test]
+    fn split_files_ticket_and_activity_rows_and_nothing_for_skip_or_digest() {
+        let d = |u: &str, how: Delivery| (Candidate::involved(u), how, ChannelOverride::default());
+        let (ticket, activity) = split(vec![
+            d("t", Delivery::Ticket),
+            d("b", Delivery::BoardActivity),
+            d("s", Delivery::Skip),
+            d("g", Delivery::Digest),
+            d("t2", Delivery::Ticket),
+        ]);
+        assert_eq!(ids(&ticket), ["t", "t2"]);
+        assert_eq!(ids(&activity), ["b"]);
+    }
+
+    // Each row is filed on the channels its own recipient's setting gives
+    // the board: two people, two overrides, never one person's for another.
+    #[test]
+    fn split_keeps_each_persons_board_channels() {
+        let email = ChannelOverride {
+            email: Some(true),
+            ..Default::default()
+        };
+        let quiet = ChannelOverride {
+            desktop: Some(false),
+            push: Some(false),
+            email: Some(false),
+        };
+        let (ticket, activity) = split(vec![
+            (Candidate::involved("a"), Delivery::Ticket, email),
+            (
+                Candidate::involved("m"),
+                Delivery::Ticket,
+                ChannelOverride::default(),
+            ),
+            (Candidate::bystander("b"), Delivery::BoardActivity, quiet),
+        ]);
+        assert_eq!(
+            ticket,
+            [
+                ("a".to_string(), email),
+                ("m".to_string(), ChannelOverride::default())
+            ]
+        );
+        assert_eq!(activity, [("b".to_string(), quiet)]);
+    }
+
+    // A board's membership that cannot be read: `bystanders` answers nobody
+    // (an event's own audience still hears it), `try_bystanders` answers the
+    // error, so the due scan keeps the ticket for its next pass rather than
+    // leave out the people who chose the whole board. No database: the pool
+    // points at a closed port (the board-wide probe answers true on a fault).
+    #[tokio::test]
+    async fn a_failed_membership_read_is_the_due_scans_to_retry() {
+        let pg = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(300))
+            .connect_lazy("postgres://nobody@127.0.0.1:9/none")
+            .unwrap();
+        let board = "00000000-0000-0000-0000-00000000000b";
+        let none = HashSet::new();
+        assert!(try_bystanders(&pg, board, &[], &none).await.is_err());
+        assert!(bystanders(&pg, board, &[], &none).await.is_empty());
+    }
+
+    /// The decisions `spawn_update_notices` makes for one person a patch
+    /// both assigns and moves, as the kinds they get: the `task-assigned`
+    /// row first, then the move's audience minus whoever that row reached.
+    fn assigned_and_moved(p: &BoardPref) -> Vec<&'static str> {
+        let audience = [Candidate::involved("bob")];
+        let decide = |ev: Ev, cs: &[Candidate]| {
+            split(
+                cs.iter()
+                    .map(|c| {
+                        (
+                            c.clone(),
+                            board_prefs::resolve(p, ev, c),
+                            p.channels.overrides(),
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        let (told, _) = decide(
+            Ev::Assigned,
+            &assigned_candidates(&["bob".into()], &audience),
+        );
+        let told: HashSet<String> = told.into_iter().map(|(u, _)| u).collect();
+        let mut rest = audience.to_vec();
+        rest.retain(|c| !told.contains(&c.user_id));
+        let (ticket, activity) = decide(Ev::Status, &rest);
+        let mut kinds = Vec::new();
+        kinds.extend(told.iter().map(|_| "task-assigned"));
+        kinds.extend(ticket.iter().map(|_| "task-status"));
+        kinds.extend(activity.iter().map(|_| "board-activity"));
+        kinds
+    }
+
+    #[test]
+    fn one_action_one_row_when_a_patch_assigns_and_moves_at_once() {
+        // The built-in: the assignment row lands, so the move leaves them out.
+        assert_eq!(assigned_and_moved(&BoardPref::builtin()), ["task-assigned"]);
+        // A setting that drops assignments but keeps status: the move tells
+        // them — once, never nothing.
+        let status_only = BoardPref::custom(&[Ev::Status], Scope::Mine, Cadence::Instant);
+        assert_eq!(assigned_and_moved(&status_only), ["task-status"]);
+        // Off: nothing at all.
+        let off = BoardPref::preset(Preset::Off, Cadence::Instant);
+        assert!(assigned_and_moved(&off).is_empty());
+    }
+
+    #[test]
+    fn a_watch_names_who_added_it_only_when_it_was_someone_else() {
+        let w = |watcher: &str, user: &str, added_by: Option<&str>| ResolvedWatcher {
+            watcher: watcher.into(),
+            user_id: user.into(),
+            deliberate: added_by.is_none_or(|by| by == user),
+            added_by: added_by.map(str::to_string),
+        };
+        let resolved = [
+            // Their own watch: nobody else to name.
+            w("ann@x.test", "u-ann", Some("u-ann")),
+            // From before anyone recorded who added a watch: their own too.
+            w("bob@x.test", "u-bob", None),
+            // An editor added it: named, so the panel can offer "Watch it
+            // myself".
+            w("cy@x.test", "u-cy", Some("u-ed")),
+            // Added by an account that is gone: still someone else's watch.
+            w("dee@x.test", "u-dee", Some("u-gone")),
+        ];
+        let names = HashMap::from([("u-ed".to_string(), "Ed Editor".to_string())]);
+        let got = watcher_origins(&resolved, &names);
+        assert_eq!(
+            got.iter()
+                .map(|o| (
+                    o.watcher.as_str(),
+                    o.added_by
+                        .as_ref()
+                        .map(|a| (a.id.as_str(), a.name.as_str()))
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("ann@x.test", None),
+                ("bob@x.test", None),
+                ("cy@x.test", Some(("u-ed", "Ed Editor"))),
+                ("dee@x.test", Some(("u-gone", "a former member"))),
+            ]
+        );
+        // The wire spelling the ticket panel reads.
+        assert_eq!(
+            serde_json::to_value(&got[2]).unwrap(),
+            serde_json::json!({ "watcher": "cy@x.test", "addedBy": { "id": "u-ed", "name": "Ed Editor" } })
+        );
+        assert_eq!(
+            serde_json::to_value(&got[0]).unwrap(),
+            serde_json::json!({ "watcher": "ann@x.test", "addedBy": null })
+        );
     }
 }

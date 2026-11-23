@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { useQueryClient } from '@tanstack/svelte-query'
+  import { createQuery, useQueryClient } from '@tanstack/svelte-query'
   import type { Snippet } from 'svelte'
   import { publicIconDomain } from '@/lib/icon-domain'
   import SettingsField from '@/components/settings/SettingsField.svelte'
@@ -17,10 +17,13 @@
   import Input from '@/components/ui/Input.svelte'
   import Modal from '@/components/ui/Modal.svelte'
   import Select from '@/components/ui/Select.svelte'
+  import StatusDot from '@/components/ui/StatusDot.svelte'
   import { confirm } from '@/components/ui/confirm.svelte'
   import type { ContextMenuEntry } from '@/components/ui/context-menu.svelte'
   import { useClock } from '@/lib/clock.svelte'
-  import { delJson, errorMessage, postJson, putJson } from '@/lib/fetch-json'
+  import { delJson, errorMessage, getJsonOr404, postJson, putJson } from '@/lib/fetch-json'
+  import { gitHostAgentsKey, unclaimedKeys, unclaimedSentence, type HostAgents } from '@/lib/git-host-agents'
+  import { GITHUB_ACCESS_HREF } from '@/lib/github-access'
   import { checkedAgo, installationDiff, permissionLabel, type PermissionEntry } from '@/lib/git-permissions'
   import { slide } from '@/lib/motion'
   import { useWorkspaceSecrets } from '@/lib/workspace-secrets'
@@ -46,7 +49,12 @@
    *  names cannot be removed, and its dialog says what holds it. A GitHub App
    *  host's dialog also lists, per installation, what the App asks for, what
    *  the installation has accepted, and what is still waiting for an org
-   *  owner on GitHub — the row's status turns gold while anything is. */
+   *  owner on GitHub — the row's status turns gold while anything is. What an
+   *  installation accepted is a fact, drawn neutral, never as a grant: it is
+   *  the most an admin may grant an agent, and no agent's token carries any
+   *  of it until an admin does, in Agent policy › GitHub access (linked
+   *  here). What the installation accepted that no agent's set names is said
+   *  as such. */
   let { host }: { host: GitHost } = $props()
 
   const live = useGitHost(() => host.id)
@@ -82,6 +90,7 @@
     try {
       const fresh = await postJson<{ host: GitHost }>(`${url}/refresh`)
       qc.setQueryData(gitHostKey(host.id), fresh.host)
+      await qc.invalidateQueries({ queryKey: gitHostAgentsKey(host.id) })
     } catch (e) {
       error = errorMessage(e)
     }
@@ -89,6 +98,14 @@
   }
 
   let open = $state(false)
+  // What the installation accepted that no agent's set names, read while the
+  // dialog is open. A server without the route answers 404: nothing is said.
+  const agents = createQuery(() => ({
+    queryKey: gitHostAgentsKey(host.id),
+    queryFn: () => getJsonOr404<HostAgents>(`${url}/agents`),
+    enabled: open && current.kind === 'github',
+  }))
+  const unclaimed = $derived(unclaimedSentence(unclaimedKeys(agents.data)))
   let connecting = $state(false)
   let busy = $state(false)
   let error = $state<string | null>(null)
@@ -288,8 +305,8 @@
           </div>
           {#if permissionsNote}<p class="font-sans text-[13px] font-medium leading-5 text-fg">{permissionsNote[0]?.toUpperCase()}{permissionsNote.slice(1)}.</p>{/if}
           <p class="font-sans text-[13px] leading-5 text-muted">
-            What this host's GitHub App holds is the most any token can carry. Talaria hands each agent only what an admin grants it on this
-            host. Read again every ten minutes, and whenever GitHub refuses a token.
+            What this host's GitHub App holds is the most an admin may grant an agent. Talaria hands each agent only what an admin grants it on
+            this host. Read again every ten minutes, and whenever GitHub refuses a token.
           </p>
           {#each installations as { inst, diff } (inst.id)}
             <div class="space-y-2 rounded-md border border-line-subtle px-3 py-2.5 font-sans text-[13px] leading-5">
@@ -303,7 +320,8 @@
               {#if inst.error}<p class="text-warning">The last check failed: {inst.error}</p>{/if}
               {#if diff.known}
                 {@render permissionRow('App asks for', diff.asked, 'neutral')}
-                {@render permissionRow('Installation accepted', diff.accepted, 'success')}
+                <!-- A fact, never a grant: neutral, not the success tone. -->
+                {@render permissionRow('Installation accepted (what an admin may grant an agent)', diff.accepted, 'neutral')}
                 {#if diff.waiting.length > 0}
                   {#snippet review()}
                     {#if inst.url}
@@ -317,6 +335,26 @@
               {/if}
             </div>
           {/each}
+          <!-- The default set (contents, pull requests, metadata) is on every
+               Developer agent's token without a grant; nothing else is. -->
+          <p class="font-sans text-[13px] leading-5 text-muted">
+            Beyond the default set every Developer agent starts with (contents, pull requests, metadata), no agent's token carries any of this until an admin grants it to that
+            agent.
+          </p>
+          {#if unclaimed}
+            <p class="font-sans text-[13px] leading-5 text-warning" data-testid="git-host-unclaimed">{unclaimed}</p>
+          {/if}
+          {#if agents.isError}
+            <!-- A server without the route answers 404, drawn as nothing; any
+                 other failure is said, never silent. -->
+            <p class="flex items-start gap-2 font-sans text-[13px] leading-5 text-muted" data-testid="git-host-agents-error">
+              <StatusDot status="warn" class="mt-[7px]" />
+              <span class="min-w-0">Could not read which agents are granted these: {errorMessage(agents.error)}</span>
+            </p>
+          {/if}
+          <p class="font-sans text-[13px] leading-5 text-muted" data-testid="git-host-access-link">
+            Each agent's GitHub access: <a href={GITHUB_ACCESS_HREF} class="text-accent hover:underline" onclick={() => (open = false)}>Agent policy › GitHub access ›</a>
+          </p>
         </section>
       {/if}
       <div class="space-y-5 border-t border-line-subtle pt-5">

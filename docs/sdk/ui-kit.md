@@ -28,6 +28,7 @@ is not one the host shares, so the build fails and names the import.
 | :--- | :--- |
 | A click action | `Button` (variants: primary, outline, ghost, danger, danger-outline, accent-soft, link) |
 | An icon-only action | `IconButton` (sizes include the bordered tile) |
+| A door into settings | `SettingsButton` (`label` says whose settings: "Board settings"); a menu entry that opens settings wears `cogMenuIcon`; the gear beside a label is `SettingsGlyph` |
 | Text in / text out | `Input`, `Textarea`, `Select`; searchable pick-list → `Combobox` |
 | A toggle | `Toggle`; one-of-many → `Radio`; yes/no → `Checkbox` (bare cell form for tables) |
 | A card | `Panel` (+ `SectionHeader` inside); a metric tile → `StatCard` |

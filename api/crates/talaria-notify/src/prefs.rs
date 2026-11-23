@@ -5,8 +5,10 @@
 // `prompt` key, and the instance email master switch in app_settings.
 //
 // Reserved top-level keys of the blob: the original class ids (legacy routes),
-// `digest`, `prompt`, `channels`, `dnd`, `email`. Every reader DERIVES from
-// whatever is stored, so a hand-edited row degrades to the defaults.
+// `digest`, `prompt`, `channels`, `dnd`, `email`, and `boards` (the person's
+// default for every board — `boards::BOARDS_KEY`, read only through
+// talaria_notify::boards). Every reader DERIVES from whatever is stored, so a
+// hand-edited row degrades to the defaults.
 
 use serde_json::{Map, Value, json};
 use sqlx::PgPool;
@@ -14,9 +16,11 @@ use talaria_agent_auth::epoch_ms_to_iso;
 use talaria_agent_auth::now_ms as wall_ms;
 use talaria_settings::{get_setting, set_setting};
 
+use crate::boards::{BOARDS_KEY, BoardPref, default_wire};
 use crate::classes::{
     CLASSES, ChannelDefaults, FALLBACK_CLASS, NOTIFY_CLASSES, ORIGINAL_CLASSES, class_def,
 };
+use crate::meta::ChannelOverride;
 
 const DIGEST_PREF_KEY: &str = "digest";
 const CHANNELS_KEY: &str = "channels";
@@ -111,6 +115,22 @@ pub fn channels_of(blob: &Value, class: &str) -> Channels {
     }
 }
 
+/// One row's effective channels: the class's (`channels_of`), with each
+/// channel the producer overrode for this recipient replaced
+/// (`NotifyMeta::channels` — a person's setting for a board). The write's
+/// decision and both send-time re-checks (the deferred push, the mail
+/// batcher) call this, with the override the row was filed with, so the
+/// three can never disagree. In-app stays on.
+pub fn channels_with(blob: &Value, class: &str, o: &ChannelOverride) -> Channels {
+    let c = channels_of(blob, class);
+    Channels {
+        in_app: true,
+        desktop: o.desktop.unwrap_or(c.desktop),
+        push: o.push.unwrap_or(c.push),
+        email: o.email.unwrap_or(c.email),
+    }
+}
+
 /// The whole matrix as the wire serves it (`channels`): class → channels, in
 /// registry order. A member is not offered an admin-only class.
 pub fn channels_wire(blob: &Value, is_admin: bool) -> Value {
@@ -196,6 +216,9 @@ pub struct PrefsWrite {
     pub channels: Option<Vec<(String, ChannelsPatch)>>,
     pub dnd: Option<DndPatch>,
     pub email_frequency: Option<String>,
+    /// The default for every board (`boards::parse_write` checked it):
+    /// `Some(None)` clears it back to the built-in.
+    pub boards: Option<Option<BoardPref>>,
 }
 
 fn obj_mut<'a>(m: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<String, Value> {
@@ -308,6 +331,15 @@ pub fn merge_prefs(before: &Value, w: &PrefsWrite) -> Value {
         && EMAIL_FREQUENCIES.contains(&f.as_str())
     {
         obj_mut(&mut m, EMAIL_KEY).insert("frequency".into(), Value::String(f.clone()));
+    }
+    match &w.boards {
+        Some(Some(p)) => {
+            m.insert(BOARDS_KEY.to_string(), p.to_stored());
+        }
+        Some(None) => {
+            m.remove(BOARDS_KEY);
+        }
+        None => {}
     }
     Value::Object(m)
 }
@@ -735,6 +767,8 @@ pub struct SettingsWire {
     pub channels: Value,
     pub dnd: Value,
     pub email_frequency: &'static str,
+    /// The default for every board: `{effective, source, stored}`.
+    pub boards: Value,
 }
 
 pub fn settings_wire(blob: &Value, time_zone: &str, now_ms: i64, is_admin: bool) -> SettingsWire {
@@ -745,6 +779,7 @@ pub fn settings_wire(blob: &Value, time_zone: &str, now_ms: i64, is_admin: bool)
         channels: channels_wire(blob, is_admin),
         dnd: dnd_wire(blob, time_zone, now_ms),
         email_frequency: email_frequency(blob),
+        boards: default_wire(blob),
     }
 }
 
@@ -1062,6 +1097,51 @@ mod tests {
         PrefsWrite::default()
     }
 
+    // A producer's override (a person's setting for a board) replaces exactly
+    // the channels it names, in both directions, over every matrix state —
+    // and with nothing named it is the matrix, for every class.
+    #[test]
+    fn an_override_replaces_only_the_channels_it_names() {
+        let opts = [None, Some(false), Some(true)];
+        for stored in [false, true] {
+            let blob = json!({ "channels": { "participating": {
+                "desktop": stored, "push": stored, "email": stored } } });
+            let matrix = channels_of(&blob, "participating");
+            for desktop in opts {
+                for push in opts {
+                    for email in opts {
+                        let o = ChannelOverride {
+                            desktop,
+                            push,
+                            email,
+                        };
+                        let c = channels_with(&blob, "participating", &o);
+                        assert_eq!(
+                            c,
+                            Channels {
+                                in_app: true,
+                                desktop: desktop.unwrap_or(matrix.desktop),
+                                push: push.unwrap_or(matrix.push),
+                                email: email.unwrap_or(matrix.email),
+                            },
+                            "{stored} {o:?}"
+                        );
+                    }
+                }
+            }
+        }
+        for c in CLASSES.iter() {
+            for blob in [json!({}), json!({ c.id: "email" })] {
+                assert_eq!(
+                    channels_with(&blob, c.id, &ChannelOverride::default()),
+                    channels_of(&blob, c.id),
+                    "{}",
+                    c.id
+                );
+            }
+        }
+    }
+
     // For every legacy blob wave 1 could have stored, the channels derive the
     // same route back: phase 0 changes no one's routing table.
     #[test]
@@ -1256,6 +1336,40 @@ mod tests {
             }
         );
         assert!(blob.get("bogus").is_none());
+    }
+
+    // The default for every board rides the reserved `boards` key: a write
+    // sets it, a null clears it, and neither touches the matrix or routes.
+    #[test]
+    fn the_board_default_merges_and_clears() {
+        use crate::boards::{Preset, Source};
+        let before = json!({ "mention": "email", "dnd": { "allowNeedsYou": false } });
+        let mut set = w();
+        set.boards = Some(Some(BoardPref::preset(
+            Preset::Mentions,
+            crate::boards::Cadence::Instant,
+        )));
+        let blob = merge_prefs(&before, &set);
+        assert_eq!(
+            blob["boards"],
+            json!({ "preset": "mentions", "cadence": "instant" })
+        );
+        assert_eq!(blob["mention"], json!("email"));
+        assert_eq!(resolve_prefs(&blob), resolve_prefs(&before));
+        let wire = settings_wire(&blob, "UTC", 0, false).boards;
+        assert_eq!(wire["source"], json!(Source::Default.id()));
+        assert_eq!(wire["effective"]["preset"], json!("mentions"));
+        let mut clear = w();
+        clear.boards = Some(None);
+        let blob = merge_prefs(&blob, &clear);
+        assert!(blob.get("boards").is_none());
+        assert_eq!(
+            settings_wire(&blob, "UTC", 0, false).boards["source"],
+            json!("builtin")
+        );
+        // A write that does not name it leaves it alone.
+        let blob = merge_prefs(&merge_prefs(&before, &set), &w());
+        assert!(blob.get("boards").is_some());
     }
 
     // C27: the digest's derivation reads the original nine only.

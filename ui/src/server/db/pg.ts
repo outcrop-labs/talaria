@@ -4062,7 +4062,10 @@ alter table tasks drop column if exists conversation_id`,
   // identifier is Hermes' own and the install's only input; path is the
   // skill directory inside repo (exact = false marks a skills.sh slug the
   // index never resolved, found by name at fetch time); rank is the index's
-  // own order, which lists Hermes' official skills first.
+  // own order, which lists Hermes' official skills first. (Since 2026-11-21
+  // rank is the row's position on the day it arrived, read only by older
+  // releases: the listing sorts by source and name, as Hermes builds the
+  // index, so a skill added mid-list rewrites no other row.)
   `create table if not exists skills_index_entries (
      identifier text primary key,
      name text not null,
@@ -5079,6 +5082,285 @@ alter table tasks drop column if exists conversation_id`,
      created_at timestamptz not null default now(),
      primary key (task_id, agent_model)
    )`,
+  // WORDS THE AGENT WROTE AND A PERSON ONLY CHOSE. Clicking an ask option or a
+  // tool chip sends the agent's own words as the person's message. The
+  // conversation twin rides `messages.metadata.drafted`; a channel row had
+  // nowhere to say it. An agent's review exit on a person's ask
+  // (talaria-tasks `asked`) never counts such a row as the ask. Defaulted,
+  // so roll-safe: the previous release neither reads nor writes it.
+  `alter table channel_messages add column if not exists drafted boolean not null default false`,
+  // ONE ASK, ONE EXIT. An agent takes a ticket out of review on a person's
+  // message at most once per (ticket, message): the key is the claim, taken
+  // before the write (update path) or under the move's row lock (board move),
+  // so two calls citing one message cannot both pass. message_id names a
+  // messages or channel_messages row, so it carries no foreign key. A new
+  // table, so roll-safe.
+  `create table if not exists task_asked_exits (
+     task_id uuid not null references tasks(id) on delete cascade,
+     message_id uuid not null,
+     agent_model text not null,
+     asked_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     primary key (task_id, message_id)
+   )`,
+  // THE MESSAGE A CHANNEL REPLY ANSWERS. An agent's streaming reply is
+  // inserted after the reply is decided (a relevance judgment in a ticket
+  // room), so "the newest person's row before the reply" can be someone who
+  // posted in that window, or the trigger of another reply streaming beside
+  // it. The reply now carries the id of the message it was started for, and
+  // an agent's review exit on a person's ask (talaria-chips `live_turn`)
+  // names exactly that message's author. It names a row in the same channel,
+  // which the channel's cascade already takes, so no foreign key. Nullable,
+  // so roll-safe: the previous release neither reads nor writes it.
+  `alter table channel_messages add column if not exists answers_message_id uuid`,
+  // A BOARD SYNCS FROM A CLICKUP LIST (talaria-board-sync, docs/BOARD-SYNC.md).
+  // One live connection per board: the board owns it, not the person who
+  // connected it, so nothing cascades when that person goes. The credential is
+  // a ClickUp personal token sealed with the secretbox (CIPHER_TARGETS lists the
+  // column; Admin -> Secrets shows it). status_map is lowercased ClickUp status
+  // name -> board column key; map_version and remap_pending let a mapping edit
+  // made during a live run be consumed by that run's finish pass, or the next.
+  // run_problems are the latest run's run-level problems (credential, list
+  // gone, sweep guard), rewritten by every run. New tables, so roll-safe.
+  `create table if not exists board_syncs (
+     id uuid primary key default gen_random_uuid(),
+     board_id uuid not null references boards(id) on delete cascade,
+     provider text not null default 'clickup' check (provider in ('clickup')),
+     workspace_id text,
+     list_id text not null,
+     list_path text,
+     list_statuses jsonb not null default '[]'::jsonb,
+     credential_sealed text,
+     credential_hint text,
+     credential_account jsonb,
+     status_map jsonb not null default '{}'::jsonb,
+     map_version integer not null default 0,
+     remap_pending boolean not null default false,
+     options jsonb not null default '{}'::jsonb,
+     interval_minutes integer,
+     state text not null default 'active'
+       check (state in ('active', 'paused', 'needs_credential', 'disconnected')),
+     watermark_ms bigint,
+     last_sweep_at timestamptz,
+     last_synced_at timestamptz,
+     next_sync_at timestamptz,
+     last_run_id uuid,
+     run_problems jsonb not null default '[]'::jsonb,
+     connected_by uuid references users(id) on delete set null,
+     disconnected_by uuid references users(id) on delete set null,
+     created_at timestamptz not null default now(),
+     updated_at timestamptz not null default now(),
+     disconnected_at timestamptz
+   )`,
+  `create unique index if not exists board_syncs_one_live on board_syncs (board_id)
+     where state <> 'disconnected'`,
+  `create index if not exists board_syncs_due on board_syncs (next_sync_at)
+     where state = 'active'`,
+  // Per-task sync state, keyed by the ClickUp task id across the instance. A row
+  // exists only once a ticket was made for it, so a row whose task_id went null
+  // is a ticket deleted in Talaria: the sync never makes it again. applied holds
+  // the last upstream value written per field (the three-way rule's base);
+  // problems is the item's current problem list, rewritten each time it syncs.
+  `create table if not exists board_sync_items (
+     provider text not null,
+     external_id text not null,
+     sync_id uuid references board_syncs(id) on delete set null,
+     board_id uuid not null references boards(id) on delete cascade,
+     task_id uuid unique references tasks(id) on delete set null,
+     custom_id text,
+     external_url text,
+     remote_state text not null default 'active'
+       check (remote_state in ('active', 'archived', 'deleted', 'moved', 'hidden')),
+     remote_updated_ms bigint,
+     applied jsonb not null default '{}'::jsonb,
+     attachments jsonb not null default '{}'::jsonb,
+     comments jsonb not null default '{}'::jsonb,
+     problems jsonb not null default '[]'::jsonb,
+     seen_run uuid,
+     synced_at timestamptz,
+     created_at timestamptz not null default now(),
+     primary key (provider, external_id)
+   )`,
+  `create index if not exists board_sync_items_board_idx on board_sync_items (board_id, external_id)`,
+  // The database is what makes "a re-run updates, never duplicates" true, even
+  // across a crash between making a ticket and recording its item row:
+  // create_task writes 'clickup:<task id>' in its own insert.
+  `alter table tasks add column if not exists external_key text`,
+  `create unique index if not exists tasks_external_key_idx on tasks (external_key)
+     where external_key is not null`,
+  // An imported comment is idempotent on its source id ('clickup:comment:<id>').
+  `alter table channel_messages add column if not exists import_key text`,
+  `create unique index if not exists channel_messages_import_key_idx
+     on channel_messages (channel_id, import_key) where import_key is not null`,
+  // One live sync per board, whoever starts it (the schedule, Sync now, a
+  // re-sync of one ticket).
+  `create unique index if not exists runs_one_live_board_sync on runs (subject_id)
+     where kind = 'clickup-sync' and state in ('queued', 'running', 'awaiting')`,
+  // A PERSON'S NOTIFICATION SETTING FOR ONE BOARD (talaria_notify::boards,
+  // docs/notifications/producers.md "Each board"): a preset (all,
+  // participating, mentions, off, custom), Custom's own events and scope, and
+  // the cadence. No row means the person's default for every board (the
+  // `boards` key of users.notify_prefs), else the built-in — Participating,
+  // the audiences every ticket producer had before this table. A table, not a
+  // board_members column: a team's members see its boards with no member row
+  // of their own. Kept when the person leaves the board (dormant: every
+  // producer re-checks access), gone with the person or the board. A new
+  // table, so roll-safe: the previous release never reads it.
+  `create table if not exists board_notify_prefs (
+     user_id uuid not null references users(id) on delete cascade,
+     board_id uuid not null references boards(id) on delete cascade,
+     preset text not null,
+     events text[],
+     scope text,
+     cadence text not null default 'instant',
+     updated_at timestamptz not null default now(),
+     primary key (user_id, board_id)
+   )`,
+  `create index if not exists board_notify_prefs_board_idx on board_notify_prefs (board_id)`,
+  // WHO ADDED A WATCH (the users.id of whoever asked): a watch a person made
+  // themselves is deliberate and carries its ticket's news through a board
+  // they set to Off; one an editor added for them does not. NULL is a watch
+  // from before this column, when the only Watch offered was a person's own,
+  // so it counts as deliberate. Nullable, so roll-safe.
+  `alter table task_watchers add column if not exists added_by text`,
+  // A BOARD'S OWN CHANNELS for one person (talaria_notify::boards, part 2):
+  // Alerts (the banner and the push, together) and Email as they choose them
+  // for this board's rows, each NULL where the class matrix (Settings →
+  // Notifications) decides. In-app is not a column: every row lands in the
+  // inbox whatever anyone chose. Nullable, so roll-safe: the previous release
+  // never reads them.
+  `alter table board_notify_prefs
+     add column if not exists alerts boolean,
+     add column if not exists email boolean`,
+  // THE OVERRIDE A ROW WAS FILED WITH (I-26): the channels a producer decided
+  // for this person in place of the matrix — their setting for the board a
+  // ticket row is about — each NULL where the matrix decided. Stored beside
+  // the delivery columns they shaped, so the deferred push and the
+  // missed-activity batcher re-check the matrix through the same override at
+  // send time and never re-read a board setting. Metadata-only ADD COLUMNs
+  // (NULL defaults); a rolled-back binary ignores them.
+  `alter table notifications
+     add column if not exists desktop_override boolean,
+     add column if not exists push_override boolean,
+     add column if not exists email_override boolean`,
+  // DUE-DATE REMINDERS (talaria-tasks `due`, docs/notifications/producers.md
+  // "Due dates"): the due date each threshold last fired for — due soon
+  // (within a day) and overdue — so each fires once per due date, and moving
+  // the due date re-arms both. Nullable, so roll-safe: the previous release
+  // never reads them.
+  `alter table tasks add column if not exists due_soon_for timestamptz`,
+  `alter table tasks add column if not exists overdue_for timestamptz`,
+  // The scan reads the open tickets whose due date sits in a two-day band
+  // around now, every 15 minutes: by due date, over the dated, unarchived ones.
+  `create index if not exists tasks_due_scan_idx on tasks (due_date)
+     where due_date is not null and archived_at is null`,
+  // THE DAILY BOARD DIGEST'S LEDGER (talaria-digest boards.rs): one row per
+  // person, written as the pass goes. filed_on is the local date the day was
+  // claimed for (so a tick inside the same send window never files it
+  // twice); window_from and window_to are the stretch its rows count (the
+  // next digest starts at window_to); filing_claim is the claiming pass's
+  // clock (epoch ms) while it files the rows, null once every row landed —
+  // nothing mails a day still filing, and a claim a dead pass left is taken
+  // over once it is stale; mailed_on is the local date the mail went, or
+  // there was none to send, and stays behind filed_on while a mail is owed,
+  // so a failed send is retried inside the window without filing the rows
+  // again. A table rather than an app_settings blob (the approvals digest
+  // keeps one): each pass writes one person's row, never everyone's, and the
+  // row goes with the person. New, so roll-safe: the previous release never
+  // reads it.
+  `create table if not exists board_digest_state (
+     user_id uuid primary key references users(id) on delete cascade,
+     filed_on text not null,
+     window_from timestamptz not null,
+     window_to timestamptz not null,
+     filing_claim bigint,
+     mailed_on text,
+     updated_at timestamptz not null default now()
+   )`,
+  // WHO PAUSED A BOARD'S CLICKUP SYNC, AND WHEN (talaria-board-sync ops.rs
+  // `update`, docs/BOARD-SYNC.md "Pausing"). A pause freezes the sync: no
+  // scheduled run, no Sync now, no one-ticket re-sync. So the board says who
+  // froze it and since when, to every member. Set when the state flips to
+  // paused and cleared on resume. A credential that dies while the sync is
+  // paused leaves them set, so a replaced token returns the sync to paused,
+  // not active. Nullable ADD COLUMNs, so roll-safe: the previous release
+  // never reads them.
+  `alter table board_syncs
+     add column if not exists paused_by uuid references users(id) on delete set null,
+     add column if not exists paused_at timestamptz`,
+  // THE DAILY BOARD DIGEST, WITHDRAWN before it reached a release (#771,
+  // reverted in favour of Home's Inbox; v0.14.0, the latest release, never
+  // had it). A board setting or a default for every board stored with
+  // cadence 'digest' meanwhile would leave its owner hearing nothing from
+  // that board: the resolver holds a digest's events and no job files them
+  // any more. So each is set back to 'instant' — the preset, events, scope
+  // and channels the person chose stay as they are — and the digest's ledger
+  // goes. Roll-safe in both directions: the previous testing build reads
+  // 'instant' like any setting, and its board digest asks who has a digest
+  // cadence first and stops at nobody, so it never reaches the dropped
+  // table. The digest key of notify_prefs (the approvals mail's on/off) is a
+  // different key and untouched.
+  `update board_notify_prefs set cadence = 'instant' where cadence = 'digest'`,
+  `update users set notify_prefs = jsonb_set(notify_prefs, '{boards,cadence}', '"instant"')
+     where notify_prefs -> 'boards' ->> 'cadence' = 'digest'`,
+  `-- contract: the board digest's ledger goes, unread since #771 was withdrawn —
+   -- no release ever shipped it (v0.14.0, the latest, predates it).
+   drop table if exists board_digest_state`,
+  // ── MCP catalog liveness: the probe's stamp in a table of its own (2026-11-21) ──
+  // The liveness job probes 300 hosted entries every 5 minutes and stamped
+  // \`live_checked_at = now()\` on each \`mcp_library_entries\` row, changed or
+  // not. That column was indexed, so every stamp was a non-HOT rewrite of a
+  // ~1.2 kB row on a random page of the heap plus an entry in each of the
+  // table's six indexes (two GIN): about 22 kB of WAL a verdict, nearly all
+  // full-page images, ~2.4 GB a day on a production instance's 215 MB
+  // database — the bulk of what its slow disk had to flush. The stamp now
+  // lives here: a narrow row, its primary key the only index, so a re-stamp
+  // is a HOT update in place. Fillfactor 50 leaves each page room for a new
+  // version of every row on it: a run's verdicts land roughly in the order
+  // it asked, so one 50-verdict chunk can re-stamp a whole page (at 70, a
+  // quarter of the stamps went non-HOT in the census, each one a new heap
+  // page and a primary-key entry). The entry row is written only when the
+  // verdict or its detail changes (talaria-mcp-library liveness.rs). No
+  // foreign key: its check takes a key-share lock on the entry row, which is
+  // WAL written on that very row; the run deletes orphans instead.
+  `create table if not exists mcp_library_liveness (
+     registry_name text primary key,
+     checked_at timestamptz not null
+   ) with (fillfactor = 50)`,
+  // Backfilled in the rotation's own order (the run's ORDER BY), so the 300
+  // rows a run stamps sit together on a handful of pages from its first run.
+  // live_checked_at stays on the entry for one release, unread. A deliberate
+  // exception to docs/UPDATES.md's rule that moved data keeps its old copy
+  // current while both releases can run: keeping the per-probe stamp current
+  // there (both writes, or a trigger) is exactly the six-index rewrite this
+  // removes. The catalog sync still nulls it when an entry changes — free,
+  // that upsert rewrites the row anyway — so a rolled-back release still asks
+  // a changed entry first. What a previous release run on this database
+  // shows: check times ("checked N ago") frozen at the upgrade until its own
+  // probes re-stamp them, oldest first, about 13 hours for the whole mirror.
+  // It is telemetry: verdicts, details, dead counts and the install gate
+  // read live_state and live_detail, which stay current. A later release
+  // drops the column.
+  `insert into mcp_library_liveness (registry_name, checked_at)
+     select registry_name, live_checked_at from mcp_library_entries
+      where live_checked_at is not null
+      order by live_checked_at, (source <> 'registry') desc, registry_name
+   on conflict do nothing`,
+  // Nothing reads live_checked_at any more, and the index never matched the
+  // run's ORDER BY. Without it a verdict that does change inserts into five
+  // indexes instead of six, and the previous release's stamps after a
+  // rollback can go HOT.
+  `drop index if exists mcp_library_entries_live_idx`,
+  // The run's selection joins the stamps to the probe-able entries (hosted,
+  // \`entry->>'url'\` an https URL). Postgres keeps no statistics on that
+  // expression and guessed ~100 of 45k rows match, so it probed the stamps'
+  // key once per entry (45k index lookups, 180k buffer hits) where one hash
+  // join of the two tables does. The expression's own statistics give it the
+  // real count; the analyze fills them now, because the mirror is rewritten
+  // too rarely for autoanalyze to get round to it soon.
+  `create statistics if not exists mcp_library_entries_url_stats
+     on (entry->>'url') from mcp_library_entries`,
+  `analyze mcp_library_entries`,
 ]
 
 // One row per APPLIED statement, keyed by its index in MIGRATIONS. The checksum

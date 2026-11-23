@@ -50,7 +50,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-use crate::files::artifacts_id::{body_editor, reindex_content};
+use crate::files::artifacts_id::{body_editor, land_document_chip, reindex_content, slim};
 use talaria_artifacts::{ConditionalSave, get_artifact, save_artifact_body_if_unchanged};
 use talaria_body::parse;
 use talaria_doc_edit::{apply, wire::edits_from};
@@ -157,7 +157,12 @@ pub async fn post(
         }
     };
     reindex_content(&state, &id, &updated);
-    land_document_chip(&state, &editor, &updated, &changes);
+    // `human: None` IS the agent case — the one `body_editor` sets for an
+    // agent key — because a person editing their own document has the
+    // document open and needs no chip about it.
+    if editor.human.is_none() {
+        land_document_chip(&state, &editor.actor, &updated, Some(&changes));
+    }
     // WHAT THE EDIT DID FIRST, then the artifact without its body. The order
     // is load-bearing on one wire: an agent's plugin clamps the tool result
     // it reports to 4000 chars, so whatever this object says first is what
@@ -165,61 +170,6 @@ pub async fn post(
     // reconstruct, where the id and the title are two short fields that fit
     // behind them.
     Ok(Json(json!({ "changes": changes, "artifact": slim(&updated) })).into_response())
-}
-
-/// The artifact this route answers with: everything the caller might read
-/// EXCEPT the body.
-///
-/// The body is the one field nobody on this door needs — the caller is the
-/// one that just edited it, `get_document` re-reads it in one call, and the
-/// living-document pane reloads the artifact itself after an edit rather
-/// than taking it from this response. Sending it put a document-sized
-/// string in front of `changes` on a wire with a 4000-char clamp on it,
-/// which cost the chat row the whole change list.
-fn slim(a: &talaria_artifacts::Artifact) -> Value {
-    json!({
-        "id": a.id,
-        "kind": a.kind,
-        "title": a.title,
-        "updatedAt": a.updated_at,
-    })
-}
-
-/// AN AGENT'S EDIT, ON ITS LIVE TURN. The chip carries what the edit did, so
-/// a person who was not watching can see what moved without opening the
-/// document.
-///
-/// FROM HERE RATHER THAN FROM THE TOOL RESULT, because the change list only
-/// survives in full on this side: the agent's plugin clamps every tool
-/// result to 4000 chars, so the round trip through `/api/agents/tool-events`
-/// is best-effort by construction. It still runs, and lands the same chip id
-/// — whichever arrives second merges onto the first instead of adding a row.
-///
-/// DETACHED, like the reindex above and for the same reason: the save has
-/// already happened, and failing this response over a chip would tell the
-/// agent its edit did not land. `human: None` IS the agent case — the one
-/// `body_editor` sets for an agent key — because a person editing their own
-/// document has the document open and needs no chip about it.
-fn land_document_chip(
-    state: &AppState,
-    editor: &crate::files::artifacts_id::Editor,
-    updated: &talaria_artifacts::Artifact,
-    changes: &Value,
-) {
-    if editor.human.is_some() {
-        return;
-    }
-    let chip = talaria_chips::document_chip(&updated.id, Some(&updated.title), Some(changes));
-    let (state, agent) = (state.clone(), editor.actor.clone());
-    tokio::spawn(async move {
-        let redis = state.redis().await.ok();
-        match talaria_chips::surface_for_agent(&state.pg, redis, &agent, vec![chip]).await {
-            // No live turn: a work-session or cron edit has no chat row to
-            // land on, which is ordinary rather than a failure.
-            Ok(_) => {}
-            Err(e) => tracing::warn!("[artifacts] edit chip surface failed for {agent}: {e}"),
-        }
-    });
 }
 
 /// What each edit did — the sentence the chat stream shows instead of making a

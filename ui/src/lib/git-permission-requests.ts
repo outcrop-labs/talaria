@@ -1,5 +1,5 @@
 // The GitHub permissions agents asked for (`request_git_permission`), as
-// Admin → Git hosts decides them: the shapes of
+// Agent policy › GitHub access decides them: the shapes of
 // `GET /api/workbench/permission-requests` and the words the section shows.
 // PURE, so the node-env tests pin it (nothing under routes/ can be unit
 // tested).

@@ -1,4 +1,5 @@
-// /api/home. GET → the Home/Today summary for the signed-in user.
+// /api/home. GET → the Home/Today summary for the signed-in user: the
+// mobile app's landing read. The web Inbox polls /api/home/queues.
 //
 // The digest job registers in main.rs's scheduler table, not here — this
 // file is only the read.

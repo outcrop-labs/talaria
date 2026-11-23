@@ -250,7 +250,20 @@ impl<'a> Engine<'a> {
         self.write_fx(id, |r, s, _| f(r, s)).await
     }
 
+    /// Say `text` as the rollout's detail. Said already — a release waiting
+    /// out its time on stable, a pull still in progress, repeated every
+    /// step — it writes nothing and takes no lock: only the step's own lock
+    /// is asked, as before every write. A rollout's `updated_at` is then its
+    /// last real change.
     async fn detail(&self, id: &str, text: &str) -> Result<(), StateError> {
+        let said = self
+            .load()
+            .await?
+            .rollout
+            .is_some_and(|r| r.id == id && r.open() && r.detail.as_deref() == Some(text));
+        if said {
+            return self.fenced().await;
+        }
         let text = text.to_string();
         self.write(id, move |r, _| r.detail = Some(text)).await
     }

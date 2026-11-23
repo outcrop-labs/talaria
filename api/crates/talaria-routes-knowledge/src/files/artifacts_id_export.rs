@@ -13,8 +13,9 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use serde::Deserialize;
 
-use talaria_agent_auth::{AgentSubject, agent_caller};
-use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, can_read_agent, list_editors};
+use talaria_agent_auth::agent_caller;
+use talaria_api_facades::kb::perms::{ITEM_ARTIFACT, can_read, list_editors};
+use talaria_artifacts::agent_access::agent_reads_artifact;
 use talaria_artifacts::{artifact_to_markdown, get_artifact, guarded, sheet_grid};
 use talaria_error::{house_error, internal};
 use talaria_office::{OfficeKind, grid_to_xlsx, markdown_to_docx};
@@ -137,29 +138,15 @@ pub async fn get(
 
     // The read gate the GET and the Google export share, owner arm included —
     // a personal assistant exports its owner's private artifacts the way it
-    // reads them. No audit entry: downloading a document you may read is a
-    // read, and the GET does not log one either.
+    // reads them. The agent arm is talaria-artifacts' (`agent_reads_artifact`),
+    // the one rule every artifact door asks. No audit entry: downloading a
+    // document you may read is a read, and the GET does not log one either.
     let agent = agent_caller(&state.pg, &headers).await?;
     if let Some(agent) = agent {
-        let name = agent.model.clone();
-        let owner =
-            match talaria_users::assistant_owner_for(&state.pg, &AgentSubject::Caller(agent)).await
-            {
-                Ok(v) => v,
-                Err(e) => return Ok(internal("[artifacts] owner resolve failed", e)),
-            };
-        let team_ids = match talaria_teams::team_ids_for_agent(&state.pg, &name).await {
-            Ok(v) => v,
-            Err(e) => return Ok(internal("[artifacts] team membership read failed", e)),
-        };
-        if !can_read_agent(
-            &guarded(&artifact),
-            &name,
-            owner.as_deref(),
-            &editors,
-            &team_ids,
-        ) {
-            return Ok(house_error(StatusCode::FORBIDDEN, "forbidden"));
+        match agent_reads_artifact(&state.pg, &agent, &guarded(&artifact), &editors).await {
+            Ok(true) => {}
+            Ok(false) => return Ok(house_error(StatusCode::FORBIDDEN, "forbidden")),
+            Err(e) => return Ok(internal("[artifacts] agent read check failed", e)),
         }
     } else {
         let user = require_user(&state, &headers).await?;

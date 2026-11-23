@@ -41,6 +41,28 @@ stand, with I-8 amended below.
 | I-23 | `features[]` in GET; one const per owning module | phase 0 | everyone |
 | I-24 | `NotifyMeta`, `group_key::*`, `entity::*`, `resolve_entity`/`clear_entity`, `add_notification_with` | phase 0 | W2-P, W2-E |
 
+**I-24, amended (I-25, per-board settings).** `entity::BOARD` (`"board"`, selectable by
+`PUT /api/notifications {entity}`) and `group_key::board_activity(board)` join the
+conventions, with their TS twins in `ui/src/lib/notify-wire.ts`. `NotifyMeta`, the write
+path's UPSERT and the `notifications` columns are unchanged: who gets a row is decided at
+fan-out by the producers (`talaria_notify::boards`, [producers.md](./producers.md#each-board)),
+and nothing at send time reads a board setting.
+
+**I-24, amended again (I-26, a board's own channels).** `NotifyMeta` gains `channels:
+ChannelOverride {desktop, push, email}` — each `Option<bool>`, `None` (the default) being
+the class matrix — so a producer can file one person's row on the channels that person
+chose for its board (a board's Alerts sets Desktop and Push together, its Email sets
+Email; producers.md "A board's own channels"). Every `NotifyMeta` literal spreads `..Default::default()`, so every
+producer compiles untouched and files exactly as before. The write path's UPSERT gains
+three binds (`$18`–`$20`), stored in three new nullable columns, `notifications.
+desktop_override`, `push_override` and `email_override`: a `Realert` coalesce takes this
+write's, a `Quiet` one keeps the open row's, `refresh_notification` clears them.
+`deliver::decide`, the deferred push and the missed-activity batcher all read a row's
+channels through `prefs::channels_with(blob, class, &override)`, so the send-time
+re-checks apply the override the write did. Still, nothing at send time reads a board
+setting: the override is what the fan-out decided, carried on the row
+([delivery.md](./delivery.md#the-decision-at-write-time)).
+
 **I-8, amended.** A known id with a later `createdAt` is a re-alert. Since the shell's
 review fix N7, a `renotify` post on Linux closes the old OS banner and posts a new one; on
 macOS and Windows a re-post under the same identifier replaces it. The rule every consumer
@@ -176,7 +198,9 @@ are not reopened. The optional `read_at` guard compares to the millisecond.
 ## Prefs v2 (I-13), DND (I-14)
 
 Storage stays `users.notify_prefs`. The reserved keys: the original class ids (legacy
-routes), `digest`, `prompt`, `channels`, `dnd`, `email`.
+routes), `digest`, `prompt`, `channels`, `dnd`, `email`, and `boards` (a person's default
+for every board — [producers.md](./producers.md#each-board); read only through
+`talaria_notify::boards`).
 
 - **Channels.** `channels_of(blob, class)` resolves each of desktop, push and email on its
   own: a stored `channels.<class>.<channel>` bool, else what the legacy route meant
@@ -207,7 +231,8 @@ routes), `digest`, `prompt`, `channels`, `dnd`, `email`.
 `CLASSES` (id, label, blurb, category, defaults, breaks-through, admin-only, email delay),
 served in order as `classes[]`. Members are not served admin-only classes. For you =
 `needs_you` + `direct`. The registry adds `participating` and `channel_activity`; neither
-has rows until W2-P files their kinds.
+has rows until W2-P files their kinds. The per-board settings add `board_activity`
+(Following, quiet by default like `work_complete`, not in `ORIGINAL_CLASSES`).
 
 Filters (W2-H) read the class through `kind`: `kinds_of(class)`, `kinds_of_category(c)`
 and `known_kinds()`. A kind the table does not name is filed under `FALLBACK_CLASS`
@@ -244,7 +269,10 @@ list.
 
 **`features`** in the contract: `seq`, `classes`, `channels`, `dnd-store`,
 `presence-store`, `ack`, `devices`, `read-ids`, `channel-levels-store`. Each stream adds
-its own in its own module's `FEATURES`.
+its own in its own module's `FEATURES` (the per-board settings: `board-prefs`, which also
+means `GET`/`PATCH /api/notifications` carry `boards`; `board-channels`, a board's own
+Alerts and Email, carried on its rows as I-26's override; and `task-due`, the due-date
+reminders a setting may name).
 
 ## The live stream (I-16, I-19)
 

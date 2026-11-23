@@ -21,6 +21,9 @@ talaria-agent-writes = { workspace = true }
 talaria-audit = { workspace = true }
 talaria-boards = { workspace = true }
 talaria-channels = { workspace = true }
+# The live-turn resolver an agent's asked review exit is proven against
+# (`asked`): whom the agent is answering right now, strictly.
+talaria-chips = { workspace = true }
 talaria-gateway = { workspace = true }
 talaria-judge = { workspace = true }
 talaria-labels = { workspace = true }
@@ -28,6 +31,8 @@ talaria-notify = { workspace = true }
 talaria-platform-events = { workspace = true }
 talaria-realtime = { workspace = true }
 talaria-retrieval = { workspace = true }
+# The due-date reminders' job (`due`): its spec, registered by talaria-jobs.
+talaria-scheduler = { workspace = true }
 talaria-statuses = { workspace = true }
 talaria-tasks-types = { workspace = true }
 talaria-ticket-chat = { workspace = true }

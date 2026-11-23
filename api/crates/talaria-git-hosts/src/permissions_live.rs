@@ -717,6 +717,75 @@ async fn an_installation_accepting_what_an_agent_was_given_writes_its_activation
     cleanup(&pg, &[&a], &h).await;
 }
 
+/// The stale cache, end to end against the record: a token minted while the
+/// installation lacked workflows is not served once a refresh records that
+/// the installation accepted it. The door's next credential carries it.
+#[tokio::test]
+#[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+async fn a_token_minted_before_an_acceptance_is_not_served_after_the_refresh_records_it() {
+    let pg = pg().await;
+    let sb = sb();
+    let t = tag();
+    let a = agent(&pg, &t).await;
+    let held = Arc::new(Mutex::new(
+        json!({ "contents": "write", "pull_requests": "write", "metadata": "read" }),
+    ));
+    let (base, log) = github("94006", held.clone(), None).await;
+    let h = host(&pg, &sb, &t, &base, "94006").await;
+    grant(&pg, &a, &h, "acme/widgets").await;
+    set(&pg, &a, &h, &default_and_wf()).await;
+    holdings::refresh_host(&pg, &sb, &h)
+        .await
+        .expect("recorded");
+    let row = get_host(&pg, &h).await.unwrap().expect("the host");
+
+    let before = grant_login(&pg, &sb, &row, "acme/widgets", &a)
+        .await
+        .expect("the door answers")
+        .expect("a credential");
+    assert!(before.minted);
+    assert_eq!(before.shortfall, wf());
+    assert_eq!(before.asked, default_and_wf());
+    assert_eq!(
+        before.carried.as_ref().and_then(|c| c.get("workflows")),
+        None
+    );
+
+    // An org owner accepts workflows; the refresh records it.
+    *held.lock().unwrap() = json!({ "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read" });
+    holdings::refresh_host(&pg, &sb, &h)
+        .await
+        .expect("recorded");
+
+    let after = grant_login(&pg, &sb, &row, "acme/widgets", &a)
+        .await
+        .expect("the door answers")
+        .expect("a credential");
+    assert!(
+        after.minted,
+        "the token minted without workflows is not served"
+    );
+    assert_ne!(after.login.password, before.login.password);
+    assert!(
+        after.carried.as_ref().is_some_and(|c| c.covers(&wf())),
+        "{:?}",
+        after.carried
+    );
+    assert!(after.shortfall.is_empty(), "{}", after.shortfall);
+    let mints = calls(&log, "POST", "/access_tokens");
+    assert_eq!(mints.len(), 2, "{mints:?}");
+    assert_eq!(posted(&mints[1].1)["workflows"], "write");
+    // Nothing short now: the next ask is the cached token.
+    let again = grant_login(&pg, &sb, &row, "acme/widgets", &a)
+        .await
+        .expect("the door answers")
+        .expect("a credential");
+    assert!(!again.minted);
+    assert_eq!(calls(&log, "POST", "/access_tokens").len(), 2);
+
+    cleanup(&pg, &[&a], &h).await;
+}
+
 #[tokio::test]
 #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
 async fn a_grant_write_says_what_it_added_and_removed_and_an_approval_adds_one() {

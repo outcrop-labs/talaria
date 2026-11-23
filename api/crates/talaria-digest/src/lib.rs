@@ -52,7 +52,7 @@ use talaria_approvals::{
 };
 use talaria_daily_brief::config::zone_for;
 use talaria_email::{email_button, email_escape, email_shell};
-use talaria_gateway::settings::{get_setting, set_setting};
+use talaria_gateway::settings::{get_setting, set_setting_if_changed};
 use talaria_home::{WorkItem, home_queues};
 use talaria_notify::{
     GatedMail, NOTIFY_SETTINGS_PATH, NotificationInput, NotifyDeps, add_notification_with,
@@ -542,6 +542,29 @@ pub fn real_digest_deps(state: &AppState, realtime: talaria_realtime::RealtimeDe
     }
 }
 
+/// Write the digest's sent-on ledger, pruned to the people in `live`: the
+/// one writer of `digest_state`, called on every mark of a pass and once at
+/// its end. A ledger that did not change (most passes: nobody in their send
+/// window) is not written at all.
+pub async fn persist_digest_state(
+    pg: &PgPool,
+    live: &HashSet<String>,
+    sent_on: &std::collections::BTreeMap<String, String>,
+) -> Result<(), sqlx::Error> {
+    let pruned: std::collections::BTreeMap<String, String> = sent_on
+        .iter()
+        .filter(|(id, _)| live.contains(*id))
+        .map(|(id, date)| (id.clone(), date.clone()))
+        .collect();
+    set_setting_if_changed(
+        pg,
+        DIGEST_STATE_KEY,
+        &json!({ "sentOn": serde_json::to_value(&pruned).expect("dates serialize") }),
+    )
+    .await
+    .map(|_| ())
+}
+
 /// One pass of the digest.
 ///
 /// THE LEDGER IS WRITTEN AS THE PASS GOES, NOT AFTER IT. `sent_on` is what
@@ -601,27 +624,6 @@ pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResul
     // final one does — two writers of one blob that disagreed about its shape
     // would be a way for the last write to resurrect a departed user's mark.
     let live: HashSet<String> = people.iter().map(|p| p.id.clone()).collect();
-    // A real fn, not a closure: a closure returning an `async` block that
-    // borrows its argument cannot prove the two lifetimes relate, and `async
-    // move` would walk off with `live` on the first call. This shape borrows
-    // everything per call and is awaited in place, on every mark.
-    async fn persist(
-        pg: &PgPool,
-        live: &HashSet<String>,
-        sent_on: &std::collections::BTreeMap<String, String>,
-    ) -> Result<(), sqlx::Error> {
-        let pruned: std::collections::BTreeMap<String, String> = sent_on
-            .iter()
-            .filter(|(id, _)| live.contains(*id))
-            .map(|(id, date)| (id.clone(), date.clone()))
-            .collect();
-        set_setting(
-            pg,
-            DIGEST_STATE_KEY,
-            &json!({ "sentOn": serde_json::to_value(&pruned).expect("dates serialize") }),
-        )
-        .await
-    }
 
     let base = instance_base_url(pg).await;
     // One census — and one audience resolution — for the whole pass. Every
@@ -695,7 +697,7 @@ pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResul
             sent_on.insert(person.id.clone(), moment.date.clone());
             // The mark is written NOW, before the next recipient is even
             // considered.
-            if let Err(e) = persist(pg, &live, &sent_on).await {
+            if let Err(e) = persist_digest_state(pg, &live, &sent_on).await {
                 // The mail went and we cannot record that it did. Everything
                 // already marked is on disk (that is the point of writing as
                 // we go), so the damage is bounded to this one person — and it
@@ -734,7 +736,7 @@ pub async fn run_digest(deps: &DigestDeps, now_ms: i64) -> Result<DigestRunResul
     // already on disk; this is the cheap half, and losing it to a crash costs
     // a recomputation rather than a duplicate email — which is why it is the
     // half that is still allowed to wait until the end.
-    if let Err(e) = persist(pg, &live, &sent_on).await {
+    if let Err(e) = persist_digest_state(pg, &live, &sent_on).await {
         tracing::error!(
             "[digest] could not record the skips for this pass \u{2014} they will be recomputed on the next tick: {e}"
         );
@@ -1007,7 +1009,7 @@ fn why_unreachable(approval: &PendingApproval) -> &'static str {
         // A GitHub permission's decide route asks the content half: only an
         // admin who may read what the agent wrote may decide it.
         Authority::Admin { on_board: Some(_) } if approval.kind == ApprovalKind::GitPermission => {
-            "Only an admin who is a member of the board it quotes can decide it, and none of this workspace\u{2019}s admins is. Add an admin to that board; they decide it in Admin \u{2192} Git hosts."
+            "Only an admin who is a member of the board it quotes can decide it, and none of this workspace\u{2019}s admins is. Add an admin to that board; they decide it in Agent policy \u{2192} GitHub access, on the agent that asked."
         }
         Authority::Admin { on_board: Some(_) } => {
             "Any admin can decide it, but it quotes work on a board none of this workspace\u{2019}s admins is a member of, so it cannot be shown to anybody as it stands. Add an admin to that board to read it, or decide it where its queue lives: Admin \u{2192} Git hosts for a repository, Manage \u{2192} Apps for an app."
@@ -1329,7 +1331,9 @@ pub async fn run_approval_escalation(
             seen
         },
     };
-    if let Err(e) = set_setting(
+    // Unchanged on most passes (nothing new pending, nothing decided), and
+    // then not written.
+    if let Err(e) = set_setting_if_changed(
         &pg,
         ESCALATION_STATE_KEY,
         &serde_json::to_value(&next).expect("escalation state serializes"),
@@ -1655,6 +1659,37 @@ mod tests {
             mail.html
                 .contains("One source could not be read when this was built")
         );
+    }
+
+    fn stalled(kind: ApprovalKind, on_board: Option<&str>) -> PendingApproval {
+        PendingApproval {
+            kind,
+            key: "k1".into(),
+            id: "a1".into(),
+            title: String::new(),
+            detail: String::new(),
+            href: String::new(),
+            waiting_since: "2026-08-28T00:00:00.000Z".into(),
+            owner_user_ids: Vec::new(),
+            authority: talaria_runs_define::Authority::Admin {
+                on_board: on_board.map(String::from),
+            },
+        }
+    }
+
+    #[test]
+    fn a_stalled_github_permission_points_at_the_agents_editor() {
+        // A GitHub permission is decided on the agent that asked, under Agent
+        // policy › GitHub access; Git hosts keeps only a pointer row. The stall
+        // report goes out with no link, so this sentence is the only
+        // directions the admins get.
+        let why = why_unreachable(&stalled(ApprovalKind::GitPermission, Some("b1")));
+        assert!(why.contains("Agent policy \u{2192} GitHub access"), "{why}");
+        assert!(!why.contains("Git hosts"), "{why}");
+
+        // A repository request is still decided on Git hosts.
+        let repo = why_unreachable(&stalled(ApprovalKind::RepoRequest, Some("b1")));
+        assert!(repo.contains("Admin \u{2192} Git hosts"), "{repo}");
     }
 
     #[test]

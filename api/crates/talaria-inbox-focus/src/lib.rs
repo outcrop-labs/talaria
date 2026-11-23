@@ -49,7 +49,7 @@ use talaria_audit::{AuditEntry, log_audit};
 use talaria_auth::sha256_hex;
 use talaria_boards::{board_role, can_edit};
 use talaria_channel_replies::{notify_dm_message, notify_user_mentions, trigger_agent_replies};
-use talaria_channels::{channel_role, insert_channel_message, mark_channel_read};
+use talaria_channels::{channel_role, insert_drafted_channel_message, mark_channel_read};
 use talaria_daily_brief::focus::key_of;
 use talaria_fleet_agents::routed_model_for;
 use talaria_google_pending::{PendingAction, decide_action, list_pending};
@@ -1769,13 +1769,14 @@ async fn execute_action_arms(
             .or_else(|| user.name.clone())
             .unwrap_or_else(|| "user".to_string());
         let deps = NotifyDeps::publishing(pg.clone(), state.redis().await.ok());
-        let posted = insert_channel_message(
+        // The reply is the person's to send, and its words may be the
+        // assistant's draft: posted as theirs, marked drafted, so it never
+        // stands in for the person's own ask (talaria-tasks `asked`).
+        let posted = insert_drafted_channel_message(
             &deps,
             &item.source_id,
-            "user",
             &author,
             &message,
-            "complete",
             &json!([]),
             None,
         )
@@ -1817,7 +1818,7 @@ async fn execute_action_arms(
             let deps = deps.clone();
             let sb = state.secretbox().await.ok();
             let trigger_state = state.clone();
-            let trigger_seq = posted.seq;
+            let (trigger_id, trigger_seq) = (posted.id.clone(), posted.seq);
             let (channel_id, channel_name, message) =
                 (item.source_id.clone(), channel_name, message);
             let trigger_sender = talaria_sender_identity::SenderIdentity {
@@ -1835,6 +1836,7 @@ async fn execute_action_arms(
                         &channel_name,
                         &message,
                         0,
+                        &trigger_id,
                         trigger_seq,
                         None,
                         Some(trigger_sender),

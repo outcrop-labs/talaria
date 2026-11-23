@@ -274,12 +274,14 @@ export const GROUP = {
   thread: (conversationId: string) => `thread:${conversationId}`,
   taskStatus: (taskId: string) => `task:${taskId}:status`,
   taskComments: (taskId: string) => `task:${taskId}:comments`,
+  taskDue: (taskId: string) => `task:${taskId}:due`,
   channelActivity: (channelId: string) => `channel:${channelId}:activity`,
   channelThread: (rootMessageId: string) => `reply:${rootMessageId}`,
   mcpDown: (serverId: string) => `mcp:${serverId}:down`,
   approval: (approvalId: string) => `approval:${approvalId}`,
   outreach: (agent: string, day: string) => `outreach:${agent}:${day}`,
   agentDesign: (designId: string) => `agent-design:${designId}`,
+  boardActivity: (boardId: string) => `board:${boardId}:activity`,
 } as const
 
 /** The entity kinds a row can be about (the server's `entity::*`). */
@@ -293,4 +295,5 @@ export const ENTITY = {
   researchRun: 'research_run',
   kbDoc: 'kb_doc',
   agentDesign: 'agent_design',
+  board: 'board',
 } as const

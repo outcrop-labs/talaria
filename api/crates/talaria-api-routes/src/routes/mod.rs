@@ -164,6 +164,15 @@ pub fn router(state: AppState) -> Router {
                 .delete(talaria_routes_boards::boards::boards_id_members::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, DELETE") }),
         )
+        // The caller's own notification setting for one board — their row
+        // only, any board role (talaria_notify::boards).
+        .route(
+            "/api/boards/{id}/notify",
+            get(talaria_routes_boards::boards::boards_id_notify::get)
+                .put(talaria_routes_boards::boards::boards_id_notify::put)
+                .delete(talaria_routes_boards::boards::boards_id_notify::delete)
+                .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
+        )
         .route(
             "/api/boards/{id}/labels",
             get(talaria_routes_boards::boards::boards_id_labels::get)
@@ -179,6 +188,34 @@ pub fn router(state: AppState) -> Router {
                 .put(talaria_routes_boards::boards::boards_id_statuses::put)
                 .delete(talaria_routes_boards::boards::boards_id_statuses::delete)
                 .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/boards/{id}/sync",
+            get(talaria_routes_boards::boards::boards_id_sync::get)
+                .post(talaria_routes_boards::boards::boards_id_sync::post)
+                .put(talaria_routes_boards::boards::boards_id_sync::put)
+                .delete(talaria_routes_boards::boards::boards_id_sync::delete)
+                .fallback(|| async { method_not_allowed("GET, POST, PUT, DELETE") }),
+        )
+        .route(
+            "/api/boards/{id}/sync/browse",
+            post(talaria_routes_boards::boards::boards_id_sync_browse::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/boards/{id}/sync/preview",
+            post(talaria_routes_boards::boards::boards_id_sync_preview::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        .route(
+            "/api/boards/{id}/sync/credential",
+            axum::routing::put(talaria_routes_boards::boards::boards_id_sync_credential::put)
+                .fallback(|| async { method_not_allowed("PUT") }),
+        )
+        .route(
+            "/api/boards/{id}/sync/runs",
+            post(talaria_routes_boards::boards::boards_id_sync_runs::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/boards/{id}/tasks",
@@ -263,6 +300,11 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(talaria_routes_boards::tasks::tasks_id_dependencies::post)
                 .delete(talaria_routes_boards::tasks::tasks_id_dependencies::delete)
                 .fallback(|| async { method_not_allowed("POST, DELETE") }),
+        )
+        .route(
+            "/api/tasks/{id}/resync",
+            axum::routing::post(talaria_routes_boards::tasks::tasks_id_resync::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/tasks/{id}/move",
@@ -370,6 +412,13 @@ pub fn router(state: AppState) -> Router {
         // The notification contract's doors (docs/notifications/contract.md):
         // a client's ack that it surfaced rows (I-18), and the per-device test
         // push (a stub that answers 501 until W2-E, rate-limited already).
+        // The caller's setting for every board they can see, with their
+        // default (talaria_notify::boards).
+        .route(
+            "/api/notifications/boards",
+            get(talaria_routes_comms::activity::notifications_boards::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
         .route(
             "/api/notifications/ack",
             post(talaria_routes_comms::activity::notifications_ack::post)
@@ -1586,11 +1635,12 @@ pub fn router(state: AppState) -> Router {
         // The workbench family, the agent sandbox plane: the per-repo git
         // flow, the operator's git hosts (talaria-git-hosts — list/add,
         // read/patch/remove, test connection, refresh what a GitHub App's
-        // installations accepted; admin, they hold org credentials), the
-        // human side of
+        // installations accepted, what each agent's token carries there;
+        // admin, they hold org credentials), the human side of
         // workbench jobs (the ticket strip + approve/reject/merge-to-testing),
         // the repo-creation approval queue, the per-agent repo grants, and
-        // the GitHub permissions an admin gives an agent on each host.
+        // the GitHub permissions an admin gives an agent on each host (and
+        // "Check token", what the agent's git would get for one repo now).
         // Who is a developer is the agent's own switch (fleet/defs PATCH).
         .route(
             "/api/workbench/flow",
@@ -1612,6 +1662,11 @@ pub fn router(state: AppState) -> Router {
                 .fallback(|| async { method_not_allowed("GET, PUT, DELETE") }),
         )
         .route(
+            "/api/workbench/git-hosts/{id}/agents",
+            get(talaria_routes_workbench::workbench::workbench_git_hosts_id_agents::get)
+                .fallback(|| async { method_not_allowed("GET") }),
+        )
+        .route(
             "/api/workbench/git-hosts/{id}/refresh",
             post(talaria_routes_workbench::workbench::workbench_git_hosts_id_refresh::post)
                 .fallback(|| async { method_not_allowed("POST") }),
@@ -1626,6 +1681,11 @@ pub fn router(state: AppState) -> Router {
             get(talaria_routes_workbench::workbench::workbench_github_permissions_agent_id::get)
                 .put(talaria_routes_workbench::workbench::workbench_github_permissions_agent_id::put)
                 .fallback(|| async { method_not_allowed("GET, PUT") }),
+        )
+        .route(
+            "/api/workbench/github-permissions/{agentId}/check",
+            post(talaria_routes_workbench::workbench::workbench_github_permissions_agent_id_check::post)
+                .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(
             "/api/workbench/harnesses",
@@ -1950,6 +2010,12 @@ pub fn router(state: AppState) -> Router {
             "/api/home",
             get(talaria_routes_comms::activity::home::get).fallback(|| async { method_not_allowed("GET") }),
         )
+        // The queues alone, for the web Inbox's board: the same pass /api/home
+        // answers them from, without the admin glance (alerts, cost) around it.
+        .route(
+            "/api/home/queues",
+            get(talaria_routes_comms::activity::home_queues::get).fallback(|| async { method_not_allowed("GET") }),
+        )
         .route(
             "/api/join",
             get(talaria_routes_integrations::account::join::get).fallback(|| async { method_not_allowed("GET") }),
@@ -2060,6 +2126,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/agent/organize",
             post(talaria_routes_comms::comms::agent_organize::post)
+                .fallback(|| async { method_not_allowed("POST") }),
+        )
+        // The agent puts an existing file in front of the person, in the pane
+        // beside the session it is answering — the same chip a create lands,
+        // so the pane follows it like any file the agent touched.
+        .route(
+            "/api/agent/open",
+            post(talaria_routes_comms::comms::agent_open::post)
                 .fallback(|| async { method_not_allowed("POST") }),
         )
         .route(

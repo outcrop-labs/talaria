@@ -325,21 +325,9 @@ pub async fn post(State(state): State<AppState>, req: Request<Body>) -> Response
             .and_then(|v| v.to_str().ok()),
     );
 
-    // Detached last_used_at — same fire-and-forget write as the models route.
-    {
-        let pg = state.pg.clone();
-        let key_id = id.key_id.clone();
-        tokio::spawn(async move {
-            if let Err(e) =
-                sqlx::query("update llm_api_keys set last_used_at = now() where id::text = $1")
-                    .bind(&key_id)
-                    .execute(&pg)
-                    .await
-            {
-                tracing::warn!("[llm/v1/chat] last_used_at update failed for {key_id}: {e}");
-            }
-        });
-    }
+    // Detached last_used_at — the same fire-and-forget write as the models
+    // route.
+    let _ = super::llm_models::note_key_used(&state.pg, &id.key_id, "[llm/v1/chat]");
 
     // The key's own request-rate ceiling (#265) — the cheapest refusal, first.
     // Unset (the default) or 0 skips it; a limiter outage fails open.

@@ -18,6 +18,7 @@ the platform for other people lives in them.
 | :--- | :--- |
 | [Comms](./comms.md) | Channels, relays, DMs, agent chats |
 | [Boards](./boards.md) | Tickets, workflow columns, views, review and sign-off |
+| [Syncing a board from ClickUp](./boards-clickup-sync.md) | Connect a ClickUp list, read the sync chip, fix problems, replace a token, disconnect |
 | [Plan](./plan.md) | Planning with an agent, the living document, drafting tickets; a work session's files |
 | [Research](./research.md) | Cited research runs at three depths |
 | [Knowledge](./knowledge.md) | Spaces and docs, official content, OKF summaries |

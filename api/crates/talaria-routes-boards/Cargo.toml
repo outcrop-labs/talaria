@@ -12,6 +12,7 @@ workspace = true
 talaria-agent-auth = { workspace = true }
 talaria-approvals = { workspace = true }
 talaria-audit = { workspace = true }
+talaria-board-sync = { workspace = true }
 talaria-boards = { workspace = true }
 talaria-body = { workspace = true }
 talaria-work-pulse = { workspace = true }

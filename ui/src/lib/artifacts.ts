@@ -1,5 +1,5 @@
 import { resolve, type MaybeGetter } from '@/lib/reactive-arg'
-import { createQuery } from '@tanstack/svelte-query'
+import { createQuery, keepPreviousData } from '@tanstack/svelte-query'
 import { delJson, delJsonGone, errorSentence, getJsonOr404, getList, HttpError, postJson, putJson, putJsonOr } from '@/lib/fetch-json'
 import type { SaveAnswer } from '@/lib/save-base.svelte'
 import type { EditPolicy, KbEditor, Visibility } from '@/lib/kb'
@@ -37,6 +37,17 @@ export interface Artifact {
   canEdit?: boolean
 }
 
+/** May this viewer change the file? `canEdit` is the PUT's own rule answered
+ *  on read; an answer without it (an older server, a save's echo) is treated as
+ *  editable, so nothing that worked before turns read-only by accident. */
+export const canEditArtifact = (a: Pick<Artifact, 'canEdit'>): boolean => a.canEdit !== false
+
+/** Where the editor opens: in Read, unless the file is empty AND this viewer
+ *  may write it — an empty body used to drop everyone into Edit, a viewer
+ *  included, whose every keystroke then failed to save. */
+export const initialMode = (a: Pick<Artifact, 'canEdit' | 'body'>): 'read' | 'edit' =>
+  canEditArtifact(a) && !a.body.trim() ? 'edit' : 'read'
+
 export interface ArtifactFolder {
   id: string
   name: string
@@ -55,6 +66,35 @@ export const useArtifacts = () =>
     queryKey: ['artifacts'],
     queryFn: (): Promise<Artifact[]> => getList<Artifact>('/api/artifacts', 'artifacts'),
   }))
+
+/** An artifact without its body: what `?fields=heads` answers. */
+export type ArtifactHead = Omit<Artifact, 'body' | 'canEdit'>
+
+/** The start of `now`'s local day, as the instant the server compares against. */
+export const startOfLocalDay = (now: number): string => {
+  const d = new Date(now)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString()
+}
+
+/** The artifacts updated since `since` (an instant, see startOfLocalDay), without
+ *  their bodies: the Inbox's Files cards, which show today's documents by title.
+ *  The whole list carries every body there is — megabytes, growing every day with
+ *  run transcripts and brief mirrors. The day is in the key, so a new day reads
+ *  afresh; keyed under ['artifacts'], so every invalidation of the list refreshes
+ *  it too. At midnight the new day's key starts empty: yesterday's heads stand in
+ *  until it answers (the Files cards' isToday filter shows none of them), so a
+ *  board left open overnight does not fall back to its skeleton while it loads.
+ *  The Files browser and KB attachments keep `useArtifacts`. */
+export const useArtifactsSince = (since: MaybeGetter<string>) =>
+  createQuery(() => {
+    const s = resolve(since)
+    return {
+      queryKey: ['artifacts', 'heads', s],
+      queryFn: (): Promise<ArtifactHead[]> =>
+        getList<ArtifactHead>(`/api/artifacts?since=${encodeURIComponent(s)}&fields=heads`, 'artifacts'),
+      placeholderData: keepPreviousData,
+    }
+  })
 
 export const useArtifact = (id: MaybeGetter<string | null>) =>
   createQuery(() => {

@@ -41,7 +41,8 @@
   import { fade, fly, slide, GROW_X } from '@/lib/motion'
   import { relativeTime } from '@/lib/fleet'
   import { useSession } from '@/lib/session'
-  import { deleteArtifact, officeExport, officeExportHref, putArtifact, uploadFile, useArtifact, type Artifact, type ArtifactPatch } from '@/lib/artifacts'
+  import { canEditArtifact, deleteArtifact, initialMode, officeExport, officeExportHref, putArtifact, uploadFile, useArtifact, type Artifact, type ArtifactPatch } from '@/lib/artifacts'
+  import { holdEdits } from '@/lib/pane-edits'
   import { followRevisions, historyKey } from '@/lib/revisions.svelte'
   import { guardedSaver } from '@/lib/save-base.svelte'
   import { heldKey, holdRefusedEdits } from '@/lib/held-edit.svelte'
@@ -101,7 +102,8 @@
     if (artifact) title = artifact.title
     if (artifact && !initMode) {
       initMode = true
-      mode = artifact.body.trim() ? 'read' : 'edit'
+      // An empty file opens in Edit only for someone who may write it.
+      mode = initialMode(artifact)
       if (artifact.kind === 'microsite') html = artifact.body
       saver.rebase(artifact)
     }
@@ -124,6 +126,21 @@
   })
 
   const isOwner = $derived(!!artifact && !!me && (artifact.ownerUserId ? artifact.ownerUserId === me.id : artifact.createdBy === (me.email ?? me.name)))
+  // VIEW ONLY. The server answers whether this viewer may change the file
+  // (`canEdit`, the PUT's own rule); every control whose save would 403 —
+  // the Read/Edit switch, Edit on an empty body, the icon, the upload, Pull
+  // from Google, Delete — is left out for a viewer rather than offered and
+  // then refused. An agent can now open somebody else's document in a
+  // person's pane, which is where this used to show.
+  const canEdit = $derived(!!artifact && canEditArtifact(artifact))
+
+  // WHAT A TAB SWITCH WOULD LOSE. The Work pane follows the agent to a file
+  // it touches, and switching tabs unmounts this editor — its autosave timer
+  // with it. So the host asks, before it moves the pane, whether anything here
+  // is unsaved (lib/pane-edits).
+  $effect(() =>
+    holdEdits(id, () => mode === 'edit' && (dirty || htmlTimer !== null || saver.busy || !!saver.conflict || !!editorRef?.hasUnsavedChanges())),
+  )
 
   /** Resolves true when the save landed. `guard`: the edit surface's buffer.
    *  `rethrow`: the caller shows the failure itself (version history's
@@ -228,6 +245,8 @@
    *  refusal already up it asks first. */
   const setMode = async (m: 'read' | 'edit') => {
     if (m === mode || !artifact) return
+    // A viewer has no Edit to enter: every save from it would be refused.
+    if (m === 'edit' && !canEdit) return
     if (m === 'edit') {
       if (saver.busy) {
         await saver.idle()
@@ -367,8 +386,11 @@
     const driveUrl = artifact.googleFileUrl
     if (driveUrl) {
       entries.push({ label: 'Open in Google', icon: [ExternalLink, { size: 13 }], onSelect: () => window.open(driveUrl, '_blank', 'noopener,noreferrer') })
-      entries.push({ label: pulling ? 'Pulling' : 'Pull from Google', icon: [Upload, { size: 13 }], disabled: pulling, onSelect: () => void pullFromGoogle() })
+      // Pulling overwrites the body, so it is an edit.
+      if (canEdit) entries.push({ label: pulling ? 'Pulling' : 'Pull from Google', icon: [Upload, { size: 13 }], disabled: pulling, onSelect: () => void pullFromGoogle() })
     }
+    // Delete follows the server's DELETE rule, which is the edit rule.
+    if (!canEdit) return entries
     entries.push({
       label: 'Delete file',
       icon: [Trash2, { size: 13 }],
@@ -418,9 +440,19 @@
   {/if}
 {/snippet}
 
+{#snippet viewOnly()}
+  <span
+    class="shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted"
+    title="You can read this but not edit it — ask its owner to make you an editor"
+    data-view-only
+  >View only</span>
+{/snippet}
+
 {#snippet paneTools()}
   <!-- A file upload has nothing to edit in place, so it has no mode either. -->
-  {#if artifact && artifact.kind !== 'file'}
+  {#if artifact && !canEdit}
+    {@render viewOnly()}
+  {:else if artifact && artifact.kind !== 'file'}
     <Segmented
       size="xs"
       options={[{ id: 'read', label: 'Read' }, { id: 'edit', label: 'Edit' }] as const}
@@ -509,6 +541,7 @@
            save path and dirty flag stay here. -->
       <RecordTitle
         icon={artifact.icon}
+        iconEditable={canEdit}
         onIconPick={(e) => void save({ icon: e })}
         onIconClear={() => void save({ icon: null })}
         value={mode === 'edit' ? title : artifact.title}
@@ -521,12 +554,16 @@
         editing={mode === 'edit'}
       />
       <Chip>{KIND_LABEL[artifact.kind]}</Chip>
-      <Segmented
-        size="xs"
-        options={[{ id: 'read', label: 'Read' }, { id: 'edit', label: 'Edit' }] as const}
-        value={mode}
-        onChange={(m) => void setMode(m)}
-      />
+      {#if canEdit}
+        <Segmented
+          size="xs"
+          options={[{ id: 'read', label: 'Read' }, { id: 'edit', label: 'Edit' }] as const}
+          value={mode}
+          onChange={(m) => void setMode(m)}
+        />
+      {:else}
+        {@render viewOnly()}
+      {/if}
       <Button variant="outline" size="sm" class="shrink-0 capitalize" title="Share &amp; permissions" onclick={() => (shareOpen = true)}>
         {artifact.visibility}
       </Button>
@@ -609,9 +646,13 @@
             <Markdown class="tiptap" children={artifact.body} />
           {:else}
             <div class="mx-auto max-w-[46rem] px-6 py-8">
-              <button type="button" onclick={() => void setMode('edit')} class="text-sm text-muted hover:text-fg">
-                Empty document. Click to start.
-              </button>
+              {#if canEdit}
+                <button type="button" onclick={() => void setMode('edit')} class="text-sm text-muted hover:text-fg">
+                  Empty document. Click to start.
+                </button>
+              {:else}
+                <p class="text-sm text-muted">This document is empty.</p>
+              {/if}
             </div>
           {/if}
         </div>
@@ -631,7 +672,11 @@
         <iframe in:fly={{ y: 6, duration: 200 }} title={artifact.title} srcdoc={artifact.body} sandbox="allow-scripts allow-forms allow-popups allow-modals" class="min-w-0 flex-1 border-0 bg-white"></iframe>
       {:else}
         <div in:fly={{ y: 6, duration: 200 }} class="grid min-w-0 flex-1 place-items-center p-8 text-center text-sm text-muted">
-          <button type="button" onclick={() => void setMode('edit')} class="hover:text-fg">Empty microsite. Switch to Edit to write HTML.</button>
+          {#if canEdit}
+            <button type="button" onclick={() => void setMode('edit')} class="hover:text-fg">Empty microsite. Switch to Edit to write HTML.</button>
+          {:else}
+            <p>This page is empty.</p>
+          {/if}
         </div>
       {/if}
     {:else if artifact.kind === 'sheet'}
@@ -673,6 +718,11 @@
                 </label>
               {/if}
             </div>
+          </div>
+        {:else if !canEdit}
+          <div class="mx-auto flex max-w-lg flex-col items-center gap-2 rounded-lg border border-dashed border-line p-12 text-center">
+            <Paperclip size={22} class="text-muted" />
+            <div class="text-sm text-muted">No file has been uploaded here yet.</div>
           </div>
         {:else}
           <label class="mx-auto flex max-w-lg cursor-pointer flex-col items-center gap-2 rounded-lg border border-dashed border-line p-12 text-center transition-colors hover:border-[var(--theme-accent-border)]">

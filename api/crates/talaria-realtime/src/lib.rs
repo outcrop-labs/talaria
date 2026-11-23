@@ -749,9 +749,21 @@ pub enum UserEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
     },
+    /// The brief moved, or needs re-reading. `seq` is the log's last seq.
+    ///
+    /// Two publishers, and the client must tell them apart. An APPEND
+    /// publishes the seq it reached, and a page already at that seq has it,
+    /// so the client drops the echo. The STALE NUDGE (`mark_brief_stale`:
+    /// a notification landed, a thread moved, a run was decided)
+    /// clears the sweep throttle and publishes the UNCHANGED seq, and its
+    /// whole point is a re-read that sweeps on the way through. `stale` marks
+    /// it, so the client refetches whatever seq its page holds. Absent on an
+    /// append, so that frame is byte-identical to before.
     Brief {
         brief_id: String,
         seq: i64,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        stale: bool,
     },
     Channel {
         channel_id: String,
@@ -1880,6 +1892,30 @@ mod tests {
             None
         );
         assert_eq!(notification_seq("not json"), None);
+    }
+
+    // An append's brief event is the frame it always was; the stale nudge
+    // says so, because it carries a seq the page already holds and still
+    // has to be refetched.
+    #[test]
+    fn only_the_stale_nudge_says_stale() {
+        let append = serde_json::to_string(&UserEvent::Brief {
+            brief_id: "b".into(),
+            seq: 3,
+            stale: false,
+        })
+        .unwrap();
+        assert_eq!(append, r#"{"type":"brief","briefId":"b","seq":3}"#);
+        let nudge = serde_json::to_string(&UserEvent::Brief {
+            brief_id: "b".into(),
+            seq: 3,
+            stale: true,
+        })
+        .unwrap();
+        assert_eq!(
+            nudge,
+            r#"{"type":"brief","briefId":"b","seq":3,"stale":true}"#
+        );
     }
 
     // The read-sync event is a number and a tag; the v2 fields are absent

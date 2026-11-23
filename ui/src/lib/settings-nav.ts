@@ -54,7 +54,7 @@ export const APPS_TABS = [
   { id: 'discover', label: 'Discover' },
 ] as const
 
-export type InstanceTabId = 'org' | 'people' | 'agents' | 'git' | 'search' | 'retrieval' | 'storage' | 'secrets' | 'security'
+export type InstanceTabId = 'org' | 'people' | 'agents' | 'git' | 'github' | 'search' | 'retrieval' | 'storage' | 'secrets' | 'security'
 export interface InstanceTab {
   id: InstanceTabId
   label: string
@@ -88,6 +88,9 @@ export const INSTANCE_PAGES: readonly InstancePage[] = [
   instancePage('Agent policy', "How agents' work is checked, and the code, web and knowledge they can reach.", [
     instanceTab('agents', 'Oversight'),
     instanceTab('git', 'Git hosts'),
+    // Every agent's repositories, permissions, tokens and requests on its
+    // git hosts, in one place.
+    instanceTab('github', 'GitHub access'),
     // Two kinds of search, named for what is searched.
     instanceTab('search', 'Web search'),
     instanceTab('retrieval', 'Knowledge search'),
@@ -224,11 +227,18 @@ const KEYWORDS: Readonly<Record<string, readonly string[]>> = {
   '/admin/storage': ['admin', 'instance', 'files', 'uploads', 's3', 'bucket', 'replica', 'credentials', 'encryption', 'updates', 'limits'],
 }
 
+/** Words a page tab is found by besides its label, keyed by the tab's
+ *  address. A row's keywords land on the row, which is its page's first tab;
+ *  these land on the tab itself. */
+const TAB_KEYWORDS: Readonly<Record<string, readonly string[]>> = {
+  '/admin/github': ['github', 'permissions', 'token', 'workflows', 'repositories', 'developer', 'installation'],
+}
+
 /**
  * What a search finds: group by group in the sidebar's order, the rows whose
- * label or keywords contain the query, then the page tabs whose label does.
- * Only rows the viewer has are searched, so a tab of a page they cannot open
- * never shows.
+ * label or keywords contain the query, then the page tabs whose label or tab
+ * keywords do. Only rows the viewer has are searched, so a tab of a page they
+ * cannot open never shows.
  */
 export function searchSettings(groups: readonly SettingsNavGroup[], tabs: SettingsPageTabs, query: string): SettingsNavMatch[] {
   const q = query.trim().toLowerCase()
@@ -241,11 +251,12 @@ export function searchSettings(groups: readonly SettingsNavGroup[], tabs: Settin
       .map((r): SettingsNavMatch => ({ to: r.to, label: r.label, icon: r.icon, rowTo: r.to, group: g.id }))
 
     const tabMatches = g.rows.flatMap((r) =>
-      (tabs[r.to] ?? []).flatMap((t, i): SettingsNavMatch[] =>
-        has(t.label) && t.label.toLowerCase() !== r.label.toLowerCase()
-          ? [{ to: t.to ?? (i === 0 ? r.to : `${r.to}/${t.id}`), label: t.label, parent: r.label, icon: r.icon, rowTo: r.to, group: g.id }]
-          : [],
-      ),
+      (tabs[r.to] ?? []).flatMap((t, i): SettingsNavMatch[] => {
+        const to = t.to ?? (i === 0 ? r.to : `${r.to}/${t.id}`)
+        return (has(t.label) || (TAB_KEYWORDS[to] ?? []).some(has)) && t.label.toLowerCase() !== r.label.toLowerCase()
+          ? [{ to, label: t.label, parent: r.label, icon: r.icon, rowTo: r.to, group: g.id }]
+          : []
+      }),
     )
     return [...rowMatches, ...tabMatches]
   })

@@ -18,6 +18,7 @@ zone that the seq bump returned, and its answer lands on the row:
 | Input | Where it comes from |
 |---|---|
 | The class's Desktop, Push and Email channels | `prefs::channels_of` (prefs v2, I-13) |
+| A channel the producer overrode for this person | `NotifyMeta::channels` (I-26): their setting for a board, decided at fan-out; `prefs::channels_with` puts it over the class's channels |
 | DND and working hours | `prefs::dnd_state` in the person's zone (I-14): `users.timezone`, else the workspace's (below) |
 | What the producer said | `NotifyMeta` (`quiet`, `skip_push`, `force_alert`) |
 | The instance switches | `app_settings.notify_delivery`: `emailEnabled` (off unless exactly `true`), `pushEnabled` (on unless exactly `false`), read through a 10 s cache |
@@ -68,6 +69,18 @@ email  = Email && emailEnabled && !quiet && frequency != off
 
   A `Quiet` coalesce changes none of the delivery columns. `refresh_notification` (a DM's
   newer message on its unread row) behaves like a `Realert` coalesce, mail included.
+- **A producer's channel override** (`NotifyMeta::channels`, I-26) replaces the class's
+  Desktop, Push or Email for this one row and this one person, each channel on its own; a
+  channel it leaves `None` is the matrix's. Today two producers set it: the ticket
+  fan-outs and the ticket @mention door (talaria-mentions), each from the recipient's
+  setting for the board — Alerts for Desktop and Push together, Email for Email
+  ([producers.md](./producers.md#each-board)). Everything after the channels is
+  unchanged — DND, working hours, the instance switches,
+  the email frequency, `quiet` and `skip_push` still win — and the legacy route reads the
+  channels that applied. The override is stored on the row (`desktop_override`,
+  `push_override`, `email_override`, null where the matrix decided), beside the delivery
+  columns it shaped: a `Realert` coalesce takes this write's, a `Quiet` one keeps the open
+  row's, and a refresh (which files with none) clears it.
 
 ### Defaults
 
@@ -87,6 +100,16 @@ The registry (`classes.rs`) defaults are wave 1's effective answer, with these c
   in the All tab, off the For-you badge, and push at Following's urgency (`low`, 1 h). The
   matrix row "Channel activity" turns any of the three off for every channel at All; a
   channel set back to Mentions files no such rows.
+- **A board set to hear every ticket stays quiet.** `board_activity` (Following) defaults
+  to the feed only, the `work_complete` channels, unlike a channel at All: the rows for the
+  tickets a person IS in are quiet by default (a status move is `work_complete`), and news
+  about tickets they are not in must never ring louder than news about their own. Its rows
+  (`board-activity`) are filed only for a person whose own setting for that board covers
+  the whole board ([producers.md](./producers.md#each-board)); the matrix row "Board
+  activity" turns the banner, push or mail on, and so does that board's own channel
+  choice. Nothing in this engine reads a board setting: who gets a row, and any channel the
+  board overrides, is decided at fan-out; the deferred push and the mail batcher re-read
+  the class matrix through the override the row was filed with, as for any row.
 - **The `account` class** (Direct; banner, push and mail on) carries
   `agent_google_principal`, the notice that an agent now acts as you on Google. It used to
   fall through into the quiet `work_complete` bucket (SE-14).
@@ -118,7 +141,9 @@ moves anyone's digest.
 - **The deferred-push job** (`notify-deferred-push`, leased, every 5 s) claims rows whose
   deferral is due and that nobody has acked or read, with `for update skip locked`. It stamps
   `pushed_at` in the same statement and then pushes. Before pushing it reads the person's
-  prefs again, so a pause or a Push switch turned off within the minute is obeyed. Claiming
+  prefs again, so a pause or a Push switch turned off within the minute is obeyed — the
+  matrix read through the row's `push_override` (`prefs::channels_with`): a push a board
+  turned on stays on, and a board setting is never re-read here. Claiming
   before sending means two processes never push one row, and no row lock is held while a
   push service answers. A process killed between the claim and the POST loses that one
   push; it never sends twice. A deferral that came due while the api was down fires once,
@@ -140,9 +165,11 @@ so that a queue accepted by the previous binary still drains (PLAN3 §13 retires
    `for update skip locked`. Each claimed row's due time moves 10 minutes on. That move is a
    lease: if the process dies mid-send, the rows come due again.
 3. **Re-check per person, right up to the send.** Rows read meanwhile are skipped and never
-   mailed. A row whose class's Email channel is now off, or whose frequency is now `off`,
-   leaves the mail plane. A row held by a pause that began after it was filed waits for the
-   pause to end.
+   mailed. A row whose Email channel is now off, or whose frequency is now `off`, leaves the
+   mail plane. Its Email channel is the class matrix as it reads now, through the override
+   the row was filed with (`email_override` — a board that turned mail on for its rows keeps
+   it; a board setting is never re-read). A row held by a pause that began after it was
+   filed waits for the pause to end.
 4. **One mail.** The subject is "N unread in Talaria". The items are grouped by category
    (Needs you, Direct, Following, Workspace), each with its title, why it showed, the first
    line of its body and its link. It carries `List-Unsubscribe` to the settings page, and
@@ -151,8 +178,9 @@ so that a queue accepted by the previous binary still drains (PLAN3 §13 retires
    links and no unsubscribe header; it names the path instead.
 5. **The outcomes:**
    - **Accepted:** `emailed_at` is set. Rows of the legacy email-only route (Desktop and
-     Push off, Email on) are filed read, which keeps wave 1's "read after an accepted mail",
-     and the read-sync event goes out.
+     Push off, Email on — read through the row's override too, so a board set to email
+     only counts) are filed read, which keeps wave 1's "read after an accepted mail", and
+     the read-sync event goes out.
    - **No address:** the rows stay in-app only.
    - **Refused by the switch mid-pass:** this person's rows and every claimed row behind
      them are dropped.
@@ -237,18 +265,25 @@ Two daily jobs, both leased:
 | `notify-retention` | 24 h | yes | aged rows and their inbox-focus rows |
 | `push-prune` | 24 h | yes | subscriptions of ended sessions, idle and failing ones |
 | `notification-mail` | 30 s | per instance | wave 1's outbox drain (one release, then retired) |
+| `task-due` | 15 min | yes (5 min) | the due-date reminders: tickets due within a day or just overdue, filed by each person's setting for the board ([producers.md](./producers.md#due-dates)) |
 
 The number in brackets is the job's `max_run_ms`. It is also how long a process killed
 mid-pass holds the job's lease, so it bounds how late the first deferred push or mail
 after a crash can be. It is kept short on purpose: a pass that outlives it is reported as
 hung, and a second instance starting meanwhile is harmless, because every claim skips
-locked rows.
+locked rows. `task-due` is the exception: its claim takes no lock, so the lease, renewed
+while a pass runs, is all that keeps two passes apart. A pass that overlaps another anyway
+(its lease lost to a Redis fault mid-pass) files the tickets both read again, into the
+same open `task_due` row: a second alert, never a second row.
 
-Two environment variables exist for live tests only. Each logs a warning at boot:
+Three environment variables exist for live tests only. Each logs a warning at boot:
 
 - `TALARIA_TEST_NOTIFY_EMAIL_DELAY_SECS=<n>`: every mail delay and backoff step becomes n
   seconds, and the batcher ticks every 5 s.
 - `TALARIA_TEST_NOTIFY_DAILY_EVERY_MS=<n>`: both daily jobs run every n ms.
+- `TALARIA_TEST_TASK_DUE_EVERY_MS=<n>`: the due-date scan runs every n ms (its first run
+  after n ms). n is at least 1000; a smaller or unreadable value is ignored, with a warning
+  that says so.
 
 ## Features
 

@@ -23,9 +23,9 @@
 Source: [`api/crates/talaria-routes-comms/src/brief/brief.rs`](../../api/crates/talaria-routes-comms/src/brief/brief.rs)
 
 > /api/brief. GET → the caller's daily brief: the assistant-assembled digest of what
-> needs them. The read sweeps-if-due first, then answers with the document —
-> or with WHICH kind of nothing, because the three absences render
-> differently and collapsing them into one empty state is how a surface
+> needs them. The read sweeps-if-due first (within a budget), then answers with
+> the document — or with WHICH kind of nothing, because the three absences
+> render differently and collapsing them into one empty state is how a surface
 > …
 
 | Method | Auth | Body | Returns | Status | Flags |
@@ -66,7 +66,7 @@ Source: [`api/crates/talaria-routes-comms/src/brief/brief_item.rs`](../../api/cr
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `session` | [body](#post-apibriefitem-body) | `{ok}` | 200, 400, 404 | — |
+| POST | `session` | [body](#post-apibriefitem-body) | `{ok, brief}` | 200, 400, 404 | — |
 
 ### POST `/api/brief/item` body
 

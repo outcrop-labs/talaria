@@ -14,6 +14,7 @@ user-facing story and troubleshooting are in [`../NOTIFICATIONS.md`](../NOTIFICA
 | The matrix | `classes`, `channels`, `delivery.emailEnabled`, `emailFrequency` | `PATCH {channels}`, `PATCH {emailFrequency}`; the digest and the admin email switch as before |
 | DND | `dnd` (stored and evaluated: `active`, `until`, `reason`, `timeZone`), the profile's zone (`GET /api/me`) | `PATCH {dnd: {pausedUntil \| schedule \| allowNeedsYou}}` |
 | The status panel | `GET /api/push/devices`, `GET /api/me/presence`, `notify-status` (W2-R's setters), the shell bridge | `POST /api/notifications/test`, `DELETE /api/push/devices/{id}`, the shell's test |
+| Each board (the board's bell, Board settings → Notifications, Settings → Boards) | `GET /api/boards/{id}/notify`, `GET /api/notifications/boards`, `features` (`board-prefs`, `board-channels`) | `PUT`/`DELETE /api/boards/{id}/notify`, `PATCH {boards}` |
 
 Every list read sits under the query key `['notifications', …]`, so the live stream's
 invalidation of the bell refreshes the page's views too.
@@ -29,7 +30,8 @@ invalidation of the bell refreshes the page's views too.
   `entity.type` and `entity.id` goes under one collapsible header; a row about something
   else in between ends the run, so a group never pulls an older row above newer ones. The
   header is "\<name\> · N updates": a ticket key every row carries (`TAL-112`), else the
-  entity type's word ("Ticket", "Channel").
+  entity type's word ("Ticket", "Channel", "Board" — a `board-activity` row is about its
+  board).
 - **The count** is the coalesced row's `count` (W2-P), worded by kind: "3 messages",
   "Moved 4 times", "Down 2 times"; "N updates" otherwise.
 - **The reason** is the row's `reason`, else the registry's reason for its kind.
@@ -54,7 +56,7 @@ under it, each with its name; from `sm` up it is one row with column heads.
 
 Its rows are `classes[]`, grouped by category in the order Needs you, Direct, Following,
 Workspace (a category the client does not know goes last, under its id). Members are not
-served admin-only classes, so today a member's matrix has 9 rows and an admin's 11, with
+served admin-only classes, so today a member's matrix has 11 rows and an admin's 13, with
 no client code knowing why. The cells are `channels[class]`. In-app is always checked and
 cannot be changed. Email is disabled, with the instance switch's explanation, while
 `delivery.emailEnabled` is false. "Reset" writes the registry's defaults as explicit bools
@@ -147,7 +149,10 @@ Nearing the end of what is loaded, `j` fetches the next page.
 - `ui/src/routes/app/Notifications.svelte`; `ui/src/route-table.ts` (`/notifications`)
 - `ui/src/routes/app/settings/NotificationsSection.svelte`, `NotifyMatrix.svelte`,
   `NotifySchedule.svelte`, `NotifyStatusPanel.svelte`, `NotifyDevices.svelte`,
-  `BrowserNotifications.svelte`
+  `BrowserNotifications.svelte`, `NotifyBoards.svelte` (Settings → Boards)
+- `ui/src/components/board/BoardNotifyMenu.svelte` (the board's bell),
+  `BoardNotifyForm.svelte`, `NotificationsTab.svelte`; `ui/src/lib/board-notify.ts` with
+  its test (the rules: [producers.md](./producers.md#each-board))
 - `ui/src/lib/notify-center.ts`, `notify-matrix.ts`, `notify-dnd.ts`, `notify-keys.ts`,
   each with its test; `notify-classes.ts` (the list retired)
 - `ui/e2e/notify-center-ui.spec.ts`: the bell, a 390 px window, the matrix, DND, the status
@@ -163,3 +168,7 @@ Nearing the end of what is loaded, `j` fetches the next page.
   labels, filters, devices, the alert target).
 - `ui/e2e/notify-center-ui.spec.ts` in Chromium and Firefox against a running stack; CI's
   e2e job runs it in Chromium.
+- `board-notify.test.ts` (every preset × cadence × source: glyph, name, words; the summary;
+  the whole-setting write) and `board-settings.test.ts` (which tabs a role sees);
+  `ui/e2e/board-notify.spec.ts` (the bell, the tab, Settings → Boards, a viewer, Watch it
+  myself, in both themes).

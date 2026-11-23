@@ -16,7 +16,7 @@
 // is the platform's OWN gate, which works for every repo on every host.
 
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use talaria_git_host_types::GitHost;
 
@@ -113,13 +113,120 @@ impl GrantChange {
     }
 }
 
+/// What an editor read of an agent's grants: every repo it holds, and each
+/// one's branch rules. A compare-and-set write sends it back as `from`, and
+/// one that finds anything else is answered with what is there now, in the
+/// same shape (`{repos, rules}` on the wire).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct GrantsRead {
+    pub repos: Vec<RepoRef>,
+    pub rules: Vec<RepoRule>,
+}
+
+impl GrantsRead {
+    /// Whether this read is what `now` holds: the same repos, in any order,
+    /// each with the same rules. A repo the read gives no rule is at the
+    /// defaults, and rules compare as the write stores them (a blank base is
+    /// the default, a prefix is trimmed of '/'), so a row written before
+    /// that trim never reads as moved.
+    pub fn matches(&self, now: &GrantsRead) -> bool {
+        let sorted = |repos: &[RepoRef]| {
+            let mut out = repos.to_vec();
+            out.sort_by(|a, b| a.host_id.cmp(&b.host_id).then_with(|| a.repo.cmp(&b.repo)));
+            out.dedup();
+            out
+        };
+        let repos = sorted(&now.repos);
+        repos == sorted(&self.repos)
+            && repos
+                .iter()
+                .all(|r| self.rule_of(r).normalized() == now.rule_of(r).normalized())
+    }
+
+    /// The rules this read gives `r`, or the defaults.
+    fn rule_of(&self, r: &RepoRef) -> RepoRule {
+        self.rules
+            .iter()
+            .find(|x| x.host_id == r.host_id && x.repo == r.repo)
+            .cloned()
+            .unwrap_or_else(|| RepoRule::defaults(r))
+    }
+}
+
+/// What a compare-and-set grant write did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrantsCas {
+    /// It landed: what it added and removed.
+    Ok(GrantChange),
+    /// The agent's grants were not what the editor read when the write
+    /// came: this is what they are now, and nothing was written.
+    Changed(GrantsRead),
+}
+
+/// The advisory lock every grant writer takes on the agent, inside its
+/// transaction: a compare-and-set's read and write, and an approval's one
+/// grant, never interleave, even when the agent holds no row yet.
+async fn lock_grants(conn: &mut PgConnection, agent_id: &str) -> Result<(), String> {
+    sqlx::query("select pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("workbench_repos:{agent_id}"))
+        .execute(conn)
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("workbench grant lock: {e}"))
+}
+
+/// Every grant the agent holds and its rules, read inside the caller's
+/// transaction.
+async fn grants_in(conn: &mut PgConnection, agent_id: &str) -> Result<GrantsRead, String> {
+    let rules: Vec<RepoRule> = sqlx::query_as::<_, RuleRow>(
+        "select host_id, repo, base_branch, push_mode, branch_prefix from workbench_repos \
+         where agent_id = $1::uuid order by host_id, repo",
+    )
+    .bind(agent_id)
+    .fetch_all(conn)
+    .await
+    .map_err(|e| format!("workbench grant read: {e}"))?
+    .into_iter()
+    .map(rule_of)
+    .collect();
+    Ok(GrantsRead {
+        repos: rules
+            .iter()
+            .map(|r| RepoRef {
+                host_id: r.host_id.clone(),
+                repo: r.repo.clone(),
+            })
+            .collect(),
+        rules,
+    })
+}
+
 /// Atomic grant replace — a crash can never leave the agent grantless by
 /// accident. `keep` is capped at 100. Answers what it added and removed.
+/// Writes no rules and compares nothing: [`set_grants_cas`] is the editor's.
 pub async fn set_granted_repos(
     pg: &PgPool,
     agent_id: &str,
     keep: &[RepoRef],
 ) -> Result<GrantChange, String> {
+    match set_grants_cas(pg, agent_id, None, keep, &[]).await? {
+        GrantsCas::Ok(change) => Ok(change),
+        GrantsCas::Changed(_) => Err("a grant write that read nothing cannot have moved".into()),
+    }
+}
+
+/// THE EDITOR'S WRITE: replace the agent's grants with `keep` (capped at
+/// 100) and write `rules` for the repos still granted (a rule for any other
+/// is dropped), all in one transaction — if the agent holds what the editor
+/// read (`from`) now. With no `from` nothing is compared: a caller from
+/// before the compare-and-set writes as it always did.
+pub async fn set_grants_cas(
+    pg: &PgPool,
+    agent_id: &str,
+    from: Option<&GrantsRead>,
+    keep: &[RepoRef],
+    rules: &[RepoRule],
+) -> Result<GrantsCas, String> {
     let keep = &keep[..keep.len().min(100)];
     let hosts: Vec<String> = keep.iter().map(|g| g.host_id.clone()).collect();
     let repos: Vec<String> = keep.iter().map(|g| g.repo.clone()).collect();
@@ -127,6 +234,13 @@ pub async fn set_granted_repos(
         .begin()
         .await
         .map_err(|e| format!("workbench grant tx: {e}"))?;
+    lock_grants(&mut tx, agent_id).await?;
+    if let Some(from) = from {
+        let now = grants_in(&mut tx, agent_id).await?;
+        if !from.matches(&now) {
+            return Ok(GrantsCas::Changed(now));
+        }
+    }
     // SET semantics, not replace-by-delete: rows that survive keep their
     // hygiene rules, rows that leave go away, rows that arrive start at the
     // defaults. A delete-everything write would wipe an admin's branch rules
@@ -159,6 +273,17 @@ pub async fn set_granted_repos(
         .await
         .map_err(|e| format!("workbench grant write: {e}"))?
     };
+    // Only rules for STILL-GRANTED repos are honored — a rule for a repo the
+    // same write removed is a UI race, and the quiet drop is the honest
+    // resolution.
+    for rule in rules {
+        if keep
+            .iter()
+            .any(|g| g.host_id == rule.host_id && g.repo == rule.repo)
+        {
+            write_rule(&mut tx, agent_id, rule).await?;
+        }
+    }
     // A permission request is the host's, not one repo's: it is withdrawn
     // with the agent's LAST grant on its host, in the same transaction, so an
     // approval can never land on a host the agent just left.
@@ -177,37 +302,43 @@ pub async fn set_granted_repos(
         out.sort_by(|a, b| a.host_id.cmp(&b.host_id).then_with(|| a.repo.cmp(&b.repo)));
         out
     };
-    Ok(GrantChange {
+    Ok(GrantsCas::Ok(GrantChange {
         added: refs(added),
         removed: refs(removed),
         withdrawn,
-    })
+    }))
 }
 
 /// Grant `agent_id` one repo on one host, leaving every other grant as it
 /// is. True when the grant is new. An approval's write (a repo created for
 /// the agent): it never reads the grant set and writes it back, which would
-/// drop a grant an admin added in between.
+/// drop a grant an admin added in between. It takes the editor's lock, so an
+/// editor's compare-and-set read either sees it or is answered with it.
 pub async fn add_grant(
     pg: &PgPool,
     agent_id: &str,
     host_id: &str,
     repo: &str,
 ) -> Result<bool, String> {
-    sqlx::query(
+    let write = |e: sqlx::Error| format!("workbench grant write: {e}");
+    let mut tx = pg.begin().await.map_err(write)?;
+    lock_grants(&mut tx, agent_id).await?;
+    let added = sqlx::query(
         "insert into workbench_repos (agent_id, host_id, repo) values ($1::uuid, $2, $3) \
          on conflict do nothing",
     )
     .bind(agent_id)
     .bind(host_id)
     .bind(repo)
-    .execute(pg)
+    .execute(&mut *tx)
     .await
     .map(|r| r.rows_affected() > 0)
-    .map_err(|e| format!("workbench grant write: {e}"))
+    .map_err(write)?;
+    tx.commit().await.map_err(write)?;
+    Ok(added)
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoRule {
     #[serde(rename = "host")]
@@ -220,6 +351,42 @@ pub struct RepoRule {
     pub push_mode: String,
     /// When set, the agent's branches must start with this prefix.
     pub branch_prefix: Option<String>,
+}
+
+impl RepoRule {
+    /// The rules a grant starts with: the repo's default branch as its base,
+    /// branches only, no prefix.
+    pub fn defaults(r: &RepoRef) -> RepoRule {
+        RepoRule {
+            host_id: r.host_id.clone(),
+            repo: r.repo.clone(),
+            base_branch: None,
+            push_mode: "branches_only".into(),
+            branch_prefix: None,
+        }
+    }
+
+    /// This rule as a write stores it: a blank base is the default, a mode
+    /// that is not 'free' is 'branches_only', and a prefix is trimmed of
+    /// spaces and '/' at both ends, blank being none.
+    pub fn normalized(&self) -> RepoRule {
+        RepoRule {
+            host_id: self.host_id.clone(),
+            repo: self.repo.clone(),
+            base_branch: self.base_branch.clone().filter(|b| !b.is_empty()),
+            push_mode: if self.push_mode == "free" {
+                "free"
+            } else {
+                "branches_only"
+            }
+            .into(),
+            branch_prefix: self
+                .branch_prefix
+                .as_deref()
+                .map(|p| p.trim().trim_matches('/').to_string())
+                .filter(|p| !p.is_empty()),
+        }
+    }
 }
 
 type RuleRow = (String, String, Option<String>, String, Option<String>);
@@ -266,6 +433,20 @@ pub async fn repo_rule(pg: &PgPool, agent_id: &str, host_id: &str, repo: &str) -
 /// Write one grant's rules. The repo must already be granted (the route
 /// validates); values are trusted to the route's own validation.
 pub async fn set_repo_rule(pg: &PgPool, agent_id: &str, rule: &RepoRule) -> Result<(), String> {
+    let mut conn = pg
+        .acquire()
+        .await
+        .map_err(|e| format!("repo rule write: {e}"))?;
+    write_rule(&mut conn, agent_id, rule).await
+}
+
+/// [`set_repo_rule`] on the caller's connection (a grant write's
+/// transaction).
+async fn write_rule(
+    conn: &mut PgConnection,
+    agent_id: &str,
+    rule: &RepoRule,
+) -> Result<(), String> {
     sqlx::query(
         "update workbench_repos set base_branch = $4, push_mode = $5, branch_prefix = $6 \
          where agent_id = $1::uuid and host_id = $2 and repo = $3",
@@ -280,7 +461,7 @@ pub async fn set_repo_rule(pg: &PgPool, agent_id: &str, rule: &RepoRule) -> Resu
         "branches_only"
     })
     .bind(&rule.branch_prefix)
-    .execute(pg)
+    .execute(conn)
     .await
     .map_err(|e| format!("repo rule write: {e}"))?;
     Ok(())
@@ -467,5 +648,84 @@ mod tests {
         let free = rule(None, "free", Some("agent/"));
         assert!(push_allowed(&free, "main", "refs/heads/main").is_ok());
         assert!(push_allowed(&free, "main", "refs/heads/master").is_ok());
+    }
+
+    #[test]
+    fn a_read_matches_what_is_held_whatever_the_order_and_however_a_rule_was_spelled() {
+        let r = |host: &str, repo: &str| RepoRef {
+            host_id: host.into(),
+            repo: repo.into(),
+        };
+        let rule = |g: &RepoRef, base: Option<&str>, mode: &str, prefix: Option<&str>| RepoRule {
+            host_id: g.host_id.clone(),
+            repo: g.repo.clone(),
+            base_branch: base.map(String::from),
+            push_mode: mode.into(),
+            branch_prefix: prefix.map(String::from),
+        };
+        let (site, app, notes) = (
+            r("github", "acme/site"),
+            r("github", "acme/app"),
+            r("forge", "acme/notes"),
+        );
+        // What is held: three grants, one with a prefix stored before the
+        // write trimmed '/' off it.
+        let now = GrantsRead {
+            repos: vec![notes.clone(), app.clone(), site.clone()],
+            rules: vec![
+                rule(&notes, None, "branches_only", None),
+                rule(&app, None, "branches_only", None),
+                rule(&site, Some("develop"), "free", Some("agent/")),
+            ],
+        };
+        // The editor's read: another order, the defaults left out, the
+        // prefix as the write stores it.
+        let read = GrantsRead {
+            repos: vec![site.clone(), app.clone(), notes.clone()],
+            rules: vec![rule(&site, Some("develop"), "free", Some("agent"))],
+        };
+        assert!(read.matches(&now));
+        assert!(now.matches(&read));
+        assert!(now.matches(&now));
+
+        // A grant added or removed since is a move.
+        let mut fewer = read.clone();
+        fewer.repos.retain(|g| g != &notes);
+        assert!(!fewer.matches(&now));
+        let mut more = read.clone();
+        more.repos.push(r("github", "acme/docs"));
+        assert!(!more.matches(&now));
+        // The same name on another host is another repository.
+        let mut elsewhere = read.clone();
+        elsewhere.repos.retain(|g| g != &notes);
+        elsewhere.repos.push(r("github", "acme/notes"));
+        assert!(!elsewhere.matches(&now));
+
+        // So is any rule changed since: the base, the mode, the prefix.
+        for moved in [
+            rule(&site, None, "free", Some("agent")),
+            rule(&site, Some("develop"), "branches_only", Some("agent")),
+            rule(&site, Some("develop"), "free", None),
+        ] {
+            let read = GrantsRead {
+                repos: read.repos.clone(),
+                rules: vec![moved],
+            };
+            assert!(!read.matches(&now), "{read:?}");
+        }
+        // A blank base and a blank prefix are the defaults.
+        let blank = GrantsRead {
+            repos: vec![app.clone()],
+            rules: vec![rule(&app, Some(""), "branches_only", Some(" / "))],
+        };
+        let held = GrantsRead {
+            repos: vec![app.clone()],
+            rules: vec![],
+        };
+        assert!(blank.matches(&held));
+        assert_eq!(
+            RepoRule::defaults(&app),
+            rule(&app, Some(""), "anything", Some("/")).normalized()
+        );
     }
 }

@@ -11,10 +11,13 @@
   // filter the ticket list, not the graph — and the row they used to sit in is
   // the only horizontal space the workchain's own verbs have.
   //
-  // The workchain menu is the one home for everything that acts on a chain:
-  // switch, create, rename, pause, straighten, copy link, delete. The focused
-  // chain lives in the URL (`?chain=`), so a chain is a thing you can send
-  // someone — the lens convention every other selection here already follows.
+  // Two doors on the chain's toolbar. The workchain menu switches, creates,
+  // copies a link and straightens; the gear beside it (WorkchainSettings)
+  // holds the focused chain's settings — its name and whether it is paused —
+  // with Delete on that panel's danger line, never a peer of the settings in
+  // one menu (docs/UI-CONVENTIONS.md, "Settings cog"). The focused chain lives
+  // in the URL (`?chain=`), so a chain is a thing you can send someone — the
+  // lens convention every other selection here already follows.
   //
   // Which chains the menu offers follows the list/gantt rule: the chains whose
   // steps the board's filtered `tasks` still contain — EXCEPT archived steps,
@@ -42,6 +45,7 @@
   import { spliceIntoWire } from '@/lib/wiring-canvas'
   import WorkchainCanvas from './WorkchainCanvas.svelte'
   import WorkchainSidebar from './WorkchainSidebar.svelte'
+  import WorkchainSettings from './WorkchainSettings.svelte'
   import {
     addWorkchainEdge,
     addWorkchainStep,
@@ -172,8 +176,8 @@
   const focusedChain = $derived(chains.find((c) => c.id === focused) ?? null)
   const menuPos = $derived(visibleChains.findIndex((w) => w.id === focused) + 1)
 
-  /** The one menu. Every verb that acts on a chain hangs off the control that
-   *  names it — switching included, so there is never a second place to look. */
+  /** The switcher: which chain fills the view, a new one, a link to this one,
+   *  and straighten (a verb on its graph). Its settings are the gear's. */
   const chainMenuItems = $derived.by(() => {
     const items: ContextMenuEntry[] = visibleChains.map((w) => ({
       // The progress read rides the label: switching chains is a decision, and
@@ -195,8 +199,6 @@
     items.push({ label: 'Copy link to this workchain', onSelect: () => copyChainLink(c) })
     if (!canEdit) return items
     items.push(
-      { label: 'Rename workchain', onSelect: () => void promptRenameFocused() },
-      { label: c.paused ? 'Resume chain' : 'Pause chain', onSelect: () => togglePaused() },
       {
         // The `positions` verb, which the api answers by rewriting the graph to
         // ONE line through the order sent. It was the rail's reorder and became
@@ -206,8 +208,6 @@
         disabled: c.steps.length < 2 || chainIsLinear(c),
         onSelect: () => void straightenFocused(),
       },
-      'sep',
-      { label: 'Delete workchain', danger: true, onSelect: () => void deleteFocused() },
     )
     return items
   })
@@ -217,25 +217,18 @@
     pushToast({ title: 'Link copied', body: `It opens this board on “${c.name}”.`, tone: 'success' })
   }
 
-  const togglePaused = () => {
+  const setPaused = (paused: boolean) => {
     const c = focusedChain
-    if (!c) return
-    void updateWorkchain(c.id, { paused: !c.paused })
+    if (!c || c.paused === paused) return
+    void updateWorkchain(c.id, { paused })
       .then(invalidate)
-      .catch(failure(c.paused ? 'Resuming the chain' : 'Pausing the chain'))
+      .catch(failure(paused ? 'Pausing the chain' : 'Resuming the chain'))
   }
 
-  const promptRenameFocused = async () => {
+  const renameFocused = (name: string) => {
     const c = focusedChain
-    if (!c) return
-    const name = await prompt({
-      title: 'Rename workchain',
-      message: `Rename “${c.name}”.`,
-      confirmLabel: 'Rename',
-      defaultValue: c.name,
-    })
-    const trimmed = name?.trim()
-    if (!trimmed || trimmed === c.name) return
+    const trimmed = name.trim()
+    if (!c || !trimmed || trimmed === c.name) return
     void updateWorkchain(c.id, { name: trimmed }).then(invalidate).catch(failure('Renaming the workchain'))
   }
 
@@ -387,7 +380,7 @@
             {#snippet trigger(open)}
               <button
                 type="button"
-                title="Switch, create or manage workchains"
+                title="Switch or create workchains"
                 class={cn(
                   'flex h-8 min-w-0 max-w-72 items-center gap-2 rounded-md border border-line bg-panel px-2 font-sans text-sm text-fg transition-colors hover:border-line-strong',
                   open && 'border-line-strong',
@@ -402,6 +395,16 @@
               </button>
             {/snippet}
           </DropdownMenu>
+          {#if canEdit && focusedChain}
+            <WorkchainSettings
+              chainId={focusedChain.id}
+              name={focusedChain.name}
+              paused={focusedChain.paused}
+              onRename={renameFocused}
+              onPaused={setPaused}
+              onDelete={() => void deleteFocused()}
+            />
+          {/if}
           {#if focusedChain}
             <span class="font-mono text-[10px] tracking-[0.05em] text-muted">{chainProgress(focusedChain)}</span>
             {#if focusedChain.paused}

@@ -333,6 +333,16 @@ async fn the_channel_reply_carries_the_identity_on_the_wire() {
         200,
         "the channel door refused the post"
     );
+    let posted: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let posted_id = posted["message"]["id"]
+        .as_str()
+        .expect("the door answers the posted row")
+        .to_string();
 
     // The agent's reply is a detached spawn — it reaches the recorder on
     // its own schedule, so this is a poll, not a read.
@@ -340,7 +350,8 @@ async fn the_channel_reply_carries_the_identity_on_the_wire() {
     let messages = sent["messages"].as_array().expect("messages on the wire");
 
     // The room's own system prompt first, the identity row second, the
-    // transcript after — the ordering the stamp was placed to keep.
+    // channel's own id third (the thread the toolkit's conversationId takes),
+    // the transcript after — the ordering the stamp was placed to keep.
     assert_eq!(messages[0]["role"], "system");
     assert!(
         messages[0]["content"]
@@ -354,14 +365,31 @@ async fn the_channel_reply_carries_the_identity_on_the_wire() {
     assert!(identity.contains("WHO YOU ARE SPEAKING WITH"), "{identity}");
     assert!(identity.contains("Zach Siegel"), "{identity}");
     assert!(identity.contains(&user.id), "{identity}");
+    assert_eq!(messages[2]["role"], "system");
+    let line = messages[2]["content"].as_str().expect("string content");
+    assert!(line.contains("THIS CHANNEL'S ID"), "{line}");
+    assert!(line.contains(&channel.id), "{line}");
     // The transcript follows: the mention itself, prefixed by name — the
     // prefix convention, riding AFTER the identity row that gives it truth.
-    assert!(messages.len() > 2, "no transcript followed the stamp");
-    let transcript = messages[2]["content"].as_str().unwrap_or_default();
+    assert!(messages.len() > 3, "no transcript followed the stamp");
+    let transcript = messages[3]["content"].as_str().unwrap_or_default();
     assert!(
         transcript.contains("@live-test-agent"),
         "the transcript's first turn is not the mention: {transcript}"
     );
+
+    // The reply's row names the message it answers — the post above, as the
+    // real door handed it to the trigger — which is what an agent's asked
+    // review exit holds the asker to (talaria-chips `live_turn`).
+    let answers: Option<String> = sqlx::query_scalar(
+        "select answers_message_id::text from channel_messages \
+         where channel_id = $1::uuid and author_type = 'agent'",
+    )
+    .bind(&channel.id)
+    .fetch_one(&state.pg)
+    .await
+    .unwrap();
+    assert_eq!(answers.as_deref(), Some(posted_id.as_str()));
 
     reset(&state.pg).await;
 }

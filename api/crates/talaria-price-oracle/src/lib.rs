@@ -13,6 +13,13 @@ pub mod unpriced;
 // own, so that row is what their usage is derived from. Local endpoints are
 // skipped ($0 by definition).
 //
+// WHAT A REFRESH WRITES. One transaction per endpoint, after the catalog
+// fetch: its stale catalog rows dropped, each priced model's published row
+// and lookup, each miss's lookup, and its fill map — committed once, and
+// synchronously (these are prices). It used to be one autocommit a
+// statement, ~340 WAL flushes a refresh for an endpoint of 175 models, each
+// one queued in front of every other writer on a slow disk.
+//
 // Three callers share one single-flight: the scheduled job
 // (registered against the scheduler; the boot wiring arms it),
 // the opportunistic `maybe_refresh_auto_prices` kick, and the
@@ -567,8 +574,8 @@ fn no_match_detail(model: &str, catalog_size: usize) -> String {
 
 /// One lookup's conclusion for an endpoint's model, upserted so the unpriced
 /// list can say why a model has no price and when that was last checked.
-async fn record_lookup(
-    pg: &PgPool,
+async fn record_lookup<'e>(
+    pg: impl sqlx::PgExecutor<'e>,
     endpoint_id: &str,
     model: &str,
     outcome: &str,
@@ -595,8 +602,8 @@ async fn record_lookup(
 
 /// A last-segment match on another host: OpenRouter's entry and rates,
 /// recorded as a suggestion the admin may accept as a manual price.
-async fn record_suggestion(
-    pg: &PgPool,
+async fn record_suggestion<'e>(
+    pg: impl sqlx::PgExecutor<'e>,
     endpoint_id: &str,
     model: &str,
     hit: &CatalogPrice,
@@ -726,97 +733,222 @@ async fn refresh_auto_prices(
         }
     };
 
-    let mut counts = RefreshCounts::default();
-    for (id, _name, provider, models) in targets {
-        let mut auto = JsonMap::new();
-        for m in models {
-            let decision = decide(&catalog, &provider, &m);
-            if !matches!(decision, Decision::Price { .. }) {
-                // No catalog price applies any more: drop an earlier pass's
-                // row for this model — a "-1" stored before negatives were
-                // refused, or a fuzzy match the policy now withholds — so it
-                // stops pricing.
-                let _ = sqlx::query(
-                    "delete from provider_prices where endpoint_id = $1::uuid and model = $2 \
-                     and variant = '' and source = $3",
-                )
-                .bind(&id)
-                .bind(&m)
-                .bind(CATALOG_SOURCE)
-                .execute(pg)
-                .await;
-            }
-            match decision {
-                Decision::Price { hit, step } => {
-                    let value = serde_json::to_value(AutoPrice {
-                        in_per_mtok: round4(hit.in_per_mtok),
-                        out_per_mtok: round4(hit.out_per_mtok),
-                    })
-                    .expect("an f64 pair serializes");
-                    auto.insert(m.clone(), value);
-                    counts.priced += 1;
-                    // The same hit is also a published model-level price for
-                    // this endpoint, carrying which catalog entry it is and
-                    // how sure the match was.
-                    let price = catalog_price_row(&m, &hit, step);
-                    match spend_fetch::upsert_price(pg, &id, &provider, &price).await {
-                        Ok(()) => {
-                            counts.catalog_priced += 1;
-                            let detail = priced_as_detail(&hit, step);
-                            let _ = record_lookup(pg, &id, &m, "priced", Some(&detail)).await;
-                        }
-                        Err(e) => {
-                            counts.upsert_failed += 1;
-                            let _ = record_lookup(
-                                pg,
-                                &id,
-                                &m,
-                                "source_failed",
-                                Some(&format!(
-                                    "the catalog priced it, and storing the price failed: {e}"
-                                )),
-                            )
-                            .await;
-                            if counts.first_upsert_error.is_none() {
-                                counts.first_upsert_error = Some(e);
-                            }
-                        }
-                    }
-                }
-                Decision::Suggest { hit } => {
-                    counts.no_match += 1;
-                    let _ = record_suggestion(pg, &id, &m, &hit).await;
-                }
-                Decision::Variable { catalog_id } => {
-                    counts.no_match += 1;
-                    let detail = variable_detail(&catalog_id);
-                    let _ = record_lookup(pg, &id, &m, "variable", Some(&detail)).await;
-                }
-                Decision::NoMatch { detail } => {
-                    counts.no_match += 1;
-                    let _ = record_lookup(pg, &id, &m, "no_match", Some(&detail)).await;
-                }
-            }
-        }
-        // A full pass replaces the endpoint's fill map (a model that left the
-        // catalog leaves it); a targeted retry merges its one entry in.
-        let sql = if only.is_some() {
-            "update llm_endpoints set auto_prices = coalesce(auto_prices, '{}'::jsonb) || $1, \
-             updated_at = now() where id = $2::uuid"
-        } else {
-            "update llm_endpoints set auto_prices = $1, updated_at = now() where id = $2::uuid"
-        };
-        sqlx::query(sql)
-            .bind(Value::Object(auto))
-            .bind(&id)
-            .execute(pg)
-            .await
-            .map_err(|e| format!("auto_prices write failed: {e}"))?;
-        counts.endpoints += 1;
-    }
+    let counts = apply_catalog(pg, targets, &catalog, only.is_some()).await?;
     // auto_prices is a cached column of the endpoints serve window — the
     // next completion must be able to see the fill.
     talaria_gateway::registry::invalidate_endpoints_cache();
+    Ok(counts)
+}
+
+/// The fetched catalog → each target endpoint's published prices, lookups
+/// and fill map. No network: the fetch is `refresh_auto_prices`'s half, and
+/// this half is what the live census drives. `merge` is a targeted retry,
+/// which merges its one entry into the fill map instead of replacing it.
+async fn apply_catalog(
+    pg: &PgPool,
+    targets: Vec<(String, String, String, Vec<String>)>,
+    catalog: &Catalog,
+    merge: bool,
+) -> Result<RefreshCounts, String> {
+    let mut counts = RefreshCounts::default();
+    for (id, _name, provider, models) in targets {
+        let one = match price_endpoint(pg, &id, &provider, &models, catalog, merge, false).await {
+            Ok(one) => one,
+            // A statement failed, and with it the transaction. The endpoint's
+            // pass again, each statement in a savepoint of its own: the one
+            // that fails is rolled back alone and noted (a refused upsert
+            // records its `source_failed` lookup), as its own autocommit was
+            // before, and the rest still land together.
+            Err(_) => price_endpoint(pg, &id, &provider, &models, catalog, merge, true).await?,
+        };
+        counts.add(one);
+    }
+    Ok(counts)
+}
+
+impl RefreshCounts {
+    fn add(&mut self, o: RefreshCounts) {
+        self.priced += o.priced;
+        self.endpoints += o.endpoints;
+        self.catalog_priced += o.catalog_priced;
+        self.upsert_failed += o.upsert_failed;
+        self.no_match += o.no_match;
+        if self.first_upsert_error.is_none() {
+            self.first_upsert_error = o.first_upsert_error;
+        }
+    }
+}
+
+/// Before a statement of an isolated pass: a savepoint for it alone.
+async fn open_step(tx: &mut sqlx::PgConnection, isolate: bool) -> Result<(), String> {
+    if isolate {
+        sqlx::query("savepoint price_step")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// After it. Not isolated, a failure ends the attempt (Postgres has aborted
+/// the transaction). Isolated, the savepoint is released, or rolled back and
+/// released, and the statement's own result comes back for the caller to
+/// note.
+async fn close_step<T, E: std::fmt::Display>(
+    tx: &mut sqlx::PgConnection,
+    isolate: bool,
+    out: Result<T, E>,
+) -> Result<Result<T, String>, String> {
+    let out = out.map_err(|e| e.to_string());
+    if !isolate {
+        return out.map(Ok);
+    }
+    if out.is_err() {
+        sqlx::query("rollback to savepoint price_step")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    sqlx::query("release savepoint price_step")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+/// One statement of an endpoint's pass, between `open_step` and
+/// `close_step`: its own result, or (`?`) the attempt's end.
+macro_rules! step {
+    ($tx:ident, $isolate:expr, $run:expr) => {{
+        open_step(&mut $tx, $isolate).await?;
+        let out = $run.await;
+        close_step(&mut $tx, $isolate, out).await?
+    }};
+}
+
+/// One endpoint's pass, in one transaction. Not isolated, the first
+/// statement that fails ends the attempt and nothing of it lands; isolated
+/// (`apply_catalog`'s second try), each statement runs in a savepoint of its
+/// own and a failure is that statement's alone. A failed fill-map write is
+/// the pass's error either way, as it always was — after the rest commits,
+/// when isolated.
+async fn price_endpoint(
+    pg: &PgPool,
+    id: &str,
+    provider: &str,
+    models: &[String],
+    catalog: &Catalog,
+    merge: bool,
+    isolate: bool,
+) -> Result<RefreshCounts, String> {
+    let mut counts = RefreshCounts::default();
+    let mut auto = JsonMap::new();
+    let mut tx = pg.begin().await.map_err(|e| e.to_string())?;
+    for m in models {
+        let decision = decide(catalog, provider, m);
+        if !matches!(decision, Decision::Price { .. }) {
+            // No catalog price applies any more: drop an earlier pass's
+            // row for this model — a "-1" stored before negatives were
+            // refused, or a fuzzy match the policy now withholds — so it
+            // stops pricing.
+            let _ = step!(
+                tx,
+                isolate,
+                sqlx::query(
+                    "delete from provider_prices where endpoint_id = $1::uuid and model = $2 \
+                     and variant = '' and source = $3",
+                )
+                .bind(id)
+                .bind(m)
+                .bind(CATALOG_SOURCE)
+                .execute(&mut *tx)
+            );
+        }
+        match decision {
+            Decision::Price { hit, step } => {
+                let value = serde_json::to_value(AutoPrice {
+                    in_per_mtok: round4(hit.in_per_mtok),
+                    out_per_mtok: round4(hit.out_per_mtok),
+                })
+                .expect("an f64 pair serializes");
+                auto.insert(m.clone(), value);
+                counts.priced += 1;
+                // The same hit is also a published model-level price for
+                // this endpoint, carrying which catalog entry it is and
+                // how sure the match was.
+                let price = catalog_price_row(m, &hit, step);
+                let stored = step!(
+                    tx,
+                    isolate,
+                    spend_fetch::upsert_price(&mut *tx, id, provider, &price)
+                );
+                match stored {
+                    Ok(()) => {
+                        counts.catalog_priced += 1;
+                        let detail = priced_as_detail(&hit, step);
+                        let _ = step!(
+                            tx,
+                            isolate,
+                            record_lookup(&mut *tx, id, m, "priced", Some(&detail))
+                        );
+                    }
+                    Err(e) => {
+                        counts.upsert_failed += 1;
+                        let detail =
+                            format!("the catalog priced it, and storing the price failed: {e}");
+                        let _ = step!(
+                            tx,
+                            isolate,
+                            record_lookup(&mut *tx, id, m, "source_failed", Some(&detail))
+                        );
+                        if counts.first_upsert_error.is_none() {
+                            counts.first_upsert_error = Some(e);
+                        }
+                    }
+                }
+            }
+            Decision::Suggest { hit } => {
+                counts.no_match += 1;
+                let _ = step!(tx, isolate, record_suggestion(&mut *tx, id, m, &hit));
+            }
+            Decision::Variable { catalog_id } => {
+                counts.no_match += 1;
+                let detail = variable_detail(&catalog_id);
+                let _ = step!(
+                    tx,
+                    isolate,
+                    record_lookup(&mut *tx, id, m, "variable", Some(&detail))
+                );
+            }
+            Decision::NoMatch { detail } => {
+                counts.no_match += 1;
+                let _ = step!(
+                    tx,
+                    isolate,
+                    record_lookup(&mut *tx, id, m, "no_match", Some(&detail))
+                );
+            }
+        }
+    }
+    // A full pass replaces the endpoint's fill map (a model that left the
+    // catalog leaves it); a targeted retry merges its one entry in.
+    let sql = if merge {
+        "update llm_endpoints set auto_prices = coalesce(auto_prices, '{}'::jsonb) || $1, \
+         updated_at = now() where id = $2::uuid"
+    } else {
+        "update llm_endpoints set auto_prices = $1, updated_at = now() where id = $2::uuid"
+    };
+    let filled = step!(
+        tx,
+        isolate,
+        sqlx::query(sql)
+            .bind(Value::Object(auto))
+            .bind(id)
+            .execute(&mut *tx)
+    );
+    tx.commit().await.map_err(|e| e.to_string())?;
+    filled.map_err(|e| format!("auto_prices write failed: {e}"))?;
+    counts.endpoints += 1;
     Ok(counts)
 }
 
@@ -1593,5 +1725,313 @@ mod tests {
             !spec.per_instance,
             "the catalog and the tables it reads are fleet-shared; it takes the lease"
         );
+    }
+}
+
+// Live CENSUS of a price refresh's writes — a measurement, not a behavior
+// test: the write half of a refresh (`apply_catalog`) for one cloud endpoint
+// with 175 models against a synthetic catalog (most priced, some missing,
+// some variable), printed for the pull request that changes it. A CHECKPOINT
+// before the measured refresh stands for the six hours since the last one.
+// It reads write transactions (the `pg_snapshot_xmax` delta), WAL bytes
+// (`pg_current_wal_lsn`) and `pg_stat_wal`'s records and full-page images —
+// the cluster's counters, so it wants a database nothing else is connected
+// to. It returns at once without TALARIA_WRITE_CENSUS=1, so CI's --ignored
+// step passes over it:
+//
+//   TALARIA_WRITE_CENSUS=1 DATABASE_URL=postgres://… \
+//     cargo test -p talaria-price-oracle --lib -- --ignored --nocapture price_refresh_live_census
+#[cfg(test)]
+mod refresh_census {
+    use std::str::FromStr;
+
+    use serde_json::json;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    use super::*;
+
+    pub(super) const MODELS: usize = 175;
+    const SCHEMA: &str = "price_refresh_census";
+
+    pub(super) fn model(k: usize) -> String {
+        format!("vendor-{}/model-{k}", k % 7)
+    }
+
+    /// The catalog the endpoint's models meet: one in 25 is missing, one in
+    /// 35 has a variable price, the rest are priced; plus entries no model
+    /// asks for, so it is catalog-sized.
+    pub(super) fn catalog() -> Catalog {
+        let mut rows: Vec<Value> = Vec::new();
+        for k in 0..MODELS {
+            if k % 25 == 24 {
+                continue;
+            }
+            let (p, c) = if k % 35 == 3 {
+                ("-1".to_string(), "-1".to_string())
+            } else {
+                (
+                    format!("{:.9}", (k + 1) as f64 * 1e-7),
+                    format!("{:.9}", (k + 1) as f64 * 4e-7),
+                )
+            };
+            rows.push(json!({ "id": model(k), "pricing": {
+                "prompt": p, "completion": c, "input_cache_read": "0.0000001" } }));
+        }
+        for k in 0..300 {
+            rows.push(
+                json!({ "id": format!("other-{}/unasked-{k}", k % 11), "pricing": {
+                "prompt": "0.000001", "completion": "0.000002" } }),
+            );
+        }
+        build_catalog(&rows)
+    }
+
+    fn census_url() -> Option<String> {
+        if std::env::var("TALARIA_WRITE_CENSUS").ok().as_deref() != Some("1") {
+            eprintln!("census skipped: set TALARIA_WRITE_CENSUS=1 and DATABASE_URL to run it");
+            return None;
+        }
+        Some(std::env::var("DATABASE_URL").expect("DATABASE_URL for the census"))
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct Mark {
+        xmax: i64,
+        lsn: i64,
+        records: i64,
+        fpi: i64,
+    }
+
+    async fn mark(pg: &PgPool) -> Mark {
+        sqlx::query("select pg_stat_force_next_flush()")
+            .execute(pg)
+            .await
+            .unwrap();
+        let (xmax, lsn, records, fpi): (i64, i64, i64, i64) = sqlx::query_as(
+            "select pg_snapshot_xmax(pg_current_snapshot())::text::int8, \
+               pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::int8, \
+               w.wal_records, w.wal_fpi from pg_stat_wal w",
+        )
+        .fetch_one(pg)
+        .await
+        .unwrap();
+        Mark {
+            xmax,
+            lsn,
+            records,
+            fpi,
+        }
+    }
+
+    async fn exec(pg: &PgPool, sql: &str) {
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(pg)
+            .await
+            .unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+
+    /// A scratch schema with the four tables a refresh reads and writes,
+    /// one cloud endpoint selling `MODELS` models, and a one-connection pool
+    /// that sees only it.
+    pub(super) async fn scratch(admin: &PgPool, url: &str, schema: &str) -> PgPool {
+        exec(admin, &format!("drop schema if exists {schema} cascade")).await;
+        exec(admin, &format!("create schema {schema}")).await;
+        for t in [
+            "llm_endpoints",
+            "provider_prices",
+            "price_lookups",
+            "usage_events",
+        ] {
+            exec(
+                admin,
+                &format!("create table {schema}.{t} (like public.{t} including all)"),
+            )
+            .await;
+        }
+        let opts = PgConnectOptions::from_str(url)
+            .expect("DATABASE_URL parses")
+            .options([("search_path", schema)]);
+        let pg = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .expect("scratch pool");
+        let models: Vec<String> = (0..MODELS).map(model).collect();
+        sqlx::query(
+            "insert into llm_endpoints (name, provider, class, models) \
+             values ('census-cloud', 'openrouter', 'cloud', $1)",
+        )
+        .bind(serde_json::to_value(&models).unwrap())
+        .execute(&pg)
+        .await
+        .unwrap();
+        pg
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn price_refresh_live_census() {
+        let Some(url) = census_url() else { return };
+        let admin = PgPool::connect(&url).await.expect("the database");
+        let pg = scratch(&admin, &url, SCHEMA).await;
+        let catalog = catalog();
+        let targets = models_to_price(&pg, None).await.unwrap();
+        // The first refresh fills; the measured one is a steady-state pass.
+        let first = apply_catalog(&pg, targets.clone(), &catalog, false)
+            .await
+            .unwrap();
+        exec(&pg, "checkpoint").await;
+        let m0 = mark(&pg).await;
+        let c = apply_catalog(&pg, targets, &catalog, false).await.unwrap();
+        let m1 = mark(&pg).await;
+        let wal = m1.lsn - m0.lsn;
+        println!(
+            "census price per refresh | 1 endpoint, {MODELS} models: {} priced, {} no price \
+             (first pass {} priced) | write xacts {} | WAL {:.3} MB ({wal} B) | records {} | FPI {} \
+             | per hour (÷6): write xacts {:.1}, WAL {:.3} MB",
+            c.priced,
+            c.no_match,
+            first.priced,
+            m1.xmax - m0.xmax,
+            wal as f64 / 1e6,
+            m1.records - m0.records,
+            m1.fpi - m0.fpi,
+            (m1.xmax - m0.xmax) as f64 / 6.0,
+            wal as f64 / 6e6,
+        );
+        pg.close().await;
+        exec(&admin, &format!("drop schema if exists {SCHEMA} cascade")).await;
+    }
+}
+
+// Live-DB proof that a refresh writes an endpoint in one transaction: every
+// row it writes for the endpoint (its published prices, its lookups, its fill
+// map) carries one xmin, a stale catalog row is dropped in the same pass, and
+// a price the store refuses still records its `source_failed` lookup while
+// the rest land. `#[ignore]`d — it needs a database — and CI's live-tests job
+// runs it (`cargo test --workspace --lib -- --ignored`):
+//
+//   DATABASE_URL=postgres://… cargo test -p talaria-price-oracle --lib -- --ignored price_refresh_live
+#[cfg(test)]
+mod refresh_live {
+    use super::refresh_census::{MODELS, catalog, model, scratch};
+    use super::*;
+
+    /// The distinct xmins of every row this endpoint has.
+    async fn xmins(pg: &PgPool, id: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "select distinct x from ( \
+               select xmin::text as x from provider_prices where endpoint_id = $1::uuid \
+               union all select xmin::text from price_lookups where endpoint_id = $1::uuid \
+               union all select xmin::text from llm_endpoints where id = $1::uuid) t",
+        )
+        .bind(id)
+        .fetch_all(pg)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn price_refresh_live_one_transaction_per_endpoint() {
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (a migrated database) to run the ignored live tests");
+        let admin = PgPool::connect(&url).await.expect("the database");
+        let schema = format!("price_refresh_live_{}", std::process::id());
+        let pg = scratch(&admin, &url, &schema).await;
+        let (id,): (String,) = sqlx::query_as("select id::text from llm_endpoints")
+            .fetch_one(&pg)
+            .await
+            .unwrap();
+        // An earlier pass priced model 24, which the catalog no longer lists.
+        sqlx::query(
+            "insert into provider_prices (endpoint_id, provider, model, variant, \
+               price_in_per_mtok, price_out_per_mtok, source) \
+             values ($1::uuid, 'openrouter', $2, '', 1, 2, 'openrouter.catalog')",
+        )
+        .bind(&id)
+        .bind(model(24))
+        .execute(&pg)
+        .await
+        .unwrap();
+
+        let targets = models_to_price(&pg, None).await.unwrap();
+        let c = apply_catalog(&pg, targets.clone(), &catalog(), false)
+            .await
+            .unwrap();
+        assert_eq!((c.priced, c.catalog_priced, c.no_match), (163, 163, 12));
+        assert_eq!((c.endpoints, c.upsert_failed), (1, 0));
+        let one = xmins(&pg, &id).await;
+        assert_eq!(one.len(), 1, "one transaction for the endpoint: {one:?}");
+        let (prices, lookups, stale): (i64, i64, i64) = sqlx::query_as(
+            "select (select count(*) from provider_prices), (select count(*) from price_lookups), \
+               (select count(*) from provider_prices where model = $1)",
+        )
+        .bind(model(24))
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!((prices, lookups, stale), (163, MODELS as i64, 0));
+        let filled: i64 = sqlx::query_scalar(
+            "select count(*) from llm_endpoints, jsonb_object_keys(auto_prices)",
+        )
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(filled, 163);
+
+        // The store refuses one model's price: its lookup says so, every
+        // other model is priced as before, and the fill map is whole.
+        sqlx::query(
+            "alter table provider_prices add constraint refuse_one \
+             check (model <> 'vendor-1/model-1') not valid",
+        )
+        .execute(&pg)
+        .await
+        .unwrap();
+        let c = apply_catalog(&pg, targets, &catalog(), false)
+            .await
+            .unwrap();
+        assert_eq!((c.priced, c.catalog_priced, c.upsert_failed), (163, 162, 1));
+        assert!(
+            c.first_upsert_error
+                .as_deref()
+                .is_some_and(|e| e.contains("refuse_one")),
+            "{:?}",
+            c.first_upsert_error
+        );
+        let (outcome, detail): (String, Option<String>) =
+            sqlx::query_as("select outcome, detail from price_lookups where model = $1")
+                .bind(model(1))
+                .fetch_one(&pg)
+                .await
+                .unwrap();
+        assert_eq!(outcome, "source_failed");
+        assert!(
+            detail.as_deref().is_some_and(
+                |d| d.starts_with("the catalog priced it, and storing the price failed")
+            ),
+            "{detail:?}"
+        );
+        let priced: i64 =
+            sqlx::query_scalar("select count(*) from price_lookups where outcome = 'priced'")
+                .fetch_one(&pg)
+                .await
+                .unwrap();
+        assert_eq!(priced, 162);
+        let filled: i64 = sqlx::query_scalar(
+            "select count(*) from llm_endpoints, jsonb_object_keys(auto_prices)",
+        )
+        .fetch_one(&pg)
+        .await
+        .unwrap();
+        assert_eq!(filled, 163);
+
+        pg.close().await;
+        let drop = format!("drop schema if exists {schema} cascade");
+        sqlx::query(sqlx::AssertSqlSafe(drop.as_str()))
+            .execute(&admin)
+            .await
+            .unwrap();
     }
 }

@@ -18,6 +18,7 @@
   import AdminEmailPanel from './AdminEmailPanel.svelte'
   import AdminEncryptionPanel from './AdminEncryptionPanel.svelte'
   import AdminGitHostsPanel from './AdminGitHostsPanel.svelte'
+  import AdminGithubAccess from './AdminGithubAccess.svelte'
   import AdminGitPermissionsSection from './AdminGitPermissionsSection.svelte'
   import AdminRepoCreationSection from './AdminRepoCreationSection.svelte'
   import AdminRepoFlowSection from './AdminRepoFlowSection.svelte'
@@ -113,11 +114,17 @@
       {/if}
       {#if tab === 'git'}
         <!-- The hosts first: requests and PR bases are about repos on them.
-             What agents asked for comes next: an agent waits on it. -->
+             Right under them, the way to each agent's GitHub access, which
+             says when a request waits. -->
         <AdminGitHostsPanel bind:adding={addingHost} />
         <AdminGitPermissionsSection />
         <AdminRepoCreationSection />
         <AdminRepoFlowSection />
+      {/if}
+      {#if tab === 'github'}
+        <!-- Every agent's repositories, permissions, tokens and requests;
+             `?agent=<id>` is one agent's editor. -->
+        <AdminGithubAccess />
       {/if}
       {#if tab === 'search'}
         <!-- The workspace search URL first: research reads it, and the agent

@@ -6,8 +6,8 @@
 //
 //   DATABASE_URL=postgres://… cargo test -p talaria-mcp-library --test catalog_live -- --ignored
 //
-// Each test builds its OWN schema (a copy of the mirror's table and of
-// app_settings, indexes and generated `search` column included) and points
+// Each test builds its OWN schema (a copy of the mirror's table, its stamp
+// table and app_settings, indexes and generated `search` column included) and points
 // the pool's search_path at it alone, so the real mirror and the real
 // settings are never read or written, and concurrent tests never meet.
 
@@ -47,6 +47,10 @@ async fn scratch(tag: &str) -> (PgPool, PgPool, String) {
         format!(
             "create table {schema}.mcp_library_entries \
              (like public.mcp_library_entries including all)"
+        ),
+        format!(
+            "create table {schema}.mcp_library_liveness \
+             (like public.mcp_library_liveness including all)"
         ),
         format!("create table {schema}.app_settings (like public.app_settings including all)"),
         // Before the first walk completes, an empty search asks the live
@@ -109,12 +113,14 @@ async fn insert(pg: &PgPool, r: Row<'_>) {
     };
     // `kind` is the filter search reads; the entry's package body is not.
     let entry = serde_json::to_value(&server).unwrap();
+    // A verdict on file comes with the job's stamp beside it.
     sqlx::query(
-        "insert into mcp_library_entries \
+        "with stamp as (insert into mcp_library_liveness (registry_name, checked_at) \
+                        select $1, now() where $8::text is not null) \
+         insert into mcp_library_entries \
            (registry_name, source, title, description, domain, domains, tier, kind, entry, \
-            live_state, live_checked_at, live_detail) \
+            live_state, live_detail) \
          values ($1, 'registry', $2, $3, $4, array[$4], $5, $6, $7, $8::text, \
-                 case when $8::text is null then null else now() end, \
                  case when $8::text is null then null else $8::text || ' detail' end)",
     )
     .bind(&server.registry_name)
@@ -446,8 +452,15 @@ async fn status_counts_partition_on_the_verdict() {
         "a new stand-in is pending: {l:?}"
     );
     sqlx::query(
-        "update mcp_library_entries set live_state = 'dead', live_checked_at = now(), \
-         live_detail = 'HTTP 404' where source = 'operator'",
+        "update mcp_library_entries set live_state = 'dead', live_detail = 'HTTP 404' \
+         where source = 'operator'",
+    )
+    .execute(&pg)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into mcp_library_liveness (registry_name, checked_at) \
+         select registry_name, now() from mcp_library_entries where source = 'operator'",
     )
     .execute(&pg)
     .await
@@ -455,8 +468,9 @@ async fn status_counts_partition_on_the_verdict() {
     cfg.stand_ins[0].title = "Stand-in, renamed".into();
     catalog::write_operator_stand_ins(&pg, &cfg).await.unwrap();
     let (state, stamped): (Option<String>, bool) = sqlx::query_as(
-        "select live_state, live_checked_at is not null from mcp_library_entries \
-         where source = 'operator'",
+        "select e.live_state, exists (select 1 from mcp_library_liveness l \
+                                      where l.registry_name = e.registry_name) \
+         from mcp_library_entries e where e.source = 'operator'",
     )
     .fetch_one(&pg)
     .await

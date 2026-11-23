@@ -12,7 +12,10 @@ import viteTsConfigPaths from 'vite-tsconfig-paths'
 // under test must compile to real reactivity the same way it does in the app.
 // Its runtime pieces (HMR, dev websocket) are inert here — no dev server, no
 // browser — so the plugin is transform-only in practice. The tsconfig path
-// mapping is reused so `@/…` resolves in tests exactly as it does in the app.
+// mapping is reused so `@/…` resolves in tests exactly as it does in the app —
+// `loose`, as vite.config.ts has it, so a `.svelte` file's own `@/…` imports
+// resolve too: a primitive's markup can be pinned by rendering it through
+// `svelte/server` (components/ui/settings-cog.test.ts), still with no DOM.
 // AN APP'S OWN TESTS run on their own, never as part of this suite (apps/ is
 // not this repo's code, and an installed app's test must not fail the
 // platform's gate): `TALARIA_APP_TESTS=<slug> bunx vitest run` from ui/ runs
@@ -41,12 +44,13 @@ export default defineConfig({
     },
   },
   plugins: [
-    viteTsConfigPaths({ projects: ['./tsconfig.json'] }),
+    viteTsConfigPaths({ projects: ['./tsconfig.json'], loose: true }),
     svelte({
       compilerOptions: {
         // Runes modules ($state in *.svelte.ts) compile in runes mode by
-        // file extension; no component is loaded by these tests and none of
-        // the browser-env assumptions (document, window) can be reached.
+        // file extension. A component is only ever server-rendered here
+        // (`svelte/server`), so none of the browser-env assumptions
+        // (document, window) can be reached.
         runes: true,
       },
     }),
