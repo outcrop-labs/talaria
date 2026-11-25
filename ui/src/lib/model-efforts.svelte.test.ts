@@ -130,11 +130,18 @@ test('a model switch empties the levels until the new answer is in, and says so'
 
 const SRC = join(import.meta.dirname, '..')
 
+// server-import-invariant.test.ts plants `.ts` files in this directory and
+// deletes them, in a worker running beside this one: a walk that lists one
+// and reads it a moment later finds it gone (ENOENT), and they are never a
+// caller anyway.
+const PROBE_DIR = '__invariant_probe__'
+
 function sources(dir: string, out: string[] = []): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, e.name)
-    if (e.isDirectory()) sources(full, out)
-    else if ((e.name.endsWith('.svelte') || e.name.endsWith('.ts')) && !e.name.endsWith('.test.ts')) out.push(full)
+    if (e.isDirectory()) {
+      if (e.name !== PROBE_DIR) sources(full, out)
+    } else if ((e.name.endsWith('.svelte') || e.name.endsWith('.ts')) && !e.name.endsWith('.test.ts')) out.push(full)
   }
   return out
 }

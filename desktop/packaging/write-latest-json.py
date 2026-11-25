@@ -139,7 +139,7 @@ def _self_test() -> None:
     pub = base64.b64decode(json.load(open(CONF, encoding="utf-8"))["plugins"]["updater"]["pubkey"]).decode()
     assert pub.splitlines()[0].endswith(shipped_key_id()), pub.splitlines()[0]
 
-    want, other = "183E3397DE42EB98", "A7E4E3180ED0F727"
+    want, other = "7DA247B3586A9245", "183E3397DE42EB98"
     sigs = {name: _box(b"ED", want, f"signature {name}") for name in ("linux", "mac", "win")}
     with tempfile.TemporaryDirectory() as tmp:
         app = os.path.join(tmp, "Talaria_1.2.3_amd64.AppImage")
