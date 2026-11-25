@@ -1,14 +1,17 @@
 // A SESSION'S FILES — what the Work pane lists as tabs, derived from what the
 // conversation already records rather than from a list of its own.
 //
-// Every Talaria document and every Google file the agent created, read or
-// edited in a turn left a chip on that turn's message (`chips_from_tool`, and
-// the edit route's document chip), so the chips ARE the session's file
-// history: the order they first appeared in is the order the files joined the
-// session, and the newest message that names a file is when it was last
-// touched. To those the teammate's own pins are added (`pinned_files` — the
-// pane's memory of what they opened), and, for a work session from before the
-// files pane, the living document it was created with.
+// Every Talaria document and every Google file the agent created, edited or
+// opened in a turn left a chip on that turn's message (`chips_from_tool`, the
+// create, edit and update routes' document chip, the open door's), so the
+// chips ARE the session's file history: the order they first appeared in is
+// the order the files joined the session, and the newest message that names a
+// file is when it was last touched. A Google READ leaves a chip too — the
+// transcript's pill — marked as a read (`READ_MARK`), and that one is not a
+// touch: reading a file for the agent's own context never opens it. To those
+// the teammate's own pins are added (`pinned_files` — the pane's memory of
+// what they opened), and, for a work session from before the files pane, the
+// living document it was created with.
 //
 // PURE, IN TWO STEPS, because the middle needs the database and this crate
 // should not decide who may read an artifact: `candidates` reads the rows the
@@ -22,19 +25,24 @@ use std::collections::HashMap;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::classify_href;
 use crate::google_file::{GoogleFile, GoogleType, google_id_ok, parse_google_file_url};
+use crate::{classify_href, is_read_mark};
 use talaria_params::uuid_canonical;
 
 /// How many files one session answers with.
 pub const MAX_SESSION_FILES: usize = 100;
 
 /// One message's chips, in conversation order, with the message's own time
-/// (ISO 8601) — what `lastTouchedAt` reports.
+/// (ISO 8601) — what `lastTouchedAt` reports — and the person that turn was
+/// for (`talaria_conversations::conversation_file_trail` says how it is read).
 #[derive(Debug, Clone)]
 pub struct TrailMessage {
     pub created_at: String,
     pub chips: Value,
+    /// Who the message was for: a person's own message is theirs, an agent's
+    /// reply belongs to whoever sent the message it answers, else the
+    /// conversation's owner. None only when the caller could not say.
+    pub requested_by: Option<String>,
 }
 
 /// Which file a candidate is.
@@ -46,7 +54,8 @@ pub enum FileRef {
 }
 
 impl FileRef {
-    fn key(&self) -> String {
+    /// The pane's key for the file: `artifact:<uuid>` or `google:<id>`.
+    pub fn key(&self) -> String {
         match self {
             Self::Artifact(id) => format!("artifact:{id}"),
             Self::Google(f) => f.key(),
@@ -88,6 +97,8 @@ pub struct Candidate {
     pub last_touched_at: Option<String>,
     /// The position of that newest message — what the cap ranks by.
     touched_rank: Option<usize>,
+    /// Who that newest message was for (`TrailMessage::requested_by`).
+    pub touched_for: Option<String>,
 }
 
 /// What the route found for one readable artifact.
@@ -116,6 +127,11 @@ pub struct SessionFile {
     pub url: Option<String>,
     pub source: &'static str,
     pub last_touched_at: Option<String>,
+    /// The person the newest touching turn was for. The pane takes the
+    /// viewer's focus only for that person; everyone else gets the tab
+    /// listed without being moved (WorkHarness `applyFiles`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub touched_for: Option<String>,
 }
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -127,8 +143,10 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 /// The file one URL names: a Talaria document by the platform-href
 /// classifier's own reading (`/artifacts?a=<uuid>` in any of its spellings —
-/// relative, absolute, with other parameters), else a Google file.
-fn file_named_by(url: &str) -> Option<FileRef> {
+/// relative, absolute, with other parameters), else a Google file. Public
+/// because the agent door that opens a file in the pane reads a link with
+/// exactly this rule: a link it accepts is a file the pane lists.
+pub fn file_named_by(url: &str) -> Option<FileRef> {
     if let Some(link) = classify_href(url) {
         if link.entity != "document" {
             return None;
@@ -140,21 +158,19 @@ fn file_named_by(url: &str) -> Option<FileRef> {
     parse_google_file_url(url).map(FileRef::Google)
 }
 
-/// A Google chip's title. `title` when the producer set one; otherwise a
-/// `source` chip's label — unless that label is only the fallback a chip
-/// carries when nobody knew the title (the URL's host, the URL itself, or
-/// what the file is: "Google Doc").
-fn google_title(chip: &Value, url: &str) -> Option<String> {
-    if let Some(t) = str_of(chip, "title") {
-        return Some(t.to_string());
-    }
-    let label = str_of(chip, "label")?;
+/// Is this label only the fallback a link carries when nobody knew the
+/// file's title — the URL itself, the URL's host, or what the file is
+/// ("Google Doc")? Public because the agent door that opens a file in the
+/// pane reads a markdown link's text by the same rule.
+pub fn generic_google_label(label: &str, url: &str) -> bool {
+    let label = label.trim();
     let host = url
         .split("://")
         .nth(1)
         .and_then(|r| r.split(['/', '?', '#']).next())
         .unwrap_or("");
-    let generic = label == url
+    label.is_empty()
+        || label == url.trim()
         || label.eq_ignore_ascii_case(host)
         || [
             GoogleType::Document,
@@ -163,12 +179,36 @@ fn google_title(chip: &Value, url: &str) -> Option<String> {
             GoogleType::Drive,
         ]
         .iter()
-        .any(|t| label == t.noun());
-    (!generic).then(|| label.to_string())
+        .any(|t| label.eq_ignore_ascii_case(t.noun()))
 }
 
-/// Every file a chip names — its `href`, and a `url` if it carries one.
+/// A Google chip's title. `title` when the producer set one; otherwise a
+/// `source` chip's label — unless that label is only the fallback a chip
+/// carries when nobody knew the title (`generic_google_label`).
+fn google_title(chip: &Value, url: &str) -> Option<String> {
+    if let Some(t) = str_of(chip, "title") {
+        return Some(t.to_string());
+    }
+    let label = str_of(chip, "label")?;
+    (!generic_google_label(label, url)).then(|| label.to_string())
+}
+
+/// Every file a chip TOUCHED — what the pane lists. A Google read's chip
+/// (`READ_MARK`) touched nothing: the agent read the file for its own
+/// context, and listing it would open a tab and move the person's pane. A
+/// chip stored before the mark existed carries none, and lists as it did.
 fn files_on(chip: &Value) -> Vec<(FileRef, Option<String>)> {
+    if is_read_mark(chip) {
+        return Vec::new();
+    }
+    files_named(chip)
+}
+
+/// Every file a chip names — its `href`, and a `url` if it carries one —
+/// read or not. A read still knows the file's name: `candidates` lets it
+/// name a file something else listed, and `session_google_title` lets it
+/// name the tab an open lands later.
+fn files_named(chip: &Value) -> Vec<(FileRef, Option<String>)> {
     let mut out = Vec::new();
     for field in ["href", "url"] {
         let Some(url) = str_of(chip, field) else {
@@ -216,12 +256,39 @@ pub fn candidates(
 ) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     let mut at: HashMap<String, usize> = HashMap::new();
+    // What the session's reads called a file nothing had listed yet: the
+    // name a later touch takes when it knows none of its own.
+    let mut read_names: HashMap<String, (FileRef, Option<String>)> = HashMap::new();
 
     for (rank, m) in messages.iter().enumerate() {
         let Some(chips) = m.chips.as_array() else {
             continue;
         };
         for chip in chips {
+            // A READ NAMES, IT DOES NOT TOUCH. A file already listed takes
+            // its newer name and type, as from any chip, but not its time or
+            // its person: the tab is renamed in place and nobody's pane moves.
+            if is_read_mark(chip) {
+                for (file, title) in files_named(chip) {
+                    let key = file.key();
+                    match at.get(&key) {
+                        Some(&i) => absorb(&mut out[i], &file, title),
+                        None => {
+                            let seen = read_names.entry(key).or_insert((file.clone(), None));
+                            if let FileRef::Google(have) = &mut seen.0
+                                && let FileRef::Google(f) = &file
+                                && have.kind == GoogleType::Drive
+                            {
+                                have.kind = f.kind;
+                            }
+                            if title.is_some() {
+                                seen.1 = title;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             for (file, title) in files_on(chip) {
                 let key = file.key();
                 match at.get(&key) {
@@ -230,8 +297,21 @@ pub fn candidates(
                         absorb(c, &file, title);
                         c.last_touched_at = Some(m.created_at.clone());
                         c.touched_rank = Some(rank);
+                        c.touched_for = m.requested_by.clone();
                     }
                     None => {
+                        let mut file = file;
+                        let mut title = title;
+                        if let Some((read, read_title)) = read_names.remove(&key) {
+                            if let (FileRef::Google(f), FileRef::Google(r)) = (&mut file, &read)
+                                && f.kind == GoogleType::Drive
+                            {
+                                f.kind = r.kind;
+                            }
+                            if title.is_none() {
+                                title = read_title;
+                            }
+                        }
                         at.insert(key, out.len());
                         out.push(Candidate {
                             file,
@@ -239,6 +319,7 @@ pub fn candidates(
                             source: FileSource::Touched,
                             last_touched_at: Some(m.created_at.clone()),
                             touched_rank: Some(rank),
+                            touched_for: m.requested_by.clone(),
                         });
                     }
                 }
@@ -279,6 +360,7 @@ pub fn candidates(
                     source: FileSource::Pinned,
                     last_touched_at: None,
                     touched_rank: None,
+                    touched_for: None,
                 });
             }
         }
@@ -293,10 +375,71 @@ pub fn candidates(
                 source: FileSource::Living,
                 last_touched_at: None,
                 touched_rank: None,
+                touched_for: None,
             });
         }
     }
     out
+}
+
+/// The chip key that marks a Google chip's `title` as only the text of a
+/// markdown link an agent passed to the door that opens a file in the pane
+/// (`[Q3 numbers](https://docs…)`), not a name Google or a pin gave. The
+/// pane lists it like any other title; what it changes is precedence
+/// (`session_google_title`): a Google read or a pin outranks it, and the
+/// next link's text may replace it — so an agent can correct a tab it named
+/// wrong, but never one Google named.
+pub const NAME_FROM: &str = "nameFrom";
+/// `NAME_FROM`'s value on a chip whose title is a link's text.
+pub const NAME_FROM_LINK: &str = "link";
+
+/// A Google file's name as the session knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionGoogleName {
+    pub title: String,
+    /// Only the text of an earlier markdown link (`NAME_FROM_LINK`).
+    pub from_link: bool,
+}
+
+/// The name the session already gives one Google file: the newest title a
+/// chip on one of the messages gave it from Google, else the one its pin
+/// carries, else the newest link text an earlier open landed (`from_link`).
+/// None when the session has never named it. The agent door that opens a
+/// Google file lands its chip with this name, so the tab reads as the file
+/// is called rather than "Google Doc".
+pub fn session_google_title(
+    messages: &[TrailMessage],
+    pinned: &Value,
+    file: &GoogleFile,
+) -> Option<SessionGoogleName> {
+    let key = file.key();
+    let (mut named, mut linked) = (None, None);
+    for chip in messages.iter().filter_map(|m| m.chips.as_array()).flatten() {
+        // A read's chip counts here: it carries Google's own name for the
+        // file, which is what the tab an open lands should read.
+        for (seen, title) in files_named(chip) {
+            if seen.key() != key {
+                continue;
+            }
+            if str_of(chip, NAME_FROM) == Some(NAME_FROM_LINK) {
+                linked = title.or(linked);
+            } else {
+                named = title.or(named);
+            }
+        }
+    }
+    let pin_title = pinned
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| str_of(p, "kind") == Some("google") && str_of(p, "id") == Some(file.id.as_str()))
+        .and_then(|p| str_of(p, "title"))
+        .map(str::to_string);
+    let name = |title, from_link| SessionGoogleName { title, from_link };
+    named
+        .or(pin_title)
+        .map(|t| name(t, false))
+        .or_else(|| linked.map(|t| name(t, true)))
 }
 
 /// The artifact ids the candidates name — what the route looks up.
@@ -367,6 +510,7 @@ pub fn session_files(
                         url: None,
                         source,
                         last_touched_at: c.last_touched_at,
+                        touched_for: c.touched_for,
                     }
                 }
                 FileRef::Google(file) => SessionFile {
@@ -379,6 +523,7 @@ pub fn session_files(
                     artifact_kind: None,
                     source,
                     last_touched_at: c.last_touched_at,
+                    touched_for: c.touched_for,
                 },
             }
         })
@@ -398,6 +543,14 @@ mod tests {
         TrailMessage {
             created_at: at.to_string(),
             chips,
+            requested_by: None,
+        }
+    }
+
+    fn msg_for(at: &str, chips: Value, who: &str) -> TrailMessage {
+        TrailMessage {
+            requested_by: Some(who.to_string()),
+            ..msg(at, chips)
         }
     }
 
@@ -709,5 +862,301 @@ mod tests {
             Some(A3),
         );
         assert_eq!(artifact_ids(&c), vec![A1, A2, A3]);
+    }
+    #[test]
+    fn a_link_names_a_talaria_document_in_every_spelling_and_a_google_file_by_type() {
+        // The agent door reads a link with this rule, so what it accepts is
+        // exactly what the pane can list.
+        let doc = FileRef::Artifact(A1.to_string());
+        for spelling in [
+            format!("/artifacts?a={A1}"),
+            format!("https://talaria.example.com/artifacts?a={A1}"),
+            format!(
+                "https://talaria.example.com/artifacts?view=grid&a={}",
+                A1.to_uppercase()
+            ),
+        ] {
+            assert_eq!(file_named_by(&spelling), Some(doc.clone()), "{spelling}");
+            assert_eq!(doc.key(), format!("artifact:{A1}"));
+        }
+        let google = |url: &str| match file_named_by(url) {
+            Some(FileRef::Google(f)) => Some((f.id, f.kind)),
+            _ => None,
+        };
+        assert_eq!(
+            google("https://docs.google.com/document/d/1doc/edit"),
+            Some(("1doc".into(), GoogleType::Document))
+        );
+        assert_eq!(
+            google("https://docs.google.com/spreadsheets/d/1sheet/edit#gid=0"),
+            Some(("1sheet".into(), GoogleType::Spreadsheet))
+        );
+        assert_eq!(
+            google("https://docs.google.com/presentation/d/1deck/edit"),
+            Some(("1deck".into(), GoogleType::Presentation))
+        );
+        assert_eq!(
+            google("https://drive.google.com/file/d/1pdf/view"),
+            Some(("1pdf".into(), GoogleType::Drive))
+        );
+        assert_eq!(
+            google("https://drive.google.com/open?id=1any"),
+            Some(("1any".into(), GoogleType::Drive))
+        );
+    }
+
+    #[test]
+    fn a_knowledge_doc_or_an_ordinary_page_is_not_a_pane_file() {
+        assert_eq!(file_named_by("/knowledge?doc=k-1"), None);
+        assert_eq!(
+            file_named_by("https://talaria.example.com/knowledge?doc=k-1"),
+            None
+        );
+        assert_eq!(file_named_by("https://example.com/plan"), None);
+        assert_eq!(file_named_by("/artifacts?a=not-a-uuid"), None);
+        assert_eq!(file_named_by(""), None);
+    }
+
+    #[test]
+    fn a_file_is_touched_for_the_person_the_newest_naming_turn_was_for() {
+        const ANA: &str = "11111111-1111-4111-8111-111111111111";
+        const BEN: &str = "22222222-2222-4222-8222-222222222222";
+        let messages = vec![
+            msg_for("t1", json!([doc_chip(A1, "Plan")]), ANA),
+            msg_for("t2", json!([doc_chip(A2, "Notes")]), BEN),
+            // Ben asked for the plan again: it is his touch now.
+            msg_for("t3", json!([doc_chip(A1, "Plan")]), BEN),
+        ];
+        let pinned = json!([{ "kind": "artifact", "id": A3 }]);
+        let files = session_files(
+            candidates(&messages, &pinned, None),
+            &readable(&[
+                (A1, "doc", "Plan"),
+                (A2, "doc", "Notes"),
+                (A3, "doc", "Pinned"),
+            ]),
+            MAX_SESSION_FILES,
+        );
+        assert_eq!(files[0].touched_for.as_deref(), Some(BEN));
+        assert_eq!(files[1].touched_for.as_deref(), Some(BEN));
+        // A pin was nobody's turn.
+        assert_eq!(files[2].touched_for, None);
+        // And it rides the wire beside the touch time.
+        let wire = serde_json::to_string(&files[0]).unwrap();
+        assert!(
+            wire.ends_with(&format!(r#""lastTouchedAt":"t3","touchedFor":"{BEN}"}}"#)),
+            "{wire}"
+        );
+    }
+
+    #[test]
+    fn a_google_file_the_session_named_keeps_that_name_and_one_it_never_named_has_none() {
+        let sheet = GoogleFile {
+            id: "1budget".into(),
+            kind: GoogleType::Spreadsheet,
+        };
+        let messages = vec![
+            // A generic label is not a name: nobody knew the title yet.
+            msg(
+                "t1",
+                json!([{ "id": "source:aa", "kind": "source", "label": "Google Sheet",
+                         "href": "https://docs.google.com/spreadsheets/d/1budget/edit" }]),
+            ),
+            msg(
+                "t2",
+                json!([{ "id": "source:aa", "kind": "source", "label": "Budget",
+                         "href": "https://docs.google.com/spreadsheets/d/1budget/edit" }]),
+            ),
+            // Renamed later: the newest name wins, as in the pane's list.
+            msg(
+                "t3",
+                json!([{ "id": "source:aa", "kind": "source", "label": "Budget",
+                         "title": "Budget 2027",
+                         "href": "https://docs.google.com/spreadsheets/d/1budget/edit" }]),
+            ),
+        ];
+        let title = |m: &[TrailMessage], p: &Value, f: &GoogleFile| {
+            session_google_title(m, p, f).map(|n| (n.title, n.from_link))
+        };
+        assert_eq!(
+            title(&messages, &json!([]), &sheet),
+            Some(("Budget 2027".to_string(), false))
+        );
+        // Only the generic label so far: no name to land.
+        assert_eq!(title(&messages[..1], &json!([]), &sheet), None);
+        // A pin that carries a title names a file no chip did.
+        let pinned = json!([{ "kind": "google", "id": "1pinned", "title": "Roadmap",
+                              "mime": "application/vnd.google-apps.document" }]);
+        let doc = GoogleFile {
+            id: "1pinned".into(),
+            kind: GoogleType::Document,
+        };
+        assert_eq!(
+            title(&[], &pinned, &doc),
+            Some(("Roadmap".to_string(), false))
+        );
+        // A file the session never mentioned has no name here.
+        let other = GoogleFile {
+            id: "1other".into(),
+            kind: GoogleType::Document,
+        };
+        assert_eq!(title(&messages, &pinned, &other), None);
+    }
+
+    #[test]
+    fn a_link_named_file_keeps_that_name_only_until_google_or_a_pin_names_it() {
+        let doc = GoogleFile {
+            id: "1linked".into(),
+            kind: GoogleType::Document,
+        };
+        let url = "https://docs.google.com/document/d/1linked/edit";
+        let link_chip = |t: &str| {
+            json!([{ "id": "source:ll", "kind": "source", "label": t, "title": t,
+                     "href": url, "nameFrom": "link" }])
+        };
+        let title = |m: &[TrailMessage], p: &Value| {
+            session_google_title(m, p, &doc).map(|n| (n.title, n.from_link))
+        };
+        // An open with a link's text: the session's name, marked as the link's.
+        let mut messages = vec![msg("t1", link_chip("Draft"))];
+        assert_eq!(
+            title(&messages, &json!([])),
+            Some(("Draft".to_string(), true))
+        );
+        // A later link's text is the newer link name.
+        messages.push(msg("t2", link_chip("Q3 Budget")));
+        assert_eq!(
+            title(&messages, &json!([])),
+            Some(("Q3 Budget".to_string(), true))
+        );
+        // A pin's title outranks every link's text…
+        let pinned = json!([{ "kind": "google", "id": "1linked", "title": "Roadmap" }]);
+        assert_eq!(
+            title(&messages, &pinned),
+            Some(("Roadmap".to_string(), false))
+        );
+        // …and so does a Google read's, whenever it came.
+        messages.insert(
+            0,
+            msg(
+                "t0",
+                json!([{ "id": "source:ll", "kind": "source", "label": "Budget",
+                         "title": "Budget", "href": url }]),
+            ),
+        );
+        assert_eq!(
+            title(&messages, &pinned),
+            Some(("Budget".to_string(), false))
+        );
+        // The pane still lists the newest title, link text or not.
+        let listed = candidates(&messages, &json!([]), None);
+        assert_eq!(listed[0].title.as_deref(), Some("Q3 Budget"));
+    }
+
+    /// A READ OPENS NOTHING; A WRITE OR AN OPEN OF THE SAME FILE DOES. The
+    /// chips below are what `chips_from_tool` lands, merged the way the row
+    /// merges them (`merge_chips`), so the pane is read off the stored truth.
+    #[test]
+    fn a_google_read_alone_is_not_a_file_of_the_session() {
+        use crate::{chips_from_tool, merge_chips};
+        let url = "https://docs.google.com/document/d/1spec/edit";
+        let read = chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1spec"}"#,
+            &format!(r#"{{"id":"1spec","title":"Spec","url":"{url}"}}"#),
+        );
+        let wrote = chips_from_tool(
+            "update_google_doc",
+            r#"{"id":"1spec","body":"x"}"#,
+            &format!(r#"{{"id":"1spec","url":"{url}","name":"Spec"}}"#),
+        );
+        let listed = |rows: Vec<TrailMessage>| {
+            session_files(
+                candidates(&rows, &json!([]), None),
+                &HashMap::new(),
+                MAX_SESSION_FILES,
+            )
+        };
+
+        // Read only: nothing in the pane.
+        let row = merge_chips(&json!([]), &read);
+        assert!(listed(vec![msg("t1", row)]).is_empty());
+
+        // Read, then update, in one turn: listed, as touched by that turn.
+        let row = merge_chips(&merge_chips(&json!([]), &read), &wrote);
+        let files = listed(vec![msg("t1", row)]);
+        assert_eq!(keys(&files), vec!["google:1spec"]);
+        assert_eq!(files[0].source, "touched");
+        assert_eq!(files[0].last_touched_at.as_deref(), Some("t1"));
+
+        // Update, then read: still listed.
+        let row = merge_chips(&merge_chips(&json!([]), &wrote), &read);
+        assert_eq!(keys(&listed(vec![msg("t1", row)])), vec!["google:1spec"]);
+
+        // A chip stored before the mark existed lists as it always did.
+        let legacy = json!([{ "id": "source:aa", "kind": "source", "label": "Spec",
+                              "href": url }]);
+        assert_eq!(keys(&listed(vec![msg("t1", legacy)])), vec!["google:1spec"]);
+    }
+
+    /// A READ STILL NAMES. It never lists a file and never moves a touch, but
+    /// the name Google gave it renames a tab already listed, names a file a
+    /// later touch lists without one, and names the tab an open lands.
+    #[test]
+    fn a_read_names_a_listed_file_without_touching_it() {
+        const ANA: &str = "11111111-1111-4111-8111-111111111111";
+        const BEN: &str = "22222222-2222-4222-8222-222222222222";
+        let url = "https://docs.google.com/document/d/1spec/edit";
+        let opened = json!([{ "id": "source:aa", "kind": "source", "label": "Google Doc",
+                              "href": url }]);
+        let read = json!([{ "id": "source:aa", "kind": "source", "label": "Spec v2",
+                            "title": "Spec v2", "href": url, "read": true }]);
+        // Opened for Ana with no name; Ben's later turn only read it.
+        let messages = vec![
+            msg_for("t1", opened.clone(), ANA),
+            msg_for("t2", read.clone(), BEN),
+        ];
+        let files = session_files(
+            candidates(&messages, &json!([]), None),
+            &HashMap::new(),
+            MAX_SESSION_FILES,
+        );
+        assert_eq!(keys(&files), vec!["google:1spec"]);
+        assert_eq!(files[0].title.as_deref(), Some("Spec v2"), "renamed");
+        assert_eq!(files[0].last_touched_at.as_deref(), Some("t1"), "not moved");
+        assert_eq!(
+            files[0].touched_for.as_deref(),
+            Some(ANA),
+            "nobody's pane moved"
+        );
+
+        // Read first, then a touch that knows no name: the read's name.
+        let messages = vec![msg("t1", read.clone()), msg("t2", opened)];
+        let c = candidates(&messages, &json!([]), None);
+        assert_eq!(c.len(), 1, "{c:?}");
+        assert_eq!(c[0].title.as_deref(), Some("Spec v2"));
+        assert_eq!(c[0].last_touched_at.as_deref(), Some("t2"));
+
+        // And the open door names its tab from the read.
+        let doc = GoogleFile {
+            id: "1spec".into(),
+            kind: GoogleType::Document,
+        };
+        assert_eq!(
+            session_google_title(&[msg("t1", read)], &json!([]), &doc)
+                .map(|n| (n.title, n.from_link)),
+            Some(("Spec v2".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn a_generic_label_is_the_url_its_host_or_what_the_file_is() {
+        let url = "https://docs.google.com/document/d/1doc/edit";
+        assert!(generic_google_label(url, url));
+        assert!(generic_google_label("docs.google.com", url));
+        assert!(generic_google_label("Google Doc", url));
+        assert!(generic_google_label("google sheet", url));
+        assert!(generic_google_label("  ", url));
+        assert!(!generic_google_label("Launch plan", url));
     }
 }

@@ -195,8 +195,10 @@
       isChannelOwner: detail?.role === 'owner',
       labelFor,
       userLabel: (author: string) => userRow(author)?.name ?? (author.split('@')[0] || author),
+      // Only a person has a photo: an agent keeps its initials, and an
+      // imported author's label is never matched against the directory.
       pictureFor: (author: string, authorType: string) =>
-        authorType === 'agent' ? null : (userRow(author)?.picture ?? null),
+        authorType === 'user' ? (userRow(author)?.picture ?? null) : null,
       selfMentions: [sessionQuery.data?.name, sessionQuery.data?.email?.split('@')[0]].filter((n): n is string => !!n),
       timeZone: prefsQuery.data?.timezone ?? null,
       onOpenProfile: onOpenProfile
@@ -237,12 +239,14 @@
     ].filter((m) => m.insert),
   )
 
-  const send = async (text: string, atts: Attachment[]) => {
+  // `drafted`: a chip or ask-option click — the agent's words, marked so they
+  // never stand in for the person's own ask (sendChannelMessage).
+  const send = async (text: string, atts: Attachment[], drafted = false) => {
     error = null
     stick.jump()
     try {
       const { attachmentIds, refs } = splitAttachments(atts)
-      await sendChannelMessage(channelId, text, attachmentIds, refs)
+      await sendChannelMessage(channelId, text, attachmentIds, refs, null, drafted)
     } catch (e) {
       error = (e as Error).message
     }
@@ -356,7 +360,7 @@
               {ctx}
               continued={continued.has(i)}
               onOpenThread={() => (threadRoot = m.threadRootId ?? m.id)}
-              onInvoke={(text) => void send(text, [])}
+              onInvoke={(text) => void send(text, [], true)}
               onDecided={() => void messagesQuery.refetch()}
               onContextMenu={(e) => menu.openMenu(e, rowMenuEntries(m, ctx, () => (threadRoot = m.id)))}
             />

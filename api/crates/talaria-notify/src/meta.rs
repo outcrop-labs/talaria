@@ -33,6 +33,32 @@ pub struct NotifyMeta {
     pub force_alert: bool,
     /// Never web-push this row.
     pub skip_push: bool,
+    /// The recipient's own channels for this row where they differ from the
+    /// class matrix: their setting for the board a ticket row is about
+    /// (talaria_notify::boards, decided at fan-out — I-26). Stored on the row,
+    /// so the send-time re-checks (the deferred push, the mail batcher) apply
+    /// the same override the write did. All `None` (the default): the matrix.
+    pub channels: ChannelOverride,
+}
+
+/// Per channel, what a producer decided for one recipient's row in place of
+/// the class matrix: `Some(on)` wins over `channels.<class>.<channel>`,
+/// `None` follows it. In-app is not a channel here: every row lands in the
+/// inbox, whatever anyone chose (I-13). DND, working hours, the instance
+/// switches, the email frequency, `quiet` and `skip_push` still apply after
+/// it, exactly as they do to the matrix's answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChannelOverride {
+    pub desktop: Option<bool>,
+    pub push: Option<bool>,
+    pub email: Option<bool>,
+}
+
+impl ChannelOverride {
+    /// Nothing overridden: the matrix decides every channel.
+    pub fn is_none(&self) -> bool {
+        self.desktop.is_none() && self.push.is_none() && self.email.is_none()
+    }
 }
 
 /// What a coalesce does to an open row.
@@ -147,6 +173,11 @@ pub mod group_key {
     pub fn task_comments(task_id: &str) -> String {
         format!("task:{task_id}:comments")
     }
+    /// A ticket's due-date reminders: "due soon", then "overdue", re-alert
+    /// the one open row (talaria-tasks `due`).
+    pub fn task_due(task_id: &str) -> String {
+        format!("task:{task_id}:due")
+    }
     /// A channel's messages, at level `all`.
     pub fn channel_activity(channel_id: &str) -> String {
         format!("channel:{channel_id}:activity")
@@ -181,6 +212,16 @@ pub mod group_key {
     pub fn agent_design(design_id: &str) -> String {
         format!("agent-design:{design_id}")
     }
+    /// A board a person hears in full: one open row for every event on its
+    /// tickets they are not in (talaria_notify::boards, I-25).
+    pub fn board_activity(board_id: &str) -> String {
+        format!("board:{board_id}:activity")
+    }
+    /// One board sync's health (a rejected credential, a failed run): a
+    /// second failure refreshes the open row instead of filing another.
+    pub fn board_sync(sync_id: &str) -> String {
+        format!("board-sync:{sync_id}")
+    }
 }
 
 /// The entity kinds a row can be about (the stored `entity_type`).
@@ -198,6 +239,8 @@ pub mod entity {
     /// A person's agent design (talaria-agent-design): resolved when it is
     /// hired, discarded or replaced.
     pub const AGENT_DESIGN: &str = "agent_design";
+    /// A board, for the rows about the board as a whole (`board-activity`).
+    pub const BOARD: &str = "board";
 }
 
 #[cfg(test)]
@@ -212,6 +255,7 @@ mod tests {
         assert_eq!(group_key::thread("v1"), "thread:v1");
         assert_eq!(group_key::task_status("t1"), "task:t1:status");
         assert_eq!(group_key::task_comments("t1"), "task:t1:comments");
+        assert_eq!(group_key::task_due("t1"), "task:t1:due");
         assert_eq!(group_key::channel_activity("c1"), "channel:c1:activity");
         assert_eq!(group_key::channel_thread("m1"), "reply:m1");
         assert_eq!(group_key::mcp_down("s1"), "mcp:s1:down");
@@ -221,6 +265,8 @@ mod tests {
             "outreach:margaret:2026-10-31"
         );
         assert_eq!(group_key::agent_design("d1"), "agent-design:d1");
+        assert_eq!(group_key::board_activity("b1"), "board:b1:activity");
+        assert_eq!(group_key::board_sync("s1"), "board-sync:s1");
         assert_eq!(entity::AGENT_DESIGN, "agent_design");
         assert_eq!(
             [
@@ -231,7 +277,8 @@ mod tests {
                 entity::MCP_SERVER,
                 entity::PLAN,
                 entity::RESEARCH_RUN,
-                entity::KB_DOC
+                entity::KB_DOC,
+                entity::BOARD
             ],
             [
                 "task",
@@ -241,7 +288,8 @@ mod tests {
                 "mcp_server",
                 "plan",
                 "research_run",
-                "kb_doc"
+                "kb_doc",
+                "board"
             ]
         );
         assert_eq!(serde_json::to_string(&Alert::Feed).unwrap(), "\"feed\"");
@@ -249,5 +297,15 @@ mod tests {
         assert_eq!(ActorKind::Agent.as_str(), "agent");
         let m = NotifyMeta::default();
         assert!(!m.quiet && m.group_key.is_none() && m.coalesce == Coalesce::Realert);
+        // A producer that says nothing about channels leaves them all to the
+        // matrix.
+        assert!(m.channels.is_none());
+        assert!(
+            !ChannelOverride {
+                email: Some(false),
+                ..Default::default()
+            }
+            .is_none()
+        );
     }
 }

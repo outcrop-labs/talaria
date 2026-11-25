@@ -34,7 +34,7 @@
 
 use serde::Serialize;
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use talaria_agent_auth::AgentSubject;
 use talaria_boards::{
     board_allows_agent, board_info, board_role, can_edit, get_board_agent_config,
@@ -48,10 +48,13 @@ use talaria_retrieval::sources::{
 use talaria_retrieval::{embed, qdrant};
 use talaria_statuses::{BoardStatus, OFF_BOARD_STATUSES, list_statuses, meta_of};
 
+use talaria_notify::boards::{self as board_prefs, Candidate};
+
+use super::asked::{self, Asker, Unproven};
 use super::{
-    AgentIntent, AgentWriteTarget, Task, TaskDeps, TaskNotification, agent_assignees,
-    agent_ticket_refusal, get_task, notify_task_users, resolve_review_approval, resolve_watchers,
-    spawn_dispatch_id, ticket_audience,
+    AgentIntent, AgentWriteTarget, AskClaim, Task, TaskDeps, TaskNotification, agent_assignees,
+    agent_ticket_refusal, bystanders, get_task, notify_ticket_event, resolve_review_approval,
+    resolve_watchers, spawn_dispatch_id, ticket_audience,
 };
 
 // ── The request, the mover, the answer ───────────────────────────────────────
@@ -63,6 +66,10 @@ pub struct MoveRequest<'a> {
     /// Answer what the move WOULD do and write nothing — the confirm dialog's
     /// read, and an agent's way to look before it leaps.
     pub preview: bool,
+    /// An agent's claim that a person asked for this move (the call's
+    /// `conversationId`). Read only when the ticket sits in review, and then
+    /// proven (`asked`) before anything else is decided.
+    pub ask: Option<&'a AskClaim>,
 }
 
 /// Who is moving the ticket. A person is gated by board ROLE on both ends; an
@@ -213,7 +220,10 @@ fn same_name(s: &BoardStatus, key: &str, label: Option<&str>) -> bool {
 /// · an AGENT may not move a ticket that is in review (a person signs it off),
 ///   blocked (a person unblocks it), stranded in a column its board no longer
 ///   has (a person places it), or closed — the same four stops its status
-///   writes obey (`agent_safe_patch`, `agent_ticket_refusal`);
+///   writes obey (`agent_safe_patch`, `agent_ticket_refusal`). `asked` — a
+///   person's ask the caller already PROVED (`asked`) — lifts the review stop
+///   alone, and with it the pickup stops below: the person chose the
+///   column. It never lifts a closed destination;
 /// · a NAMED column must exist on the destination. A closed one is refused
 ///   for an agent always, and for a person unless the ticket is already
 ///   closed — a move carries closure, it never creates it;
@@ -230,6 +240,7 @@ pub fn pick_move_status(
     dest_name: &str,
     requested: Option<&str>,
     agent: bool,
+    asked: bool,
 ) -> Result<StatusPick, PickRefusal> {
     let sm = meta_of(src);
     let dm = meta_of(dest);
@@ -237,18 +248,18 @@ pub fn pick_move_status(
     let src_status = src.iter().find(|s| s.key == src_key);
     let src_label = src_status.map(|s| s.label.as_str());
     let src_start = sm.agent_start_keys.iter().any(|k| k == src_key);
-    let enters_pickup = |k: &str| !src_start && dm.agent_start_keys.iter().any(|s| s == k);
+    // An asked exit enters a pickup column on the person's word, not as
+    // assignment by the agent.
+    let enters_pickup =
+        |k: &str| !asked && !src_start && dm.agent_start_keys.iter().any(|s| s == k);
     if agent {
         if closed {
             return Err(PickRefusal::Forbidden(
                 "agents cannot change a closed ticket".into(),
             ));
         }
-        if sm.review_keys.iter().any(|k| k == src_key) {
-            return Err(PickRefusal::Forbidden(
-                "agents cannot take a ticket out of review — a person signs it off, or moves it"
-                    .into(),
-            ));
+        if !asked && sm.review_keys.iter().any(|k| k == src_key) {
+            return Err(PickRefusal::Forbidden(asked::NO_ASK.into()));
         }
         if src_key == "blocked" {
             return Err(PickRefusal::Forbidden(
@@ -560,11 +571,13 @@ async fn decision_window_test_pause(task_id: &str) {
 }
 
 /// Of `before`, the people not in `after` — who loses sight of a ticket.
-fn lost(before: &[String], after: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for u in before {
-        if !after.contains(u) && !out.contains(u) {
-            out.push(u.clone());
+fn lost(before: &[Candidate], after: &[Candidate]) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
+    for c in before {
+        if !after.iter().any(|a| a.user_id == c.user_id)
+            && !out.iter().any(|o| o.user_id == c.user_id)
+        {
+            out.push(c.clone());
         }
     }
     out
@@ -680,6 +693,29 @@ pub async fn move_task(
         list_statuses(pg, &cur.board_id),
         list_statuses(pg, req.board_id),
     )?;
+    let src_meta = meta_of(&src_statuses);
+    // AN AGENT TAKING A TICKET OUT OF REVIEW ON A PERSON'S ASK (`asked`): the
+    // asker must be able to edit BOTH boards — the rule their own move would
+    // obey. Proven here, before the pick; the one exit the message allows is
+    // claimed under the row lock below. A closed destination stays refused
+    // by the pick, asked or not.
+    let mut asker: Option<Asker> = None;
+    if let (Mover::Agent { model, .. }, Some(claim)) = (mover, req.ask)
+        && src_meta.review_keys.iter().any(|k| k == &cur.status)
+    {
+        match asked::person_asked(
+            pg,
+            model,
+            &cur,
+            &[cur.board_id.as_str(), req.board_id],
+            claim,
+        )
+        .await?
+        {
+            Ok(who) => asker = Some(who),
+            Err(why) => return Err(MoveError::Forbidden(why.refusal())),
+        }
+    }
     let pick = pick_move_status(
         &src_statuses,
         &cur.status,
@@ -687,8 +723,8 @@ pub async fn move_task(
         &dest_info.label,
         req.status,
         mover.is_agent(),
+        asker.is_some(),
     )?;
-    let src_meta = meta_of(&src_statuses);
     let dest_meta = meta_of(&dest_statuses);
     let status_label = dest_statuses
         .iter()
@@ -833,6 +869,14 @@ pub async fn move_task(
     if let Some(hold) = live_hold(&mut tx, id).await? {
         return Err(MoveError::Conflict(hold));
     }
+    // ONE ASK, ONE EXIT, under the row lock: a second call citing the same
+    // message finds the key taken, and the transaction it would have written
+    // in rolls back with the refusal.
+    if let Some(who) = &asker
+        && !asked::claim_exit(&mut *tx, id, mover.actor(), who).await?
+    {
+        return Err(MoveError::Forbidden(Unproven::Spent.refusal()));
+    }
     let (ticket_no,): (i32,) = sqlx::query_as(
         "update boards set ticket_seq = ticket_seq + 1, updated_at = now() \
          where id = $1::uuid returning ticket_seq",
@@ -869,26 +913,43 @@ pub async fn move_task(
     .await?;
     moved.to_ref = Some(format!("{dest_prefix}-{ticket_no}"));
     let actor = mover.actor();
-    activity_in(
-        &mut tx,
-        id,
-        actor,
-        "moved",
-        &activity_line(&moved, &labels_of),
-    )
-    .await?;
+    // An asked exit names its asker on both lines; the actor is the agent.
+    let asked_note = asker.as_ref().map(Asker::note);
+    let mut line = activity_line(&moved, &labels_of);
+    if let Some(note) = &asked_note {
+        line.push_str(&format!(" · {note}"));
+    }
+    activity_in(&mut tx, id, actor, "moved", &line).await?;
     if moved.status != moved.from_status {
         // The column changed too, and the record says so in the words every
         // status move uses — the approvals inbox reads "entered review" off
         // exactly this line.
+        let why = match &asked_note {
+            Some(note) => format!("moved boards, {note}"),
+            None => "moved boards".to_string(),
+        };
         activity_in(
             &mut tx,
             id,
             actor,
             "status",
-            &format!("moved to {} (moved boards)", moved.status),
+            &format!("moved to {} ({why})", moved.status),
         )
         .await?;
+    }
+    let mut after = serde_json::json!({
+        "boardId": moved.to_board_id,
+        "boardName": moved.to_board_name,
+        "ref": moved.to_ref,
+        "status": moved.status,
+        "labelsDropped": moved.labels_dropped,
+        "unassigned": moved.unassigned,
+    });
+    if let Some(who) = &asker
+        && let serde_json::Value::Object(extra) = who.audit()
+        && let Some(obj) = after.as_object_mut()
+    {
+        obj.extend(extra);
     }
     // A move changes who can see the ticket: governance, not chatter. In the
     // transaction, so a committed move always has its row.
@@ -906,14 +967,7 @@ pub async fn move_task(
                 "ref": moved.from_ref,
                 "status": moved.from_status,
             })),
-            after: Some(serde_json::json!({
-                "boardId": moved.to_board_id,
-                "boardName": moved.to_board_name,
-                "ref": moved.to_ref,
-                "status": moved.status,
-                "labelsDropped": moved.labels_dropped,
-                "unassigned": moved.unassigned,
-            })),
+            after: Some(after),
         },
     )
     .await?;
@@ -1004,19 +1058,25 @@ fn activity_line(m: &MoveSummary, labels: &HashMap<String, String>) -> String {
     line
 }
 
-/// The move's two notices, detached like every post-commit notice (C30), and
-/// both through `notify_task_users` (the mover is never told):
+/// The move's notices, detached like every post-commit notice (C30), each
+/// through `notify_ticket_event` (the mover is never told, and each person's
+/// setting for the board in question decides — talaria_notify::boards):
 /// · the destination's audience — watchers, assigned humans and the creator
-///   who can see it there — hears where it went;
+///   who can see it there — hears where it went, by their setting for the
+///   board it is on now;
+/// · the people who hear the destination in full hear that a ticket arrived
+///   (a new ticket, for that board);
 /// · the people who could see it and now cannot hear only that it left, and
 ///   never where to: naming a board they cannot open would be the leak the
-///   move's own permission rules exist to prevent.
+///   move's own permission rules exist to prevent;
+/// · the people who hear the source board in full hear that it left, and
+///   never where to, for the same reason.
 fn spawn_move_notices(
     deps: &TaskDeps,
     cur: &Task,
     m: &MoveSummary,
-    audience: Vec<String>,
-    losing: Vec<String>,
+    audience: Vec<Candidate>,
+    losing: Vec<Candidate>,
     actor: &str,
 ) {
     let deps = deps.clone();
@@ -1025,43 +1085,79 @@ fn spawn_move_notices(
     let actor = actor.to_string();
     let m = m.clone();
     tokio::spawn(async move {
+        let pg = &deps.notify.pg;
         let was = match &m.from_ref {
             Some(r) => format!("was {r} on {}", m.from_board_name),
             None => format!("was on {}", m.from_board_name),
         };
-        notify_task_users(
+        let to_subject = m.to_ref.clone().unwrap_or_else(|| title.clone());
+        let from_subject = m.from_ref.clone().unwrap_or_else(|| title.clone());
+        let arrived = TaskNotification {
+            kind: "task-status".into(),
+            title: format!("{to_subject}: moved to {}", m.to_board_name),
+            body: Some(format!("{title} — {was}")),
+            href: Some(format!("/boards/{}/{id}", m.to_board_id)),
+            task_id: id.clone(),
+            status_burst: None,
+            group_key: None,
+        };
+        let line = arrived.title.clone();
+        let arrived_told = notify_ticket_event(
             &deps.notify,
+            &m.to_board_id,
+            board_prefs::BoardEvent::Status,
             &audience,
             &actor,
-            &TaskNotification {
-                kind: "task-status".into(),
-                title: format!(
-                    "{}: moved to {}",
-                    m.to_ref.clone().unwrap_or_else(|| title.clone()),
-                    m.to_board_name
-                ),
-                body: Some(format!("{title} — {was}")),
-                href: Some(format!("/boards/{}/{id}", m.to_board_id)),
-                task_id: id.clone(),
-                status_burst: None,
-            },
+            Some(&arrived),
+            &line,
         )
         .await;
-        notify_task_users(
+        let fresh = bystanders(pg, &m.to_board_id, &audience, &HashSet::new()).await;
+        notify_ticket_event(
             &deps.notify,
+            &m.to_board_id,
+            board_prefs::BoardEvent::Created,
+            &fresh,
+            &actor,
+            None,
+            &format!("{to_subject} moved here — {title}"),
+        )
+        .await;
+        let gone = TaskNotification {
+            kind: "task-status".into(),
+            title: format!("{from_subject}: moved to a board you can't see"),
+            body: Some(title.clone()),
+            href: None,
+            task_id: id.clone(),
+            status_burst: None,
+            group_key: None,
+        };
+        let line = gone.title.clone();
+        let gone_told = notify_ticket_event(
+            &deps.notify,
+            &m.from_board_id,
+            board_prefs::BoardEvent::Status,
             &losing,
             &actor,
-            &TaskNotification {
-                kind: "task-status".into(),
-                title: format!(
-                    "{}: moved to a board you can't see",
-                    m.from_ref.clone().unwrap_or_else(|| title.clone())
-                ),
-                body: Some(title.clone()),
-                href: None,
-                task_id: id.clone(),
-                status_burst: None,
-            },
+            Some(&gone),
+            &line,
+        )
+        .await;
+        // ONE ACTION, ONE ROW, as the status move keeps it: whoever a
+        // per-ticket row above reached is not told again by the source's
+        // activity row — only those whose row landed. Someone whose setting
+        // dropped that row (Off on the destination, say) still hears the
+        // source board in full if that is what they chose for it.
+        let told: HashSet<String> = arrived_told.union(&gone_told).cloned().collect();
+        let left = bystanders(pg, &m.from_board_id, &[], &told).await;
+        notify_ticket_event(
+            &deps.notify,
+            &m.from_board_id,
+            board_prefs::BoardEvent::Status,
+            &left,
+            &actor,
+            None,
+            &format!("{from_subject} moved to another board"),
         )
         .await;
     });
@@ -1188,7 +1284,28 @@ mod tests {
         requested: Option<&str>,
         agent: bool,
     ) -> Result<StatusPick, PickRefusal> {
-        pick_move_status(&defaults(), src_key, &custom(), "\"Ops\"", requested, agent)
+        pick_move_status(
+            &defaults(),
+            src_key,
+            &custom(),
+            "\"Ops\"",
+            requested,
+            agent,
+            false,
+        )
+    }
+
+    /// An agent's pick when the caller proved a person asked for the move.
+    fn asked_pick(src_key: &str, requested: Option<&str>) -> Result<StatusPick, PickRefusal> {
+        pick_move_status(
+            &defaults(),
+            src_key,
+            &custom(),
+            "\"Ops\"",
+            requested,
+            true,
+            true,
+        )
     }
 
     #[test]
@@ -1243,7 +1360,8 @@ mod tests {
         // ticket, even when the source column is NAMED like the done one.
         let mut src = defaults();
         src.push(st("shipped_soon", "Shipped", "active", false));
-        let p = pick_move_status(&src, "shipped_soon", &custom(), "Ops", None, false).unwrap();
+        let p =
+            pick_move_status(&src, "shipped_soon", &custom(), "Ops", None, false, false).unwrap();
         assert_eq!(
             p.key, "doing",
             "an active ticket lands active, never in Shipped"
@@ -1321,6 +1439,47 @@ mod tests {
     }
 
     #[test]
+    fn without_an_ask_review_refuses_and_says_how_a_person_gets_it_out() {
+        let Err(PickRefusal::Forbidden(msg)) = pick("quality_review", Some("doing"), true) else {
+            panic!("an unasked agent may not take a ticket out of review");
+        };
+        assert!(
+            msg.contains("conversationId") && msg.contains("card"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn an_asked_exit_from_review_goes_to_any_open_column_pickup_included() {
+        for dest in ["triage", "queue", "doing", "blocked", "qa"] {
+            assert_eq!(
+                asked_pick("quality_review", Some(dest)).unwrap().key,
+                dest,
+                "{dest}"
+            );
+        }
+        // Mapped, it may land in the review column of the same kind.
+        assert_eq!(asked_pick("quality_review", None).unwrap().key, "qa");
+    }
+
+    #[test]
+    fn an_asked_exit_never_closes_and_lifts_no_other_stop() {
+        for closed in ["shipped", "failed", "cancelled"] {
+            assert_eq!(
+                asked_pick("quality_review", Some(closed)),
+                Err(PickRefusal::Forbidden(AGENT_NO_CLOSE.into())),
+                "{closed}"
+            );
+        }
+        for src in ["done", "cancelled", "blocked", "ghost"] {
+            assert!(
+                matches!(asked_pick(src, None), Err(PickRefusal::Forbidden(_))),
+                "{src}"
+            );
+        }
+    }
+
+    #[test]
     fn a_status_the_destination_lacks_is_the_callers_fix() {
         let Err(PickRefusal::Bad(msg)) = pick("inbox", Some("in_progress"), false) else {
             panic!("a default key on a renamed board is not a column there");
@@ -1336,14 +1495,14 @@ mod tests {
         ];
         // Same category still answers…
         assert_eq!(
-            pick_move_status(&defaults(), "in_progress", &dest, "Ops", None, false)
+            pick_move_status(&defaults(), "in_progress", &dest, "Ops", None, false, false)
                 .unwrap()
                 .key,
             "doing"
         );
         // …but an inbox ticket has nowhere to go but a closed column.
         assert!(matches!(
-            pick_move_status(&defaults(), "inbox", &dest, "Ops", None, false),
+            pick_move_status(&defaults(), "inbox", &dest, "Ops", None, false, false),
             Err(PickRefusal::Bad(m)) if m.contains("no intake column")
         ));
     }

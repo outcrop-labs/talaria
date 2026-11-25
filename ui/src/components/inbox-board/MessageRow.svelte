@@ -15,6 +15,7 @@
   import { fade, QUICK, slide } from '@/lib/motion'
   import { wordClamp } from '@/lib/word-clamp'
   import { navigateHref } from '@/router'
+  import { briefMarkFailed } from '@/components/brief/daily-brief.svelte'
   import PersonMark from './PersonMark.svelte'
   import { ACTION, ROW_GRID, type TodayActions } from './inbox-board.svelte'
 
@@ -160,7 +161,9 @@
   {/if}
 </div>
 
-{#if failed}
+<!-- A marked message leaves the list at once; a failed mark brings it back as
+     a new row, which learns of the failure from the brief's record of it. -->
+{#if failed || briefMarkFailed(key)}
   <p transition:fade={QUICK} class={cn(UNDER, 'pb-2 text-[12px] text-[color:var(--theme-danger)]')}>That did not go through.</p>
 {/if}
 {#if replying && message.comms}

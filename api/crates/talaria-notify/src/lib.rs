@@ -12,11 +12,17 @@
 //   presence, defer, mail, retention  W2-E (engine)
 //   inbox                            W2-H (hub and inbox API)
 //   threads                          W2-P (producers)
+//   boards                           per-board settings (FR5) — never
+//                                    glob-re-exported: callers spell
+//                                    `talaria_notify::boards::…`, and
+//                                    scripts/check-invariants.mjs confines
+//                                    that path to the per-recipient fan-outs
 
 use sqlx::PgPool;
 use talaria_realtime::RealtimeDeps;
 
 pub mod agent_mutes;
+pub mod boards;
 pub mod brief;
 pub mod classes;
 pub mod defer;
@@ -61,8 +67,8 @@ pub const FEATURES: &[&str] = &[
 
 /// Every feature this api serves (`features` in `GET /api/notifications`):
 /// the contract's, then each module's own list — the delivery engine, the
-/// presence plane, the inbox, the thread producers. Each stream turns its
-/// features on in its own file.
+/// presence plane, the inbox, the thread producers, the per-board settings.
+/// Each stream turns its features on in its own file.
 pub fn features() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = FEATURES.to_vec();
     for f in deliver::FEATURES
@@ -70,6 +76,7 @@ pub fn features() -> Vec<&'static str> {
         .chain(presence::FEATURES)
         .chain(inbox::FEATURES)
         .chain(threads::FEATURES)
+        .chain(boards::FEATURES)
     {
         if !out.contains(f) {
             out.push(f);

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-19 routes.
+21 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -20,11 +20,13 @@
 | [`/api/cost/unpriced/lookup`](#apicostunpricedlookup) | POST | `admin` |
 | [`/api/history`](#apihistory) | GET | `session` |
 | [`/api/home`](#apihome) | GET | `session` |
+| [`/api/home/queues`](#apihomequeues) | GET | `session` |
 | [`/api/host`](#apihost) | GET | `session` + `view:/observability` |
 | [`/api/notifications`](#apinotifications) | GET | `session` |
 | [`/api/notifications`](#apinotifications) | PUT | `session` |
 | [`/api/notifications`](#apinotifications) | PATCH | `session` |
 | [`/api/notifications/ack`](#apinotificationsack) | POST | `session` |
+| [`/api/notifications/boards`](#apinotificationsboards) | GET | `session` |
 | [`/api/notifications/test`](#apinotificationstest) | POST | `session` |
 | [`/api/push/devices`](#apipushdevices) | GET | `session` |
 | [`/api/push/devices/{id}`](#apipushdevicesid) | DELETE | `session` |
@@ -166,14 +168,29 @@ Source: [`api/crates/talaria-routes-comms/src/activity/history.rs`](../../api/cr
 
 Source: [`api/crates/talaria-routes-comms/src/activity/home.rs`](../../api/crates/talaria-routes-comms/src/activity/home.rs)
 
-> /api/home. GET → the Home/Today summary for the signed-in user.
+> /api/home. GET → the Home/Today summary for the signed-in user: the
+> mobile app's landing read. The web Inbox polls /api/home/queues.
 >
 > The digest job registers in main.rs's scheduler table, not here — this
-> file is only the read.
+> …
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` | — | `…` | 200 | — |
+
+## `/api/home/queues`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/home_queues.rs`](../../api/crates/talaria-routes-comms/src/activity/home_queues.rs)
+
+> /api/home/queues. GET → `{ queues }`: the signed-in user's three human
+> queues (triage, review, blocked), and nothing else.
+>
+> The web Inbox's board reads only the queues, every 30 seconds. /api/home
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{queues}` | 200 | — |
 
 ## `/api/host`
 
@@ -200,9 +217,9 @@ Source: [`api/crates/talaria-routes-comms/src/activity/notifications.rs`](../../
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` | — | `{notifications, unread, prefs, digest, delivery, canSetDelivery, prompt, unreadForYou, seq, classes, channels, dnd, emailFrequency, features, next, more}` | 200, 400 | — |
+| GET | `session` | — | `{notifications, unread, prefs, digest, delivery, canSetDelivery, prompt, unreadForYou, seq, classes, channels, dnd, emailFrequency, boards, features, next, more}` | 200, 400 | — |
 | PUT | `session` | [body](#put-apinotifications-body) | `{ok, read, archived, unread, unarchived}` | 200, 400 | — |
-| PATCH | `session` | [body](#patch-apinotifications-body) | `{prefs, digest, delivery, canSetDelivery, prompt, channels, dnd, emailFrequency}` | 200, 400, 403 | audit |
+| PATCH | `session` | [body](#patch-apinotifications-body) | `{prefs, digest, delivery, canSetDelivery, prompt, channels, dnd, emailFrequency, boards}` | 200, 400, 403 | audit |
 
 **GET** — Optional query: `view=foryou|all|done`, `unread=1`, `category=`, `class=`, `kind=` (comma lists), `limit=1..100`, `before=<next>`; or `since=<seq>` (rows with a higher seq, in seq order, ≤ 200, with `more`). None is wave 1's newest 50. See docs/notifications/live-and-inbox.md.
 
@@ -245,6 +262,22 @@ Source: [`api/crates/talaria-routes-comms/src/activity/notifications_ack.rs`](..
 | field | schema | notes |
 | :--- | :--- | :--- |
 | `ids` | `uuid[]()` |  |
+
+## `/api/notifications/boards`
+
+Source: [`api/crates/talaria-routes-comms/src/activity/notifications_boards.rs`](../../api/crates/talaria-routes-comms/src/activity/notifications_boards.rs)
+
+> GET /api/notifications/boards — the caller's notification setting for
+> every board they can see, with their default for every board, for the
+> Settings → Notifications "Boards" list (talaria_notify::boards):
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `{default, boards, registry}` | 200 | — |
+
+**GET** — The caller's default for every board and the effective setting of every board they can see: `{default, boards: [{id, name, role, effective, source}], registry}`.
 
 ## `/api/notifications/test`
 

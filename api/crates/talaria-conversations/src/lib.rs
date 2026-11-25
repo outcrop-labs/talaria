@@ -913,22 +913,71 @@ pub async fn list_plan_members(
         .collect())
 }
 
+/// WHO A MESSAGE WAS FOR, as one SQL expression over a `messages` row
+/// aliased `m` joined to its conversation aliased `c`. A macro because the
+/// statement has to stay a literal for sqlx, and two readers use it.
+///
+/// - A person's own message is theirs.
+/// - An agent's reply carrying a responsible person is theirs: a cron turn
+///   stamps the person who set the schedule up on its own row
+///   (talaria-cron-output), and nobody chatting asked for it.
+/// - Any other reply belongs to whoever sent the newest person's message
+///   BEFORE it, by seq. A collaborator's message queued behind a live reply
+///   has a higher seq than the reply, so it never counts.
+/// - With no such message, the conversation's owner.
+///
+/// UNATTRIBUTED MEANS THE OWNER, everywhere: a person's message with no
+/// author is the owner's whether it is the row itself or the one a reply
+/// answers — a reply to it is never credited to an older collaborator's
+/// message further back.
+///
+/// NOT `talaria_chips::live_turn`, on purpose. That reader answers "which
+/// person's words is this LIVE turn answering" for the review-exit proof: the
+/// user rows after the last finished reply, queued and steered ones included,
+/// and chip or ask-option clicks excluded (words the agent drafted prove no
+/// ask). This one answers "whose pane does a file this row landed belong in",
+/// for any row, finished ones too (the files trail reads every row): the
+/// newest person's message strictly below the row, queued ones excluded, and
+/// a click counts — the person who clicked is the person waiting.
+macro_rules! requester_of_m {
+    () => {
+        "(case when m.role = 'user' then coalesce(m.author_user_id, c.user_id) \
+           else coalesce( \
+             m.author_user_id, \
+             (select coalesce(u.author_user_id, c.user_id) from messages u \
+               where u.conversation_id = m.conversation_id and u.role = 'user' \
+                 and u.seq < m.seq \
+               order by u.seq desc limit 1), \
+             c.user_id) end)::text"
+    };
+}
+
+/// One message of the Work pane's file trail: when it was written (ISO), the
+/// chips it carries, and who it was for (`requester_of_m!`).
+pub type TrailRow = (String, Value, Option<String>);
+
 /// What the Work pane's file list is derived from: every message that carries
-/// chips, in conversation order, as `(created_at ISO, chips)`, and the
-/// conversation's `pinned_files`. Rows with no chips are skipped in the
+/// chips, in conversation order, as `(created_at ISO, chips, for whom)`, and
+/// the conversation's `pinned_files`. Rows with no chips are skipped in the
 /// query — most of a long thread carries none. The caller has already been
 /// access-checked; this only reads.
+///
+/// FOR WHOM is what lets the pane follow the agent for the person who asked
+/// and nobody else: a teammate typing in another tab of the same session must
+/// not have it pulled out from under them because the agent opened something
+/// for someone else.
 pub async fn conversation_file_trail(
     pg: &PgPool,
     conversation_id: &str,
-) -> Result<(Vec<(String, Value)>, Value), sqlx::Error> {
-    let rows: Vec<(i64, Value)> = sqlx::query_as(
-        "select (trunc(extract(epoch from created_at) * 1000))::bigint, chips \
-         from messages \
-         where conversation_id = $1::uuid \
-           and chips <> '[]'::jsonb \
-         order by seq asc",
-    )
+) -> Result<(Vec<TrailRow>, Value), sqlx::Error> {
+    let rows: Vec<(i64, Value, Option<String>)> = sqlx::query_as(concat!(
+        "select (trunc(extract(epoch from m.created_at) * 1000))::bigint, m.chips, ",
+        requester_of_m!(),
+        " from messages m join conversations c on c.id = m.conversation_id \
+         where m.conversation_id = $1::uuid \
+           and m.chips <> '[]'::jsonb \
+         order by m.seq asc"
+    ))
     .bind(conversation_id)
     .fetch_all(pg)
     .await?;
@@ -939,12 +988,28 @@ pub async fn conversation_file_trail(
             .await?;
     Ok((
         rows.into_iter()
-            .map(|(ms, chips)| (epoch_ms_to_iso(ms), chips))
+            .map(|(ms, chips, who)| (epoch_ms_to_iso(ms), chips, who))
             .collect(),
         pinned
             .map(|(p,)| p)
             .unwrap_or_else(|| Value::Array(Vec::new())),
     ))
+}
+
+/// Who one message was for — the person an agent's reply answers
+/// (`requester_of_m!`, which says why this is not `talaria_chips::live_turn`).
+/// None when the message does not exist.
+pub async fn turn_requester(pg: &PgPool, message_id: &str) -> Result<Option<String>, sqlx::Error> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(concat!(
+        "select ",
+        requester_of_m!(),
+        " from messages m join conversations c on c.id = m.conversation_id \
+         where m.id = $1::uuid"
+    ))
+    .bind(message_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(row.and_then(|(who,)| who))
 }
 
 /// Replace the conversation's pinned files — the document pane's memory.
@@ -2185,7 +2250,17 @@ pub fn verdict_at(reported: Option<i64>, now: i64) -> i64 {
 /// none. The session arm's session is the conversation's own id; the
 /// completions arm's is the `api-…` session Hermes derived, which the chat
 /// turn recorded against its conversation when its stream opened.
-async fn verdict_conversation(
+///
+/// ONE RULE FOR EVERY DOOR THE PLUGIN POSTS TO. A failure verdict is kept
+/// for the conversation this names, and a chip lands in it
+/// (`talaria_chips::session_hint`): both read the same id off the same
+/// frame, and two readings of it is how a verdict and a chip from one call
+/// end up in two threads. A UUID counts only as one of this agent's own
+/// conversations; any other key only through a `chat` attribution of this
+/// agent's whose conversation is also this agent's. A key with no such row —
+/// a cron or work session's, an older plugin's, another agent's — names
+/// nothing, and the caller decides what nothing means.
+pub async fn session_conversation(
     pg: &PgPool,
     agent_model: &str,
     session_id: &str,
@@ -2241,7 +2316,7 @@ pub async fn record_tool_failure(
     let Some(id) = plain_call_id(tool_call_id) else {
         return Ok(None);
     };
-    let Some(conversation) = verdict_conversation(pg, agent_model, session_id).await? else {
+    let Some(conversation) = session_conversation(pg, agent_model, session_id).await? else {
         tracing::debug!(
             "[tool-events] {agent_model}: {id} failed in session {session_id:?}, which names no \
              conversation — not kept"

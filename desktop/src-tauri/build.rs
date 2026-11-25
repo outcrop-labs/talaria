@@ -1,4 +1,14 @@
 fn main() {
+    // The drag-image shim (src/drag_icon.rs, main.rs): libwebkit2gtk must find
+    // the executable's gtk_drag_set_icon_surface. GNU ld and lld already export
+    // a definition that a shared library on the link line references, and
+    // libwebkit2gtk-4.1 is on it; this names the symbol explicitly, in case
+    // the link ever changes. desktop/packaging/linux/check-drag-icon-shim.sh
+    // is the proof, in CI. Linux targets only: nothing else has the symbol.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-arg-bins=-Wl,--export-dynamic-symbol=gtk_drag_set_icon_surface");
+    }
+
     // AppManifest::commands gates every shell command behind a capability:
     // without this, commands registered in invoke_handler are callable from
     // EVERY webview — including remote instance webviews. With it, only the

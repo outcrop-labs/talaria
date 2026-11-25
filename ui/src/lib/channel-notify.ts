@@ -108,6 +108,22 @@ export function mutedLabel(
   return `Muted until ${weekday} ${time}`
 }
 
+/** Whose notifications the header control sets, named the way the header
+ *  names the conversation: a channel, a group, or a direct message. */
+export function notifyScope(kind: 'channel' | 'group' | 'dm' | undefined): string {
+  return kind === 'group' ? 'Group' : kind === 'dm' ? 'Direct message' : 'Channel'
+}
+
+/** The control's accessible name, and its tooltip word for word:
+ *  "<Scope> notifications: <level>", or the running mute in the level's
+ *  place. Its glyph shows the value (bell, @, bell-off); this says whose
+ *  setting it is and what the value means. */
+export function notifyControlName(scope: string, n: Pick<ChannelNotify, 'level'> | null, mutedLine: string | null): string {
+  const value = mutedLine ?? (n ? levelLabel(n.level) : null)
+  if (!value) return `${scope} notifications`
+  return `${scope} notifications: ${value.charAt(0).toLowerCase()}${value.slice(1)}`
+}
+
 /** Write the caller's level and/or mute, answering what the server stored. */
 export async function putChannelNotify(channelId: string, patch: ChannelNotifyPatch): Promise<Pick<ChannelNotify, 'level' | 'mutedUntil'>> {
   const r = await putJson<{ ok: boolean; level: ChannelLevel; mutedUntil: string | null }>(

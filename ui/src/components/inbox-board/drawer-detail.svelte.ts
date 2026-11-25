@@ -1,4 +1,5 @@
 import { useAgents } from '@/lib/agents'
+import { actorLabel } from '@/lib/board-sync'
 import { useBoardMembers, useBoardTasks, useTask } from '@/lib/boards.svelte'
 import type { BriefEvidence } from '@/lib/daily-brief-types'
 import { ownersOf, type InboxCard, type InboxPerson } from '@/lib/inbox-board'
@@ -47,7 +48,7 @@ export function useDrawerDetail(card: () => InboxCard): DrawerDetail {
       ? [...ticket.activity]
           .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
           .slice(-12)
-          .map((a) => ({ actor: a.actor, label: a.description, at: a.createdAt as string | null }))
+          .map((a) => ({ actor: actorLabel(a.actor), label: a.description, at: a.createdAt as string | null }))
       : card().steps.map((s) => ({ actor: null, label: s.label, at: s.at })),
   )
 

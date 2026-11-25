@@ -1,4 +1,4 @@
-import type { Artifact } from '@/lib/artifacts'
+import type { ArtifactHead } from '@/lib/artifacts'
 import type { Conversation } from '@/lib/conversations.svelte'
 import type { BriefEntry, BriefLine, BriefView, CommsState } from '@/lib/daily-brief-types'
 import type { ResearchRun } from '@/lib/research'
@@ -186,7 +186,8 @@ export interface InboxInput {
   queues: HomeSummary['queues'] | null
   sessions: readonly Conversation[] | null
   runs: readonly ResearchRun[] | null
-  artifacts: readonly Artifact[] | null
+  /** Today's documents, by head: the Files cards never read a body. */
+  artifacts: readonly ArtifactHead[] | null
   /** An agent's label, or null for an id that is not an agent (a person, say). */
   agentName: (id: string) => string | null
   /** A ticket's assignees, or null while its board is unread. */

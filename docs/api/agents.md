@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-29 routes.
+30 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -18,6 +18,7 @@
 | [`/api/agent/chips`](#apiagentchips) | POST | `agent` |
 | [`/api/agent/gap`](#apiagentgap) | POST | `agent` |
 | [`/api/agent/message-user`](#apiagentmessage-user) | POST | `agent` |
+| [`/api/agent/open`](#apiagentopen) | POST | `agent` |
 | [`/api/agent/organize`](#apiagentorganize) | POST | `agent` |
 | [`/api/agent/problem`](#apiagentproblem) | POST | `agent` |
 | [`/api/agent/todo`](#apiagenttodo) | PUT | `agent` |
@@ -156,6 +157,29 @@ Source: [`api/crates/talaria-routes-fleet/src/agents/agent_message_user.rs`](../
 | :--- | :--- | :--- |
 | `to` | `string(1, 200)` | Teammate's email (preferred) or exact display name. |
 | `message` | `string(1, 4000)` |  |
+
+## `/api/agent/open`
+
+Source: [`api/crates/talaria-routes-comms/src/comms/agent_open.rs`](../../api/crates/talaria-routes-comms/src/comms/agent_open.rs)
+
+> POST /api/agent/open — the agent puts an existing file in front of the
+> person, in the pane beside a Work, Plan or Research session.
+>
+> WHY A DOOR AT ALL. The pane lists the files the conversation's chips name
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `agent` | [body](#post-apiagentopen-body) | `{ok, conversationId, file, alreadyOpen, theyCanEdit, youCanEdit, message}` | 200, 400, 403, 404, 409 | — |
+
+**POST** — Open an existing file in the person's pane beside the session this agent is in — or, with no file named, list the session's files.
+
+### POST `/api/agent/open` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `documentId` | `string?(200)` |  |
+| `url` | `string?(2000)` |  |
 
 ## `/api/agent/organize`
 

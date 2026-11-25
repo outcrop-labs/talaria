@@ -28,6 +28,7 @@ import { browserLeaderEdges, startNotifyLeader, type NotifyLeader } from '@/lib/
 import { clientId, remintClientId } from '@/lib/notify-presence'
 import { noteStreamEvent, setHubRole, setStreamState } from '@/lib/notify-status.svelte'
 import type { PresenceEvent, ResyncEvent, SessionEvent } from './notify-wire'
+import { briefEventIsNews, type BriefResponse } from './daily-brief-types'
 
 /** The wire's id-shaped events — camelCase, tagged `type`, nothing else. The
  *  contract's additions (notify-wire.ts) are optional fields on two of them
@@ -48,7 +49,10 @@ export type UserEvent =
       all?: boolean
       resync?: boolean
     }
-  | { type: 'brief'; briefId: string; seq: number }
+  /** `seq`: the log's last seq. `stale`: the nudge (a notification, a
+   *  thread, a decided run cleared the sweep throttle) — re-read even
+   *  at that seq, because the read is what sweeps. Absent on an append. */
+  | { type: 'brief'; briefId: string; seq: number; stale?: boolean }
   | { type: 'channel'; channelId: string }
   | { type: 'conversation'; conversationId: string }
   | { type: 'typing'; channelId: string; userId: string; typing: boolean }
@@ -324,6 +328,7 @@ export const USER_STREAM_KEYS = [
   'home',
   'channels',
   'conversations',
+  'session-files',
   'research-runs',
   'research-run',
   'agent-design',
@@ -377,6 +382,13 @@ export function useUserEventInvalidation(): void {
         case 'conversation':
           void qc.invalidateQueries({ queryKey: ['conversations'] })
           void qc.invalidateQueries({ queryKey: ['unreads'] })
+          // A chip landing is how a file joins a session (an agent created,
+          // edited or opened it), and it fans this event to the whole
+          // audience — so every member's open pane re-reads the session's
+          // files, not only the tab that is streaming the turn. Whose pane
+          // MOVES is the Work view's call (`takesFocus`); a key nobody has
+          // mounted is only marked stale.
+          void qc.invalidateQueries({ queryKey: ['session-files', event.conversationId] })
           break
         case 'run':
           void qc.invalidateQueries({ queryKey: ['research-runs'] })
@@ -391,7 +403,15 @@ export function useUserEventInvalidation(): void {
           if (designRunIs(qc, event.runId)) void qc.invalidateQueries({ queryKey: ['agent-design'] })
           break
         case 'brief':
-          void qc.invalidateQueries({ queryKey: ['daily-brief'] })
+          // MARKED STALE HERE, REFETCHED THERE. The mounted brief has its own
+          // listener (useBriefLive), the one that refetches — after dropping
+          // an event its page already covers and holding one that lands
+          // while a check-off is in flight. Two listeners that both refetched
+          // cancelled and restarted each other's GET on every event. This one
+          // only makes sure a page nobody has mounted reads fresh next time.
+          if (briefEventIsNews(qc.getQueryData<BriefResponse>(['daily-brief']), event)) {
+            void qc.invalidateQueries({ queryKey: ['daily-brief'], refetchType: 'none' })
+          }
           break
         case 'session':
           // The api ended the stream because the session behind it ended (a

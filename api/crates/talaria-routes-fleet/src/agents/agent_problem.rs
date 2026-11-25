@@ -322,6 +322,9 @@ pub async fn post(
                 tags: &[],
                 created_by: &agent,
                 status: None,
+                mention_text: None,
+                external_key: None,
+                quiet: false,
             },
         )
         .await;

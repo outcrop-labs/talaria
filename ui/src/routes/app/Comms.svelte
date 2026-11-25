@@ -3,7 +3,7 @@
   import { useQueryClient } from '@tanstack/svelte-query'
   import { searchParams } from 'sv-router'
   import { navigate } from '@/router'
-  import { CheckCheck, ClipboardList, Settings } from '@lucide/svelte'
+  import { CheckCheck, ClipboardList } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import GeneratingOverlay from '@/components/ui/GeneratingOverlay.svelte'
@@ -54,6 +54,7 @@
   import ProfileDrawer from './comms/ProfileDrawer.svelte'
   import StarButton from './comms/StarButton.svelte'
   import ChannelNotifyMenu from '@/components/chat/ChannelNotifyMenu.svelte'
+  import SettingsButton from '@/components/ui/SettingsButton.svelte'
   import NewMessagePane from './comms/NewMessagePane.svelte'
   import { dmZeroState, groupDmCount, groupDmLabel, isGroupDm } from '@/lib/comms-dm'
   import { channelStarKey } from '@/lib/comms-stars'
@@ -427,7 +428,7 @@
           <!-- How much of this conversation the person hears, and a timed
                mute (hidden on an api without channel levels); its "Muted
                until …" line follows the name and the topic. -->
-          <ChannelNotifyMenu channelId={selected.id} {detail} />
+          <ChannelNotifyMenu channelId={selected.id} {detail} kind={selected.kind} />
           {#if groupDm}
             <!-- A group DM: the rail's count badge, then who's in it. -->
             <span
@@ -517,9 +518,13 @@
             </IconButton>
           {/if}
           {#if selected.kind !== 'dm'}
-            <IconButton size="sm" title="Settings: people, agents, rename" onclick={() => (settingsOpen = true)}>
-              <Settings size={16} />
-            </IconButton>
+            <!-- People, agents and the name: the conversation's settings,
+                 named for which kind of conversation it is. -->
+            <SettingsButton
+              label={selected.kind === 'group' ? 'Group settings' : 'Channel settings'}
+              aria-haspopup="dialog"
+              onclick={() => (settingsOpen = true)}
+            />
           {/if}
         </header>
         <div class="relative min-h-0 flex-1">

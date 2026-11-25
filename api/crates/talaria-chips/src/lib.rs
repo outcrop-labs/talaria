@@ -39,7 +39,9 @@ pub fn tools_unlocked(kind: &str) -> &'static [&'static str] {
         "slides_update" => &["update_google_slides"],
         "drive_move" => &["move_google_file"],
         "drive_rename" => &["rename_google_file"],
-        "ticket_move" => &["triage_ticket"],
+        // A ticket move unlocks nothing: the approval IS the move, made by
+        // the person who approved it. (It used to post a `triage_ticket`
+        // grant that no door ever consumed.)
         "board_access" => &["join_board"],
         _ => &[],
     }
@@ -94,6 +96,25 @@ fn google_approval_for(tool: &str) -> Option<(&'static str, &'static str)> {
         "rename_google_file" => ("drive_rename", "Rename a Drive file"),
         _ => return None,
     })
+}
+
+/// A ticket tool's answer was a REFUSAL: a 403 as the toolkit words it
+/// (`Talaria API 403: …`), or the api's own `{error}` body. Never a landed
+/// write's answer — `{ task, … }`, the ticket itself, whose title or
+/// description may say anything, "Talaria API 403" included.
+fn is_refusal(result: &str, result_v: &Value) -> bool {
+    if result_v.get("task").is_some() {
+        return false;
+    }
+    result.contains("Talaria API 403") || result_v.get("error").is_some()
+}
+
+/// The approval kinds that move a ticket: a refused `triage_ticket`
+/// (`ticket_move`) and a refused `move_ticket` (`ticket_board_move`). The
+/// approve route gates both on the ticket's BOARD — an editor of it, or an
+/// admin — and runs the move as the person who approved.
+pub fn is_ticket_approval(kind: &str) -> bool {
+    matches!(kind, "ticket_move" | "ticket_board_move")
 }
 
 fn is_id(s: &str) -> bool {
@@ -310,16 +331,22 @@ fn str_field<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
+/// The platform links in one tool answer, as link chips: a string the href
+/// classifier accepts, or an object naming a ticket by `boardId` + `id`.
+///
+/// A LISTING IS NOT A TRAIL, so the walk never enters an array. A link chip
+/// says "this turn made or worked on this" — the ticket a call created, the
+/// one it moved. An array in an answer is a listing: `list_tickets`' rows,
+/// search hits, a ticket's comments or its similar tickets, each one only
+/// looked at. A chip per entry buried the one thing the turn was about under
+/// every row it read, on a transcript everyone in the thread sees. (Search
+/// pages are read separately, by `sources_from`, and Google files by
+/// `google_file_from`; neither goes through here.)
 fn walk_links(v: &Value, title: Option<&str>, out: &mut Vec<Value>) {
     match v {
         Value::String(s) => {
             if let Some(link) = classify_href(s) {
                 out.push(link_chip(&link, title));
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                walk_links(item, title, out);
             }
         }
         Value::Object(map) => {
@@ -529,6 +556,37 @@ fn google_file_tool(tool: &str) -> Option<GoogleType> {
         "read_drive_file" => GoogleType::Drive,
         _ => return None,
     })
+}
+
+/// The Google tools among those that only READ the file.
+///
+/// A READ IS FOR THE AGENT'S OWN CONTEXT, so it opens nothing. Every file a
+/// chip names joins the session's files, and the one touched for the person
+/// the turn is for takes their pane's focus — so an agent grounding an answer
+/// on five Google files opened five tabs and moved the pane five times, away
+/// from whatever the person was reading. A Talaria read already lands no
+/// document chip (`writes_document`); a Google read keeps its transcript pill
+/// (how a reader gets back to what the agent looked at) but carries
+/// `READ_MARK`, which the session's file list skips. A person who wants it in
+/// the pane asks, and `open_in_pane` lands the unmarked chip.
+fn google_read_tool(tool: &str) -> bool {
+    matches!(
+        tool,
+        "read_google_doc" | "read_google_sheet" | "read_google_slides" | "read_drive_file"
+    )
+}
+
+/// The chip key a Google file chip from a READ carries (`google_read_tool`),
+/// as `true`. The session's file list does not list a file for a chip with
+/// it (`session_files`), and the merge lets an unmarked chip for the same
+/// file — a write, an open — replace a marked one, never the other way round
+/// (`merge_chips`, `merge_chips_sql!`). Absent, not false, on every other
+/// chip: a chip stored before the mark existed lists exactly as it did.
+pub const READ_MARK: &str = "read";
+
+/// Does this chip carry `READ_MARK`?
+pub fn is_read_mark(chip: &Value) -> bool {
+    chip.get(READ_MARK).and_then(Value::as_bool) == Some(true)
 }
 
 /// The Google file one of those tools touched: the URL the result returned
@@ -792,6 +850,114 @@ fn parse_loose(raw: &str) -> Value {
     serde_json::from_str(&text).unwrap_or(Value::Null)
 }
 
+/// THE TOOLKIT'S OWN NAME FOR A TOOL, however the agent's MCP client spelled
+/// it. Hermes registers every MCP tool as `mcp__<server>__<tool>` and reports
+/// that registry name to the talaria-events plugin, which posts it to the
+/// tool-events door as it is — so a Talaria writer reaches this crate as
+/// `mcp__talaria__create_document`, never `create_document`, and every arm of
+/// `chips_from_tool` that keys on the toolkit's names missed it: a document
+/// an agent created landed no chip, so it never joined the session's files
+/// and never opened in the Work pane (seen on a live stack, Hermes v0.22.4).
+/// Only the toolkit's own server is stripped — it is always `talaria`
+/// (talaria-fleet-render renders it under that key and refuses an authored
+/// server of that name) — plus the single-underscore display spelling some
+/// Hermes surfaces use. Another server's tool keeps its prefix: a Google
+/// Workspace MCP tool is not a toolkit tool, and must not be read as one.
+pub fn bare_tool_name(tool: &str) -> &str {
+    let tool = tool.trim();
+    tool.strip_prefix("mcp__talaria__")
+        .or_else(|| tool.strip_prefix("mcp_talaria_"))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(tool)
+}
+
+/// THE ANSWER AN MCP TOOL GAVE, out of the envelope Hermes puts it in.
+///
+/// Hermes' MCP handler returns `json.dumps({"result": text})` for a tool's
+/// text content, and that envelope is the `result` the talaria-events plugin
+/// posts — so a toolkit writer's `{"artifact": {"id": …}}` reached
+/// `chips_from_tool` as one JSON string under `result`, and no arm keyed on an
+/// id, a title or a URL found anything (seen on a live stack, Hermes v0.22.4).
+/// Unwrapped here: a whole envelope gives back its string; one the plugin's
+/// 4000-char clamp cut short gives back as much of the string as arrived,
+/// decoded, for `parse_loose` to repair like any other truncated payload.
+/// Anything else — a native tool's answer, an object with other keys — is
+/// returned as it came.
+pub fn mcp_result_text(raw: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let t = raw.trim_start();
+    if let Ok(v) = serde_json::from_str::<Value>(t) {
+        if let Some(obj) = v.as_object()
+            && obj.len() == 1
+            && let Some(Value::String(inner)) = obj.get("result")
+        {
+            return Cow::Owned(inner.clone());
+        }
+        return Cow::Borrowed(raw);
+    }
+    match t
+        .strip_prefix("{\"result\": \"")
+        .or_else(|| t.strip_prefix("{\"result\":\""))
+    {
+        Some(rest) => Cow::Owned(json_string_prefix(rest)),
+        None => Cow::Borrowed(raw),
+    }
+}
+
+/// The decoded text of a JSON string body that may have been cut off: up to
+/// its closing quote, or to wherever the text ends. An escape cut in half is
+/// dropped rather than guessed at.
+fn json_string_prefix(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('b') => out.push('\u{8}'),
+                Some('f') => out.push('\u{c}'),
+                Some('u') => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if hex.len() < 4 {
+                        break;
+                    }
+                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(ch);
+                    }
+                }
+                Some(other) => out.push(other),
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The toolkit writers whose answer names the Talaria document they made or
+/// changed — the only calls whose document chip means the session TOUCHED
+/// that file (and so the Work pane lists it, `session_files`).
+fn writes_document(tool: &str) -> bool {
+    matches!(
+        tool,
+        "create_document"
+            | "create_sheet"
+            | "create_page"
+            | "save_image_artifact"
+            // The import answers `{ artifact, message }`: a NEW Talaria file,
+            // and the session that asked for it should see it like any other.
+            | "import_drive_file"
+            | "update_document"
+            // A surgical edit lands the same chip as a full rewrite: what the
+            // reader wants is a way into the document that just changed, and
+            // how much of it the agent resent is not their problem.
+            | "edit_document"
+    )
+}
+
 /// Chips implied by one completed tool call. Link-producing tools always
 /// emit a link chip, even when the result text never pasted the URL.
 /// Protected tools emit an approval chip instead of pretending the action
@@ -804,22 +970,22 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
     if let Some(link) = classify_href(result) {
         out.push(link_chip(&link, None));
     }
+    // A DOCUMENT A CALL ONLY MENTIONED IS NOT ONE IT OPENED. Every chip that
+    // names a Talaria document is a file of the session: the Work pane lists
+    // it and brings it forward for the person the turn is for. So a document
+    // link in a reader's answer — a `get_document`, a knowledge search whose
+    // hits carry `/artifacts?a=…` — must not land one, or grounding an answer
+    // on five documents opened five tabs and yanked the pane five times.
+    // Writers land theirs below; an existing file opens through
+    // `open_in_pane`, whose door lands its own chip.
+    if !writes_document(tool) {
+        out.retain(|c| c.get("entity").and_then(Value::as_str) != Some("document"));
+    }
 
     let title = first_title(&result_v).or_else(|| str_field(&args_v, "title"));
     let id = first_id(&result_v);
     match tool {
-        "create_document"
-        | "create_sheet"
-        | "create_page"
-        | "save_image_artifact"
-        // The import answers `{ artifact, message }`: a NEW Talaria file,
-        // and the session that asked for it should see it like any other.
-        | "import_drive_file"
-        | "update_document"
-        // A surgical edit lands the same chip as a full rewrite: what the
-        // reader wants is a way into the document that just changed, and how
-        // much of it the agent resent is not their problem.
-        | "edit_document" => {
+        t if writes_document(t) => {
             if let Some(id) = id.filter(|s| is_id(s)) {
                 // Only `edit_document` reports changes — a full rewrite's
                 // "change" is the whole body, which is not a diff anyone
@@ -890,23 +1056,68 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
                 out.push(approval_chip(pending, kind, summary));
             }
         }
-        "triage_ticket" => {
-            let refused = result.contains("cannot") || result_v.get("error").is_some();
-            if refused {
+        // THE PERSON'S WAY THROUGH A REFUSED TICKET MOVE. An agent refused a
+        // column change (out of review without a proven ask, say) leaves a
+        // card in the thread; a person who can edit the board approves it and
+        // the move runs as THAT person (chips_approvals_id). Matched on the
+        // bare tool name, so the card does not depend on how the client
+        // prefixed the toolkit's tools.
+        //
+        // Only a REFUSAL leaves a card — a 403 as the toolkit words it, or the
+        // api's own `{error}` — never a move that landed: its answer is the
+        // moved ticket, whose title or description may say "cannot", and a
+        // stale card approved later would re-apply the move as that person.
+        t if bare_tool_name(t) == "triage_ticket" => {
+            if is_refusal(result, &result_v) {
                 let task = str_field(&args_v, "taskId").unwrap_or("");
                 let status = str_field(&args_v, "status").unwrap_or("move");
                 if is_id(task) {
                     let external = format!("ticket:{task}:{status}");
+                    // The ticket as the agent named it (its ref, usually), so
+                    // two refused moves never read as one card.
                     let mut chip = approval_chip(
                         &external,
                         "ticket_move",
-                        &format!("Move ticket to {status}"),
+                        &format!("Move {task} to {status}"),
                     );
                     if let Some(obj) = chip.as_object_mut() {
                         obj.insert("payload".into(), args_v.clone());
                     }
                     out.push(chip);
                 }
+            }
+        }
+        // The board-move twin, refused the same way.
+        t if bare_tool_name(t) == "move_ticket" => {
+            let task = str_field(&args_v, "taskId").unwrap_or("");
+            let board = str_field(&args_v, "boardId").unwrap_or("");
+            let preview = args_v.get("preview").and_then(Value::as_bool) == Some(true);
+            if is_refusal(result, &result_v) && !preview && is_id(task) && is_id(board) {
+                let status = str_field(&args_v, "status");
+                let external = format!("board-move:{task}:{board}:{}", status.unwrap_or(""));
+                let summary = match status {
+                    Some(s) => format!("Move {task} to another board ({s})"),
+                    None => format!("Move {task} to another board"),
+                };
+                let mut chip = approval_chip(&external, "ticket_board_move", &summary);
+                if let Some(obj) = chip.as_object_mut() {
+                    obj.insert("payload".into(), args_v.clone());
+                }
+                out.push(chip);
+                // WHERE IT WOULD GO, beside the card. A link chip's title is
+                // resolved per viewer (`resolve_titles`), so an editor sees the
+                // destination board's name before approving, and a reader who
+                // cannot see that board gets the bare entity label — the name
+                // is never baked into a summary everyone in the thread reads.
+                out.push(link_chip(
+                    &PlatformLink {
+                        href: format!("/boards/{board}"),
+                        entity: "board",
+                        id: board.to_string(),
+                        board_id: None,
+                    },
+                    None,
+                ));
             }
         }
         "request_board_access" => {
@@ -931,8 +1142,17 @@ pub fn chips_from_tool(tool: &str, args: &str, result: &str) -> Vec<Value> {
     //
     // The title is the RESULT's only: a queued edit's `title` argument is a
     // rename nobody has approved yet, not what the file is called.
+    //
+    // A READ keeps its pill and is marked as one (`google_read_tool`): the
+    // file list skips it, so reading a file never opens a tab.
     if let Some(file) = google_file_from(tool, &args_v, &result_v) {
-        out.push(google_file_chip(&file, first_title(&result_v)));
+        let mut chip = google_file_chip(&file, first_title(&result_v));
+        if google_read_tool(tool)
+            && let Some(obj) = chip.as_object_mut()
+        {
+            obj.insert(READ_MARK.into(), json!(true));
+        }
+        out.push(chip);
     }
     dedupe(out)
 }
@@ -1019,6 +1239,59 @@ fn merge_doc_changes(existing: &Value, incoming: &Value) -> Value {
     chip
 }
 
+/// Does `incoming` replace a READ of the same file (`READ_MARK`)? An
+/// unmarked chip — a write, an open — does, in place: the turn that read a
+/// file and then changed or opened it has touched it, and first-wins would
+/// leave the read's mark standing and the file out of the pane. A marked
+/// chip never replaces anything: a read after a write is still a write.
+fn replaces_a_read(existing: &Value, incoming: &Value) -> bool {
+    is_read_mark(existing) && !is_read_mark(incoming)
+}
+
+/// `incoming` taking a read's place, KEEPING THE READ'S NAME when it knows
+/// none of its own. A write's answer often names no file — a queued edit to
+/// somebody else's file answers `{ pending, approver, message }`, so its chip
+/// is labelled with what the file is ("Google Doc") — and the read it
+/// replaces is then the only name the row has for the file: dropping it
+/// would leave the tab and the pill reading "Google Doc" for a file the
+/// agent had just read by name. A title the incoming chip does carry wins,
+/// since it is the newer one. `merge_chips_sql!`'s read arm is this, in SQL.
+fn keeping_the_read_name(read: &Value, incoming: &Value) -> Value {
+    if incoming.get("title").is_some_and(Value::is_string) {
+        return incoming.clone();
+    }
+    named_by(incoming, read)
+}
+
+/// `existing`, RENAMED BY A LATER READ of the same file that knew its name.
+/// A read never takes a chip's place — a read after a write is still a write,
+/// and the file stays listed — but what it read is the file as it is called
+/// now, and dropping that would leave a queued write's "Google Doc" (or a
+/// name from before a rename) on the row for the rest of the turn. Only the
+/// name moves: `title`, and `label` beside it; never the mark. A read that
+/// knew no name changes nothing. `merge_chips_sql!`'s rename arm is this, in
+/// SQL.
+fn renamed_by_read(existing: &Value, read: &Value) -> Value {
+    named_by(existing, read)
+}
+
+/// `chip` with `donor`'s name — its `title`, and its `label` beside it —
+/// when the donor has a title; `chip` unchanged otherwise. Nothing else
+/// moves (never `READ_MARK`).
+fn named_by(chip: &Value, donor: &Value) -> Value {
+    let mut chip = chip.clone();
+    let Some(title) = donor.get("title").filter(|t| t.is_string()) else {
+        return chip;
+    };
+    if let Some(obj) = chip.as_object_mut() {
+        obj.insert("title".into(), title.clone());
+        if let Some(label) = donor.get("label").filter(|l| l.is_string()) {
+            obj.insert("label".into(), label.clone());
+        }
+    }
+    chip
+}
+
 pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
     let mut out = match existing {
         Value::Array(items) => items.clone(),
@@ -1033,14 +1306,20 @@ pub fn merge_chips(existing: &Value, incoming: &[Value]) -> Value {
             .iter()
             .position(|c| c.get("id").and_then(Value::as_str) == Some(id));
         match at {
+            // A read never replaces what is there; it only renames it.
+            Some(i) if is_read_mark(chip) => out[i] = renamed_by_read(&out[i], chip),
             // Already there: a snapshot is overwritten in PLACE (so it keeps
             // its position in the row rather than jumping to the end), a
             // document chip carrying changes takes the place over with BOTH
-            // edits' rows, and any other event is left alone.
+            // edits' rows, an unmarked chip takes a read's place (keeping the
+            // read's name when it has none), and any other event is left
+            // alone.
             Some(i) => {
                 let kind = chip.get("kind").and_then(Value::as_str).unwrap_or("");
                 if snapshot_kind(kind) {
                     out[i] = chip.clone();
+                } else if replaces_a_read(&out[i], chip) {
+                    out[i] = keeping_the_read_name(&out[i], chip);
                 } else if !changes_on(chip).is_empty() {
                     out[i] = merge_doc_changes(&out[i], chip);
                 }
@@ -1132,6 +1411,53 @@ pub fn conversation_hint(body: &Value) -> Option<String> {
         .find_map(|s| talaria_params::uuid_canonical(s.trim()))
 }
 
+/// The conversation a plugin's frame was made in: `conversation_hint`, else
+/// the conversation the frame's Hermes session names
+/// (`talaria_conversations::session_conversation`).
+///
+/// THE DEFAULT CHAT PATH SENDS NO UUID. An agent without pinned sessions
+/// answers on Hermes' completions arm, where the session the plugin stamps on
+/// every frame is Hermes' own `api-<16 hex>` digest. `conversation_hint`
+/// rightly refuses it as an address, so every chip from that path landed
+/// unaddressed — on the agent's one live turn, and nowhere at all the moment
+/// it was answering in two places (two people, two Work sessions, a channel
+/// reply), with only a log line to say so. The chat transport records that
+/// key against its conversation when the stream opens (`usage_attributions`,
+/// source `chat`), and the failure-verdict path already reads it back; this
+/// is the same read for the chips. Every session the frame carries is asked
+/// in turn — its own, then its parent's (a subagent hook's
+/// `parentSessionId`) — and the first that names one of this agent's
+/// conversations is the address, so a child session with no record of its
+/// own never hides the parent's.
+///
+/// A KEY THAT NAMES NOTHING IS NOT AN ADDRESS: no row, another agent's row,
+/// a row whose conversation is not this agent's. The answer is None and the
+/// caller keeps today's unaddressed rule — exactly one live turn, else
+/// nothing — so a stray id can never land a chip on a thread it guessed.
+pub async fn session_hint(
+    pg: &PgPool,
+    agent: &str,
+    body: &Value,
+) -> Result<Option<String>, sqlx::Error> {
+    if let Some(id) = conversation_hint(body) {
+        return Ok(Some(id));
+    }
+    for key in ["sessionId", "parentSessionId"] {
+        let Some(session) = body
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        if let Some(id) = talaria_conversations::session_conversation(pg, agent, session).await? {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
 /// The rule, pure: one candidate is the target, several are an ambiguity,
 /// none is "look further". Live rows are asked first and only when nothing
 /// is live does the recent tier count — a turn that closed a moment before
@@ -1155,6 +1481,12 @@ fn unaddressed(live: Vec<Landed>, recent: Vec<Landed>) -> Target {
 /// nowhere. The conversation must be this agent's own — an id naming another
 /// agent's thread, or no thread, lands nothing rather than falling back to a
 /// guess.
+///
+/// A CHANNEL ID IS AN ADDRESS TOO. A channel turn's prompt names its channel
+/// id as the thread to pass under `conversationId` (talaria-channel-replies),
+/// so an id that is no conversation of this agent's lands on the agent's own
+/// reply in that channel by the same two tiers — and still nowhere when the
+/// agent has no such reply there.
 async fn addressed_target(
     pg: &PgPool,
     agent: &str,
@@ -1172,31 +1504,37 @@ async fn addressed_target(
     .bind(conversation_id)
     .fetch_optional(pg)
     .await?;
-    Ok(match row {
-        Some((message_id,)) => Target::Found(Landed {
+    if let Some((message_id,)) = row {
+        return Ok(Target::Found(Landed {
             conversation_id: Some(conversation_id.to_string()),
             channel_id: None,
+            message_id,
+        }));
+    }
+    let row: Option<(String,)> = sqlx::query_as(
+        "select id::text from channel_messages \
+         where channel_id = $2::uuid and author_type = 'agent' and author = $1 \
+           and created_at > now() - interval '15 minutes' \
+         order by (status = 'streaming') desc, seq desc limit 1",
+    )
+    .bind(agent)
+    .bind(conversation_id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(match row {
+        Some((message_id,)) => Target::Found(Landed {
+            conversation_id: None,
+            channel_id: Some(conversation_id.to_string()),
             message_id,
         }),
         None => Target::Nowhere,
     })
 }
 
-/// Where an agent's chips land. With a conversation named, that
-/// conversation's own turn (`addressed_target`). Without one: the agent's
-/// live streaming rows — conversation turns and channel turns alike — when
-/// there is exactly one; else its rows of the last 15 minutes regardless of
-/// status, when there is exactly one; else `Ambiguous` when several could be
-/// meant, and `Nowhere` when none could. Two rows are read per tier rather
-/// than one so "several" is observable without counting the table.
-pub async fn landing_target(
-    pg: &PgPool,
-    agent: &str,
-    conversation_id: Option<&str>,
-) -> Result<Target, sqlx::Error> {
-    if let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) {
-        return addressed_target(pg, agent, &id).await;
-    }
+/// The agent's LIVE rows: its streaming conversation replies and streaming
+/// channel replies of the last 15 minutes, up to two of each — two so that
+/// "several" is observable without counting the table.
+async fn live_rows(pg: &PgPool, agent: &str) -> Result<Vec<Landed>, sqlx::Error> {
     let mut live: Vec<Landed> = sqlx::query_as::<_, (String, String)>(
         "select m.id::text, m.conversation_id::text \
          from messages m join conversations c on c.id = m.conversation_id \
@@ -1231,6 +1569,25 @@ pub async fn landing_target(
             message_id,
         }),
     );
+    Ok(live)
+}
+
+/// Where an agent's chips land. With a conversation named, that
+/// conversation's own turn (`addressed_target`). Without one: the agent's
+/// live streaming rows — conversation turns and channel turns alike — when
+/// there is exactly one; else its rows of the last 15 minutes regardless of
+/// status, when there is exactly one; else `Ambiguous` when several could be
+/// meant, and `Nowhere` when none could. Two rows are read per tier rather
+/// than one so "several" is observable without counting the table.
+pub async fn landing_target(
+    pg: &PgPool,
+    agent: &str,
+    conversation_id: Option<&str>,
+) -> Result<Target, sqlx::Error> {
+    if let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) {
+        return addressed_target(pg, agent, &id).await;
+    }
+    let live = live_rows(pg, agent).await?;
     if !live.is_empty() {
         return Ok(unaddressed(live, Vec::new()));
     }
@@ -1273,6 +1630,48 @@ pub async fn landing_target(
         }),
     );
     Ok(unaddressed(Vec::new(), recent))
+}
+
+/// `landing_target` with no recent tier: the reply the agent is streaming
+/// NOW — in the conversation named, else its one live row anywhere (several
+/// are `Ambiguous`, none is `Nowhere`).
+///
+/// FOR A DOOR OR ROUTE THE AGENT REACHES INSIDE ITS OWN CALL: opening a file
+/// in the pane, or a create's or an edit's own chip. A tool call runs while its
+/// turn streams, so a finished turn is never the one asking. The recent tier
+/// exists for the tool-events door, whose frame can arrive a beat after the
+/// turn closed. Anywhere else, with no reply streaming (a cron run, whose row
+/// is written at delivery; a background job), it lands the file in the pane of
+/// whoever the agent last spoke to, and a document chip opens and takes focus
+/// there. A named id that is no conversation of this agent's with a streaming
+/// reply — a finished thread, a channel, another agent's — is `Nowhere`.
+pub async fn live_landing_target(
+    pg: &PgPool,
+    agent: &str,
+    conversation_id: Option<&str>,
+) -> Result<Target, sqlx::Error> {
+    let Some(id) = conversation_id.and_then(|s| talaria_params::uuid_canonical(s.trim())) else {
+        return Ok(unaddressed(live_rows(pg, agent).await?, Vec::new()));
+    };
+    let row: Option<(String,)> = sqlx::query_as(
+        "select m.id::text \
+         from messages m join conversations c on c.id = m.conversation_id \
+         where c.id = $2::uuid and c.agent_model = $1 and m.role = 'assistant' \
+           and m.status = 'streaming' and m.streamed_at > now() - interval '15 minutes' \
+         order by m.seq desc limit 1",
+    )
+    .bind(agent)
+    .bind(&id)
+    .fetch_optional(pg)
+    .await?;
+    Ok(match row {
+        Some((message_id,)) => Target::Found(Landed {
+            conversation_id: Some(id),
+            channel_id: None,
+            message_id,
+        }),
+        None => Target::Nowhere,
+    })
 }
 
 /// The unaddressed resolver as an Option, for the callers that have no
@@ -1324,6 +1723,23 @@ fn snapshot_chips(chips: &[Value]) -> Vec<Value> {
 /// two implementations are the contract, so a change to either is a change
 /// to both.
 ///
+/// THE READ ARM IS `replaces_a_read`, in SQL. A chip on the row marked as a
+/// read (`READ_MARK`) is replaced, in its place, by an incoming chip with the
+/// same id that is not marked — a write or an open of the file the turn had
+/// read — taken from `$2`; an incoming marked chip never replaces anything,
+/// since it is neither in `$3` nor unmarked. Without it the read, landing
+/// first, would keep the file out of the pane for the rest of the turn. The
+/// replacement keeps the read's `title` and `label` when it carries no
+/// title of its own (`keeping_the_read_name`): a queued write's answer names
+/// no file, and the read was the only name the row had.
+///
+/// THE RENAME ARM IS `renamed_by_read`, in SQL. An incoming chip marked as a
+/// read that carries a `title` replaces nothing, but sets the `title` (and
+/// `label`) of the chip already at its id — the read is the file's name as
+/// it is now. Neither the mark nor anything else moves. The arms are
+/// exclusive: the read arm wants an unmarked incoming chip, this one a
+/// marked one.
+///
 /// A macro over the table name because the statement has to stay a LITERAL —
 /// sqlx refuses a built SQL string by type, and the two tables carrying chips
 /// otherwise mean two copies of this to keep in step.
@@ -1354,6 +1770,31 @@ macro_rules! merge_chips_sql {
                                  end \
                             from jsonb_array_elements($3::jsonb) n(c) \
                            where n.c->>'id' = e.c->>'id' limit 1 \
+                        ), ( \
+                          select case \
+                                   when jsonb_typeof(n.c->'title') is distinct from 'string' \
+                                    and jsonb_typeof(e.c->'title') = 'string' \
+                                   then n.c || jsonb_strip_nulls(jsonb_build_object( \
+                                          'title', e.c->'title', \
+                                          'label', case when jsonb_typeof(e.c->'label') = 'string' \
+                                                        then e.c->'label' end)) \
+                                   else n.c \
+                                 end \
+                            from jsonb_array_elements($2::jsonb) n(c) \
+                           where n.c->>'id' = e.c->>'id' \
+                             and e.c->'read' = 'true'::jsonb \
+                             and n.c->'read' is distinct from 'true'::jsonb \
+                           limit 1 \
+                        ), ( \
+                          select e.c || jsonb_strip_nulls(jsonb_build_object( \
+                                   'title', n.c->'title', \
+                                   'label', case when jsonb_typeof(n.c->'label') = 'string' \
+                                                 then n.c->'label' end)) \
+                            from jsonb_array_elements($2::jsonb) n(c) \
+                           where n.c->>'id' = e.c->>'id' \
+                             and n.c->'read' = 'true'::jsonb \
+                             and jsonb_typeof(n.c->'title') = 'string' \
+                           limit 1 \
                         ), e.c) as c, e.ord \
                    from jsonb_array_elements(chips) with ordinality e(c, ord) \
                  union all \
@@ -1428,6 +1869,33 @@ pub async fn surface_for_agent(
         return Ok(None);
     }
     let Some(landed) = speaking_target(pg, agent).await? else {
+        return Ok(None);
+    };
+    write_chips(pg, &landed, &chips).await?;
+    fan(pg, redis, &landed);
+    Ok(Some(landed))
+}
+
+/// Attach chips to the agent's LIVE turn only — exactly one streaming row,
+/// else nowhere (`live_landing_target`, unaddressed) — and tell the open
+/// thread to refetch. For a route that lands its own chip (a create, an
+/// edit), detached from any tool answer and naming no conversation.
+pub async fn surface_on_live_turn(
+    pg: &PgPool,
+    redis: Option<redis::aio::ConnectionManager>,
+    agent: &str,
+    chips: Vec<Value>,
+) -> Result<Option<Landed>, sqlx::Error> {
+    if chips.is_empty() || agent.is_empty() {
+        return Ok(None);
+    }
+    let target = live_landing_target(pg, agent, None).await?;
+    if let Target::Ambiguous { turns } = &target {
+        eprintln!(
+            "[chips] {agent} is streaming in {turns} places and the caller named none — dropped"
+        );
+    }
+    let Some(landed) = target.landed() else {
         return Ok(None);
     };
     write_chips(pg, &landed, &chips).await?;
@@ -2034,7 +2502,6 @@ const KINDS_WITH_UNLOCKS: &[&str] = &[
     "slides_update",
     "drive_move",
     "drive_rename",
-    "ticket_move",
     "board_access",
 ];
 
@@ -2064,6 +2531,241 @@ pub async fn streaming_conversation_user(
     .bind(agent_model)
     .fetch_optional(pg)
     .await
+}
+
+// ── The live turn: whom an agent is answering right now ─────────────────────
+//
+// `landing_target` answers WHERE an agent's turn is; this answers WHO it is
+// answering, strictly: only a reply streaming now counts (no recent tier — a
+// finished turn answers nobody), and only the human messages that turn
+// answers come back. A door that lets an agent act on a person's word
+// (talaria-tasks `asked`) asks this and nothing looser, so a cron, a work
+// session or yesterday's chat cannot be cited as somebody's request.
+//
+// A channel reply answers exactly the message it was started for: the
+// trigger stamps that message's id on the streaming row
+// (`answers_message_id`, talaria-channels `insert_streaming_reply`). Nothing
+// is inferred from what sits before the row — a person who posts while the
+// reply is still being decided (a ticket room's relevance judgment) is not
+// the one it answers. And a tool call names only the channel, so two replies
+// this agent is streaming in one channel cannot be told apart: that is
+// `Several`, never the newer one's guess.
+//
+// NOT THE SAME QUESTION AS `talaria_conversations::turn_requester`, which
+// answers whose Work pane a file landed on a row belongs in — for any row,
+// finished ones too: the newest person's message strictly below that row, a
+// queued one never, a chip click counting as the person who clicked. Both
+// read `messages`; the policies differ on purpose, and each names the other.
+
+// The live window is the fifteen minutes every resolver in this file uses.
+// Conversation replies refresh `streamed_at` every ten seconds while they
+// write, so the window only bounds a dead row. Channel rows carry no beat:
+// their window runs from `created_at`, which caps a channel turn at fifteen
+// minutes (documented in docs/user/boards.md).
+
+/// One human message a live turn answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnMessage {
+    pub id: String,
+    /// The person the row can be held to: a conversation row's
+    /// `author_user_id`; a channel row's author when it is an email that
+    /// names exactly one user. None is "nobody this row proves".
+    pub user_id: Option<String>,
+    /// How a record names them: the email, else the name.
+    pub label: String,
+    pub content: String,
+    /// The words were the agent's — an ask option or a tool chip the person
+    /// clicked, or a reply the person sent from a draft. Chosen, not written.
+    pub drafted: bool,
+}
+
+/// Where the live turn is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnPlace {
+    Conversation,
+    /// A channel, with the task it is the discussion room of, if any.
+    Channel {
+        name: String,
+        task_id: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveTurn {
+    /// The thread's id in canonical text.
+    pub thread_id: String,
+    pub place: TurnPlace,
+    /// The agent's streaming reply.
+    pub reply_id: String,
+    /// The human messages this turn answers, oldest first. In a conversation:
+    /// the user rows after the last finished reply, including any queued
+    /// behind (or steered into) the streaming one. In a channel: the one
+    /// person's message the reply's row says it answers — none when the row
+    /// carries no stamp, or the stamped row is no person's.
+    pub messages: Vec<TurnMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnLookup {
+    /// The id names no thread of this agent's: not a UUID, another agent's
+    /// conversation, or a channel this agent has never spoken in.
+    NotYours,
+    /// This agent's thread, but no reply of its own is streaming there now.
+    NotLive,
+    /// More than one reply of this agent's is streaming in that channel, and
+    /// the id alone cannot say which turn is asking.
+    Several,
+    Live(LiveTurn),
+}
+
+/// The live turn `thread_id` names for `agent`: a conversation of its own, or
+/// a channel it is replying in. See the section comment above.
+pub async fn live_turn(
+    pg: &PgPool,
+    agent: &str,
+    thread_id: &str,
+) -> Result<TurnLookup, sqlx::Error> {
+    let Some(id) = talaria_params::uuid_canonical(thread_id.trim()) else {
+        return Ok(TurnLookup::NotYours);
+    };
+    let owned: Option<(String,)> = sqlx::query_as(
+        "select id::text from conversations where id = $1::uuid and agent_model = $2",
+    )
+    .bind(&id)
+    .bind(agent)
+    .fetch_optional(pg)
+    .await?;
+    if owned.is_some() {
+        return conversation_turn(pg, &id).await;
+    }
+    channel_turn(pg, agent, &id).await
+}
+
+async fn conversation_turn(pg: &PgPool, id: &str) -> Result<TurnLookup, sqlx::Error> {
+    let reply: Option<(String, i32)> = sqlx::query_as(
+        "select id::text, seq from messages \
+         where conversation_id = $1::uuid and role = 'assistant' and status = 'streaming' \
+           and streamed_at > now() - interval '15 minutes' \
+         order by seq desc limit 1",
+    )
+    .bind(id)
+    .fetch_optional(pg)
+    .await?;
+    let Some((reply_id, reply_seq)) = reply else {
+        return Ok(TurnLookup::NotLive);
+    };
+    // `author_user_id` is the session that sent the row; a cron's
+    // responsible-user stamp sits on ASSISTANT rows, so it is never here.
+    let rows: Vec<(String, Option<String>, Option<String>, String, bool)> = sqlx::query_as(
+        "select m.id::text, m.author_user_id::text, coalesce(u.email, u.name), m.content, \
+                coalesce(m.metadata->>'drafted', '') = 'true' \
+         from messages m left join users u on u.id = m.author_user_id \
+         where m.conversation_id = $1::uuid and m.role = 'user' \
+           and m.seq > coalesce((select max(p.seq) from messages p \
+                                 where p.conversation_id = $1::uuid and p.role = 'assistant' \
+                                   and p.status <> 'streaming' and p.seq < $2), 0) \
+         order by m.seq",
+    )
+    .bind(id)
+    .bind(reply_seq)
+    .fetch_all(pg)
+    .await?;
+    Ok(TurnLookup::Live(LiveTurn {
+        thread_id: id.to_string(),
+        place: TurnPlace::Conversation,
+        reply_id,
+        messages: rows
+            .into_iter()
+            .map(|(id, user_id, label, content, drafted)| TurnMessage {
+                id,
+                label: label.unwrap_or_else(|| "a person".into()),
+                user_id,
+                content,
+                drafted,
+            })
+            .collect(),
+    }))
+}
+
+async fn channel_turn(pg: &PgPool, agent: &str, id: &str) -> Result<TurnLookup, sqlx::Error> {
+    type ReplyRow = (String, String, Option<String>, Option<String>);
+    // Two rows are enough to know the call is ambiguous.
+    let replies: Vec<ReplyRow> = sqlx::query_as(
+        "select m.id::text, c.name, c.task_id::text, m.answers_message_id::text \
+         from channel_messages m join channels c on c.id = m.channel_id \
+         where m.channel_id = $1::uuid and m.author_type = 'agent' and m.author = $2 \
+           and m.status = 'streaming' and m.created_at > now() - interval '15 minutes' \
+         order by m.seq desc limit 2",
+    )
+    .bind(id)
+    .bind(agent)
+    .fetch_all(pg)
+    .await?;
+    let (reply_id, name, task_id, answers) = match replies.as_slice() {
+        [] => {
+            let spoke: Option<(i32,)> = sqlx::query_as(
+                "select 1 from channel_messages \
+                 where channel_id = $1::uuid and author_type = 'agent' and author = $2 limit 1",
+            )
+            .bind(id)
+            .bind(agent)
+            .fetch_optional(pg)
+            .await?;
+            return Ok(if spoke.is_some() {
+                TurnLookup::NotLive
+            } else {
+                TurnLookup::NotYours
+            });
+        }
+        [one] => one.clone(),
+        _ => return Ok(TurnLookup::Several),
+    };
+    // The message the reply answers: the one its row was stamped with, if it
+    // is a person's. The calling agent is never "a person", whatever its row
+    // was typed as.
+    let asked: Option<(String, String, String, bool)> = match answers.as_deref() {
+        Some(message) => {
+            sqlx::query_as(
+                "select id::text, author, content, drafted from channel_messages \
+                 where id = $1::uuid and channel_id = $2::uuid \
+                   and author_type = 'user' and author <> $3",
+            )
+            .bind(message)
+            .bind(id)
+            .bind(agent)
+            .fetch_optional(pg)
+            .await?
+        }
+        None => None,
+    };
+    let mut messages = Vec::new();
+    if let Some((message_id, author, content, drafted)) = asked {
+        // A channel row stores the sender's email, else their name. Only an
+        // email naming exactly one user is a person this row proves — a
+        // shared display name resolves to nobody, which refuses safely.
+        let users: Vec<(String,)> =
+            sqlx::query_as("select id::text from users where lower(email) = lower($1) limit 2")
+                .bind(&author)
+                .fetch_all(pg)
+                .await?;
+        let user_id = match users.as_slice() {
+            [(one,)] => Some(one.clone()),
+            _ => None,
+        };
+        messages.push(TurnMessage {
+            id: message_id,
+            user_id,
+            label: author,
+            content,
+            drafted,
+        });
+    }
+    Ok(TurnLookup::Live(LiveTurn {
+        thread_id: id.to_string(),
+        place: TurnPlace::Channel { name, task_id },
+        reply_id,
+        messages,
+    }))
 }
 
 /// The conversation an agent is speaking in, for callers with no id of
@@ -2594,12 +3296,129 @@ mod tests {
             r#"{"error":"agents cannot take a ticket out of review"}"#,
         );
         assert_eq!(refused[0]["actionKind"], "ticket_move");
+        assert_eq!(refused[0]["summary"], "Move t-2 to done");
         let ok = chips_from_tool(
             "triage_ticket",
             r#"{"taskId":"t-2","status":"in_progress"}"#,
             r#"{"task":{"id":"t-2","boardId":"b-1","title":"Gate"}}"#,
         );
         assert!(ok.iter().all(|c| c["kind"] != "approval"));
+    }
+
+    /// A triage that LANDED never leaves a card, whatever its ticket says —
+    /// a stale card a board editor approved later would re-apply the move as
+    /// them. Hermes reports the prefixed name, so that spelling is the one
+    /// that matters; an asked exit answers with the moved ticket too.
+    #[test]
+    fn a_landed_triage_whose_ticket_says_cannot_leaves_no_card() {
+        for name in [
+            "triage_ticket",
+            "mcp_talaria_triage_ticket",
+            "mcp__talaria__triage_ticket",
+        ] {
+            let ok = chips_from_tool(
+                name,
+                r#"{"taskId":"ABC-12","status":"in_progress","conversationId":"c-1"}"#,
+                r#"{"task":{"id":"t-2","boardId":"b-1","title":"We cannot ship this","description":"agents cannot fix it alone"}}"#,
+            );
+            assert!(ok.iter().all(|c| c["kind"] != "approval"), "{name}: {ok:?}");
+        }
+        // Not even when the ticket's own text quotes a refusal: a landed
+        // answer is the ticket, whatever it says.
+        for name in ["mcp_talaria_triage_ticket", "mcp_talaria_move_ticket"] {
+            let ok = chips_from_tool(
+                name,
+                r#"{"taskId":"ABC-12","boardId":"b-9","status":"triage"}"#,
+                r#"{"task":{"id":"t-2","boardId":"b-9","title":"Talaria API 403: agents cannot take a ticket out of review"},"moved":{}}"#,
+            );
+            assert!(ok.iter().all(|c| c["kind"] != "approval"), "{name}: {ok:?}");
+        }
+        // A 400 is a bad call, not a refusal a person could approve past.
+        let bad = chips_from_tool(
+            "mcp_talaria_triage_ticket",
+            r#"{"taskId":"ABC-12","status":"nowhere"}"#,
+            "Talaria API 400: status cannot be nowhere",
+        );
+        assert!(bad.iter().all(|c| c["kind"] != "approval"), "{bad:?}");
+    }
+
+    /// The card does not depend on how the client spelled the tool: Hermes
+    /// reports `mcp_talaria_*`, a Claude-style client `mcp__talaria__*`.
+    #[test]
+    fn a_prefixed_tool_name_still_leaves_the_card() {
+        for name in [
+            "triage_ticket",
+            "mcp_talaria_triage_ticket",
+            "mcp__talaria__triage_ticket",
+        ] {
+            let chips = chips_from_tool(
+                name,
+                r#"{"taskId":"t-2","status":"in_progress"}"#,
+                "Talaria API 403: agents cannot take a ticket out of review on their own",
+            );
+            assert_eq!(chips[0]["actionKind"], "ticket_move", "{name}");
+        }
+        assert_eq!(bare_tool_name("mcp_talaria_move_ticket"), "move_ticket");
+        assert_eq!(bare_tool_name("mcp__talaria__get_ticket"), "get_ticket");
+        assert_eq!(bare_tool_name("mcp_other_thing"), "mcp_other_thing");
+    }
+
+    /// A refused board move leaves its own card, carrying the call so the
+    /// approve route can run it; a move that landed, a preview, and a call
+    /// with no board leave none.
+    #[test]
+    fn a_refused_board_move_becomes_an_approval_and_a_landed_one_does_not() {
+        let refused = chips_from_tool(
+            "mcp_talaria_move_ticket",
+            r#"{"taskId":"t-2","boardId":"b-9","status":"triage"}"#,
+            "Talaria API 403: agents cannot take a ticket out of review on their own",
+        );
+        let card = refused
+            .iter()
+            .find(|c| c["kind"] == "approval")
+            .expect("a card");
+        assert_eq!(card["actionKind"], "ticket_board_move");
+        assert_eq!(card["actionId"], "board-move:t-2:b-9:triage");
+        assert_eq!(card["payload"]["boardId"], "b-9");
+        // The card names the ticket; the destination rides beside it as a
+        // link whose title each viewer's own access resolves.
+        assert_eq!(card["summary"], "Move t-2 to another board (triage)");
+        let dest = refused
+            .iter()
+            .find(|c| c["kind"] == "link")
+            .expect("the destination board");
+        assert_eq!(dest["href"], "/boards/b-9");
+        assert_eq!(dest["entity"], "board");
+        assert!(dest["title"].is_null());
+        assert!(is_ticket_approval("ticket_board_move"));
+        assert!(is_ticket_approval("ticket_move"));
+        assert!(!is_ticket_approval("gmail_send"));
+        // The api's own `{error}` counts as a refusal too.
+        let raw = chips_from_tool(
+            "move_ticket",
+            r#"{"taskId":"t-2","boardId":"b-9"}"#,
+            r#"{"error":"agents cannot take a ticket out of review"}"#,
+        );
+        assert!(raw.iter().any(|c| c["actionKind"] == "ticket_board_move"));
+        // A landed move whose ticket text happens to say "cannot".
+        let landed = chips_from_tool(
+            "move_ticket",
+            r#"{"taskId":"t-2","boardId":"b-9"}"#,
+            r#"{"task":{"id":"t-2","boardId":"b-9","title":"We cannot ship"},"moved":{}}"#,
+        );
+        assert!(landed.iter().all(|c| c["kind"] != "approval"));
+        let preview = chips_from_tool(
+            "move_ticket",
+            r#"{"taskId":"t-2","boardId":"b-9","preview":true}"#,
+            "Talaria API 403: agents cannot take a ticket out of review",
+        );
+        assert!(preview.iter().all(|c| c["kind"] != "approval"));
+        let no_board = chips_from_tool(
+            "move_ticket",
+            r#"{"taskId":"t-2"}"#,
+            "Talaria API 403: agents cannot take a ticket out of review",
+        );
+        assert!(no_board.iter().all(|c| c["kind"] != "approval"));
     }
 
     #[test]
@@ -2813,7 +3632,7 @@ mod tests {
     #[test]
     fn unlock_names_the_tools_the_approval_granted() {
         assert_eq!(tools_unlocked("gmail_send"), ["draft_email"]);
-        assert_eq!(tools_unlocked("ticket_move"), ["triage_ticket"]);
+        assert!(tools_unlocked("ticket_move").is_empty());
         assert!(tools_unlocked("nope").is_empty());
         assert_eq!(unlock_chip("a-1", "gmail_send")["tools"][0], "draft_email");
     }
@@ -2827,10 +3646,14 @@ mod tests {
             "gmail_send",
             "calendar_create",
             "doc_update",
-            "ticket_move",
             "board_access",
         ] {
             assert!(KINDS_WITH_UNLOCKS.contains(&kind), "{kind} missing");
+        }
+        // The ticket approvals ARE the move; they grant no later call.
+        for kind in ["ticket_move", "ticket_board_move"] {
+            assert!(tools_unlocked(kind).is_empty(), "{kind} unlocks a tool");
+            assert!(!KINDS_WITH_UNLOCKS.contains(&kind), "{kind} listed");
         }
     }
 
@@ -3473,6 +4296,248 @@ mod tests {
         assert_eq!(google_chips(&read)[0]["id"], google_chips(&edit)[0]["id"]);
     }
 
+    /// A READ KEEPS ITS PILL AND OPENS NOTHING. Every Google reader marks its
+    /// chip as a read; every writer, and the create, does not. The chip id is
+    /// the file's either way, so the merge can tell a read of a file from a
+    /// write of the same one.
+    #[test]
+    fn a_google_read_is_marked_as_one_and_a_google_write_is_not() {
+        let url = "https://docs.google.com/document/d/1same/edit";
+        for (tool, args, result) in [
+            (
+                "read_google_doc",
+                r#"{"id":"1same"}"#,
+                format!(r#"{{"id":"1same","title":"Spec","url":"{url}"}}"#),
+            ),
+            (
+                "read_google_sheet",
+                r#"{"id":"1sheet"}"#,
+                r#"{"id":"1sheet","title":"Q3"}"#.to_string(),
+            ),
+            (
+                "read_google_slides",
+                r#"{"id":"1deck"}"#,
+                r#"{"id":"1deck","title":"Deck","slides":[]}"#.to_string(),
+            ),
+            (
+                "read_drive_file",
+                r#"{"id":"1pdf"}"#,
+                r#"{"id":"1pdf","text":"…"}"#.to_string(),
+            ),
+        ] {
+            let chips = chips_from_tool(tool, args, &result);
+            let g = google_chips(&chips);
+            assert_eq!(g.len(), 1, "{tool}: {chips:?}");
+            assert_eq!(g[0][READ_MARK], json!(true), "{tool}: {}", g[0]);
+            assert!(is_read_mark(g[0]), "{tool}");
+        }
+        let written = format!(r#"{{"id":"1same","url":"{url}","name":"Spec"}}"#);
+        for tool in [
+            "create_google_doc",
+            "update_google_doc",
+            "append_google_doc",
+        ] {
+            let chips = chips_from_tool(tool, r#"{"id":"1same","body":"x"}"#, &written);
+            let g = google_chips(&chips);
+            assert_eq!(g.len(), 1, "{tool}: {chips:?}");
+            assert!(g[0].get(READ_MARK).is_none(), "{tool}: {}", g[0]);
+        }
+        // One file, one chip id, read or written.
+        let read = chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","url":"{url}"}}"#),
+        );
+        let wrote = chips_from_tool("update_google_doc", r#"{"id":"1same"}"#, &written);
+        assert_eq!(google_chips(&read)[0]["id"], google_chips(&wrote)[0]["id"]);
+    }
+
+    /// THE MERGE NEVER LETS A READ HIDE A WRITE. A turn that reads a file and
+    /// then changes (or opens) it has touched it: the unmarked chip takes the
+    /// read's place, where it sits. A read after a write changes nothing. Two
+    /// reads stay one read.
+    #[test]
+    fn an_unmarked_chip_replaces_a_read_of_the_same_file_and_a_read_never_replaces() {
+        let url = "https://docs.google.com/document/d/1same/edit";
+        let read = google_chips(&chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","title":"Spec","url":"{url}"}}"#),
+        ))[0]
+            .clone();
+        let wrote = google_chips(&chips_from_tool(
+            "update_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","url":"{url}","name":"Spec"}}"#),
+        ))[0]
+            .clone();
+        let other = json!({ "id": "link:/boards/b/t", "kind": "link", "href": "/boards/b/t" });
+
+        // Read, then write: the write, in the read's place.
+        let merged = merge_chips(&json!([read.clone(), other.clone()]), &[wrote.clone()]);
+        assert_eq!(merged, json!([wrote.clone(), other.clone()]), "{merged}");
+        // Write, then read: still the write.
+        let merged = merge_chips(&json!([wrote.clone()]), &[read.clone()]);
+        assert_eq!(merged, json!([wrote.clone()]), "{merged}");
+        // Read only, twice: one read, still marked.
+        let merged = merge_chips(&json!([read.clone()]), &[read.clone()]);
+        assert_eq!(merged, json!([read.clone()]), "{merged}");
+        // A chip from before the mark is unmarked, and a read leaves it
+        // unmarked: it only names it.
+        let legacy =
+            json!({ "id": read["id"], "kind": "source", "label": "Old name", "href": url });
+        let merged = merge_chips(&json!([legacy.clone()]), &[read.clone()]);
+        assert_eq!(
+            merged,
+            json!([{ "id": read["id"], "kind": "source", "label": "Spec", "title": "Spec", "href": url }]),
+            "{merged}"
+        );
+    }
+
+    /// A READ RENAMES WHAT IS THERE, AND ONLY THAT. A read after a write in
+    /// one turn does not take the write's place (the file stays listed), but
+    /// it read the file as it is called now: a queued write's "Google Doc",
+    /// or a name from before a rename, takes the read's name. A read that
+    /// knew no name changes nothing.
+    #[test]
+    fn a_read_after_a_write_names_the_write_and_never_marks_it() {
+        let url = "https://docs.google.com/document/d/1same/edit";
+        let queued = google_chips(&chips_from_tool(
+            "update_google_doc",
+            r#"{"id":"1same","body":"more"}"#,
+            r#"{"pending":{"id":"p1","status":"pending","ownerUserId":"u1","isOrg":false},"approver":{"userId":"u1","queue":"owner"},"message":"Waiting for the owner."}"#,
+        ))[0]
+            .clone();
+        assert!(queued.get("title").is_none(), "{queued}");
+        let read = google_chips(&chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","title":"Spec","url":"{url}"}}"#),
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([queued.clone()]), &[read.clone()]);
+        let chip = &merged[0];
+        assert_eq!(merged.as_array().map(Vec::len), Some(1), "{merged}");
+        assert!(!is_read_mark(chip), "still the write: {chip}");
+        assert_eq!(chip["title"], json!("Spec"), "{chip}");
+        assert_eq!(chip["label"], json!("Spec"), "{chip}");
+
+        // A read that knew no name: the write, untouched.
+        let unnamed_read = google_chips(&chips_from_tool(
+            "read_drive_file",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","url":"{url}","text":"…"}}"#),
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([queued.clone()]), &[unnamed_read]);
+        assert_eq!(merged, json!([queued]), "{merged}");
+
+        // Two reads, the second knowing a newer name: one read, renamed,
+        // still marked.
+        let renamed_read = google_chips(&chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","title":"Spec v2","url":"{url}"}}"#),
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([read.clone()]), &[renamed_read.clone()]);
+        assert_eq!(merged, json!([renamed_read]), "{merged}");
+    }
+
+    /// A WRITE THAT NAMES NO FILE KEEPS THE READ'S NAME. A queued edit to a
+    /// file the agent did not create answers `{ pending, approver, message }`
+    /// — no title, no name — so its chip is labelled "Google Doc"; taking the
+    /// read's place must not take the read's name with it, or the tab and
+    /// the pill read "Google Doc" for a file the agent just read by name. A
+    /// write that does name the file wins: its name is the newer one.
+    #[test]
+    fn a_write_that_names_no_file_keeps_the_name_of_the_read_it_replaces() {
+        let url = "https://docs.google.com/document/d/1same/edit";
+        let read = google_chips(&chips_from_tool(
+            "read_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","title":"Spec","url":"{url}"}}"#),
+        ))[0]
+            .clone();
+        let queued_answer = r#"{"pending":{"id":"p1","status":"pending","ownerUserId":"u1","isOrg":false},"approver":{"userId":"u1","queue":"owner"},"message":"Waiting for the owner. Confirm with list_pending_sends before telling anyone it is ready."}"#;
+        for tool in ["update_google_doc", "append_google_doc"] {
+            let queued = google_chips(&chips_from_tool(
+                tool,
+                r#"{"id":"1same","body":"more"}"#,
+                queued_answer,
+            ))[0]
+                .clone();
+            assert_eq!(queued["label"], json!("Google Doc"), "{tool}: {queued}");
+            assert!(queued.get("title").is_none(), "{tool}: {queued}");
+
+            let merged = merge_chips(&json!([read.clone()]), &[queued.clone()]);
+            let chip = &merged[0];
+            assert_eq!(merged.as_array().map(Vec::len), Some(1), "{merged}");
+            assert!(
+                !is_read_mark(chip),
+                "the write took the read's place: {chip}"
+            );
+            assert_eq!(chip["title"], json!("Spec"), "{tool}: {chip}");
+            assert_eq!(chip["label"], json!("Spec"), "{tool}: {chip}");
+            assert_eq!(chip["href"], json!(url), "{tool}: {chip}");
+        }
+
+        // A write that names the file: its name, not the read's.
+        let renamed = google_chips(&chips_from_tool(
+            "update_google_doc",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","url":"{url}","name":"Spec v2"}}"#),
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([read.clone()]), &[renamed.clone()]);
+        assert_eq!(merged, json!([renamed]), "{merged}");
+
+        // A read that knew no name has none to keep.
+        let unnamed_read = google_chips(&chips_from_tool(
+            "read_drive_file",
+            r#"{"id":"1same"}"#,
+            &format!(r#"{{"id":"1same","url":"{url}","text":"…"}}"#),
+        ))[0]
+            .clone();
+        let queued = google_chips(&chips_from_tool(
+            "update_google_doc",
+            r#"{"id":"1same","body":"more"}"#,
+            queued_answer,
+        ))[0]
+            .clone();
+        let merged = merge_chips(&json!([unnamed_read]), &[queued.clone()]);
+        assert_eq!(merged, json!([queued]), "{merged}");
+    }
+
+    /// AND THE SQL STATES THE SAME RULE. `merge_chips_sql!` has no Rust to run
+    /// here (the live test drives it against Postgres); this pins that its
+    /// read arm exists and is keyed the way `replaces_a_read` is, and that
+    /// its name rules (`keeping_the_read_name`, `renamed_by_read`) are there.
+    #[test]
+    fn the_sql_merge_carries_the_read_arm() {
+        for sql in [MERGE_ONTO_CONVERSATION, MERGE_ONTO_CHANNEL] {
+            assert!(
+                sql.contains("e.c->'read' = 'true'::jsonb"),
+                "the row's chip must be a read: {sql}"
+            );
+            assert!(
+                sql.contains("n.c->'read' is distinct from 'true'::jsonb"),
+                "and the incoming chip must not be: {sql}"
+            );
+            assert!(
+                sql.contains("jsonb_typeof(n.c->'title') is distinct from 'string'")
+                    && sql.contains("'title', e.c->'title'"),
+                "and an untitled replacement keeps the read's name: {sql}"
+            );
+            assert!(
+                sql.contains("n.c->'read' = 'true'::jsonb")
+                    && sql.contains("'title', n.c->'title'"),
+                "and a read renames the chip already there: {sql}"
+            );
+        }
+        assert_eq!(READ_MARK, "read", "the SQL spells the mark by name");
+    }
+
     #[test]
     fn an_imported_drive_file_becomes_a_document_chip() {
         let chips = chips_from_tool(
@@ -3489,5 +4554,115 @@ mod tests {
             "/artifacts?a=9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2"
         );
         assert_eq!(doc["title"], "Imported plan");
+    }
+
+    #[test]
+    fn a_toolkit_tool_reads_by_its_own_name_whatever_the_mcp_client_called_it() {
+        for spelling in [
+            "create_document",
+            "mcp__talaria__create_document",
+            "mcp_talaria_create_document",
+            "  mcp__talaria__create_document ",
+        ] {
+            assert_eq!(bare_tool_name(spelling), "create_document", "{spelling:?}");
+        }
+        // Another server's tool is not the toolkit's, whatever it is called.
+        assert_eq!(
+            bare_tool_name("mcp__workspace__create_document"),
+            "mcp__workspace__create_document"
+        );
+        assert_eq!(bare_tool_name("mcp__talaria__"), "mcp__talaria__");
+        assert_eq!(bare_tool_name("web_search"), "web_search");
+    }
+
+    #[test]
+    fn an_mcp_answer_is_read_out_of_its_envelope_whole_or_cut_short() {
+        let inner = "{\n  \"artifact\": {\n    \"id\": \"9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2\",\n    \"title\": \"Launch plan\"\n  }\n}";
+        let whole = serde_json::to_string(&json!({ "result": inner })).unwrap();
+        assert_eq!(mcp_result_text(&whole), inner);
+        // Hermes' own spelling (json.dumps puts a space after the colon), cut
+        // by the plugin's clamp in the middle of the string.
+        let spaced = whole.replacen("\"result\":", "\"result\": ", 1);
+        let cut: String = spaced.chars().take(40).collect();
+        let prefix = mcp_result_text(&cut);
+        assert!(inner.starts_with(prefix.as_ref()), "{prefix:?}");
+        assert!(prefix.starts_with("{\n  \"artifact\""), "{prefix:?}");
+        // An escape cut in half is dropped, not guessed.
+        assert_eq!(json_string_prefix("ab\\"), "ab");
+        assert_eq!(json_string_prefix("a\\u00e9b\\u00"), "aéb");
+        // Not an envelope: as it came.
+        for raw in [
+            r#"{"artifact":{"id":"x"}}"#,
+            r#"{"result":5}"#,
+            r#"{"result":"x","more":1}"#,
+            "plain words",
+        ] {
+            assert_eq!(mcp_result_text(raw), raw);
+        }
+    }
+
+    /// A DOCUMENT A READER ONLY MENTIONED OPENS NOTHING. Every document chip
+    /// is a file of the session, which the Work pane lists and brings
+    /// forward, so only a writer's answer may land one — not a search whose
+    /// hits point at documents, and not a single read that carries a link.
+    #[test]
+    fn a_document_link_in_a_readers_answer_lands_no_chip() {
+        let (a, b) = (
+            "9f1d0c44-3ab2-4f65-9d1a-2c88f7b0e1f2",
+            "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        );
+        let hits = format!(
+            r#"{{"hits":[{{"title":"Launch plan","snippet":"…","href":"/artifacts?a={a}"}},{{"title":"Pricing","href":"/artifacts?a={b}"}}]}}"#
+        );
+        let single = format!(
+            r#"{{"artifact":{{"id":"{a}","title":"Launch plan"}},"href":"/artifacts?a={a}"}}"#
+        );
+        let bare = format!("/artifacts?a={a}");
+        for (tool, result) in [
+            ("search_knowledge", hits.as_str()),
+            ("get_document", single.as_str()),
+            ("open_in_pane", single.as_str()),
+            ("get_document", bare.as_str()),
+        ] {
+            let chips = chips_from_tool(tool, "{}", result);
+            assert!(
+                chips.iter().all(|c| c["entity"] != "document"),
+                "{tool}: {chips:?}"
+            );
+        }
+        // A writer still lands its own — and only its own.
+        let made = chips_from_tool("create_document", "{}", &single);
+        let docs: Vec<&Value> = made.iter().filter(|c| c["entity"] == "document").collect();
+        assert_eq!(docs.len(), 1, "{made:?}");
+        assert_eq!(docs[0]["href"], format!("/artifacts?a={a}"));
+    }
+
+    /// A LISTING IS NOT A TRAIL. A ticket a call created or moved lands its
+    /// link; the rows a listing or a search returned land none — one chip
+    /// per row buried what the turn was about.
+    #[test]
+    fn a_listing_lands_no_link_per_row_and_a_single_answer_still_does() {
+        let rows = (0..5)
+            .map(|i| {
+                format!(r#"{{"id":"t-{i}","boardId":"b-1","ticketRef":"A-{i}","title":"Row {i}"}}"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let listing = format!(r#"{{"tasks":[{rows}]}}"#);
+        assert!(
+            chips_from_tool("list_tickets", r#"{"boardId":"b-1"}"#, &listing).is_empty(),
+            "a listing"
+        );
+        let hits = r#"{"hits":[{"title":"A board","href":"/boards/b-1"},{"title":"A doc","href":"/knowledge?doc=k-1"}]}"#;
+        assert!(
+            chips_from_tool("search_knowledge", "{}", hits).is_empty(),
+            "search hits"
+        );
+        // A ticket's own answer still links it, whatever lists ride beside it.
+        let one = r#"{"task":{"id":"t-2","boardId":"b-1","title":"Fix the gate"},"subTasks":[{"id":"t-3","boardId":"b-1"}]}"#;
+        let chips = chips_from_tool("get_ticket", r#"{"taskId":"t-2"}"#, one);
+        let links: Vec<&Value> = chips.iter().filter(|c| c["kind"] == "link").collect();
+        assert_eq!(links.len(), 1, "{chips:?}");
+        assert_eq!(links[0]["href"], "/boards/b-1/t-2");
     }
 }

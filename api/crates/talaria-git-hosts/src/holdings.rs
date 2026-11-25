@@ -37,7 +37,10 @@
 //   · The mint (talaria-github) reads `held` through [`TableHoldings`] before
 //     it asks GitHub, kept for a minute per process. A row the refresh could
 //     not read, or one older than half an hour, is no answer, and the mint
-//     asks GitHub as it always did.
+//     asks GitHub as it always did. A cached token that went without
+//     something the installation did not hold reads the row again on every
+//     serve, past that minute: once the row holds it, the token is dropped
+//     and the next one minted with it, in whichever process serves it.
 //   · The alerts (talaria-alerts) read the rows and never GitHub: what is
 //     waiting for an org owner, and what is unknown.
 //   · Admin → Git hosts reads them with the host's live status.
@@ -725,7 +728,11 @@ pub async fn refresh_host(pg: &PgPool, sb: &SecretBox, host_id: &str) -> Result<
     }
     // Requests an admin approved ahead of GitHub are measured against what
     // the installations hold now — every refresh, not only on a diff: a
-    // record read for the first time has nothing to diff against.
+    // record read for the first time has nothing to diff against. The record
+    // is written above, before this: settling tells the agent its next git
+    // credential carries the permission, and the mint makes that true by
+    // reading this record past every process's cache (talaria-github's
+    // `installation_token`), so the record must already say it.
     let settled = crate::requests::settle_awaiting(pg, host_id).await;
     if settled > 0 {
         tracing::info!(

@@ -22,7 +22,9 @@
 // chip write is also the realtime nudge that makes a browser go fetch it.
 //
 // ADDRESSED BY CONVERSATION. The plugin stamps the Hermes session id on the
-// POST, and for a pinned agent that id IS the conversation id: the row is
+// POST, and for a pinned agent that id IS the conversation id; on the
+// completions arm it is the `api-…` session the chat turn recorded against
+// its conversation (`talaria_chips::session_hint`). Either way the row is
 // resolved inside that conversation and nowhere else. A body with no usable
 // id is served only while the agent has exactly one turn it could mean —
 // several, and the answer is a 409 that says so, never a guess at somebody
@@ -157,7 +159,12 @@ pub async fn post(
     // a blob nobody will ever open, and the next tool call is one screenshot
     // away — refusing costs the agent nothing. 409, not 400: the body was
     // fine, the moment was not.
-    let hint = talaria_chips::conversation_hint(&parsed);
+    // The conversation the screenshot was taken in: a UUID session, or the
+    // `api-…` session its chat turn recorded (`session_hint`).
+    let hint = match talaria_chips::session_hint(&state.pg, &caller.model, &parsed).await {
+        Ok(hint) => hint,
+        Err(e) => return Ok(internal("[agent-uploads] session lookup failed", e)),
+    };
     let target =
         match talaria_chips::landing_target(&state.pg, &caller.model, hint.as_deref()).await {
             Ok(t) => t,

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Archive, ArchiveRestore, ArrowRightLeft, Check, Eye, SlidersHorizontal, Trash2 } from '@lucide/svelte'
+  import { Archive, ArchiveRestore, ArrowRightLeft, Check, ExternalLink, Eye, RefreshCw, SlidersHorizontal, Trash2 } from '@lucide/svelte'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import StatusDot from '@/components/ui/StatusDot.svelte'
   import SkeletonRows from '@/components/ui/SkeletonRows.svelte'
@@ -83,6 +83,18 @@
   import WorkbenchTicker from './WorkbenchTicker.svelte'
   import RunDetailModal from './RunDetailModal.svelte'
   import { useWorkSession } from '@/lib/work-session.svelte'
+  import {
+    actorLabel,
+    clickupTaskId,
+    clickupTaskUrl,
+    pausedHint,
+    resyncOutcome,
+    resyncTicket,
+    syncKey,
+    useBoardSync,
+  } from '@/lib/board-sync'
+  import { pushToast, toastError } from '@/lib/toast.svelte'
+  import RemoteStateChip from './RemoteStateChip.svelte'
 
   const MOVE: TaskStatus[] = [...TASK_STATUSES, ...OFF_BOARD_STATUSES]
 
@@ -212,6 +224,8 @@
       roomId = null
       roomTried = false
       propsOpen = false
+      // …and the old ticket's re-sync is not this one's to finish.
+      resyncing = null
     }
   })
 
@@ -239,6 +253,31 @@
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ['task', taskId] })
     void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
+  }
+
+  // WATCHING. A watch is the watcher's own when they made it (or it predates
+  // anyone recording who did); one someone else added names them
+  // (`watcherOrigins`), because it does not carry the ticket through a board
+  // its watcher set to Off — "Watch it myself" makes it theirs (the server
+  // records the watcher as having added it). Emails compare case-blind, as
+  // the server stores the account's own spelling.
+  const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+  const addedBy = (w: string) => data?.watcherOrigins?.find((o) => same(o.watcher, w))?.addedBy ?? null
+  const watching = $derived(!!me && !!data?.watchers.some((w) => same(w, me)))
+  const myOrigin = $derived(me ? addedBy(me) : null)
+  let watchBusy = $state(false)
+  const setWatch = async (on: boolean) => {
+    if (watchBusy || !me) return
+    watchBusy = true
+    try {
+      if (on) await watchTask(taskId, me)
+      else await unwatchTask(taskId, me)
+      refresh()
+    } catch (e) {
+      toastError(on ? 'Could not watch this ticket' : 'Could not stop watching this ticket', e)
+    } finally {
+      watchBusy = false
+    }
   }
   const save = async (patch: Parameters<typeof updateTask>[1]) => {
     await updateTask(taskId, patch)
@@ -328,6 +367,74 @@
     watchFocus = 'agent'
     watchRun = runId
   }
+
+  // ── A ticket the ClickUp sync made ─────────────────────────────────────
+  // `externalKey` names its ClickUp task. The board's sync projection (the
+  // same read as the header chip's) says whether that task is still active in
+  // ClickUp and whether the board still syncs; "Re-sync from ClickUp" forces
+  // this one ticket to ClickUp's values (docs/BOARD-SYNC.md) and is an owner's
+  // or editor's, like Sync now — and, like it, off while the sync is paused.
+  const syncQuery = useBoardSync(() => board.id)
+  const boardSync = $derived(syncQuery.data?.sync ?? null)
+  const clickupId = $derived(clickupTaskId(t?.externalKey))
+  const remoteState = $derived(t ? boardSync?.remoteStates[t.id] : undefined)
+  const openedBy = $derived(actorLabel(t?.createdBy))
+  const resyncPaused = $derived(boardSync?.state === 'paused')
+  // The re-sync this view started: its run, the ticket it is for, and when
+  // the POST answered — a projection read before then predates the run and
+  // says nothing about it. `resyncPending` covers the POST itself, so a
+  // double-click is one request, not a second one the server refuses (409).
+  let resyncPending = $state(false)
+  let resyncing = $state<{ runId: string; taskId: string; since: number } | null>(null)
+  const resync = async () => {
+    if (resyncPending || resyncing) return
+    const forTask = taskId
+    resyncPending = true
+    try {
+      const r = await resyncTicket(forTask)
+      // The modal jumped to another ticket meanwhile: the run still goes, but
+      // this view no longer shows the ticket it is for.
+      if (forTask !== taskId) return
+      resyncing = { runId: r.runId, taskId: forTask, since: Date.now() }
+      void qc.invalidateQueries({ queryKey: syncKey(board.id) })
+    } catch (e) {
+      toastError('Could not re-sync from ClickUp', e)
+    } finally {
+      resyncPending = false
+    }
+  }
+  // The re-sync is a run of the board's sync; the projection polls while it
+  // is live. It is over once the projection (read after it started) shows it
+  // finished — or shows it neither live nor latest, because a later run took
+  // `lastRun` first: the schedule held back behind it, or a member's Sync
+  // now. Then read the ticket again — this view never refetches the open
+  // ticket on the board's live events (it would thrash its editors).
+  $effect(() => {
+    const r = resyncing
+    const s = boardSync
+    if (!r || !s || syncQuery.dataUpdatedAt < r.since) return
+    const outcome = resyncOutcome(s, r.runId)
+    if (outcome === 'going') return
+    resyncing = null
+    void qc.invalidateQueries({ queryKey: ['board-tasks', board.id] })
+    if (outcome === 'error') {
+      refresh()
+      const run = s.lastRun
+      pushToast({ title: 'The re-sync did not finish', body: run?.error ?? 'The run stopped.', tone: 'danger' })
+      return
+    }
+    // A forced title lands in the title field too (it is seeded once per
+    // ticket, so a refetch alone would leave the old one showing).
+    void qc.refetchQueries({ queryKey: ['task', r.taskId] }).then(() => {
+      const fresh = taskQuery.data?.task
+      if (fresh && fresh.id === r.taskId) title = fresh.title
+    })
+    pushToast(
+      outcome === 'done'
+        ? { title: 'Re-synced from ClickUp', body: 'The ticket now matches its ClickUp task.', tone: 'success' }
+        : { title: 'The re-sync has ended', body: 'Another sync started right after it; its progress shows on the board’s ClickUp chip.', tone: 'info' },
+    )
+  })
 </script>
 
 <!-- Escape closes the PROPERTIES DRAWER first, and only closes the ticket once
@@ -419,11 +526,41 @@
             </Chip>
           {/if}
           {#if t.archivedAt}<Chip title="This ticket is archived">Archived</Chip>{/if}
+          {#if clickupId}
+            <!-- Where it came from: the ClickUp task, and its state there. -->
+            <a
+              href={clickupTaskUrl(clickupId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-flex shrink-0"
+              title={boardSync ? 'Synced from ClickUp — open the task there' : 'Imported from ClickUp; the board no longer syncs — open the task there'}
+              data-ticket-source
+            >
+              <Chip class="inline-flex items-center gap-1">ClickUp {clickupId}<ExternalLink size={9} /></Chip>
+            </a>
+            <RemoteStateChip state={remoteState} />
+            {#if syncQuery.data && !boardSync}
+              <span class="hidden shrink-0 font-mono text-[10px] uppercase tracking-[0.05em] text-muted md:inline" data-sync-disconnected>
+                sync disconnected
+              </span>
+            {/if}
+          {/if}
           <span class="hidden min-w-0 truncate font-mono text-[11px] text-muted sm:block">
-            opened by {t.createdBy}
+            opened by {openedBy}
           </span>
 
           <div class="ml-auto flex shrink-0 items-center gap-0.5">
+            {#if clickupId && boardSync && canEdit}
+              <IconButton
+                size="sm"
+                title={resyncing || resyncPending ? 'Re-syncing from ClickUp…' : resyncPaused ? `Re-sync from ClickUp is off: ${pausedHint(boardSync, Date.now(), board.role === 'owner')}` : boardSync.liveRun ? 'A sync is running on this board — re-sync when it finishes' : boardSync.state === 'needs_credential' ? 'The board’s sync needs a new token — a board owner replaces it in Board settings → Sync' : 'Re-sync from ClickUp'}
+                disabled={!!resyncing || resyncPending || resyncPaused || !!boardSync.liveRun || boardSync.state === 'needs_credential'}
+                onclick={() => void resync()}
+                data-resync
+              >
+                <RefreshCw size={13} />
+              </IconButton>
+            {/if}
             {#if live || queuedWait}
               <!-- The same watch affordance the board surfaces carry, opening
                    the run-detail modal on the LIVE run. Like the card
@@ -617,7 +754,7 @@
             <ul class="min-h-0 flex-1 space-y-1 overflow-y-auto px-5 py-3" use:listStagger>
               {#each data!.activity as a (a.id)}
                 <li in:fade={{ duration: 150 }} out:fade={QUICK} class="flex items-center gap-2 text-xs text-muted">
-                  <span class="font-mono text-[11px] tracking-[0.05em] text-accent">{a.actor}</span>
+                  <span class="font-mono text-[11px] tracking-[0.05em] text-accent">{actorLabel(a.actor)}</span>
                   <span class="min-w-0 flex-1 truncate font-sans">{a.description}</span>
                   <span class="shrink-0 font-mono text-[10px] tracking-[0.05em]">{relativeTime(a.createdAt)}</span>
                 </li>
@@ -923,19 +1060,35 @@
 
           <PropGroup label="People">
             <Prop label={`Watchers (${data!.watchers.length})`}>
-              <div class="space-y-1">
-                {#each data!.watchers as w (w)}<div class="truncate text-xs text-muted">{w}</div>{/each}
+              <div class="space-y-1" data-watchers>
+                {#each data!.watchers as w (w)}
+                  {@const by = addedBy(w)}
+                  <div class="min-w-0 text-xs text-muted" data-watcher={w}>
+                    <div class="truncate" title={w}>{w}</div>
+                    {#if by}<div class="truncate text-[11px]" title={`Added by ${by.name}`} data-watch-added-by>added by {by.name}</div>{/if}
+                  </div>
+                {/each}
                 {#if me}
-                  <button
-                    class="text-xs text-accent hover:underline"
-                    onclick={async () => {
-                      if (data!.watchers.includes(me)) await unwatchTask(taskId, me)
-                      else await watchTask(taskId, me)
-                      refresh()
-                    }}
-                  >
-                    {data!.watchers.includes(me) ? 'Unwatch' : 'Watch'}
-                  </button>
+                  <div class="flex flex-wrap items-center gap-x-3">
+                    {#if watching && myOrigin}
+                      <button
+                        class="text-xs text-accent hover:underline disabled:opacity-50"
+                        disabled={watchBusy}
+                        onclick={() => void setWatch(true)}
+                        data-watch-myself
+                      >
+                        Watch it myself
+                      </button>
+                    {/if}
+                    <button class="text-xs text-accent hover:underline disabled:opacity-50" disabled={watchBusy} onclick={() => void setWatch(!watching)} data-watch-toggle>
+                      {watching ? 'Unwatch' : 'Watch'}
+                    </button>
+                  </div>
+                  {#if watching && myOrigin}
+                    <p class="text-xs leading-4 text-muted" data-watch-note>
+                      {myOrigin.name} added your watch. One someone else adds doesn’t reach you on a board you’ve turned off — watch it yourself and it will.
+                    </p>
+                  {/if}
                 {/if}
               </div>
             </Prop>

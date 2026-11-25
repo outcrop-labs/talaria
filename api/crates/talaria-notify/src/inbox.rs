@@ -815,6 +815,7 @@ pub const ENTITY_TYPES: &[&str] = &[
     entity::PLAN,
     entity::RESEARCH_RUN,
     entity::KB_DOC,
+    entity::BOARD,
 ];
 
 /// A wire entity type back to its `meta::entity` constant.

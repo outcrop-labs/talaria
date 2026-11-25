@@ -14,6 +14,7 @@
   // rules, and decides on commit whether there is anything to save.
   let {
     icon,
+    iconEditable = true,
     onIconPick,
     onIconClear,
     iconFallback = '📄',
@@ -28,6 +29,9 @@
   }: {
     /** The record's icon; `null` renders `iconFallback` in the trigger. */
     icon: string | null
+    /** False shows the icon without the picker — a viewer who may not change
+     *  the record gets no control whose save would be refused. */
+    iconEditable?: boolean
     onIconPick: (icon: string) => void
     onIconClear: () => void
     /** Shown when no icon is set (📄 doc/artifact, 📚 space). */
@@ -51,13 +55,17 @@
 </script>
 
 <div class="shrink-0">
-  <EmojiPicker onPick={onIconPick} onClear={onIconClear}>
-    {#snippet trigger()}
-      <button type="button" class="rounded-md px-1 text-xl leading-none transition-colors dither-fill" title="Set icon">
-        {icon ?? iconFallback}
-      </button>
-    {/snippet}
-  </EmojiPicker>
+  {#if iconEditable}
+    <EmojiPicker onPick={onIconPick} onClear={onIconClear}>
+      {#snippet trigger()}
+        <button type="button" class="rounded-md px-1 text-xl leading-none transition-colors dither-fill" title="Set icon">
+          {icon ?? iconFallback}
+        </button>
+      {/snippet}
+    </EmojiPicker>
+  {:else}
+    <span class="px-1 text-xl leading-none">{icon ?? iconFallback}</span>
+  {/if}
 </div>
 {#if editing}
   <Input

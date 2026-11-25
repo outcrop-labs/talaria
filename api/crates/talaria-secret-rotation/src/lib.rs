@@ -24,6 +24,8 @@ const CIPHER_TARGETS: &[(&str, &str, &[&str])] = &[
     ("google_org_connection", "access_token_enc", &["id"]),
     ("google_org_connection", "refresh_token_enc", &["id"]),
     ("mcp_servers", "headers_sealed", &["id"]),
+    // A board's ClickUp sync token (talaria-board-sync).
+    ("board_syncs", "credential_sealed", &["id"]),
 ];
 
 #[derive(serde::Serialize)]

@@ -7,8 +7,8 @@
 // state: nobody could tell an agent "yes", and the agent could not tell when
 // to try again. An agent now asks with `request_git_permission`; the request
 // is an approval (`git_permission` in talaria-approvals' census), an admin
-// approves or denies it in Admin → Git hosts, and the agent reads the outcome
-// in `list_repos` and on the ticket.
+// approves or denies it in the agent's editor in Agent policy → GitHub access,
+// and the agent reads the outcome in `list_repos` and on the ticket.
 //
 // WHAT IS REFUSED UP FRONT, and nothing else: a key or level GitHub's App
 // catalog does not know (talaria-github's `CATALOG`), a repo the agent is not

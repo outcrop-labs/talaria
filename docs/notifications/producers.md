@@ -18,19 +18,29 @@ timed mute. Every producer files through `add_notification_with` and the convent
 | `channel-levels` | The producers obey `channel_members.notify_level` and `muted_until` (the contract's `channel-levels-store` is the storage alone). |
 | `participants` | Ticket comments and channel thread replies notify the people taking part. |
 
+`boards::FEATURES`:
+
+| Flag | Means |
+|---|---|
+| `board-prefs` | The ticket producers obey each person's setting for a board (below, "Each board"), and `GET`/`PUT`/`DELETE /api/boards/{id}/notify`, `GET /api/notifications/boards` and the `boards` default in `GET`/`PATCH /api/notifications` are served. |
+| `board-channels` | A board setting and the `boards` default accept and serve `channels: {alerts, email}` (below, "A board's own channels"), and the rows a board's fan-outs file carry that person's choice as their channel override (I-26). |
+| `task-due` | The due-date reminders run (below, "Due dates"), so a setting may name the `due` event. |
+
 ## The producers
 
 | Producer | Kind | Group key | Coalesce | Entity | Actor | Who |
 |---|---|---|---|---|---|---|
 | A DM (`talaria-channel-replies`) | `dm` | `dm(channel)`, adopts a pre-contract row | Realert | `channel` | the sender | every other member, at their level |
-| An @mention in a channel, room, ticket or plan | `mention` | none (each mention is its own row) | — | `channel`, `task` or `plan` | the sender (a person, or the agent by model id) | the members it names, minus level `none` |
+| An @mention in a channel, room, ticket or plan | `mention` | none (each mention is its own row) | — | `channel`, `task` or `plan` | the sender (a person, or the agent by model id) | the members it names, minus level `none`; a ticket's: each by their setting for the board (Off drops it; a deliberate watch keeps it) |
 | A channel thread reply | `thread-reply` | `channel_thread(root)` | Realert | `channel` | the replier | the root's author and earlier repliers, access re-checked |
 | A message in a channel at level `all` | `channel-message` | `channel_activity(channel)` | Quiet | `channel` | the sender | members at `all`, top-level messages only |
+| An event on a ticket a person is not in, on a board they hear in full (`talaria-tasks`) | `board-activity` | `board_activity(board)` | Quiet | `board` | the person or agent who caused it | members whose setting for the board covers the event over scope `board` (All, or Custom), not in the ticket's own audience |
 | An agent's reply in your thread | `agent-reply` | `thread(conversation)`, adopts | Realert | `conversation` | the agent | audience members whose read cursor is behind the reply |
 | Agent outreach | `agent-outreach` | `outreach(agent, UTC day)` | Realert | `conversation` | the agent | the person reached |
-| A ticket's status move (`talaria-tasks`) | `task-status` | `task_status(task)`, 10-minute window | Quiet | `task` | the mover | watchers, assigned humans and the **creator**, access re-checked |
-| A ticket comment | `task-comment` | `task_comments(task)` | Realert | `task` | the commenter | assigned humans, the creator, watchers and earlier commenters, minus the author and anyone the comment @mentions, access re-checked |
-| Assignment, workchain turn and pause | `task-assigned`, `workchain_*` | none | — | `task` | the assigner, or the chain | as in wave 1 |
+| A ticket's status move (`talaria-tasks`) | `task-status` | `task_status(task)`, 10-minute window | Quiet | `task` | the mover | watchers, assigned humans and the **creator**, access re-checked, each by their setting for the board |
+| A ticket comment | `task-comment` | `task_comments(task)` | Realert | `task` | the commenter | assigned humans, the creator, watchers and earlier commenters, minus the author and anyone the comment @mentions whose mention row lands, access re-checked, each by their setting for the board |
+| Assignment, workchain turn and pause | `task-assigned`, `workchain_*` | none | — | `task` | the assigner, or the chain | as in wave 1; a ticket's assignment: each by their setting for the board (Off drops it; a deliberate watch keeps it); a workchain turn or pause never reads it |
+| A ticket due within a day, or overdue (`talaria-tasks` `due`, the `task-due` job) | `task-due` | `task_due(task)` | Realert | `task` | the system ("Due dates") | watchers, assigned humans and the creator, access re-checked, whose setting for the board names `due` (opt-in: All, or a Custom set); the people who hear the whole board get it on its `board-activity` row |
 | An MCP server going down (`talaria-mcp`) | `mcp_server_down` | `mcp_down(server)` | Realert | `mcp_server` | the health pass | every admin |
 | A Hermes agent image that failed its rollout, a release held for review (a Hermes internal Talaria relies on changed), an agent unhealthy on a known-good image or failing a catch-up, a newly good image withholding stored secrets (`talaria-hermes-channel`) | `hermes_update_failed` | `hermes("<digest>:failed")`; the rest `hermes("<topic>")`, once a day per topic | Realert | `hermes_image` | the stable channel | every admin |
 | The agent image channel stuck: checks failing 3 days, a rollout open 7 days, the host failing a rollout three times in a row or short of disk for a download, an agent left behind three windows, its state unreadable | `hermes_channel_stuck` | `hermes("<topic>")`, once a day per topic | Realert | `hermes_image` | the stable channel | every admin |
@@ -125,6 +135,216 @@ a member row for them would outlive their team membership, so giving them levels
 per-person table. That is the coordinator's decision, and nothing here invents the schema
 for it.
 
+## Each board
+
+A person chooses, board by board, what they hear about its tickets
+(`talaria_notify::boards`). The ticket producers ask it at fan-out, once per event, the
+place channel levels are asked: the status move (`update_task`), the review decision, the
+board move, creation with its assignment, the comment fan-out, and the four ticket
+@mention doors (the create and edit of a description, the comment route, a post in the
+ticket's room) through `MentionOpts.ticket`. Nothing at send time reads it: a board's own
+channels (below) ride on each row, and the deferred push and the mail batcher re-check the
+class matrix through what the row carries.
+
+**The setting** is a preset — `all`, `participating`, `mentions`, `off` — or `custom`:
+chosen events over a scope. The events are `created` (a ticket appeared on the board,
+created there or moved onto it), `assigned`, `status` (any column move but one into a done
+column), `comment`, `mention`, `due` and `completed` (a move into one of the board's done
+columns). The scope is `mine` (the tickets the person is in: each producer's own
+audience — watchers, assigned people, the creator, earlier commenters) or `board` (every
+ticket). Presets are stored by name and expanded when read: `all` is every event over the
+board; `participating` is assigned, status, comment, mention and completed over mine;
+`mentions` is assigned and mention; `off` is nothing. `created` needs scope `board`
+(nobody is in a ticket before it exists). `due` is opt-in: no preset but `all` names it
+(below, "Due dates"). The cadence is `instant`: the `digest` cadence is listed unavailable
+and refused on write, because the daily board digest was withdrawn before it reached a
+release (Home's Inbox is the once-a-day view of what happened). A digest a testing build
+stored reads as instant, the rest of the setting kept, and a migration set every stored
+one back to instant — held for a digest that nothing files, its owner would hear nothing.
+
+**A board's own channels** (feature `board-channels`). A setting may also say how this
+board's rows reach the person: `channels: {alerts, email}`, each on, off, or null — null,
+the default, is the class matrix in Settings → Notifications. `alerts` is the banner and
+the push together: on, the board's rows pop up and push; off, they land in the inbox
+alone. `email` is the missed-activity mail. Two choices, as the per-board design decided
+— in-app and email — with the in-app one named for what it does: every row lands in the
+inbox whatever anyone chose, so in-app itself is not a choice (`inApp: false` is refused,
+as in the matrix), and push is not a board choice of its own (the matrix keeps its
+per-class Push). The row carries them as the matrix's own channels: `alerts` sets Desktop
+and Push together (`BoardChannels::overrides`). Set Alerts off and Email on and the
+board's rows reach the person by mail alone, filed read once the mail is accepted (the
+legacy email-only route); set Alerts on and the quiet board-activity row pops up. They
+change no decision about WHO gets a row, only how it reaches them, and
+they apply to every row the board's fan-outs file for that person — per-ticket rows,
+@mentions, the board-activity row, and the rows a deliberate watch carries through Off.
+Decided once, at fan-out like the rest: the producer files the row with them
+(`NotifyMeta::channels`), the writer stores them on the row (I-26), and the deferred push
+and the mail batcher re-check the matrix through the stored override — a board turned to
+mail keeps mailing what it filed, and a board setting is never re-read at send time. They
+travel with their layer: a board's row carries its own (null there means the matrix, not
+the default's), and the default for every board can carry some too.
+
+**Where it is stored.** One row per person per board in `board_notify_prefs` — a table,
+not a `board_members` column, because a team's members see its boards with no member row
+of their own. A person's default for every board sits under the reserved `boards` key of
+`users.notify_prefs` (`boards::BOARDS_KEY`), written by `PATCH /api/notifications`.
+Effective = the board's row, else the default, else the built-in, `participating` — the
+audience every ticket producer had before this existed. So nobody hears anything new, or
+less, until they choose, and a new board inherits the default by having no row.
+
+**The order**, written once in `boards::resolve`:
+
+1. Needs-you rows never ask it: approvals (ticket review included), judge escalations,
+   workchain turns and blocked agents are filed by their own producers. A board set to Off
+   still gets its review sign-offs.
+2. A deliberate watch on the ticket — the watcher added it themselves (`task_watchers.
+   added_by` is them), or it predates `added_by` (null: the only Watch the product
+   offered then was a person's own) — carries that ticket's status, completion, comment,
+   mention and assignment rows, even on a board set to Off. A watch an editor added for
+   someone is involvement, not a choice, and does not wake a board they set to Off.
+   Pressing Watch on such a watch makes it theirs; an editor's add never takes one back.
+   `GET /api/tasks/{id}` says which are which (`watcherOrigins: [{watcher, addedBy}]`,
+   `addedBy` naming whoever added a watch for someone else), so the ticket panel says
+   "added by …" and offers **Watch it myself**.
+3. The person's setting for the board, then their default, then the built-in.
+4. Then the channels: the setting's own where it chose one (Alerts for Desktop and Push,
+   Email for Email), else the class matrix. Then
+   everything else, unchanged: DND, working hours, the instance switches and the email
+   frequency.
+
+Off silences assignments and @mentions from that board, as a channel at Nothing silences
+@mentions. Whatever points at the person (assigned, @mentioned) is never held back by
+scope.
+
+**The busy-board cap.** An event on a ticket the person is not in, on a board they hear in
+full, files ONE `board-activity` row per board (`group_key::board_activity`,
+`Coalesce::Quiet`, entity `board`, href `/boards/<id>`): the first event files it, the rest
+count into it with the newest line, until it is read — a channel at All, for a board. The
+tickets the person is in keep their own per-ticket rows. Its class, `board_activity`, is
+Following and quiet by default (the `work_complete` channels): news about tickets you are
+not in never rings louder than the status moves of the tickets you are (`work_complete`,
+quiet). A person who wants the banner turns that matrix row on. A visit to the board reads
+the row (the visit rule, EB-13), and the next event files a fresh one.
+
+**One action, one row** still holds, and only when the louder row lands: a person a patch
+assigns leaves that move's audience only if their `task-assigned` row was filed, and a
+person a comment @mentions leaves the comment fan-out only if their mention row lands
+(`boards::mention_listeners`, the same question the mention door asks). A new ticket's
+"New ticket" board row skips whoever its `task-assigned` row reached and whoever its
+description @mentions whose mention row lands (the door's roster — the board's direct
+members — and the same question). A Custom set that keeps comments but drops @mentions hears the @mentioning
+comment as a comment; a set that keeps status but drops assignments hears a patch that
+assigns and moves them as one status row.
+
+**A board move** tells the destination's audience by their setting for the destination,
+the people who hear the destination in full that a ticket arrived (`created`), the people
+losing sight of it by their setting for the source, and the people who hear the source in
+full that it left — never where to — unless a per-ticket row about the move already
+reached them.
+
+**Who caused it.** An agent's move is a move: an agent that takes a ticket out of review
+on a person's proven ask (`talaria-tasks` `asked`) is the actor, and the ticket's people —
+the asker among them, when they watch, are assigned or created it — hear it as a status
+move by their setting, like any other. A tracker sync's write is not news: the ClickUp
+sync (`talaria-board-sync`, [BOARD-SYNC.md](../BOARD-SYNC.md)) writes with `quiet` set,
+so its creates, assignments and moves file no per-ticket row and no board-activity row,
+whoever hears the board in full, and its imported comments run no comment fan-out. The
+tracker it mirrors already told its people.
+
+**Access and leaving.** The board-wide audience is `talaria_boards::board_audience`
+(`board_role`'s two legs: a member row, or the owning team). Every recipient is re-checked
+at fan-out, as before, so a setting is dormant while its person cannot see the board; it is
+kept when they leave and applies again when they rejoin (the dormant-watcher rule). It goes
+when the person or the board is deleted. A team's members can set a board; they still get
+no ticket @mention rows (the mention doors read `board_members`, as before this existed),
+so a comment or a new ticket that @mentions one does not count as having told them: they
+hear it as the comment, or on their board row, by their setting — never nothing.
+
+**Humans only.** Rows go to people; the routes are session-only; agents are only ever
+actors (excluded as before). There is no MCP tool.
+
+**Confined.** A person's setting must change only what that person receives. The module is
+never glob-re-exported, and `scripts/check-invariants.mjs`
+(`board-notify-setting-outside-the-fan-outs`) allows `talaria_notify::boards`,
+`board_notify_prefs` and `BOARDS_KEY` only in the per-recipient fan-outs and the caller's
+own routes — no broadcast (a board event to apps, a channel or room post, a realtime frame)
+can read one. It reads every spelling of the module path: the full path, a braced import,
+an alias or glob of the crate, and inside talaria-notify `crate::`, `super::` and a bare
+`boards::` (the crate root's `boards::FEATURES` excepted), so the send-time readers there
+cannot reach it either. A future board-to-channel feed is board configuration, never a person's
+setting.
+
+**The routes.** `GET /api/boards/{id}/notify` → `{effective, source, stored, default,
+registry}` (any board role; anyone else 403); `PUT` `{preset, events?, scope?, cadence?,
+channels?}` replaces the caller's own row — the whole setting: a member it leaves out goes
+back to its default, so a client sends `stored` back with its change; `DELETE` goes back
+to the default. `GET
+/api/notifications/boards` → `{default, boards: [{id, name, role, effective, source}],
+registry}` for the boards the caller can see (the registry too, so a person with no board
+yet can set their default). `GET`/`PATCH /api/notifications` carry `boards` (the
+default; `null` clears it). The registry (event, preset and cadence labels) is served,
+never a client-side list.
+
+**The controls** (feature `board-prefs`; the channel switches only with `board-channels`,
+an event only once the registry marks it available; no cadence is offered):
+- The board's bell (`BoardNotifyMenu`), beside the Board settings gear, for every role:
+  value-faced — bell-ring, bell, @, bell-off, bell-dot for Custom — named "Board
+  notifications: <value>" (plus "(your default)" when the board has no setting of its
+  own), its tooltip the same words, a 32px target. Its menu
+  is the four presets, Custom… (the tab), Use my default (only over a setting of the
+  board's own) and the gear's Notification settings (`?settings=notifications`). A
+  preset keeps the channels that applied.
+- Board settings → Notifications (`NotificationsTab`, `BoardNotifyForm`): the summary of
+  what reaches you and from which layer, the presets with what each covers, Custom's
+  events and scope (New ticket only over Every ticket), Alerts and Email (From settings /
+  On / Off), Use my default. Owners and editors
+  see it as the last of the seven tabs; a viewer's modal holds only it, is named
+  Notification settings, and opens on no other tab (`board-settings.ts` `tabsFor`) — the
+  Board settings gear stays the owners' and editors' (UI-CONVENTIONS "Who sees the door").
+- Settings → Notifications → Boards (`NotifyBoards`): the default for every board in the
+  same form (Back to the standard default clears it), then every board the person can
+  see — those with a setting of their own first — with where its setting comes from, a
+  quick preset change, Use my default and a door to the board's tab.
+
+### Due dates
+
+The `task-due` job (`talaria_tasks::due`) runs every 15 minutes, leased, and reminds at
+two thresholds of a ticket's due date: **due soon** (less than a day ahead) and
+**overdue** (passed, less than a day ago).
+
+- **Once per due date.** `tasks.due_soon_for` and `tasks.overdue_for` hold the due date
+  each threshold last fired for. A pass marks a ticket after its fan-out, compare-and-set
+  on the due date it read. So moving the due date re-arms both, and a ticket already past
+  due at its first pass gets "overdue" alone. The row is one per ticket per person
+  (`group_key::task_due`, Realert): "overdue" takes over an unread "due soon" and alerts
+  again. A crash between the fan-out and the mark files into that same row on the next
+  pass, so it re-alerts rather than doubling.
+- **No flood.** "Overdue" fires only in the day after the due date. A ticket that was
+  already long overdue when someone opted in, or when this shipped, is on the board for
+  everyone to see and is not news. A pass takes at most 200 tickets, soonest due first.
+- **Opt-in, decided at the moment.** The event is `due`. No preset but `all` names it, so
+  with nobody's setting stored nobody is told and existing users see no change. A watch
+  turns on nothing new. The ticket's own audience (watchers, assigned humans, the creator,
+  access re-checked) gets a `task-due` row, class `participating` (banner and push by
+  default, like a comment on a ticket you take part in). The people who hear the whole
+  board get it on the board's `board-activity` row. A ticket that crosses a threshold
+  while nobody on its board could hear one is marked all the same, with no audience read
+  (`boards::due_possible`, one query per board per pass). A setting changed later applies
+  to the next threshold, never to one already passed.
+- **A read that fails is retried, never silence.** Elsewhere a settings or membership
+  read that fails falls back to the built-in, which keeps the audiences producers had
+  before boards had a setting. The built-in names no due date, so for a reminder that
+  fallback would tell nobody and then mark the ticket. The scan's reads (the ticket's
+  audience, the board's membership, the settings) answer their error instead, and the
+  ticket stays unmarked for the next pass.
+- **Skipped:** archived tickets, tickets on archived boards, and closed ones (a done
+  column on the ticket's own board, or failed or cancelled). A closed ticket is not
+  marked, so one reopened while its due date is still in the band is still reminded.
+- **The clock's, not a write's.** A ticket a tracker sync keeps reminds like any other:
+  the sync's writes are quiet, but a reminder is not news about a write.
+- **The row:** title `<ref>: due soon` or `<ref>: overdue` (the ticket's title when it
+  has no ref), body the ticket's title, href the ticket, actor the system ("Due dates").
+
 ## Cancel safety (C30, C34)
 
 A handler future is dropped when its caller hangs up, at whatever await it had reached. A
@@ -154,7 +374,10 @@ count.
 
 ## Contract notes
 
-- No new kind was needed: every kind filed here is already in `classes.rs`'s `KIND_CLASS`.
+- No new kind was needed for the 2026-10 producers: every kind filed here was already in
+  `classes.rs`'s `KIND_CLASS`. The per-board settings added one, `board-activity`, in a new
+  Following class `board_activity` (not in `ORIGINAL_CLASSES`, so the C27 digest freeze
+  holds).
 - The @mention token rules moved from `talaria-mentions` into `talaria-notify`'s
   `threads.rs` (`mention_tokens`, `user_mention_tokens`, `answers_to_tokens`), so a ticket's
   comment participants can leave out the people a comment names without a new crate edge

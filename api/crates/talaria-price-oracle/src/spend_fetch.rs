@@ -56,9 +56,11 @@ fn model_ids(models: &Value) -> Vec<String> {
 }
 
 /// Upsert one published price. The unique key is (endpoint_id, model, variant),
-/// so a model-level row (variant '') and each upstream variant coexist.
-pub(crate) async fn upsert_price(
-    pg: &PgPool,
+/// so a model-level row (variant '') and each upstream variant coexist. On the
+/// pool or inside a caller's transaction (the catalog refresh writes an
+/// endpoint's rows in one).
+pub(crate) async fn upsert_price<'e>(
+    pg: impl sqlx::PgExecutor<'e>,
     endpoint_id: &str,
     provider: &str,
     price: &PublishedPrice,

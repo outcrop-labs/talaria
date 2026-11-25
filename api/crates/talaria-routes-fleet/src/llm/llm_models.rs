@@ -26,6 +26,62 @@ struct ModelsBody {
     data: Vec<ModelEntry>,
 }
 
+/// The LLM-key stamp: a key stamped less than four minutes ago is not
+/// matched, so it is not written (talaria-agent-auth's last-used stamps say
+/// why that is enough for every reader, and why the guard is a minute inside
+/// `STAMP_WINDOW`). `$1::uuid` against the uuid column keeps it on the
+/// primary key.
+const STAMP_LLM_KEY: &str = "update llm_api_keys set last_used_at = now() \
+     where id = $1::uuid \
+       and (last_used_at is null or last_used_at < now() - interval '4 minutes')";
+
+static KEY_STAMPS: std::sync::LazyLock<talaria_agent_auth::StampCoalescer> =
+    std::sync::LazyLock::new(|| {
+        talaria_agent_auth::StampCoalescer::new(talaria_agent_auth::STAMP_WINDOW)
+    });
+
+/// Stamp `llm_api_keys.last_used_at` — the database half alone,
+/// asynchronously committed. Rows written: 0 when the stamp is still inside
+/// the window.
+pub async fn stamp_key(pg: &sqlx::PgPool, key_id: &str) -> Result<u64, sqlx::Error> {
+    talaria_agent_auth::stamp_async(pg, "llm_api_keys", STAMP_LLM_KEY, key_id).await
+}
+
+/// Note that an LLM key just authenticated, for this route and the chat
+/// relay alike: at most once a window, a detached stamp — a bookkeeping
+/// write must never fail or hold up a request that already authenticated.
+/// `what` names the route in the log line. None when this process stamped
+/// the key within the window. The handle is for a test to wait on; the
+/// routes drop it.
+pub fn note_key_used(
+    pg: &sqlx::PgPool,
+    key_id: &str,
+    what: &'static str,
+) -> Option<tokio::task::JoinHandle<()>> {
+    note_key_used_at(pg, key_id, what, std::time::Instant::now())
+}
+
+/// [`note_key_used`] at a given instant: the seam a test drives its clock
+/// through.
+pub fn note_key_used_at(
+    pg: &sqlx::PgPool,
+    key_id: &str,
+    what: &'static str,
+    now: std::time::Instant,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !KEY_STAMPS.due_at(key_id, now) {
+        return None;
+    }
+    let pg = pg.clone();
+    let key_id = key_id.to_string();
+    Some(tokio::spawn(async move {
+        if let Err(e) = stamp_key(&pg, &key_id).await {
+            KEY_STAMPS.forget(&key_id);
+            tracing::warn!("{what} last_used_at update failed for {key_id}: {e}");
+        }
+    }))
+}
+
 pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let auth = headers
         .get(header::AUTHORIZATION)
@@ -45,20 +101,8 @@ pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Response 
     };
 
     // Detached last_used_at: a bookkeeping write must never fail a request
-    // that already authenticated. `id::text = $1` because the bind is a
-    // String — sqlx types it as text, which has no implicit uuid comparison.
-    let pg = state.pg.clone();
-    let key_id = identity.key_id;
-    tokio::spawn(async move {
-        if let Err(e) =
-            sqlx::query("update llm_api_keys set last_used_at = now() where id::text = $1")
-                .bind(&key_id)
-                .execute(&pg)
-                .await
-        {
-            tracing::warn!("[llm/v1/models] last_used_at update failed for {key_id}: {e}");
-        }
-    });
+    // that already authenticated.
+    let _ = note_key_used(&state.pg, &identity.key_id, "[llm/v1/models]");
 
     // Local endpoints first, then name asc — first-seen order is what
     // owned_by's endpoint list preserves. `models` is a jsonb column: sqlx

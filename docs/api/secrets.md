@@ -101,7 +101,7 @@ Source: [`api/crates/talaria-routes-integrations/src/secrets/secrets_git_credent
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| POST | `agent` | [body](#post-apisecretsgit-credential-body) | `{username, password}` | 200, 400, 403, 404 | audit |
+| POST | `agent` | [body](#post-apisecretsgit-credential-body) | `{username, password}` | 200, 400, 403, 404, 502 | audit |
 
 ### POST `/api/secrets/git-credential` body
 

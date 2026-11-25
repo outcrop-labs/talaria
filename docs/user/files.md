@@ -34,7 +34,7 @@ The left rail splits your files by ownership, not by folder — folders only exi
 | See details | Right-click → **Properties** — location, owner, sharing, identifiers. It reports; it never edits |
 | Download | Right-click → **Download** (or the ⬇ button on a public page) |
 | Share | Right-click → **Share** — same dialog as Knowledge: people & agents, Restricted / Organization / Anyone with the link |
-| Export to Google | Editor toolbar → **Export to Google Docs / Sheets / Drive** (needs your Google connected) |
+| Export to Google | Editor toolbar → **Export to Google Docs / Sheets / Drive** (needs your Google connected). Anyone who can read a file can export a copy; only an editor's export becomes the Google file **Pull from Google** reads back |
 | Import from Drive | **Sources → Google Drive** → search → import. Lands in Files, not Knowledge |
 | Delete | Right-click → **Delete** — a folder's contents move up a level, they are not deleted |
 

@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-19 routes.
+25 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -30,10 +30,21 @@
 | [`/api/boards/{id}/members`](#apiboardsidmembers) | GET | `dual` |
 | [`/api/boards/{id}/members`](#apiboardsidmembers) | POST | `dual` |
 | [`/api/boards/{id}/members`](#apiboardsidmembers) | DELETE | `dual` |
+| [`/api/boards/{id}/notify`](#apiboardsidnotify) | GET | `session` |
+| [`/api/boards/{id}/notify`](#apiboardsidnotify) | PUT | `session` |
+| [`/api/boards/{id}/notify`](#apiboardsidnotify) | DELETE | `session` |
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | GET | `session` |
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | POST | `session` |
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | PUT | `session` |
 | [`/api/boards/{id}/statuses`](#apiboardsidstatuses) | DELETE | `session` |
+| [`/api/boards/{id}/sync`](#apiboardsidsync) | GET | `session` |
+| [`/api/boards/{id}/sync`](#apiboardsidsync) | POST | `session` |
+| [`/api/boards/{id}/sync`](#apiboardsidsync) | PUT | `session` |
+| [`/api/boards/{id}/sync`](#apiboardsidsync) | DELETE | `session` |
+| [`/api/boards/{id}/sync/browse`](#apiboardsidsyncbrowse) | POST | `session` |
+| [`/api/boards/{id}/sync/credential`](#apiboardsidsynccredential) | PUT | `session` |
+| [`/api/boards/{id}/sync/preview`](#apiboardsidsyncpreview) | POST | `session` |
+| [`/api/boards/{id}/sync/runs`](#apiboardsidsyncruns) | POST | `session` |
 | [`/api/boards/{id}/tasks`](#apiboardsidtasks) | GET | `dual` |
 | [`/api/boards/{id}/tasks`](#apiboardsidtasks) | POST | `dual` |
 | [`/api/boards/{id}/templates`](#apiboardsidtemplates) | GET | `session` |
@@ -251,6 +262,34 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_members.rs`](../
 | `userId` | `uuid?` | Both members optional; the 'userId or email required' refine runs AFTER the field checks. |
 | `email` | `email` |  |
 
+## `/api/boards/{id}/notify`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_notify.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_notify.rs)
+
+> /api/boards/{id}/notify — the caller's own notification setting for one
+> board (talaria_notify::boards; docs/notifications/producers.md "Each
+> board"). Sessions only: a setting is a person's, and humans are the only
+> recipients of ticket rows in v1.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `…` | 200, 403 | — |
+| PUT | `session` | [body](#put-apiboardsidnotify-body) | `…` | 200, 400, 403 | — |
+| DELETE | `session` | — | `…` | 200, 403 | — |
+
+**GET** — The caller's own setting for this board: `{effective, source, stored, default, registry}`. Any board role.
+
+**PUT** — `{preset, events?, scope?, cadence?, channels?}` → replaces the caller's own setting for this board; answers as GET. `events` and `scope` only with `custom`; `channels` is `{alerts?, email?}`, each bool or null (null: the matrix decides); `alerts` is the banner and the push together.
+
+### PUT `/api/boards/{id}/notify` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
+
+**DELETE** — The caller's own setting for this board is removed — it follows their default again; answers as GET.
+
 ## `/api/boards/{id}/statuses`
 
 Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_statuses.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_statuses.rs)
@@ -299,6 +338,116 @@ Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_statuses.rs`](..
 | :--- | :--- | :--- |
 | `statusKey` | `string(1, 40)` |  |
 | `reassignTo` | `string?(40)` |  |
+
+## `/api/boards/{id}/sync`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync.rs)
+
+> /api/boards/{id}/sync — the board's ClickUp sync (talaria-board-sync,
+> docs/BOARD-SYNC.md). One-way, ClickUp → Talaria: a board owner connects one
+> ClickUp list with a personal token; a durable `clickup-sync` run pulls its
+> tasks, comments and attachments into tickets on a schedule and on Sync now.
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `session` | — | `…` | 200, 403 | — |
+| POST | `session` | [body](#post-apiboardsidsync-body) | `{sync, runId}` | 200, 400 | — |
+| PUT | `session` | [body](#put-apiboardsidsync-body) | `{sync}` | 200, 400 | — |
+| DELETE | `session` | — | `{ok}` | 200, 400 | — |
+
+### POST `/api/boards/{id}/sync` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `token` | `string(8, 400)` |  |
+| `listId` | `string(1, 100)` |  |
+| `statusMap` | `status_map` |  |
+| `options` | `options` |  |
+| `intervalMinutes` | `interval` |  |
+
+### PUT `/api/boards/{id}/sync` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `statusMap` | `status_map` |  |
+| `options` | `options` |  |
+| `intervalMinutes` | `interval` |  |
+| `paused` | `bool?` | true freezes the sync until an owner resumes it; false resumes it, and a scheduled sync runs at the scheduler's next tick. |
+
+## `/api/boards/{id}/sync/browse`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_browse.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync_browse.rs)
+
+> POST /api/boards/{id}/sync/browse {token?, teamId?, spaceId?, folderId?} —
+> one level of the ClickUp hierarchy a person walks to pick a list, lazily:
+> no ids → the token's account and workspaces; teamId → its spaces; spaceId
+> → its folders and folderless lists; folderId → its lists. `token` is
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiboardsidsyncbrowse-body) | `…` | 200, 400 | — |
+
+### POST `/api/boards/{id}/sync/browse` body
+
+Body is validated imperatively (`obj.get` dispatch / element-wise walks), not
+through the `crate::body` member vocabulary — the field set lives in the route
+source.
+
+## `/api/boards/{id}/sync/credential`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_credential.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync_credential.rs)
+
+> PUT /api/boards/{id}/sync/credential {token} — replace the sync's ClickUp
+> token. Owner only; the new token must read the connected list. A sync that
+> waits for a credential turns active and runs at once — or returns to paused
+> when it was paused as the token died. Answers {sync}. For when the member
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| PUT | `session` | [body](#put-apiboardsidsynccredential-body) | `{sync}` | 200, 400 | — |
+
+### PUT `/api/boards/{id}/sync/credential` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `token` | `string(8, 400)` |  |
+
+## `/api/boards/{id}/sync/preview`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_preview.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync_preview.rs)
+
+> POST /api/boards/{id}/sync/preview {token?, listId} — what connecting would
+> do, before anything is written: the list's statuses with their suggested
+> columns (exact label matches, or this board's last mapping of the list —
+> nothing guessed), the columns on offer and which start agent work, the
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | [body](#post-apiboardsidsyncpreview-body) | `…` | 200, 400 | — |
+
+### POST `/api/boards/{id}/sync/preview` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `token` | `string?(400)` |  |
+| `listId` | `string(1, 100)` |  |
+
+## `/api/boards/{id}/sync/runs`
+
+Source: [`api/crates/talaria-routes-boards/src/boards/boards_id_sync_runs.rs`](../../api/crates/talaria-routes-boards/src/boards/boards_id_sync_runs.rs)
+
+> POST /api/boards/{id}/sync/runs — Sync now: start a sync of the board's
+> ClickUp list (it always reconciles every task), or answer the run already
+> going. Owner or editor; 409 while paused or waiting for a new credential.
+> Answers {runId, live}: `live` true when the run was already under way.
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `session` | — | `{runId, live}` | 200 | — |
 
 ## `/api/boards/{id}/tasks`
 

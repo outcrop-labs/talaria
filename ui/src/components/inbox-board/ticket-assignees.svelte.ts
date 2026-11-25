@@ -4,7 +4,7 @@ import type { BoardMember } from '@/lib/boards.svelte'
 import { getList } from '@/lib/fetch-json'
 import type { InboxPerson } from '@/lib/inbox-board'
 import type { Task } from '@/lib/task-const'
-import type { HomeSummary } from '@/routes/app/home/home'
+import type { HomeQueues } from '@/routes/app/home/home'
 
 /** Every read's data under one key. `createQueries` hands back an array whose length is no
  *  signal, so a reader that saw it empty (the queues not yet read, so no boards) never sees
@@ -19,7 +19,7 @@ export function personOf(assignee: string, agents: Array<{ id: string; label: st
 }
 
 export function useTicketAssignees(
-  queues: () => HomeSummary['queues'] | null,
+  queues: () => HomeQueues | null,
   agents: () => Array<{ id: string; label: string }>,
 ): (taskId: string) => readonly InboxPerson[] | null {
   const boardIds = $derived([...new Set(Object.values(queues() ?? {}).flatMap((q) => q.items.map((t) => t.boardId)))])

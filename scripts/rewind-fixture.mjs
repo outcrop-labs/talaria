@@ -311,7 +311,12 @@ async function ensureHost(stack, api, agent) {
   }
   const test = await api('POST', `/api/workbench/git-hosts/${HOST_ID}/test`)
   if (!test.repos?.includes(REPO)) die(`the git host does not reach ${REPO}: ${JSON.stringify(test)}`)
-  await api('PUT', `/api/workbench/repos/${agent.id}`, { repos: [{ host: HOST_ID, repo: REPO }] })
+  // The grants write is a compare-and-set: it sends back what it read.
+  const read = await api('GET', `/api/workbench/repos/${agent.id}`)
+  await api('PUT', `/api/workbench/repos/${agent.id}`, {
+    repos: [{ host: HOST_ID, repo: REPO }],
+    from: { repos: read.granted ?? [], rules: read.rules ?? [] },
+  })
 }
 
 async function ensureModel(api, agent, model) {

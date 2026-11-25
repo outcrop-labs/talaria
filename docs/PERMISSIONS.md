@@ -115,10 +115,20 @@ same manage surface read-only.
   the git-host plane is admin-only and the set reaches every repo the agent holds on that host.
   An agent's managers see what it carries there, read-only, and still grant and remove its repos
   and set their branch rules; every grant change is audited. See
-  [WORKBENCH.md → Git hosts](./WORKBENCH.md#git-hosts-the-operators-choice).
+  [WORKBENCH.md → GitHub permissions per agent](./WORKBENCH.md#github-permissions-per-agent).
   An agent's own request for a permission (`request_git_permission`) is decided by an admin
   too (`/api/workbench/permission-requests`), and only by an admin who may read the board the
   request was raised on; the agent's managers are told the outcome, never what it said.
+  All of it is edited in one place: **Agent policy › GitHub access** (`/admin/github`, admins)
+  lists every agent and its requests, and `/admin/github?agent=<id>` is that agent's editor —
+  the same editor its own **GitHub access** section shows in the agent's settings, which its
+  managers and readers open too. There an admin sets permissions, checks tokens and decides
+  requests; the agent's managers switch Developer on or off and grant repos and branch rules;
+  anyone who may read the agent reads the rest. When a workspace secret answers git at a host
+  ahead of the App, the editor names it, and an **admin** may revoke a grant made to the agent
+  directly in place (the same `POST /api/admin/workspace-secrets {action: 'revoke'}` the
+  agent's Secrets section makes, admin-only like every write to the workspace store); a grant
+  that reaches it through a folder is revoked from the folder, which the editor names.
 
 The rows live in `agent_managers` (agent × user). Where this is asked in code:
 `talaria_agent_managers::manages_agent` and the route guard

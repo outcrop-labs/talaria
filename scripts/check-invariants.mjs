@@ -62,6 +62,7 @@ import { checkDropGuard } from './desktop-drop-guard.mjs'
 import { checkReloadKeys } from './desktop-reload-keys.mjs'
 import { checkOsLinks } from './desktop-os-links.mjs'
 import { checkReleaseLatest, selfTest as releaseLatestSelfTest } from './release-latest.mjs'
+import { judgeSettingsGlyphs, selfTest as settingsGlyphSelfTest } from './settings-glyph.mjs'
 
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..')
 
@@ -324,7 +325,98 @@ const RULES = [
       'a client contract; no other file needs to name it.',
     ],
   },
+  {
+    id: 'board-notify-setting-outside-the-fan-outs',
+    lang: 'rust',
+    // A person's notification setting for a board (FR5) may decide only what
+    // THAT person receives. The way it could change what somebody else
+    // receives is a broadcast — a board event to apps, a channel or room
+    // post, a realtime frame, a future board-to-channel feed — reading it. So
+    // the module (`talaria_notify::boards`, never glob-re-exported), its
+    // table and the prefs key are named only by the per-recipient fan-outs
+    // and the caller's own routes below — by any spelling a path can take
+    // (scanBoardNotify). The allowlist and the spellings are checked for rot
+    // after the rules run.
+    scan: scanBoardNotify,
+    allow: [
+      // the module itself, and the prefs writer that holds its key
+      'api/crates/talaria-notify/src/boards.rs',
+      'api/crates/talaria-notify/src/prefs.rs',
+      // the per-recipient fan-outs: the ticket producers and the mention doors
+      'api/crates/talaria-tasks/src/lib.rs',
+      'api/crates/talaria-tasks/src/moving.rs',
+      // the due-date scan: asks whether anyone on a board could hear a reminder
+      // (`boards::due_possible`) before reading a ticket's audience, decides each
+      // recipient with `boards::try_listeners` (a failed read is retried, never
+      // the built-in's silence) and files their row through `file_decided`
+      'api/crates/talaria-tasks/src/due.rs',
+      'api/crates/talaria-mentions/src/lib.rs',
+      // the caller's own setting: one board, every board, the default
+      'api/crates/talaria-routes-boards/src/boards/boards_id_notify.rs',
+      'api/crates/talaria-routes-comms/src/activity/notifications_boards.rs',
+      'api/crates/talaria-routes-comms/src/activity/notifications.rs',
+    ],
+    what: 'a per-board notification setting read outside the per-recipient fan-outs',
+    fix: [
+      "A person's setting for a board decides what that person receives, and nothing else.",
+      'A broadcast — a board event to apps, a channel or task-room post, a realtime frame,',
+      'a board-to-channel feed — must never read one: that is how one person turning a board',
+      'off would change what everybody else hears.',
+      '',
+      'If this file files rows one recipient at a time and needs the setting, file through',
+      'the existing fan-outs (talaria-tasks `notify_ticket_event`, talaria-mentions',
+      '`MentionOpts.ticket`) or add the file to `allow` on this rule with the reason, in the',
+      'pull request where a reviewer can veto it. A board-level feed is board configuration,',
+      'never a person\'s setting. Import it by its full path (`talaria_notify::boards`), never',
+      'through an alias or a glob of the crate, so this rule and a reviewer can both see it.',
+    ],
+  },
 ]
+
+/** Every spelling that reaches a person's per-board notification setting in
+ *  one Rust file: the module (`talaria_notify::boards`), its table and its
+ *  prefs key. A plain name match is not enough — a braced import
+ *  (`use talaria_notify::{Coalesce, boards};`) or an alias of the crate
+ *  (`use talaria_notify as tn;` then `tn::boards::…`) reaches the module
+ *  without ever writing its full path, and inside talaria-notify itself —
+ *  where the send-time readers (defer.rs, mail.rs) live, the code that must
+ *  never read one — `crate::boards`, `super::boards` and a bare `boards::`
+ *  all do. `path` decides which legs apply: the bare spelling means this
+ *  module only inside its own crate, or after a glob of the crate root;
+ *  elsewhere it is some other crate's own `boards` (talaria-routes-boards).
+ *  The crate root's `boards::FEATURES` (the feature list it chains into the
+ *  registry) is the one bare path that reads nothing. */
+function scanBoardNotify(src, path) {
+  const legs = [
+    /\btalaria_notify::boards\b/,
+    // a use tree never holds a `;`, so this stays inside the one statement
+    /\btalaria_notify::\{[^;]*?\bboards\b/,
+    /\bboard_notify_prefs\b/,
+    /\bBOARDS_KEY\b/,
+  ]
+  // The crate under another name: `use talaria_notify as tn;`,
+  // `extern crate talaria_notify as tn;`, `use talaria_notify::{self as tn};`.
+  for (const m of src.matchAll(/\btalaria_notify(?:\s+as\s+|::\{[^;]*?\bself\s+as\s+)(\w+)/g)) {
+    legs.push(new RegExp(`\\b${m[1]}::(?:boards\\b|\\{[^;]*?\\bboards\\b)`))
+  }
+  if (path.startsWith('api/crates/talaria-notify/') || /\btalaria_notify::\*/.test(src)) {
+    legs.push(/\b(?:crate|super|self)::boards\b/)
+    legs.push(/\b(?:crate|super|self)::\{[^;]*?\bboards\b/)
+    legs.push(/\bboards::(?!FEATURES\b)/)
+  }
+  const out = []
+  const seen = new Set()
+  for (const leg of legs) {
+    for (const h of matches(src, leg)) {
+      const key = `${h.line}:${h.text}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        out.push(h)
+      }
+    }
+  }
+  return out.sort((x, y) => x.line - y.line)
+}
 
 /** Legal in named files, in a known quantity, and forbidden everywhere else.
  *  A census entry is a promise: "these are all of them, and a new one is a bug."
@@ -806,7 +898,7 @@ for (const rule of RULES) {
   const scanned = rule.lang === 'rust' ? rustSources : sources
   for (const [path, src] of scanned) {
     if (rule.allow?.includes(path)) continue
-    const hits = rule.scan ? rule.scan(src) : matches(src, rule.pattern)
+    const hits = rule.scan ? rule.scan(src, path) : matches(src, rule.pattern)
     for (const h of hits) found.push({ path, ...h })
   }
   if (found.length) failures.push({ id: rule.id, what: rule.what, fix: rule.fix, found })
@@ -846,6 +938,125 @@ for (const rule of RULES) {
         found: [],
       })
     }
+  }
+}
+
+// The board-setting confinement rule's allowlist and spellings rot the way
+// every allowlist does: a file that moved keeps an exemption that exempts
+// nothing, and a scan that stopped matching the module's spelling passes on a
+// tree that reads the setting everywhere. So each allowed file must still
+// exist and still name the setting, the module must still hold its table, and
+// the scan is proven against the spellings it exists to catch (and the ones
+// it must not), each in the file it would be written in.
+{
+  const rule = RULES.find((r) => r.id === 'board-notify-setting-outside-the-fan-outs')
+  const found = []
+  for (const path of rule.allow) {
+    const src = rustSources.get(path)
+    if (src === undefined) found.push({ path, line: 1, text: 'on the allowlist but no longer exists' })
+    else if (!rule.scan(src, path).length) found.push({ path, line: 1, text: 'on the allowlist but no longer names the setting — delete its entry' })
+  }
+  const home = rustSources.get('api/crates/talaria-notify/src/boards.rs') ?? ''
+  if (!home.includes('board_notify_prefs')) {
+    found.push({ path: 'api/crates/talaria-notify/src/boards.rs', line: 1, text: 'no longer holds board_notify_prefs — point the rule at its new home' })
+  }
+  // [file it is written in, text]
+  const elsewhere = 'api/crates/talaria-chips/src/lib.rs'
+  const inNotify = 'api/crates/talaria-notify/src/defer.rs'
+  const mustMatch = [
+    [elsewhere, 'talaria_notify::boards::listeners(&pg, b, ev, &c)'],
+    [elsewhere, 'use talaria_notify::boards::{self as board_prefs, Candidate};'],
+    [elsewhere, 'use talaria_notify::{Coalesce, boards};'],
+    [elsewhere, 'use talaria_notify::{boards::{self as bp}, NotifyDeps};'],
+    [elsewhere, 'use talaria_notify::{\n    inbox::{Filed, Seen},\n    boards::listeners,\n};'],
+    [elsewhere, 'use talaria_notify as tn;\nfn f() { tn::boards::listeners(); }'],
+    [elsewhere, 'use talaria_notify::{self as tn, Coalesce};\nfn f() { tn::boards::listeners(); }'],
+    [elsewhere, 'use talaria_notify::*;\nfn f() { boards::listeners(); }'],
+    [elsewhere, 'sqlx::query("select preset from board_notify_prefs")'],
+    [elsewhere, 'm.insert(BOARDS_KEY.to_string(), v)'],
+    [inNotify, 'use crate::boards::default_wire;'],
+    [inNotify, 'use super::boards::default_wire;'],
+    [inNotify, 'use crate::{Coalesce, boards};'],
+    [inNotify, 'let l = boards::listeners(&pg, b, ev, &c).await;'],
+    ['api/crates/talaria-notify/src/lib.rs', 'pub use boards::*;'],
+    ['api/crates/talaria-notify/src/lib.rs', 'pub use self::boards::listeners;'],
+  ]
+  const mustNot = [
+    [elsewhere, 'talaria_notify::board_activity'],
+    [elsewhere, 'group_key::board_activity(board_id)'],
+    [elsewhere, 'talaria_boards::board_audience(pg, id)'],
+    [elsewhere, 'use talaria_notify::{Coalesce, NotifyDeps};\nlet q = "select name from boards";'],
+    // another crate's own `boards` module is not this one
+    ['api/crates/talaria-routes-boards/src/boards/mod.rs', 'pub mod boards_id_notify;\nuse super::boards::boards_id_tasks;'],
+    ['api/crates/talaria-api-routes/src/routes/mod.rs', 'get(talaria_routes_boards::boards::boards_id_notify::get)'],
+    // the crate root declares the module and chains its feature list
+    ['api/crates/talaria-notify/src/lib.rs', 'pub mod boards;\nlet f = x.chain(boards::FEATURES);'],
+    [inNotify, 'href: Some("/boards/x"),'],
+  ]
+  const show = (t) => t.replace(/\n\s*/g, ' ')
+  for (const [path, t] of mustMatch) if (!rule.scan(t, path).length) found.push({ path: 'scripts/check-invariants.mjs', line: 1, text: `self-test: the scan misses \`${show(t)}\` in ${path}` })
+  for (const [path, t] of mustNot) if (rule.scan(t, path).length) found.push({ path: 'scripts/check-invariants.mjs', line: 1, text: `self-test: the scan matches \`${show(t)}\` in ${path}` })
+  if (found.length) {
+    failures.push({
+      id: 'board-notify-allowlist-rot',
+      what: "the board-setting confinement rule's allowlist or spellings no longer describe the tree",
+      fix: [
+        "Update `allow` on 'board-notify-setting-outside-the-fan-outs' or `scanBoardNotify` in this",
+        'file, in the commit that moved the code. An entry that names nothing is an exemption',
+        'waiting for the next broadcast to walk through.',
+      ],
+      found,
+    })
+  }
+}
+
+// ONE SETTINGS GEAR. Every door into a settings surface draws its gear from
+// ui/src/components/ui/settings-cog.ts (SettingsButton, cogMenuIcon,
+// SettingsGlyph); three glyphs used to mean "settings" and each view drew its
+// own. The scan, the per-name allowlist (each entry says why it is not a
+// settings door) and the fixtures live in scripts/settings-glyph.mjs. The
+// allowlist gets this file's usual companion: an entry whose file or name is
+// gone fails too, so it cannot rot into an amnesty.
+{
+  const wrong = settingsGlyphSelfTest()
+  if (wrong.length) {
+    failures.push({
+      id: 'settings-glyph-scan-blind',
+      what: 'the settings-gear tripwire no longer flags its own fixtures',
+      fix: ['scripts/settings-glyph.mjs must catch every fixture in its selfTest() before it judges the tree.'],
+      found: wrong.map((text) => ({ path: 'scripts/settings-glyph.mjs', line: 0, text: `self-test: ${text}` })),
+    })
+  }
+  const { violations, stale } = judgeSettingsGlyphs(sources)
+  if (violations.length) {
+    failures.push({
+      id: 'settings-glyph-outside-the-cog',
+      what: 'a gear (or the sliders that used to mean settings) drawn outside the one settings cog',
+      fix: [
+        "A door into settings uses the shared cog from '@/components/ui/settings-cog' (apps:",
+        "'@talaria/sdk'): `<SettingsButton label=\"<Scope> settings\">` for an icon-only door,",
+        '`cogMenuIcon` on a menu entry that opens settings, `SettingsGlyph` beside a visible label.',
+        'A control that holds settings AND other or destructive verbs is split: a SettingsButton for',
+        'the settings, the verbs stay where they were, and Delete goes on the panel\'s danger line.',
+        'A value-faced control (a notification level) keeps its value glyph; its menu ends in a',
+        '`cogMenuIcon` entry to the full settings. docs/UI-CONVENTIONS.md, "Settings cog".',
+        'A gear that is genuinely not a settings door (a destination in app chrome) is an entry in',
+        'SETTINGS_GLYPH_ALLOW with the reason — argued in the PR, not added to pass.',
+      ],
+      found: violations,
+    })
+  }
+  if (stale.length) {
+    failures.push({
+      id: 'settings-glyph-allowlist-entry-gone',
+      what: 'a settings-gear allowlist entry that exempts nothing',
+      fix: [
+        'Delete the entry from SETTINGS_GLYPH_ALLOW in scripts/settings-glyph.mjs (or point it at',
+        'where the file moved). An exemption held open for a file or name that no longer needs it',
+        'is held open for the next per-view gear to walk through.',
+      ],
+      found: stale,
+    })
   }
 }
 

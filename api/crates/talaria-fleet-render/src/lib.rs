@@ -974,8 +974,10 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "body=\"{\\\"host\\\":\\\"$(jstr \"$host\")\\\",\\\"protocol\\\":\\\"$(jstr \"$proto\")\\\",\\\"path\\\":\\\"$(jstr \"$path\")\\\"}\"\n",
     "if command -v curl >/dev/null 2>&1; then\n",
     "  # No --fail: a refusal's body says why. The status follows the body on\n",
-    "  # a line of its own, and a 403's sentence is passed on, because it names\n",
-    "  # what an admin changes (the agent's Developer Agent switch); a 404 says\n",
+    "  # a line of its own, and two refusals' sentences are passed on: a 403's\n",
+    "  # names what an admin changes (the agent's Developer Agent switch), and a\n",
+    "  # 502's is the git host's own reason it gave no token for a granted repo\n",
+    "  # (GitHub refused the mint, or minted one wider than asked). A 404 says\n",
     "  # no more than the line decline prints.\n",
     "  out=$(curl -sS -X POST \"$url\" \\\n",
     "    -H \"X-Agent-Name: $API_SERVER_MODEL_NAME\" -H \"X-Api-Key: $TALARIA_AGENT_KEY\" \\\n",
@@ -983,7 +985,7 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "    || decline\n",
     "  code=$(printf '%s\\n' \"$out\" | sed -n '$p')\n",
     "  resp=$(printf '%s\\n' \"$out\" | sed '$d')\n",
-    "  if [ \"$code\" = \"403\" ]; then\n",
+    "  if [ \"$code\" = \"403\" ] || [ \"$code\" = \"502\" ]; then\n",
     "    why=$(printf %s \"$resp\" | sed -n 's/.*\"error\":\"\\([^\"]*\\)\".*/\\1/p')\n",
     "  fi\n",
     "  case \"$code\" in 2??) ;; *) decline ;; esac\n",
@@ -1010,6 +1012,12 @@ const GIT_CREDENTIAL_HELPER: &str = concat!(
     "u=$(printf %s \"$resp\" | sed -n 's/.*\"username\":\"\\([^\"]*\\)\".*/\\1/p')\n",
     "p=$(printf %s \"$resp\" | sed -n 's/.*\"password\":\"\\([^\"]*\\)\".*/\\1/p')\n",
     "[ -n \"$p\" ] || exit 0\n",
+    "# A token that goes without part of what the agent was given comes with a\n",
+    "# note naming each missing key and why. It goes to stderr, which git and\n",
+    "# `git credential fill` show the agent; stdout is the login and nothing\n",
+    "# else, because git reads every line of it.\n",
+    "note=$(printf %s \"$resp\" | sed -n 's/.*\"note\":\"\\([^\"]*\\)\".*/\\1/p')\n",
+    "[ -z \"$note\" ] || echo \"talaria: $note\" >&2\n",
     "echo \"username=$u\"\n",
     "echo \"password=$p\"\n",
     "\n",
@@ -6820,6 +6828,8 @@ empty_list: []
             "git -c credential.helper= config --get remote.origin.url",
             "never runs bare: what it prints is the token",
             "sed -n 's/.*\"username\":\"\\([^\"]*\\)\".*/\\1/p')\n",
+            "if [ \"$code\" = \"403\" ] || [ \"$code\" = \"502\" ]; then\n",
+            "[ -z \"$note\" ] || echo \"talaria: $note\" >&2\n",
         ] {
             assert!(
                 GIT_CREDENTIAL_HELPER.contains(needle),
@@ -7013,18 +7023,47 @@ empty_list: []
         assert!(stdout.is_empty(), "{stdout}");
         assert!(!stderr.contains("that host"), "{stderr}");
         assert!(stderr.contains("no credential for github.com"), "{stderr}");
+
+        // A token short of a key the agent was given comes with a note: it
+        // goes to stderr, and stdout stays exactly the login git reads.
+        let noted = Some((
+            r#"{"note":"this token for acme/widgets carries contents:write, metadata:read, pull_requests:write and not workflows:write — the installation on acme has not accepted workflows:write","password":"sekret","username":"x-access-token"}"#,
+            200,
+        ));
+        let (code, stdout, stderr, _) = run(false, noted, scoped);
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stdout, "username=x-access-token\npassword=sekret\n");
+        assert!(
+            stderr.contains("talaria: this token for acme/widgets carries contents:write, metadata:read, pull_requests:write and not workflows:write"),
+            "{stderr}"
+        );
+        // A 502 is the git host's reason it gave no token: passed on, with
+        // nothing on stdout.
+        let refused = Some((
+            r#"{"error":"GitHub minted a token for acme/widgets wider than Talaria asked for (it carries workflows:write, above the read asked for); it was revoked and never used"}"#,
+            502,
+        ));
+        let (code, stdout, stderr, _) = run(false, refused, scoped);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(
+            stderr.contains("talaria: GitHub minted a token for acme/widgets wider than Talaria asked for (it carries workflows:write, above the read asked for)"),
+            "{stderr}"
+        );
     }
 
-    /// RUN the line the agents are taught for a GitHub API call, through real
-    /// git and the rendered helper, the way the sandbox has them: a gitconfig
-    /// that names the helper and turns on useHttpPath, and a stub curl
-    /// standing in for the credential door. What the line puts in `$TOKEN`
-    /// is what this answers, along with the body the helper sent.
-    fn run_api_token_line(reply: Option<&str>) -> (i32, String, String, Value) {
+    /// RUN `script` through real git and the rendered helper, the way the
+    /// sandbox has them: a gitconfig that names the helper and turns on
+    /// useHttpPath, and a stub curl standing in for the credential door that
+    /// answers `reply` (a body and its status) or fails outright. Answers the
+    /// script's status, stdout and stderr, and the body the helper sent.
+    fn run_through_git(script: &str, reply: Option<(&str, u16)>) -> (i32, String, String, Value) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static RUN: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "talaria-api-token-{}-{}",
             std::process::id(),
-            reply.is_some()
+            RUN.fetch_add(1, Ordering::SeqCst)
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("stub")).unwrap();
@@ -7043,22 +7082,26 @@ empty_list: []
         )
         .unwrap();
         let capture = dir.join("body");
+        // The reply is read from a file, so a body with any quote in it
+        // reaches the helper exactly as the door would send it.
+        let answer = dir.join("answer");
         let curl = match reply {
-            Some(body) => format!(
-                "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\nprintf '%s\\n%s' '{body}' 200\n",
-                capture.display()
-            ),
+            Some((body, status)) => {
+                std::fs::write(&answer, body).unwrap();
+                format!(
+                    "#!/bin/sh\nprev=\nfor a in \"$@\"; do\n  if [ \"$prev\" = \"-d\" ]; then printf '%s' \"$a\" > '{}'; fi\n  prev=$a\ndone\ncat '{}'\nprintf '\\n%s' {status}\n",
+                    capture.display(),
+                    answer.display()
+                )
+            }
             None => "#!/bin/sh\nexit 1\n".to_string(),
         };
         let curl_path = dir.join("stub/curl");
         std::fs::write(&curl_path, curl).unwrap();
         std::fs::set_permissions(&curl_path, exec).unwrap();
-        // The taught call, with printf where the API call goes.
-        let script = format!("( {API_TOKEN_LINE}; {API_TOKEN_GUARD}; printf %s \"$TOKEN\" )\n")
-            .replace("OWNER/REPO", "acme/widgets");
         let out = std::process::Command::new("sh")
             .arg("-c")
-            .arg(&script)
+            .arg(script)
             .current_dir(&dir)
             .env(
                 "PATH",
@@ -7092,14 +7135,77 @@ empty_list: []
         )
     }
 
+    /// RUN the line the agents are taught for a GitHub API call through real
+    /// git and the helper ([`run_through_git`]), with printf where the API
+    /// call goes: what the line puts in `$TOKEN` is its stdout.
+    fn run_api_token_line(reply: Option<(&str, u16)>) -> (i32, String, String, Value) {
+        let script = format!("( {API_TOKEN_LINE}; {API_TOKEN_GUARD}; printf %s \"$TOKEN\" )\n")
+            .replace("OWNER/REPO", "acme/widgets");
+        run_through_git(&script, reply)
+    }
+
+    /// `git credential fill` for acme/widgets, as the API line runs it.
+    const CREDENTIAL_FILL: &str = "printf 'protocol=https\\nhost=github.com\\npath=acme/widgets.git\\n\\n' | GIT_TERMINAL_PROMPT=0 git credential fill";
+
+    /// What git's credential fill printed beyond echoing what it was asked
+    /// (protocol, host, path, and any capability lines a newer git adds).
+    fn filled(stdout: &str) -> Vec<&str> {
+        stdout
+            .lines()
+            .filter(|l| {
+                !["protocol=", "host=", "path=", "capability"]
+                    .iter()
+                    .any(|p| l.starts_with(p))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_note_or_a_refusal_reaches_gits_stderr_and_never_its_stdout() {
+        let note = "this token for acme/widgets carries contents:write, metadata:read, pull_requests:write and not workflows:write — the GitHub App's installation on acme has not accepted workflows:write (an admin sees it in Admin → Git hosts)";
+        let reply =
+            format!(r#"{{"note":"{note}","password":"ghs_sekret","username":"x-access-token"}}"#);
+        let (code, stdout, stderr, body) = run_through_git(CREDENTIAL_FILL, Some((&reply, 200)));
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(
+            filled(&stdout),
+            ["username=x-access-token", "password=ghs_sekret"],
+            "stdout is the login and nothing else: {stdout}"
+        );
+        assert!(!stdout.contains("talaria"), "{stdout}");
+        assert!(stderr.contains(&format!("talaria: {note}")), "{stderr}");
+        assert_eq!(body["path"], "acme/widgets.git", "{body}");
+        // The API line still reads the token alone.
+        let (code, stdout, stderr, _) = run_api_token_line(Some((&reply, 200)));
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stdout, "ghs_sekret");
+        assert!(
+            stderr.contains("talaria: this token for acme/widgets"),
+            "{stderr}"
+        );
+
+        // A 502: the host's sentence on stderr, no login on stdout.
+        let refused = r#"{"error":"GitHub refused a token for acme/widgets (422: The permissions requested are not granted to this installation.)"}"#;
+        let (_, stdout, stderr, _) = run_through_git(CREDENTIAL_FILL, Some((refused, 502)));
+        assert!(
+            !stdout.contains("password=") && !stdout.contains("username="),
+            "{stdout}"
+        );
+        assert!(
+            stderr.contains("talaria: GitHub refused a token for acme/widgets (422: The permissions requested are not granted to this installation.)"),
+            "{stderr}"
+        );
+    }
+
     #[test]
     fn the_api_token_line_reads_the_repos_token_through_git_and_the_helper() {
         // Granted: the helper asks the door for exactly that repository on
         // that host, and the token lands in $TOKEN, never on the output
         // until the script itself prints it.
-        let (code, stdout, stderr, body) = run_api_token_line(Some(
+        let (code, stdout, stderr, body) = run_api_token_line(Some((
             r#"{"username":"x-access-token","password":"ghs_sekret"}"#,
-        ));
+            200,
+        )));
         assert_eq!(code, 0, "{stderr}");
         assert_eq!(stdout, "ghs_sekret", "{stderr}");
         assert_eq!(body["host"], "github.com", "{body}");

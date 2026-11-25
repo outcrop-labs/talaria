@@ -1,5 +1,5 @@
 // The boot assembly — the one place the job bodies become a running schedule,
-// and the one place the eight armed run steps get their deps.
+// and the one place the nine armed run steps get their deps.
 //
 // Every job module owns its own `register_*_job(deps)`: the deps are runtime
 // values (the pool, the realtime fan-out, the secretbox), so registration
@@ -7,12 +7,12 @@
 // and hand them over. This module is that something, and its one rule is
 // COMPLETENESS: every job is declared here in one visible list, because a
 // register call that falls out of this function is work that silently never
-// happens. `start_scheduler`'s boot check enforces the required nine against
+// happens. `start_scheduler`'s boot check enforces the required ten against
 // this list; the test below pins the whole table.
 //
 // THE OTHER HALF of the assembly is the run kinds. The defs self-register on
 // first getter call, so `try_arm` touches each getter and then REFUSES to arm
-// unless the census's eight kinds are all present. The refusal is a boot list
+// unless the census's nine kinds are all present. The refusal is a boot list
 // made executable: `run-reclaim` is one of the ten jobs, and a sweep that
 // cannot define a kind leaves those rows to an instance that can — no such
 // instance exists, and the rows would sit forever with only a warn line.
@@ -68,6 +68,7 @@ fn live_secretbox(state: &AppState) -> talaria_push::SecretBoxSource {
 const BOOT_RUN_KINDS: &[&str] = &[
     "agent-design",
     "agent-hire",
+    "clickup-sync",
     "plan-draft",
     "rag-backfill",
     "rag-reindex",
@@ -901,6 +902,17 @@ pub async fn register_all(state: &AppState, run: Arc<RunDeps>, rt: RealtimeDeps,
         state.pg.clone(),
         live_secretbox(state),
     ));
+    // Boards that sync from a ClickUp list (talaria-board-sync): a minute
+    // hand that only starts the `clickup-sync` runs that are due, and prunes
+    // old ones. Required: a sync that silently stops is a stale board.
+    talaria_board_sync::job::register_board_sync_job(state.clone());
+    // Due-date reminders (talaria-tasks `due`): every 15 minutes, the tickets
+    // that came due within a day or went overdue, told to whoever opted in.
+    // Required: a reminder that silently never comes is a missed deadline.
+    talaria_tasks::due::register_task_due_job(talaria_notify::NotifyDeps {
+        pg: state.pg.clone(),
+        realtime: rt.clone(),
+    });
 }
 
 /// The census kinds this build cannot define. Empty is arming's
@@ -953,7 +965,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
         .await
         .map_err(|e| format!("the secretbox did not load: {e}"))?;
 
-    // The eight armed run steps: their deps are the AppState's edges, and an
+    // The nine armed run steps: their deps are the AppState's edges, and an
     // unarmed step is the loud refusal in the def — reached only by a driver
     // armed before its deps, which this order makes impossible.
     talaria_research_def::arm_research_step(talaria_research_def::real_research_deps(
@@ -978,6 +990,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     talaria_runs_rewind::arm_rewind_step(Arc::new(talaria_runs_rewind::world::Real {
         state: state.clone(),
     }));
+    talaria_board_sync::arm_sync_step(state.clone());
     // The boot kind list: touch each getter so its kind registers NOW, then
     // hold arming to the census's table.
     let _ = talaria_research_def::research_run();
@@ -988,6 +1001,7 @@ async fn try_arm(state: &AppState) -> Result<(), String> {
     let _ = talaria_runs_reindex::backfill_run();
     let _ = talaria_runs_reindex::reindex_run();
     let _ = talaria_runs_rewind::rewind_run();
+    let _ = talaria_board_sync::sync_run();
     let missing = missing_run_kinds();
     if !missing.is_empty() {
         return Err(format!(
@@ -1183,6 +1197,14 @@ mod tests {
             !REQUIRED_JOBS.contains(&JobName::GitHostHoldings),
             "git-host-holdings must stay optional: an instance with no GitHub App host runs it as a no-op"
         );
+        // The daily board digest was withdrawn before it reached a release:
+        // no job by its name is registered, and the daily digest (the
+        // approvals mail) still is.
+        assert!(
+            names.iter().all(|n| n.as_str() != "board-digest"),
+            "the withdrawn board-digest job is back in the job table"
+        );
+        assert!(names.contains(&JobName::DailyDigest));
 
         // THE ROLL'S EDGE, the same completeness rule one layer down. This
         // OnceLock is how the reconcile crate reaches the renderer, and an
@@ -1311,6 +1333,7 @@ mod tests {
         let _ = talaria_runs_reindex::backfill_run();
         let _ = talaria_runs_reindex::reindex_run();
         let _ = talaria_runs_rewind::rewind_run();
+        let _ = talaria_board_sync::sync_run();
         // The census's kind table is WHOLE. An empty list is the assertion
         // now, not the goal: a kind showing up here means a def module fell
         // out of try_arm's boot list, and the sweep would strand that kind's

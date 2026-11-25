@@ -120,7 +120,7 @@ describe('settingsNav active row', () => {
       return nav.groups.flatMap((g) => g.rows).find((r) => r.to === nav.activePath)?.label
     }
     for (const path of ['/admin', '/admin/people']) expect(lit(path), path).toBe('Organization')
-    for (const path of ['/admin/agents', '/admin/git', '/admin/search', '/admin/retrieval']) expect(lit(path), path).toBe('Agent policy')
+    for (const path of ['/admin/agents', '/admin/git', '/admin/github', '/admin/search', '/admin/retrieval']) expect(lit(path), path).toBe('Agent policy')
     for (const path of ['/admin/storage', '/admin/secrets', '/admin/security']) expect(lit(path), path).toBe('Data & security')
   })
 
@@ -160,7 +160,7 @@ describe('searchSettings', () => {
   })
 
   it('matches a row by keyword', () => {
-    expect(found('token')).toEqual(['API keys'])
+    expect(found('token')).toEqual(['API keys', 'Agent policy › GitHub access'])
     expect(found('invites')).toEqual(['Organization'])
   })
 
@@ -184,6 +184,7 @@ describe('searchSettings', () => {
       '/admin/people',
       '/admin/agents',
       '/admin/git',
+      '/admin/github',
       '/admin/search',
       '/admin/retrieval',
       '/admin/storage',
@@ -197,6 +198,26 @@ describe('searchSettings', () => {
     }
     expect(found('secrets')).toEqual(['Data & security › Secrets'])
     expect(found('knowledge')).toEqual(['Agent policy › Knowledge search'])
+  })
+
+  it("finds Agent policy's GitHub access tab under the words its owner looks for, at the tab itself", () => {
+    for (const q of ['github', 'GitHub', 'workflows', 'permissions', 'token', 'repositories']) {
+      expect(found(q), q).toContain('Agent policy › GitHub access')
+      expect(searchSettings(groups, TABS, q), q).toContainEqual(
+        expect.objectContaining({ to: '/admin/github', label: 'GitHub access', parent: 'Agent policy', rowTo: '/admin/agents', group: 'instance' }),
+      )
+    }
+    // The row keywords still land on the page's first tab, and the tab once.
+    expect(found('workflows')).toEqual(['Agent policy › GitHub access'])
+    expect(found('installation')).toEqual(['Agent policy › GitHub access'])
+  })
+
+  it('never finds the GitHub access tab for a viewer who cannot open Agent policy', () => {
+    const member = { isAdmin: false, denied: [] as string[], appGrants: [] as string[] }
+    const theirs = settingsNav(CORE, [], member, '/agents').groups
+    for (const q of ['workflows', 'github', 'installation']) {
+      expect(searchSettings(theirs, TABS, q).map((m) => m.to), q).not.toContain('/admin/github')
+    }
   })
 
   it('finds the three Instance pages under the name they shared, which is no longer a label', () => {

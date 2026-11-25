@@ -7,7 +7,7 @@
 > The **Returns** column is the first success-shaped `json!({…})` literal and is heuristic —
 > `…` means the shape is not a literal in source.
 
-24 routes.
+26 routes.
 
 | Route | Method | Auth |
 | :--- | :--- | :--- |
@@ -39,10 +39,12 @@
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | GET | `admin` |
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | PUT | `admin` |
 | [`/api/workbench/git-hosts/{id}`](#apiworkbenchgit-hostsid) | DELETE | `admin` |
+| [`/api/workbench/git-hosts/{id}/agents`](#apiworkbenchgit-hostsidagents) | GET | `admin` |
 | [`/api/workbench/git-hosts/{id}/refresh`](#apiworkbenchgit-hostsidrefresh) | POST | `admin` |
 | [`/api/workbench/git-hosts/{id}/test`](#apiworkbenchgit-hostsidtest) | POST | `admin` |
 | [`/api/workbench/github-permissions/{agentId}`](#apiworkbenchgithub-permissionsagentid) | GET | `session` + `agent-reader` |
 | [`/api/workbench/github-permissions/{agentId}`](#apiworkbenchgithub-permissionsagentid) | PUT | `admin` |
+| [`/api/workbench/github-permissions/{agentId}/check`](#apiworkbenchgithub-permissionsagentidcheck) | POST | `admin` |
 | [`/api/workbench/harnesses`](#apiworkbenchharnesses) | GET | `admin` |
 | [`/api/workbench/harnesses`](#apiworkbenchharnesses) | POST | `admin` |
 | [`/api/workbench/jobs`](#apiworkbenchjobs) | GET | `session` |
@@ -414,6 +416,20 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_
 | `repoCreationOrgs` | `string[]?(0, 100, 20)` |  |
 | `secret` | `string?(200)` |  |
 
+## `/api/workbench/git-hosts/{id}/agents`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_agents.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_agents.rs)
+
+> /api/workbench/git-hosts/{id}/agents. What Agent policy › GitHub access
+> and the host dialog read: each agent with a set or a repo grant on the
+> host, beside what the installations accepted, because an installation
+> accepting a permission is not an agent's token carrying it. GET → per
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| GET | `admin` | — | `{host, narrowing, default, agents, unclaimed}` | 200, 404 | — |
+
 ## `/api/workbench/git-hosts/{id}/refresh`
 
 Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_refresh.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_git_hosts_id_refresh.rs)
@@ -453,7 +469,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_github_per
 
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| GET | `session` + `agent-reader` | — | `{agentId, canEdit, default, catalog, hosts}` | 200, 404 | — |
+| GET | `session` + `agent-reader` | — | `{agentId, canEdit, canCheck, default, catalog, hosts}` | 200, 404 | — |
 | PUT | `admin` | [body](#put-apiworkbenchgithub-permissionsagentid-body) | `{ok, host, permissions, isDefault, notes}` | 200, 400, 404, 409 | — |
 
 ### PUT `/api/workbench/github-permissions/{agentId}` body
@@ -463,6 +479,27 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_github_per
 | `host` | `string(1, 40)` |  |
 | `from` | `permissions_or_default` | What the editor read: the agent's set, or null when it is on the default. |
 | `to` | `permissions_or_default` | The whole new set, or null to put the agent back on the default. |
+
+## `/api/workbench/github-permissions/{agentId}/check`
+
+Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_github_permissions_agent_id_check.rs`](../../api/crates/talaria-routes-workbench/src/workbench/workbench_github_permissions_agent_id_check.rs)
+
+> /api/workbench/github-permissions/{agentId}/check. "Check token": what the
+> agent's git would get for one granted repo NOW, read from the token itself
+> rather than from what the installation is recorded to hold.
+>
+> …
+
+| Method | Auth | Body | Returns | Status | Flags |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| POST | `admin` | [body](#post-apiworkbenchgithub-permissionsagentidcheck-body) | `…` | 200, 400, 404 | audit |
+
+### POST `/api/workbench/github-permissions/{agentId}/check` body
+
+| field | schema | notes |
+| :--- | :--- | :--- |
+| `host` | `string(1, 40)` |  |
+| `repo` | `string(3, 200)` |  |
 
 ## `/api/workbench/harnesses`
 
@@ -572,7 +609,7 @@ Source: [`api/crates/talaria-routes-workbench/src/workbench/workbench_repos_agen
 | Method | Auth | Body | Returns | Status | Flags |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | GET | `session` + `agent-reader` | — | `{hosts, available, granted, rules, branches}` | 200, 404 | — |
-| PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404 | audit |
+| PUT | `session` + `agent-manager` | [body](#put-apiworkbenchreposagentid-body) | `{granted}` | 200, 400, 404, 409 | audit |
 
 ### PUT `/api/workbench/repos/{agentId}` body
 

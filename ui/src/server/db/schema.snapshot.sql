@@ -471,6 +471,17 @@ CREATE TABLE public.board_members (
     role text DEFAULT 'editor'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.board_notify_prefs (
+    user_id uuid NOT NULL,
+    board_id uuid NOT NULL,
+    preset text NOT NULL,
+    events text[],
+    scope text,
+    cadence text DEFAULT 'instant'::text NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    alerts boolean,
+    email boolean
+);
 CREATE TABLE public.board_statuses (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     board_id uuid NOT NULL,
@@ -481,6 +492,58 @@ CREATE TABLE public.board_statuses (
     agent_start boolean DEFAULT false NOT NULL,
     "position" integer DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+CREATE TABLE public.board_sync_items (
+    provider text NOT NULL,
+    external_id text NOT NULL,
+    sync_id uuid,
+    board_id uuid NOT NULL,
+    task_id uuid,
+    custom_id text,
+    external_url text,
+    remote_state text DEFAULT 'active'::text NOT NULL,
+    remote_updated_ms bigint,
+    applied jsonb DEFAULT '{}'::jsonb NOT NULL,
+    attachments jsonb DEFAULT '{}'::jsonb NOT NULL,
+    comments jsonb DEFAULT '{}'::jsonb NOT NULL,
+    problems jsonb DEFAULT '[]'::jsonb NOT NULL,
+    seen_run uuid,
+    synced_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT board_sync_items_remote_state_check CHECK ((remote_state = ANY (ARRAY['active'::text, 'archived'::text, 'deleted'::text, 'moved'::text, 'hidden'::text])))
+);
+CREATE TABLE public.board_syncs (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    board_id uuid NOT NULL,
+    provider text DEFAULT 'clickup'::text NOT NULL,
+    workspace_id text,
+    list_id text NOT NULL,
+    list_path text,
+    list_statuses jsonb DEFAULT '[]'::jsonb NOT NULL,
+    credential_sealed text,
+    credential_hint text,
+    credential_account jsonb,
+    status_map jsonb DEFAULT '{}'::jsonb NOT NULL,
+    map_version integer DEFAULT 0 NOT NULL,
+    remap_pending boolean DEFAULT false NOT NULL,
+    options jsonb DEFAULT '{}'::jsonb NOT NULL,
+    interval_minutes integer,
+    state text DEFAULT 'active'::text NOT NULL,
+    watermark_ms bigint,
+    last_sweep_at timestamp with time zone,
+    last_synced_at timestamp with time zone,
+    next_sync_at timestamp with time zone,
+    last_run_id uuid,
+    run_problems jsonb DEFAULT '[]'::jsonb NOT NULL,
+    connected_by uuid,
+    disconnected_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    disconnected_at timestamp with time zone,
+    paused_by uuid,
+    paused_at timestamp with time zone,
+    CONSTRAINT board_syncs_provider_check CHECK ((provider = 'clickup'::text)),
+    CONSTRAINT board_syncs_state_check CHECK ((state = ANY (ARRAY['active'::text, 'paused'::text, 'needs_credential'::text, 'disconnected'::text])))
 );
 CREATE TABLE public.board_templates (
     board_id uuid NOT NULL,
@@ -558,7 +621,10 @@ CREATE TABLE public.channel_messages (
     edited_at timestamp with time zone,
     attachments jsonb DEFAULT '[]'::jsonb NOT NULL,
     guard jsonb,
-    chips jsonb DEFAULT '[]'::jsonb NOT NULL
+    chips jsonb DEFAULT '[]'::jsonb NOT NULL,
+    drafted boolean DEFAULT false NOT NULL,
+    answers_message_id uuid,
+    import_key text
 );
 CREATE TABLE public.channel_teams (
     channel_id uuid NOT NULL,
@@ -1046,6 +1112,11 @@ CREATE TABLE public.mcp_library_entries (
     live_checked_at timestamp with time zone,
     live_detail text
 );
+CREATE TABLE public.mcp_library_liveness (
+    registry_name text NOT NULL,
+    checked_at timestamp with time zone NOT NULL
+)
+WITH (fillfactor='50');
 CREATE TABLE public.mcp_oauth_reconnect (
     server_id uuid NOT NULL,
     subject text NOT NULL,
@@ -1214,7 +1285,10 @@ CREATE TABLE public.notifications (
     pushed_at timestamp with time zone,
     email_due_at timestamp with time zone,
     emailed_at timestamp with time zone,
-    email_attempts integer DEFAULT 0 NOT NULL
+    email_attempts integer DEFAULT 0 NOT NULL,
+    desktop_override boolean,
+    push_override boolean,
+    email_override boolean
 );
 CREATE TABLE public.org_domains (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1541,6 +1615,13 @@ CREATE TABLE public.task_activity (
     description text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
+CREATE TABLE public.task_asked_exits (
+    task_id uuid NOT NULL,
+    message_id uuid NOT NULL,
+    agent_model text NOT NULL,
+    asked_by uuid,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 CREATE TABLE public.task_coding_pins (
     task_id uuid NOT NULL,
     account_id bigint,
@@ -1562,7 +1643,8 @@ CREATE TABLE public.task_ref_aliases (
 CREATE TABLE public.task_watchers (
     task_id uuid NOT NULL,
     watcher text NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    added_by text
 );
 CREATE TABLE public.task_workchain_edges (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
@@ -1635,7 +1717,10 @@ CREATE TABLE public.tasks (
     parent_id uuid,
     start_date timestamp with time zone,
     color text,
-    approved_at timestamp with time zone
+    approved_at timestamp with time zone,
+    external_key text,
+    due_soon_for timestamp with time zone,
+    overdue_for timestamp with time zone
 );
 CREATE TABLE public.team_agents (
     team_id uuid NOT NULL,
@@ -2002,10 +2087,18 @@ ALTER TABLE ONLY public.board_labels
     ADD CONSTRAINT board_labels_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.board_members
     ADD CONSTRAINT board_members_pkey PRIMARY KEY (board_id, user_id);
+ALTER TABLE ONLY public.board_notify_prefs
+    ADD CONSTRAINT board_notify_prefs_pkey PRIMARY KEY (user_id, board_id);
 ALTER TABLE ONLY public.board_statuses
     ADD CONSTRAINT board_statuses_board_id_key_key UNIQUE (board_id, key);
 ALTER TABLE ONLY public.board_statuses
     ADD CONSTRAINT board_statuses_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.board_sync_items
+    ADD CONSTRAINT board_sync_items_pkey PRIMARY KEY (provider, external_id);
+ALTER TABLE ONLY public.board_sync_items
+    ADD CONSTRAINT board_sync_items_task_id_key UNIQUE (task_id);
+ALTER TABLE ONLY public.board_syncs
+    ADD CONSTRAINT board_syncs_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.board_templates
     ADD CONSTRAINT board_templates_pkey PRIMARY KEY (board_id, template_id);
 ALTER TABLE ONLY public.board_views
@@ -2118,6 +2211,8 @@ ALTER TABLE ONLY public.llm_endpoints
     ADD CONSTRAINT llm_endpoints_pkey PRIMARY KEY (id);
 ALTER TABLE ONLY public.mcp_library_entries
     ADD CONSTRAINT mcp_library_entries_pkey PRIMARY KEY (registry_name);
+ALTER TABLE ONLY public.mcp_library_liveness
+    ADD CONSTRAINT mcp_library_liveness_pkey PRIMARY KEY (registry_name);
 ALTER TABLE ONLY public.mcp_oauth_reconnect
     ADD CONSTRAINT mcp_oauth_reconnect_pkey PRIMARY KEY (server_id, subject);
 ALTER TABLE ONLY public.mcp_oauth_states
@@ -2228,6 +2323,8 @@ ALTER TABLE ONLY public.skills_index_entries
     ADD CONSTRAINT skills_index_entries_pkey PRIMARY KEY (identifier);
 ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_pkey PRIMARY KEY (id);
+ALTER TABLE ONLY public.task_asked_exits
+    ADD CONSTRAINT task_asked_exits_pkey PRIMARY KEY (task_id, message_id);
 ALTER TABLE ONLY public.task_coding_pins
     ADD CONSTRAINT task_coding_pins_pkey PRIMARY KEY (task_id);
 ALTER TABLE ONLY public.task_dependencies
@@ -2331,8 +2428,13 @@ CREATE INDEX audit_log_created_idx ON public.audit_log USING btree (created_at D
 CREATE INDEX audit_log_target_idx ON public.audit_log USING btree (target_type, target_id);
 CREATE INDEX blueprints_owner_idx ON public.blueprints USING btree (owner_user_id, sort, name);
 CREATE UNIQUE INDEX board_agent_requests_one_open ON public.board_agent_requests USING btree (board_id, agent_model) WHERE (status = 'open'::text);
+CREATE INDEX board_notify_prefs_board_idx ON public.board_notify_prefs USING btree (board_id);
+CREATE INDEX board_sync_items_board_idx ON public.board_sync_items USING btree (board_id, external_id);
+CREATE INDEX board_syncs_due ON public.board_syncs USING btree (next_sync_at) WHERE (state = 'active'::text);
+CREATE UNIQUE INDEX board_syncs_one_live ON public.board_syncs USING btree (board_id) WHERE (state <> 'disconnected'::text);
 CREATE INDEX board_views_board_idx ON public.board_views USING btree (board_id, "position");
 CREATE INDEX channel_messages_idx ON public.channel_messages USING btree (channel_id, seq);
+CREATE UNIQUE INDEX channel_messages_import_key_idx ON public.channel_messages USING btree (channel_id, import_key) WHERE (import_key IS NOT NULL);
 CREATE INDEX channel_messages_streaming_idx ON public.channel_messages USING btree (created_at) WHERE (status = 'streaming'::text);
 CREATE INDEX channel_messages_thread_idx ON public.channel_messages USING btree (thread_root_id) WHERE (thread_root_id IS NOT NULL);
 CREATE INDEX channel_thread_reads_user_idx ON public.channel_thread_reads USING btree (user_id, thread_root_id) INCLUDE (last_read_seq);
@@ -2367,7 +2469,6 @@ CREATE INDEX kb_docs_space_idx ON public.kb_docs USING btree (space_id, parent_i
 CREATE INDEX kb_editors_item_idx ON public.kb_editors USING btree (item_type, item_id);
 CREATE INDEX mcp_library_entries_dead_idx ON public.mcp_library_entries USING btree (tier) WHERE (live_state = 'dead'::text);
 CREATE INDEX mcp_library_entries_domains_idx ON public.mcp_library_entries USING gin (domains);
-CREATE INDEX mcp_library_entries_live_idx ON public.mcp_library_entries USING btree (live_checked_at NULLS FIRST);
 CREATE INDEX mcp_library_entries_search_idx ON public.mcp_library_entries USING gin (search);
 CREATE INDEX mcp_library_entries_tier_idx ON public.mcp_library_entries USING btree (tier, title);
 CREATE INDEX mcp_tool_calls_agent_idx ON public.mcp_tool_calls USING btree (agent, at DESC);
@@ -2396,6 +2497,7 @@ CREATE INDEX run_checkpoints_job_idx ON public.run_checkpoints USING btree (job_
 CREATE INDEX run_pushes_run_idx ON public.run_pushes USING btree (run_id, created_at);
 CREATE UNIQUE INDEX runs_approval_key_idx ON public.runs USING btree (approval_key) WHERE (approval_key IS NOT NULL);
 CREATE UNIQUE INDEX runs_lineage_attempt_idx ON public.runs USING btree (lineage_id, attempt_no) WHERE (lineage_id IS NOT NULL);
+CREATE UNIQUE INDEX runs_one_live_board_sync ON public.runs USING btree (subject_id) WHERE ((kind = 'clickup-sync'::text) AND (state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text])));
 CREATE UNIQUE INDEX runs_one_live_per_kind ON public.runs USING btree (kind) WHERE ((state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text])) AND (kind = ANY (ARRAY['rag-reindex'::text, 'rag-backfill'::text])));
 CREATE INDEX runs_owner_active_idx ON public.runs USING btree (owner_user_id, state, updated_at DESC) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting'::text]));
 CREATE INDEX runs_reclaim_idx ON public.runs USING btree (lease_expires_at NULLS FIRST, created_at) WHERE (state = ANY (ARRAY['queued'::text, 'running'::text]));
@@ -2409,6 +2511,8 @@ CREATE INDEX task_workchain_edges_to ON public.task_workchain_edges USING btree 
 CREATE UNIQUE INDEX task_workchain_steps_one_chain ON public.task_workchain_steps USING btree (task_id);
 CREATE INDEX tasks_assignee_idx ON public.tasks USING btree (assigned_to);
 CREATE INDEX tasks_board_idx ON public.tasks USING btree (board_id, status, updated_at DESC);
+CREATE INDEX tasks_due_scan_idx ON public.tasks USING btree (due_date) WHERE ((due_date IS NOT NULL) AND (archived_at IS NULL));
+CREATE UNIQUE INDEX tasks_external_key_idx ON public.tasks USING btree (external_key) WHERE (external_key IS NOT NULL);
 CREATE INDEX tasks_parent_idx ON public.tasks USING btree (parent_id);
 CREATE INDEX usage_events_affinity_idx ON public.usage_events USING btree (agent_model, affinity_key) WHERE (affinity_key IS NOT NULL);
 CREATE INDEX usage_events_agent_idx ON public.usage_events USING btree (agent_model, created_at DESC);
@@ -2420,6 +2524,7 @@ CREATE INDEX work_wait_agent_time ON public.work_wait USING btree (agent_model, 
 CREATE INDEX workbench_jobs_run_idx ON public.workbench_jobs USING btree (run_id) WHERE (run_id IS NOT NULL);
 CREATE UNIQUE INDEX workbench_permission_requests_one_open ON public.workbench_permission_requests USING btree (agent_id, host_id, permission) WHERE (status = ANY (ARRAY['pending'::text, 'awaiting_github'::text]));
 CREATE INDEX workspace_secrets_secret_folder_idx ON public.workspace_secrets USING btree (secret_folder_id);
+CREATE STATISTICS public.mcp_library_entries_url_stats ON (entry ->> 'url'::text) FROM public.mcp_library_entries;
 CREATE TRIGGER agent_coding_accounts_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_accounts FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
 CREATE TRIGGER agent_coding_blocks_rev AFTER INSERT OR DELETE OR UPDATE ON public.agent_coding_account_blocks FOR EACH ROW EXECUTE FUNCTION public.talaria_bump_coding_rev();
 CREATE TRIGGER app_settings_github_mirror AFTER INSERT OR UPDATE ON public.app_settings FOR EACH ROW WHEN ((new.key = 'github_config'::text)) EXECUTE FUNCTION public.talaria_github_setting_to_host();
@@ -2522,8 +2627,26 @@ ALTER TABLE ONLY public.board_members
     ADD CONSTRAINT board_members_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_members
     ADD CONSTRAINT board_members_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_notify_prefs
+    ADD CONSTRAINT board_notify_prefs_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_notify_prefs
+    ADD CONSTRAINT board_notify_prefs_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_statuses
     ADD CONSTRAINT board_statuses_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_sync_items
+    ADD CONSTRAINT board_sync_items_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_sync_items
+    ADD CONSTRAINT board_sync_items_sync_id_fkey FOREIGN KEY (sync_id) REFERENCES public.board_syncs(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.board_sync_items
+    ADD CONSTRAINT board_sync_items_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.board_syncs
+    ADD CONSTRAINT board_syncs_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.board_syncs
+    ADD CONSTRAINT board_syncs_connected_by_fkey FOREIGN KEY (connected_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.board_syncs
+    ADD CONSTRAINT board_syncs_disconnected_by_fkey FOREIGN KEY (disconnected_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.board_syncs
+    ADD CONSTRAINT board_syncs_paused_by_fkey FOREIGN KEY (paused_by) REFERENCES public.users(id) ON DELETE SET NULL;
 ALTER TABLE ONLY public.board_templates
     ADD CONSTRAINT board_templates_board_id_fkey FOREIGN KEY (board_id) REFERENCES public.boards(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.board_templates
@@ -2768,6 +2891,10 @@ ALTER TABLE ONLY public.secret_folders
     ADD CONSTRAINT secret_folders_owner_user_id_fkey FOREIGN KEY (owner_user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_activity
     ADD CONSTRAINT task_activity_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
+ALTER TABLE ONLY public.task_asked_exits
+    ADD CONSTRAINT task_asked_exits_asked_by_fkey FOREIGN KEY (asked_by) REFERENCES public.users(id) ON DELETE SET NULL;
+ALTER TABLE ONLY public.task_asked_exits
+    ADD CONSTRAINT task_asked_exits_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_coding_pins
     ADD CONSTRAINT task_coding_pins_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.agent_coding_accounts(id) ON DELETE CASCADE;
 ALTER TABLE ONLY public.task_coding_pins

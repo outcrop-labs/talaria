@@ -37,6 +37,7 @@
   import { EFFORT_LABEL, OFF_BOARD_STATUSES, PRIORITIES, PRIORITY_COLOR, TASK_STATUSES, pgNum, pgNumOr, taskTimeSpent, type Priority, type Task, type TaskStatus } from '@/lib/task-const'
   import { relativeTime } from '@/lib/fleet'
   import WorkPulse from './WorkPulse.svelte'
+  import RemoteStateChip from './RemoteStateChip.svelte'
   import { behindLine } from '@/lib/work-pulse'
   import {
     ALL_KEYS,
@@ -68,6 +69,7 @@
     canEdit = false,
     groupBy = 'status',
     showEmptyGroups = false,
+    remoteStates = {},
   }: {
     tasks: Task[]
     onOpen: (id: string) => void
@@ -77,6 +79,9 @@
     groupBy?: GroupByKey
     /** Status/priority grouping: render EVERY group (drop lanes included). */
     showEmptyGroups?: boolean
+    /** Ticket id → its ClickUp task's state, for synced tickets whose task is
+     *  no longer active there (lib/board-sync.ts). */
+    remoteStates?: Record<string, string>
   } = $props()
 
   const qc = useQueryClient()
@@ -343,6 +348,7 @@
     <span class="font-mono text-xs tracking-[0.05em] text-muted">{t.ticketRef ?? ''}</span>
   {:else if key === 'title'}
     <span class="font-sans text-fg">{t.title}</span>
+    <RemoteStateChip state={remoteStates[t.id]} class="ml-1.5 align-middle" />
   {:else if key === 'status'}
     <StatusPill {t} ctx={pctx(t)} />
   {:else if key === 'priority'}
@@ -429,7 +435,9 @@
                   </SortHeader>
                 </th>
               {/each}
-              <th class="w-8 py-1 pr-2 text-right">
+              <!-- py-0.5 around the 28px gear keeps the row at the other cells'
+                   height (py-2 around a 10px label). -->
+              <th class="w-9 py-0.5 pr-1 text-right">
                 <ColumnsMenu {visible} {order} onChangeVisible={updateCols} onChangeOrder={updateOrder} />
               </th>
             </tr>

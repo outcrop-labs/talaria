@@ -5,8 +5,8 @@
 // outbox (depth, age, breaker, what has been lost), what each GitHub App
 // installation has accepted (the record talaria-git-hosts keeps — never GitHub
 // itself), the agents given GitHub permissions it has not, a git token revoke
-// GitHub did not confirm, and stuck tickets on boards the requesting user can
-// access.
+// GitHub did not confirm, a granted repo an agent's git got no token for, and
+// stuck tickets on boards the requesting user can access.
 //
 // THE RULE THIS FILE IS FOR: anything whose failure mode is SILENCE has to be
 // asked here, because nothing else asks it. A dead container is obvious the
@@ -352,6 +352,13 @@ async fn compute_alerts_fresh(state: &AppState, user_id: &str) -> Vec<Alert> {
         match unconfirmed_revokes(pg).await {
             Ok(n) => alerts.extend(revoke_failed_alert(n)),
             Err(e) => tracing::warn!("[alerts] token revoke read failed: {e}"),
+        }
+        // A granted repo the git host gave an agent no token for: the push
+        // fails in a sandbox nobody is watching, and the agent's git was told
+        // why, which no admin otherwise hears.
+        match refused_credentials(pg).await {
+            Ok(rows) => alerts.extend(refused_credentials_alert(&rows)),
+            Err(e) => tracing::warn!("[alerts] refused git credential read failed: {e}"),
         }
     }
 
@@ -812,6 +819,12 @@ fn mcp_attention_alert(labels: &[String]) -> Option<Alert> {
 /// card lists each installation's permissions and has the Refresh.
 pub const GIT_HOSTS_HREF: &str = "/admin/git";
 
+/// Where an alert about what agents' GitHub tokens carry sends an admin:
+/// Agent policy → GitHub access, which lists every agent with its set and
+/// its tokens' state, and whose editor names, per permission, what the
+/// installation holds and where an owner accepts it on GitHub.
+pub const GITHUB_ACCESS_HREF: &str = "/admin/github";
+
 /// The GitHub App alerts, from the holdings record alone (`hosts`, as
 /// `recorded_holdings` reads it): one warning naming every installation with
 /// a permission change waiting for an owner of its account, and one naming
@@ -937,13 +950,13 @@ pub fn dormant_permissions_alert(
             format!("{n} agents hold GitHub permissions the installation has not accepted")
         },
         detail: format!(
-            "{}. An admin gave {} in Talaria, and the tokens of those repos carry the rest without {} until the GitHub App asks for {} and an owner of the account accepts the change on GitHub (Admin → Git hosts names each installation and where to accept it).",
+            "{}. An admin gave {} in Talaria, and the tokens of those repos carry the rest without {} until the GitHub App asks for {} and an owner of the account accepts the change on GitHub (Agent policy → GitHub access shows each agent's set beside what the installation holds, and where an owner accepts it).",
             each.join("; "),
             if each.len() == 1 { "it" } else { "them" },
             if each.len() == 1 { "it" } else { "them" },
             if each.len() == 1 { "it" } else { "them" }
         ),
-        href: GIT_HOSTS_HREF,
+        href: GITHUB_ACCESS_HREF,
     })
 }
 
@@ -978,6 +991,90 @@ pub fn revoke_failed_alert(n: i64) -> Option<Alert> {
             if n == 1 { "it" } else { "them" },
             if n == 1 { "it" } else { "they" },
             if n == 1 { "s" } else { "" }
+        ),
+        href: GIT_HOSTS_HREF,
+    })
+}
+
+/// One granted repo an agent's git got no token for in the last hour, and
+/// the git host's sentence (`git.credential_refused` rows, one per agent,
+/// host, repo and sentence).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedCredential {
+    /// The agent's display name, or its model when the agent is gone.
+    pub agent: String,
+    /// The git host's name, or its id when the host is gone.
+    pub host: String,
+    pub repo: String,
+    pub message: String,
+}
+
+/// The refusals of the last hour, newest first. The door records one per
+/// (agent, repo, sentence) per ten minutes, so this is a short list.
+async fn refused_credentials(pg: &sqlx::PgPool) -> Result<Vec<RefusedCredential>, sqlx::Error> {
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "select coalesce(d.display_name, a.actor), \
+                coalesce(h.name, a.after->>'host_id', ''), \
+                coalesce(a.after->>'repo', ''), coalesce(a.after->>'message', '') \
+         from audit_log a \
+         left join agent_defs d on d.id::text = a.target_id \
+         left join git_hosts h on h.id = a.after->>'host_id' \
+         where a.action = 'git.credential_refused' and a.created_at > now() - interval '1 hour' \
+         group by 1, 2, 3, 4 order by max(a.created_at) desc limit 20",
+    )
+    .fetch_all(pg)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(agent, host, repo, message)| RefusedCredential {
+            agent,
+            host,
+            repo,
+            message,
+        })
+        .collect())
+}
+
+/// How many refusals the alert names before it counts the rest.
+const REFUSALS_NAMED: usize = 5;
+
+/// The alert for granted repos an agent's git got no token for: which agents
+/// and repos, and the git host's own words (GitHub refused the mint, the
+/// token came back wider than asked, the installation holds none of the
+/// agent's set). None when there are none.
+pub fn refused_credentials_alert(rows: &[RefusedCredential]) -> Option<Alert> {
+    if rows.is_empty() {
+        return None;
+    }
+    let mut agents: Vec<&str> = rows.iter().map(|r| r.agent.as_str()).collect();
+    agents.sort_unstable();
+    agents.dedup();
+    let mut hosts: Vec<&str> = rows.iter().map(|r| r.host.as_str()).collect();
+    hosts.sort_unstable();
+    hosts.dedup();
+    // The host's own name when every refusal is on one host, so a Forgejo
+    // host's refusal is never called a GitHub token.
+    let token = match hosts.as_slice() {
+        [one] if !one.is_empty() => format!("{one} token"),
+        _ => "git token".to_string(),
+    };
+    let mut each: Vec<String> = rows
+        .iter()
+        .take(REFUSALS_NAMED)
+        .map(|r| format!("{} on {} ({}): {}", r.agent, r.repo, r.host, r.message))
+        .collect();
+    if rows.len() > REFUSALS_NAMED {
+        each.push(format!("and {} more", rows.len() - REFUSALS_NAMED));
+    }
+    Some(Alert {
+        severity: AlertSeverity::Warning,
+        title: match agents.as_slice() {
+            [one] => format!("{one} got no {token} for a granted repo"),
+            all => format!("{} agents got no {token} for a granted repo", all.len()),
+        },
+        detail: format!(
+            "In the last hour: {}. The agent's git was told the same, and its push or API call failed. Admin → Git hosts shows each host's connection, and for a GitHub App what each installation holds and where an owner accepts a permission; the audit trail (git.credential_refused) has each one.",
+            each.join("; ")
         ),
         href: GIT_HOSTS_HREF,
     })
@@ -1269,7 +1366,7 @@ mod tests {
             missing: wf.clone(),
             repos: repos.iter().map(|r| r.to_string()).collect(),
         };
-        let one = dormant_permissions_alert(&[dormant("a1", "Billy", &["acme/site"])]).unwrap();
+        let one = dormant_permissions_alert(&[dormant("a1", "Dev", &["acme/site"])]).unwrap();
         assert_eq!(
             one.severity,
             AlertSeverity::Info,
@@ -1281,13 +1378,20 @@ mod tests {
         );
         assert!(
             one.detail
-                .starts_with("Billy on GitHub: workflows:write (acme/site)."),
+                .starts_with("Dev on GitHub: workflows:write (acme/site)."),
             "{}",
             one.detail
         );
-        assert_eq!(one.href, "/admin/git");
+        // About what agents' tokens carry: it opens their GitHub access.
+        assert_eq!(one.href, "/admin/github");
+        assert!(
+            one.detail.contains("Agent policy → GitHub access")
+                && !one.detail.contains("Git hosts"),
+            "{}",
+            one.detail
+        );
         let two = dormant_permissions_alert(&[
-            dormant("a1", "Billy", &["acme/site"]),
+            dormant("a1", "Dev", &["acme/site"]),
             dormant("a2", "Ana", &["acme/app", "acme/api"]),
         ])
         .unwrap();
@@ -1320,6 +1424,55 @@ mod tests {
             "{}",
             three.detail
         );
+    }
+
+    #[test]
+    fn a_granted_repo_with_no_token_is_named_with_the_hosts_words() {
+        assert!(refused_credentials_alert(&[]).is_none());
+        let refused = |agent: &str, host: &str, repo: &str, message: &str| RefusedCredential {
+            agent: agent.into(),
+            host: host.into(),
+            repo: repo.into(),
+            message: message.into(),
+        };
+        let one = refused_credentials_alert(&[refused(
+            "Ana",
+            "GitHub",
+            "acme/site",
+            "GitHub minted a token for acme/site wider than Talaria asked for (it carries workflows:write, above the read asked for); it was revoked and never used",
+        )])
+        .unwrap();
+        assert_eq!(one.severity, AlertSeverity::Warning);
+        assert_eq!(one.title, "Ana got no GitHub token for a granted repo");
+        assert!(
+            one.detail
+                .contains("Ana on acme/site (GitHub): GitHub minted a token for acme/site wider"),
+            "{}",
+            one.detail
+        );
+        assert_eq!(one.href, GIT_HOSTS_HREF);
+        // A Forgejo host's refusal is called by its host's name, never GitHub.
+        let forge = refused_credentials_alert(&[refused(
+            "Dev",
+            "Forge",
+            "acme/app",
+            "the git host Forge has no usable login right now",
+        )])
+        .unwrap();
+        assert_eq!(forge.title, "Dev got no Forge token for a granted repo");
+        let many: Vec<RefusedCredential> = (0..7)
+            .map(|i| {
+                refused(
+                    if i % 2 == 0 { "Ana" } else { "Dev" },
+                    if i < 6 { "GitHub" } else { "Forge" },
+                    &format!("acme/r{i}"),
+                    "x",
+                )
+            })
+            .collect();
+        let two = refused_credentials_alert(&many).unwrap();
+        assert_eq!(two.title, "2 agents got no git token for a granted repo");
+        assert!(two.detail.contains("and 2 more"), "{}", two.detail);
     }
 
     #[test]
@@ -1420,5 +1573,125 @@ mod live {
         ] {
             sqlx::query(sql).bind(&ep).execute(&pg).await.unwrap();
         }
+    }
+
+    /// The refused-credential alert's read against the real trail: a
+    /// `git.credential_refused` row written the way the door writes it is
+    /// named with the agent's and the host's names, a gone agent by its
+    /// model and a gone host by its id, and a row older than an hour is not.
+    #[tokio::test]
+    #[ignore = "needs a migrated Postgres (DATABASE_URL)"]
+    async fn a_refused_git_credential_is_read_with_the_agents_and_hosts_names() {
+        let url = std::env::var("DATABASE_URL")
+            .expect("set DATABASE_URL (source ui/.env) to run the ignored live tests");
+        let pg = sqlx::PgPool::connect(&url).await.expect("connect");
+        let t = format!("alerts-refused-{}", now_ms());
+        let agent: String = sqlx::query_scalar(
+            "insert into agent_defs (slug, department, model, display_name, developer) \
+             values ($1, $1, $1, $2, true) returning id::text",
+        )
+        .bind(&t)
+        .bind(format!("Refused {t}"))
+        .fetch_one(&pg)
+        .await
+        .expect("the agent");
+        sqlx::query(
+            "insert into git_hosts (id, kind, name, base_url, auth) \
+             values ($1, 'github', $2, $3, '{}'::jsonb)",
+        )
+        .bind(&t)
+        .bind(format!("Host {t}"))
+        .bind(format!("https://{t}.example.invalid"))
+        .execute(&pg)
+        .await
+        .expect("the host");
+        let refused = |actor: &str, target: &str, host_id: &str, repo: &str, age: &str| {
+            let (pg, actor, target, host_id, repo, age) = (
+                pg.clone(),
+                actor.to_string(),
+                target.to_string(),
+                host_id.to_string(),
+                repo.to_string(),
+                age.to_string(),
+            );
+            async move {
+                // The after-data the door's `refused_after` writes.
+                sqlx::query(
+                    "insert into audit_log (actor, action, target_type, target_id, target_label, after, created_at) \
+                     values ($1, 'git.credential_refused', 'agent', $2, $3, \
+                             jsonb_build_object('source', 'git_host', 'host', 'github.com', \
+                               'host_id', $4::text, 'repo', $5::text, 'kind', 'refused', \
+                               'message', $6::text, \
+                               'asked', '{\"contents\":\"write\",\"metadata\":\"read\"}'::jsonb, \
+                               'shortfall', '{}'::jsonb), \
+                             now() - $7::interval)",
+                )
+                .bind(&actor)
+                .bind(&target)
+                .bind(format!("{host_id}:{repo}"))
+                .bind(&host_id)
+                .bind(&repo)
+                .bind(format!("GitHub refused a token for {repo}"))
+                .bind(age)
+                .execute(&pg)
+                .await
+                .expect("the row");
+            }
+        };
+        let gone_agent = "00000000-0000-4000-8000-00000000a1e7";
+        refused(&t, &agent, &t, "acme/one", "1 minute").await;
+        refused(&t, &agent, &format!("{t}-gone"), "acme/two", "2 minutes").await;
+        refused(
+            &format!("{t}-model"),
+            gone_agent,
+            &t,
+            "acme/three",
+            "3 minutes",
+        )
+        .await;
+        refused(&t, &agent, &t, "acme/old", "2 hours").await;
+
+        let rows = refused_credentials(&pg).await.expect("the read");
+        let mine: Vec<&RefusedCredential> = rows
+            .iter()
+            .filter(|r| r.repo.starts_with("acme/") && r.message.starts_with("GitHub refused"))
+            .filter(|r| r.agent.contains(&t) || r.host.contains(&t))
+            .collect();
+        let named = |repo: &str| mine.iter().find(|r| r.repo == repo).copied();
+        let one = named("acme/one").expect("the newest row");
+        assert_eq!(one.agent, format!("Refused {t}"));
+        assert_eq!(one.host, format!("Host {t}"));
+        assert_eq!(one.message, "GitHub refused a token for acme/one");
+        assert_eq!(
+            named("acme/two").map(|r| r.host.clone()),
+            Some(format!("{t}-gone")),
+            "a gone host by its id"
+        );
+        assert_eq!(
+            named("acme/three").map(|r| r.agent.clone()),
+            Some(format!("{t}-model")),
+            "a gone agent by its model"
+        );
+        assert!(named("acme/old").is_none(), "older than an hour: {mine:?}");
+        assert_eq!(mine[0].repo, "acme/one", "newest first: {mine:?}");
+        let alert = refused_credentials_alert(&rows).expect("the alert");
+        assert_eq!(alert.href, GIT_HOSTS_HREF);
+
+        sqlx::query("delete from audit_log where actor in ($1, $2)")
+            .bind(&t)
+            .bind(format!("{t}-model"))
+            .execute(&pg)
+            .await
+            .unwrap();
+        sqlx::query("delete from agent_defs where id = $1::uuid")
+            .bind(&agent)
+            .execute(&pg)
+            .await
+            .unwrap();
+        sqlx::query("delete from git_hosts where id = $1")
+            .bind(&t)
+            .execute(&pg)
+            .await
+            .unwrap();
     }
 }

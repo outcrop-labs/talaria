@@ -6,6 +6,7 @@
   import EmptyState from '@/components/ui/EmptyState.svelte'
   import IconButton from '@/components/ui/IconButton.svelte'
   import Popover from '@/components/ui/Popover.svelte'
+  import { COG, SettingsGlyph } from '@/components/ui/settings-cog'
   import Tabs from '@/components/ui/Tabs.svelte'
   import {
     browserNotifyPrefOff,
@@ -388,12 +389,15 @@
       >
         View all
       </a>
+      <!-- The door to notification preferences: the one gear beside a label
+           that says whose settings, on a 28px target. -->
       <a
         href={p('/settings/:tab', { params: { tab: 'notifications' } })}
         onclick={close}
-        class="rounded-md px-1.5 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors duration-[120ms] hover:text-fg"
+        class="flex h-7 items-center gap-1.5 rounded-md px-1.5 text-sm text-muted transition-colors duration-[120ms] hover:text-fg focus:text-fg"
+        data-bell-settings
       >
-        Settings
+        <SettingsGlyph size={COG.sm} />Notification settings
       </a>
     </div>
     </div>

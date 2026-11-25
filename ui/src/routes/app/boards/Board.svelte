@@ -2,7 +2,7 @@
   import { untrack } from 'svelte'
   import { searchParams } from 'sv-router'
   import { useQueryClient } from '@tanstack/svelte-query'
-  import { Archive, CalendarRange, Layers, LayoutGrid, List, Plus, Settings2, Workflow } from '@lucide/svelte'
+  import { Archive, CalendarRange, Layers, LayoutGrid, List, Plus, Workflow } from '@lucide/svelte'
   import { navigate, route } from '@/router'
   import Skeleton from '@/components/ui/Skeleton.svelte'
   import Avatar from '@/components/ui/Avatar.svelte'
@@ -13,6 +13,11 @@
   import Gantt from '@/components/board/Gantt.svelte'
   import Workchains from '@/components/board/Workchains.svelte'
   import BoardSettingsModal from '@/components/board/BoardSettingsModal.svelte'
+  import BoardSyncChip from '@/components/board/BoardSyncChip.svelte'
+  import BoardNotifyMenu from '@/components/board/BoardNotifyMenu.svelte'
+  import { opensOn, settingsTabOf, type SettingsTab } from '@/components/board/board-settings'
+  import SavedViewSettings from '@/components/board/SavedViewSettings.svelte'
+  import SettingsButton from '@/components/ui/SettingsButton.svelte'
   import FilterBar from '@/components/board/FilterBar.svelte'
   import { BOARD_MENU_GROUP, filtersActive, type BoardFilters } from '@/components/board/filter-bar'
   import EmptyState from '@/components/ui/EmptyState.svelte'
@@ -48,6 +53,7 @@
   import { confirm, prompt } from '@/components/ui/confirm.svelte'
   import { useSession } from '@/lib/session'
   import { useBoardStatuses, type BoardStatus } from '@/lib/statuses'
+  import { useBoardSync } from '@/lib/board-sync'
   import type { Task } from '@/lib/task-const'
   import { isClosedStatus } from '@/components/board/field-pills'
   import { readFlag, readText, writeFlag, writeText } from '@/lib/persist'
@@ -69,6 +75,12 @@
     /** Workchains lens: which chain fills the canvas. A chain is a thing you
      *  send someone, so it is a link, not component state. */
     chain?: string
+    /** Board settings, open on this tab (board-settings.ts) — so a door such
+     *  as the sync chip's "Sync settings" or the bell's "Notification
+     *  settings" is a link, and a shared URL opens the same tab. A viewer's
+     *  modal holds only their own Notifications tab, so a link to any other
+     *  tab opens nothing for them (`opensOn`). */
+    settings?: SettingsTab
   }
 
   const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined)
@@ -92,6 +104,7 @@
       due: sp('due'),
       archived: searchParams.get('archived') === true,
       chain: sp('chain'),
+      settings: settingsTabOf(sp('settings')),
     }
     return {
       ...(s.view === 'list' || s.view === 'gantt' || s.view === 'workchains' ? { view: s.view } : {}),
@@ -107,6 +120,7 @@
       ...(['overdue', 'today', 'week', 'none'].includes(s.due as string) ? { due: s.due as BoardSearch['due'] } : {}),
       ...(s.archived === true ? { archived: true } : {}),
       ...(str(s.chain) ? { chain: str(s.chain) } : {}),
+      ...(s.settings ? { settings: s.settings as SettingsTab } : {}),
     }
   })
 
@@ -182,6 +196,12 @@
       : (fleet?.agents ?? []).filter((a) => boardCfg?.models.includes(a.id)),
   )
   useBoardLive(() => (board ? boardId : null))
+  // The ClickUp sync, when the board has one: the header chip, and the
+  // remote-state marks on cards and rows (a task archived, deleted or moved in
+  // ClickUp). Any member may read it.
+  const syncQuery = useBoardSync(() => (board ? boardId : null))
+  const boardSync = $derived(syncQuery.data?.sync ?? null)
+  const remoteStates = $derived(boardSync?.remoteStates ?? {})
 
   const qc = useQueryClient()
   // Per-user preference (localStorage): render every status/priority group
@@ -197,7 +217,6 @@
   const viewsList = listQuery(useBoardViews(() => (board ? boardId : null)), { title: 'Could not load your saved views', variant: 'inline' })
   const savedViews = $derived(viewsList.rows)
   const menu = useContextMenu()
-  let settingsOpen = $state(false)
   const view = $derived(search.view ?? 'board')
   const groupBy: GroupByKey = $derived(search.group ?? 'status')
   const q = $derived(search.q ?? '')
@@ -257,33 +276,65 @@
     await invalidateViews()
     if (r.view.id) setSearch({ v: r.view.id })
   }
-  const viewTabContextMenu = (e: MouseEvent, sv: { id: string; name: string; config: BoardViewConfig }) =>
+  type SavedView = { id: string; name: string; config: BoardViewConfig }
+  // A saved view's three settings, written once: the tab's right-click menu
+  // and the gear beside it (SavedViewSettings) both call these. Saving,
+  // renaming and deleting a view is an owner/editor write (the api answers a
+  // viewer 403), so neither door is offered to a viewer.
+  const updateViewToCurrent = (sv: SavedView) =>
+    void updateBoardView(boardId, sv.id, { config: currentConfig() })
+      .then(async () => {
+        await invalidateViews()
+        // The board now shows exactly what the view saves: its tab lights again.
+        setSearch({ v: sv.id })
+      })
+      .catch(viewFailure('Saving the view'))
+  const renameView = (sv: SavedView, name: string) =>
+    void updateBoardView(boardId, sv.id, { name }).then(invalidateViews).catch(viewFailure('Renaming the view'))
+  const promptRenameView = async (sv: SavedView) => {
+    const name = await prompt({ title: 'Rename view', message: sv.name, confirmLabel: 'Rename' })
+    if (name?.trim()) renameView(sv, name.trim())
+  }
+  const deleteView = async (sv: SavedView) => {
+    if (!(await confirm({ title: `Delete view "${sv.name}"?`, message: 'The filters it saved are lost; tickets are untouched.', danger: true }))) return
+    await deleteBoardView(boardId, sv.id).catch(viewFailure('Deleting the view'))
+    await invalidateViews()
+    if (lastViewId === sv.id) lastViewId = null
+    if (search.v === sv.id) setSearch({ v: undefined })
+  }
+  const viewTabContextMenu = (e: MouseEvent, sv: SavedView) =>
     menu.openMenu(e, [
-      {
-        label: 'Update to current filters',
-        onSelect: () => void updateBoardView(boardId, sv.id, { config: currentConfig() }).then(invalidateViews).catch(viewFailure('Saving the view')),
-      },
-      {
-        label: 'Rename',
-        onSelect: () =>
-          void (async () => {
-            const name = await prompt({ title: 'Rename view', message: sv.name, confirmLabel: 'Rename' })
-            if (name?.trim()) await updateBoardView(boardId, sv.id, { name: name.trim() }).then(invalidateViews).catch(viewFailure('Renaming the view'))
-          })(),
-      },
+      { label: 'Update to current filters', onSelect: () => updateViewToCurrent(sv) },
+      { label: 'Rename', onSelect: () => void promptRenameView(sv) },
       'sep',
-      {
-        label: 'Delete view',
-        danger: true,
-        onSelect: () =>
-          void (async () => {
-            if (!(await confirm({ title: `Delete view "${sv.name}"?`, message: 'The filters it saved are lost; tickets are untouched.', danger: true }))) return
-            await deleteBoardView(boardId, sv.id).catch(viewFailure('Deleting the view'))
-            await invalidateViews()
-            if (search.v === sv.id) setSearch({ v: undefined })
-          })(),
-      },
+      { label: 'Delete view', danger: true, onSelect: () => void deleteView(sv) },
     ])
+
+  // WHICH VIEW THE GEAR SITS BESIDE. The applied view, and — once a filter
+  // changes and the tab un-highlights (setSearch drops `v`) — still the view
+  // the person last applied on this board, because that is exactly when
+  // "Update to current filters" has something to save. Another board starts
+  // with none.
+  let lastViewId = $state<string | null>(null)
+  $effect(() => {
+    void boardId
+    lastViewId = null
+  })
+  $effect(() => {
+    if (search.v) lastViewId = search.v
+  })
+  const settingsViewId = $derived(search.v ?? lastViewId)
+  /** The same view whatever order the URL rebuilt it in, and whether or not
+   *  it spells the defaults (`currentConfig` leaves board/status out). */
+  const sameConfig = (a: BoardViewConfig, b: BoardViewConfig) => {
+    const canon = (c: BoardViewConfig) =>
+      JSON.stringify(
+        Object.entries(c)
+          .filter(([k, v]) => v !== undefined && v !== '' && !(k === 'view' && v === 'board') && !(k === 'group' && v === 'status'))
+          .sort(([x], [y]) => (x < y ? -1 : 1)),
+      )
+    return canon(a) === canon(b)
+  }
 
   // The label registry powers the facet (colored); names still filter tags.
   const boardLabels = $derived(registryLabels)
@@ -433,9 +484,9 @@
         {@const TypeIcon = sv.config.view === 'workchains' ? Workflow : sv.config.view === 'gantt' ? CalendarRange : sv.config.view === 'list' ? List : LayoutGrid}
         <button
           onclick={() => applyView(sv)}
-          oncontextmenu={(e) => viewTabContextMenu(e, sv)}
+          oncontextmenu={canEdit ? (e) => viewTabContextMenu(e, sv) : undefined}
           class={cn(
-            'flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
+            'flex min-h-6 items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] transition-colors',
             focusGold,
             search.v === sv.id
               ? 'border-[var(--theme-accent-border)] bg-raised text-fg'
@@ -445,13 +496,23 @@
           <TypeIcon size={12} class={cn('shrink-0', search.v === sv.id ? 'text-accent' : 'opacity-70')} />
           {sv.name}
         </button>
+        {#if canEdit && sv.id === settingsViewId}
+          <SavedViewSettings
+            viewId={sv.id}
+            name={sv.name}
+            dirty={!sameConfig(currentConfig(), sv.config)}
+            onRename={(name) => renameView(sv, name)}
+            onUpdate={() => updateViewToCurrent(sv)}
+            onDelete={() => void deleteView(sv)}
+          />
+        {/if}
       {/each}
       {#if canEdit}
         <button
           onclick={() => void saveCurrentAsView()}
           title="Save the current layout, grouping, and filters as a named view"
           class={cn(
-            'flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg',
+            'flex min-h-6 items-center gap-1 rounded-md px-2 py-1 font-mono text-[10px] uppercase tracking-[0.05em] text-muted transition-colors hover:text-fg',
             focusGold,
           )}
         >
@@ -483,16 +544,20 @@
           </span>
         {/if}
       </div>
+      {#if boardSync}
+        <BoardSyncChip
+          {boardId}
+          role={board.role}
+          sync={boardSync}
+          onSettings={canEdit ? () => setSearch({ settings: 'sync' }) : undefined}
+        />
+      {/if}
+      <!-- What this person hears about the board: every role, a viewer
+           included. Value-faced (its glyph is the level); its menu ends in
+           the Notifications tab. The gear stays the owners' and editors'. -->
+      <BoardNotifyMenu {boardId} onSettings={() => setSearch({ settings: 'notifications' })} />
       {#if canEdit}
-        <button
-          type="button"
-          onclick={() => (settingsOpen = true)}
-          class="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted transition-colors dither-fill hover:text-fg"
-          title="Board settings"
-          aria-label="Board settings"
-        >
-          <Settings2 size={17} />
-        </button>
+        <SettingsButton size="md" label="Board settings" aria-haspopup="dialog" onclick={() => setSearch({ settings: 'general' })} />
       {/if}
       <ContextMenu {menu} />
     </div>
@@ -554,7 +619,7 @@
 
     <div class="relative min-h-0 min-w-0 flex-1">
       {#if view === 'board'}
-        <Kanban {board} {tasks} onOpen={openTicket} {members} />
+        <Kanban {board} {tasks} onOpen={openTicket} {members} {remoteStates} />
       {:else if view === 'gantt'}
         <Gantt {board} {tasks} onOpen={openTicket} />
       {:else if view === 'workchains'}
@@ -578,14 +643,16 @@
           }}
         />
       {:else}
-        <BoardList {tasks} onOpen={openTicket} {boardId} {members} {canEdit} {groupBy} {showEmptyGroups} />
+        <BoardList {tasks} onOpen={openTicket} {boardId} {members} {canEdit} {groupBy} {showEmptyGroups} {remoteStates} />
       {/if}
     </div>
 
     <BoardSettingsModal
       {board}
-      open={settingsOpen}
-      onClose={() => (settingsOpen = false)}
+      open={opensOn(board.role, search.settings)}
+      initialTab={search.settings}
+      onTab={(t) => setSearch({ settings: t })}
+      onClose={() => setSearch({ settings: undefined })}
       onArchived={() => void navigate('/boards')}
       onDeleted={() => void navigate('/boards')}
     />

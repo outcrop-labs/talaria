@@ -16,7 +16,7 @@ use talaria_body::{
     optional_string_array_member, optional_uuid_member, parse, string_member,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_mentions::{MentionOpts, MentionSender, Mentionee, notify_mentions_with};
+use talaria_mentions::{MentionOpts, MentionSender, Mentionee, TicketScope, notify_mentions_with};
 use talaria_notify::NotifyDeps;
 use talaria_session::require_user;
 use talaria_state::AppState;
@@ -263,6 +263,10 @@ pub async fn post(
         tags: &tags,
         created_by: &actor,
         status: status.as_deref(),
+        // The door below files @mentions from the raw description.
+        mention_text: raw_description.as_deref(),
+        external_key: None,
+        quiet: false,
     };
     let deps = talaria_tasks::TaskDeps::from_route(state.pg.clone(), state.redis().await.ok());
     let task = match create_task(&deps, &input).await {
@@ -315,11 +319,13 @@ pub async fn post(
                 })
                 .collect();
             let href = format!("/boards/{board_id}/{task_id}");
+            // Each mentioned person's setting for the board decides.
             let opts = MentionOpts {
                 entity: Some(talaria_notify::NotifyEntity::new(
                     talaria_notify::entity::TASK,
                     task_id.as_str(),
                 )),
+                ticket: Some(TicketScope::new(board_id.as_str(), task_id.as_str())),
                 ..Default::default()
             };
             notify_mentions_with(

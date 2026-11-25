@@ -20,3 +20,5 @@ talaria-retrieval-embed = { workspace = true }
 talaria-retrieval-index = { workspace = true }
 talaria-retrieval-qdrant = { workspace = true }
 talaria-retrieval-sources = { workspace = true }
+talaria-teams = { workspace = true }
+talaria-users = { workspace = true }

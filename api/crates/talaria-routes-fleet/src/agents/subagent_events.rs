@@ -24,8 +24,11 @@
 //
 // ADDRESSED BY CONVERSATION. Both hooks carry `parentSessionId`, and for a
 // pinned agent that session id IS the conversation the parent is speaking
-// in; the chip lands there and nowhere else. A body without one is served
-// only while exactly one turn could be meant — otherwise a 409 that says so.
+// in; on the completions arm it is the `api-…` session the parent's chat
+// turn recorded against its conversation (`talaria_chips::session_hint`).
+// Either way the chip lands there and nowhere else. A body without one is
+// served only while exactly one turn could be meant — otherwise a 409 that
+// says so.
 //
 // THE TRUST BOUNDARY IS THE AGENT, NOT THE PLUGIN: the key this door takes
 // is readable from the container's own terminal, so a model can post a
@@ -201,7 +204,12 @@ pub async fn post(
             .ok()
             .and_then(|principal| principal.owner_user_id);
     let redis = state.redis().await.ok();
-    let hint = talaria_chips::conversation_hint(&parsed);
+    // The parent's conversation: its UUID session, or the `api-…` session
+    // its chat turn recorded (`session_hint`).
+    let hint = match talaria_chips::session_hint(&state.pg, &caller.model, &parsed).await {
+        Ok(hint) => hint,
+        Err(e) => return Ok(internal("[subagent-events] session lookup failed", e)),
+    };
     match talaria_chips::surface_tool_chips_in(
         &state.pg,
         redis,

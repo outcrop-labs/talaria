@@ -8,29 +8,33 @@
 // starts org-visible — stamped to the human the agent answers to (the
 // attribution ladder), so a person governs it instead of an allow-list.
 
+use std::collections::{HashMap, HashSet};
+
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-use talaria_agent_auth::{AgentSubject, agent_caller};
+use crate::files::artifacts_id::{land_document_chip, slim};
+use talaria_agent_auth::{AgentCaller, AgentSubject, agent_caller, iso_to_epoch_ms};
 use talaria_api_facades::fleet::describe_agent;
 use talaria_api_facades::kb::perms::{
-    EditorGrant, ITEM_ARTIFACT, can_read, can_read_agent, granted_item_ids,
-    granted_item_ids_for_agent, set_editors,
+    EditorGrant, ITEM_ARTIFACT, can_read, granted_item_ids, set_editors,
 };
+use talaria_artifacts::agent_access::agent_readable;
 use talaria_artifacts::{
-    AGENT_CATEGORIES, Artifact, SaveArtifactPatch, agent_category_folder, create_artifact,
-    list_artifacts, named_root_folder, save_artifact,
+    AGENT_CATEGORIES, Artifact, ArtifactHead, ArtifactMeta, SaveArtifactPatch,
+    agent_category_folder, create_artifact, guarded, list_artifact_meta, list_artifacts,
+    list_artifacts_since, named_root_folder, save_artifact,
 };
 use talaria_audit::{AuditEntry, log_audit, spawn_audit};
 use talaria_body::{
     optional_enum_member, optional_max_string_member, parse, too_big_msg, zod_type_name,
 };
 use talaria_error::{house_error, internal, object_or_400};
-use talaria_session::{actor_of, require_perm, require_user, who_of};
+use talaria_session::{SessionUser, actor_of, require_perm, require_user, who_of};
 use talaria_state::AppState;
 
 struct Body {
@@ -79,74 +83,141 @@ fn parse_body(obj: &serde_json::Map<String, Value>) -> Result<Body, String> {
     Ok(parsed)
 }
 
-pub async fn get(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, Response> {
-    let caller = agent_caller(&state.pg, &headers).await?;
-    if let Some(caller) = caller {
-        let name = caller.model.clone();
-        // The LIST must answer the same question the single-artifact GET
-        // answers: a personal assistant reads its owner's private artifacts
-        // too. Without this arm the two planes disagreed — the GET opened
-        // what the browser's own listing never showed.
-        let owner = match talaria_users::assistant_owner_for(
-            &state.pg,
-            &AgentSubject::Caller(caller),
-        )
-        .await
-        {
-            Ok(o) => o,
-            Err(e) => return Ok(internal("[artifacts] owner lookup failed", e)),
-        };
-        let granted = match granted_item_ids_for_agent(&state.pg, ITEM_ARTIFACT, &name).await {
-            Ok(g) => g,
-            Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
-        };
-        let artifacts = match list_artifacts(&state.pg).await {
-            Ok(a) => a,
-            Err(e) => return Ok(internal("[artifacts] list failed", e)),
-        };
-        // Agents see org/public artifacts, ones they've been granted, and —
-        // for a personal assistant — the owner's own private ones. `&[]`
-        // grants here is right: the granted-set clause above already covers
-        // grants, so can_read_agent is asked only its owner arm.
-        let artifacts: Vec<&Artifact> = artifacts
+/// The list's two optional narrowings, read from the query string. Absent
+/// and empty are the same query, and neither changes what a viewer may see:
+///   since=<ISO instant>  only artifacts updated at or after it
+///   fields=heads         every column but the body
+/// The web Inbox asks for both (its Files cards are today's documents, by
+/// title); the Files browser and KB attachments ask for neither.
+#[derive(Debug, Default, PartialEq)]
+struct ListQuery {
+    since_ms: Option<i64>,
+    heads: bool,
+}
+
+fn list_query(q: &HashMap<String, String>) -> Result<ListQuery, String> {
+    let since_ms = match q.get("since").map(String::as_str) {
+        None | Some("") => None,
+        Some(s) => Some(iso_to_epoch_ms(s).ok_or_else(|| {
+            format!("since must be an ISO time like 2026-11-20T08:00:00.000Z, not {s:?}")
+        })?),
+    };
+    let heads = match q.get("fields").map(String::as_str) {
+        None | Some("") => false,
+        Some("heads") => true,
+        Some(other) => return Err(format!("fields must be heads, not {other:?}")),
+    };
+    Ok(ListQuery { since_ms, heads })
+}
+
+/// Who is listing, and what the read filter needs of them.
+enum Viewer {
+    /// An agent: the batch agent read rule (`agent_readable`).
+    Agent(AgentCaller),
+    /// A person: their grants, then the KB read rule.
+    Person {
+        id: String,
+        who: Option<String>,
+        granted: HashSet<String>,
+    },
+}
+
+/// The rows `viewer` may read, in their order. The LIST must answer the same
+/// question the single-artifact GET answers: for an agent, org/public
+/// artifacts, ones granted to it or a team it is on, and — for a personal
+/// assistant — its owner's own private ones (talaria-artifacts' batch rule,
+/// not a copy of it); for a person, a grant or the read rule. Whole rows and
+/// heads go through the same filter, by their head.
+async fn readable<T>(
+    pg: &sqlx::PgPool,
+    viewer: &Viewer,
+    rows: Vec<T>,
+    head: impl Fn(&T) -> ArtifactHead,
+) -> Result<Vec<T>, Response> {
+    let heads: Vec<ArtifactHead> = rows.iter().map(head).collect();
+    let keep: Vec<bool> = match viewer {
+        Viewer::Agent(caller) => {
+            let ok = agent_readable(pg, caller, &heads)
+                .await
+                .map_err(|e| internal("[artifacts] agent read check failed", e))?;
+            heads.iter().map(|h| ok.contains(&h.id)).collect()
+        }
+        Viewer::Person { id, who, granted } => heads
             .iter()
-            .filter(|a| {
-                a.visibility != "private"
-                    || granted.contains(&a.id)
-                    || can_read_agent(
-                        &talaria_artifacts::guarded(a),
-                        &name,
-                        owner.as_deref(),
-                        &[],
-                        &[],
-                    )
+            .map(|h| {
+                granted.contains(&h.id) || can_read(&h.guarded, Some(id), who.as_deref(), &[], &[])
             })
-            .collect();
-        return Ok(Json(json!({ "artifacts": artifacts })).into_response());
+            .collect(),
+    };
+    Ok(rows
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(r, k)| k.then_some(r))
+        .collect())
+}
+
+fn whole_head(a: &Artifact) -> ArtifactHead {
+    ArtifactHead {
+        id: a.id.clone(),
+        kind: a.kind.clone(),
+        title: a.title.clone(),
+        guarded: guarded(a),
     }
-    let user = require_user(&state, &headers).await?;
-    let who = who_of(&user);
-    let granted = match granted_item_ids(&state.pg, ITEM_ARTIFACT, &user.id).await {
-        Ok(g) => g,
-        Err(e) => return Ok(internal("[artifacts] grants read failed", e)),
+}
+
+/// A signed-in person as the read filter sees them: their grants, and the
+/// author string older rows were stamped with.
+async fn person_viewer(pg: &sqlx::PgPool, user: &SessionUser) -> Result<Viewer, Response> {
+    let granted = granted_item_ids(pg, ITEM_ARTIFACT, &user.id)
+        .await
+        .map_err(|e| internal("[artifacts] grants read failed", e))?;
+    Ok(Viewer::Person {
+        id: user.id.clone(),
+        who: who_of(user),
+        granted,
+    })
+}
+
+/// The list `viewer` may read, narrowed by `query` — the answer's `artifacts`
+/// once the caller is known.
+async fn list_for(
+    pg: &sqlx::PgPool,
+    viewer: &Viewer,
+    query: &ListQuery,
+) -> Result<Value, Response> {
+    let failed = |e: sqlx::Error| internal("[artifacts] list failed", e);
+    if query.heads {
+        let rows = list_artifact_meta(pg, query.since_ms)
+            .await
+            .map_err(failed)?;
+        return Ok(json!(readable(pg, viewer, rows, ArtifactMeta::head).await?));
+    }
+    let rows = match query.since_ms {
+        Some(ms) => list_artifacts_since(pg, ms).await,
+        None => list_artifacts(pg).await,
+    }
+    .map_err(failed)?;
+    Ok(json!(readable(pg, viewer, rows, whole_head).await?))
+}
+
+// doc: The artifacts the caller may read, newest first. Two optional
+// doc: narrowings, neither of which widens what a caller sees:
+// doc: `?since=<ISO instant>` keeps those updated at or after it, and
+// doc: `?fields=heads` drops the body. A malformed value is a 400.
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Result<Response, Response> {
+    let viewer = match agent_caller(&state.pg, &headers).await? {
+        Some(caller) => Viewer::Agent(caller),
+        None => person_viewer(&state.pg, &require_user(&state, &headers).await?).await?,
     };
-    let artifacts = match list_artifacts(&state.pg).await {
-        Ok(a) => a,
-        Err(e) => return Ok(internal("[artifacts] list failed", e)),
+    let query = match list_query(&q) {
+        Ok(query) => query,
+        Err(msg) => return Ok(house_error(StatusCode::BAD_REQUEST, &msg)),
     };
-    let artifacts: Vec<&Artifact> = artifacts
-        .iter()
-        .filter(|a| {
-            granted.contains(&a.id)
-                || can_read(
-                    &talaria_artifacts::guarded(a),
-                    Some(&user.id),
-                    who.as_deref(),
-                    &[],
-                    &[],
-                )
-        })
-        .collect();
+    let artifacts = list_for(&state.pg, &viewer, &query).await?;
     Ok(Json(json!({ "artifacts": artifacts })).into_response())
 }
 
@@ -275,7 +346,14 @@ pub async fn post(
             Some(artifact.id.clone()),
             Some(json!({ "title": artifact.title, "kind": artifact.kind })),
         );
-        return Ok(Json(json!({ "artifact": updated.unwrap_or(artifact) })).into_response());
+        let created = updated.unwrap_or(artifact);
+        // THE NEW FILE JOINS THE SESSION, and the agent hears what an edit
+        // tells it: the chip lands from here on the live turn, and the
+        // answer leaves the body out (`slim`) — the agent just wrote it, and
+        // a body-first answer lost its id to the plugin's 4000-char cut, so
+        // the tool event could not address the chip to its conversation.
+        land_document_chip(&state, &name, &created, None);
+        return Ok(Json(json!({ "artifact": slim(&created) })).into_response());
     }
 
     let user = require_perm(&state, &headers, "artifacts.create").await?;
@@ -334,3 +412,65 @@ pub async fn post(
     });
     Ok(Json(json!({ "artifact": updated.unwrap_or(artifact) })).into_response())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn q(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn no_narrowing_is_the_whole_list() {
+        assert_eq!(list_query(&q(&[])), Ok(ListQuery::default()));
+        // Absent and empty are the same query.
+        assert_eq!(
+            list_query(&q(&[("since", ""), ("fields", "")])),
+            Ok(ListQuery::default())
+        );
+        // A parameter the list does not know is ignored, as it always was.
+        assert_eq!(list_query(&q(&[("folder", "x")])), Ok(ListQuery::default()));
+    }
+
+    #[test]
+    fn since_takes_the_instant_a_browser_writes() {
+        // `new Date(y, m, d).toISOString()` — the reader's local midnight in UTC.
+        assert_eq!(
+            list_query(&q(&[
+                ("since", "2026-11-20T08:00:00.000Z"),
+                ("fields", "heads")
+            ])),
+            Ok(ListQuery {
+                since_ms: Some(1_795_161_600_000),
+                heads: true,
+            })
+        );
+        assert_eq!(
+            list_query(&q(&[("since", "2026-11-20T08:00:00Z")])).map(|l| l.since_ms),
+            Ok(Some(1_795_161_600_000))
+        );
+    }
+
+    #[test]
+    fn a_bad_narrowing_is_refused_not_ignored() {
+        for bad in [
+            "yesterday",
+            "2026-11-20",
+            "1795680000000",
+            "2026-13-01T00:00:00Z",
+        ] {
+            let err = list_query(&q(&[("since", bad)])).unwrap_err();
+            assert!(err.starts_with("since must be an ISO time"), "{bad}: {err}");
+        }
+        let err = list_query(&q(&[("fields", "body")])).unwrap_err();
+        assert_eq!(err, r#"fields must be heads, not "body""#);
+    }
+}
+
+#[cfg(test)]
+#[path = "artifacts_live.rs"]
+mod artifacts_live;

@@ -28,11 +28,15 @@
     tasks,
     onOpen,
     members = [],
+    remoteStates = {},
   }: {
     board: Board
     tasks: Task[]
     onOpen: (taskId: string) => void
     members?: BoardMember[]
+    /** Ticket id → its ClickUp task's state, for synced tickets whose task is
+     *  no longer active there (lib/board-sync.ts). */
+    remoteStates?: Record<string, string>
   } = $props()
 
   const qc = useQueryClient()
@@ -196,6 +200,7 @@
               >
                 <KanbanCard
                   task={t}
+                  remoteState={remoteStates[t.id]}
                   session={working(t.id)}
                   wait={queued(t.id)}
                   receivedAt={work.dataUpdatedAt}

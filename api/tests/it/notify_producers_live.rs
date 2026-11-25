@@ -546,7 +546,13 @@ async fn status_moves_coalesce_quietly_and_the_creator_hears_them() {
         "task",
     );
     let href = format!("/boards/{board}/{task}");
-    for status in ["assigned", "in_progress", "assigned", "in_progress"] {
+    // Each move's fan-out is detached, so moves fired back to back land in
+    // any order, and the body's "now …" is whichever landed last — the
+    // product promises only that the count is the row's own (the concurrent
+    // test below races for exactly that). So each move waits for its own
+    // write before the next is made: serialised, the last move's words are
+    // the last word.
+    for (n, status) in (1..).zip(["assigned", "in_progress", "assigned", "in_progress"]) {
         ok(
             &state,
             "PUT",
@@ -555,13 +561,16 @@ async fn status_moves_coalesce_quietly_and_the_creator_hears_them() {
             json!({ "status": status }),
         )
         .await;
+        assert!(
+            eventually!(
+                rows(&state, &bob, "task-status", &href)
+                    .await
+                    .first()
+                    .is_some_and(|r| r.count == n)
+            ),
+            "move {n} ({status}) lands in the creator's row before the next"
+        );
     }
-    assert!(eventually!(
-        rows(&state, &bob, "task-status", &href)
-            .await
-            .first()
-            .is_some_and(|r| r.count == 4)
-    ));
     let r = rows(&state, &bob, "task-status", &href).await;
     assert_eq!(r.len(), 1, "the creator hears the moves, once");
     assert_eq!(r[0].body, "Moved 4 times — now in progress");
