@@ -355,10 +355,19 @@ install, because an install trusts only the pubkey it was built with, and
 the plugin has no second key to fall back on. The first release signed by a
 new key fails Update on every older copy ("The download did not match
 Talaria's signature"), and each of those copies is reinstalled once by hand
-from the Releases page. It happened once: on 2026-11-12 the key moved from
-`A7E4E3180ED0F727` to `183E3397DE42EB98`, after the only copy had been
-deleted. So the new pubkey reaches main before, or with, the first release
-the new key signs. `write-latest-json.py` refuses a feed whose signatures
+from the Releases page. It has happened twice. On 2026-11-12 the key moved
+from `A7E4E3180ED0F727` to `183E3397DE42EB98`, after the only copy had been
+deleted. On 2026-11-25 it moved to `7DA247B3586A9245`: nobody had kept
+`183E3397DE42EB98`'s password, and the one saved in `desktop-release` did not
+open the key, so every `desktop-package` run failed at signing ("Wrong password
+for that key") and that key never signed a release. So the new pubkey reaches
+main before, or with, the first release the new key signs, and a new key is
+proven before its secrets are saved. Sign a file with it the way
+`sign-update.sh` does, with `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` in the environment and
+`bunx tauri signer sign <file>`. Then save both from files that end without
+a newline (`gh secret set NAME --env desktop-release < file`), so each secret
+holds exactly what signed. `write-latest-json.py` refuses a feed whose signatures
 carry any key ID but the one in `tauri.conf.json`, so a release can never pair
 one key's signatures with another key's pubkey.
 
